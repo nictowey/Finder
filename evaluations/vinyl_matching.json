@@ -1,0 +1,22 @@
+[
+  {"id":"damn","artist":"Kendrick Lamar","title":"Damn.","year":2017,"scenario":"exact_barcode","color":"Red","edition":"Collector's Edition"},
+  {"id":"rodeo","artist":"Travis Scott","title":"Rodeo","year":2015,"scenario":"edition","color":"Black","edition":"First Pressing"},
+  {"id":"igor","artist":"Tyler, The Creator","title":"Igor","year":2019,"scenario":"catalog_color","color":"Mint","edition":"Limited Edition"},
+  {"id":"daytona","artist":"Pusha T","title":"Daytona","year":2018,"scenario":"exact_barcode","color":"Black","edition":"Album"},
+  {"id":"swimming","artist":"Mac Miller","title":"Swimming","year":2018,"scenario":"catalog_color","color":"Blue","edition":"Limited Edition"},
+  {"id":"forest_hills","artist":"J. Cole","title":"2014 Forest Hills Drive","year":2014,"scenario":"ambiguous_shared_barcode","color":"Black","edition":"Album"},
+  {"id":"take_care","artist":"Drake","title":"Take Care","year":2011,"scenario":"ambiguous_shared_barcode","color":"Black","edition":"Reissue"},
+  {"id":"ds2","artist":"Future","title":"DS2","year":2015,"scenario":"edition","color":"Purple","edition":"Deluxe Edition"},
+  {"id":"awaken_my_love","artist":"Childish Gambino","title":"Awaken, My Love!","year":2016,"scenario":"exact_barcode","color":"Black","edition":"Album"},
+  {"id":"melt_my_eyez","artist":"Denzel Curry","title":"Melt My Eyez See Your Future","year":2022,"scenario":"catalog_color","color":"Orange","edition":"Limited Edition"},
+  {"id":"lp_2021","artist":"JPEGMAFIA","title":"LP!","year":2021,"scenario":"title_only","color":"Black","edition":"Album"},
+  {"id":"doris","artist":"Earl Sweatshirt","title":"Doris","year":2013,"scenario":"conflicting_barcode","color":"Black","edition":"Album"},
+  {"id":"pinata","artist":"Freddie Gibbs & Madlib","title":"Piñata","year":2014,"scenario":"ambiguous_shared_barcode","color":"Black","edition":"Reissue"},
+  {"id":"rtj2","artist":"Run The Jewels","title":"Run The Jewels 2","year":2014,"scenario":"exact_barcode","color":"Teal","edition":"Limited Edition"},
+  {"id":"luv_is_rage_2","artist":"Lil Uzi Vert","title":"Luv Is Rage 2","year":2017,"scenario":"edition","color":"Red","edition":"Deluxe Edition"},
+  {"id":"die_lit","artist":"Playboi Carti","title":"Die Lit","year":2018,"scenario":"title_only","color":"Black","edition":"Unofficial Release"},
+  {"id":"summertime_06","artist":"Vince Staples","title":"Summertime '06","year":2015,"scenario":"conflicting_barcode","color":"Black","edition":"Album"},
+  {"id":"atrocity_exhibition","artist":"Danny Brown","title":"Atrocity Exhibition","year":2016,"scenario":"ambiguous_shared_barcode","color":"Pink","edition":"Limited Edition"},
+  {"id":"alfredo","artist":"Freddie Gibbs & The Alchemist","title":"Alfredo","year":2020,"scenario":"catalog_color","color":"Bone","edition":"Limited Edition"},
+  {"id":"cheat_codes","artist":"Danger Mouse & Black Thought","title":"Cheat Codes","year":2022,"scenario":"conflicting_barcode","color":"Red","edition":"Limited Edition"}
+]

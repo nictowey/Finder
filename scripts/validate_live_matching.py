@@ -8,7 +8,7 @@ from finder.adapters.discogs.adapter import DiscogsCatalogProvider
 from finder.adapters.discogs.client import DiscogsClient
 from finder.config import load_discogs_settings
 from finder.domain import Listing, Variant
-from finder.matching import score_variant
+from finder.matching import rank_variants, score_variant
 from finder.persistence import SqlAlchemyRepository
 
 
@@ -75,11 +75,10 @@ def main() -> int:
         assert listing.total_acquisition_cost == Decimal("25.00")
         assert repository.upsert(listing) == "new"
 
-        candidates = []
         for variant in variants:
             repository.upsert_product(provider.product_for(variant))
             repository.upsert_variant(variant)
-            candidates.append(score_variant(listing, variant, observed_at))
+        candidates = rank_variants(listing, variants, observed_at)
         repository.replace_candidates(
             listing.marketplace,
             listing.marketplace_item_id,
@@ -94,6 +93,7 @@ def main() -> int:
         )
         assert selected_candidate.status == "strong_candidate"
         assert selected_candidate.score >= 70
+        assert selected_candidate.score == candidates[0].score
         assert any(
             evidence.field == "barcode" and evidence.matched
             for evidence in selected_candidate.evidence

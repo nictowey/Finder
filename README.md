@@ -122,6 +122,7 @@ Unknown configuration fields, duplicate monitor IDs, invalid types, and out-of-r
 | `adapters/ebay/adapter.py` | Browse search, pagination, item detail enrichment |
 | `adapters/ebay/normalize.py` | Pure eBay-to-domain normalization |
 | `adapters/discogs/*` | Authenticated CC0 catalog search, release lookup, and normalization |
+| `categories/vinyl.py` | Vinyl-only identity extraction for pressing and edition evidence |
 | `matching.py` | Conservative deterministic candidate scoring with visible evidence |
 | `persistence.py` | Listing/catalog repository protocols and SQLAlchemy implementation |
 | `service.py` | Scan orchestration, durable writes, summary counts |
@@ -133,9 +134,16 @@ The service depends on adapter and repository interfaces. Another marketplace ca
 
 Candidate scoring uses only explicit, inspectable evidence: barcode, catalog number, seller-supplied artist, title similarity, release year, and format descriptors. Conflicting barcodes force rejection, while title similarity alone cannot create a strong match. A `strong_candidate` is still a candidate and requires later validation; Finder does not yet designate exact matches.
 
+Vinyl-specific extraction is isolated in `categories/vinyl.py`. It maps listing specifics and
+Discogs release fields into artist, year, label, catalog number, barcode, color, edition, country,
+format, size, speed, and matrix/runout evidence. Color or edition conflicts prevent a candidate
+from being labeled strong even when broader album identity agrees. Shared barcodes can still
+produce multiple strong candidates, which Finder reports as ambiguity rather than breaking ties
+arbitrarily.
+
 ### Stored listing data
 
-The `listings` table has a composite primary key **(`marketplace`, `marketplace_item_id`)**, indexed latest-observation timestamp, original first-observation timestamp, and a normalized JSON `data` payload. JSON is used through SQLAlchemy's portable type rather than SQLite-specific SQL. The payload contains:
+The `listings` table has a composite primary key **(`marketplace`, `marketplace_item_id`)**, indexed latest-observation timestamp, original first-observation timestamp, and a normalized JSON `data` payload. The append-only `listing_observations` table stores one immutable snapshot per marketplace item and observation timestamp; repeating the same observation is idempotent. JSON is used through SQLAlchemy's portable type rather than SQLite-specific SQL. The payload contains:
 
 - Full eBay Browse item ID, title, current price, currency, and price kind.
 - Quoted shipping amount and its currency, plus computed total acquisition cost.
@@ -160,7 +168,23 @@ Updates preserve the original first-observation time and refresh current values.
 
 The default is `FINDER_DATABASE_URL=sqlite:///finder.db`. SQLAlchemy keeps SQL and engine management behind the repository. A hosted PostgreSQL deployment can use a URL such as `postgresql+psycopg://user:password@host/finder` after installing that driver's package; the service and adapter need no changes. Hosted databases have **not been integration-tested in Phase 1**. Provision the database and use a new empty schema for an initial move; changing the URL does not transfer existing data.
 
-`create_all` bootstraps `listings`, `products`, `variants`, and `listing_variant_candidates`. It is not a migration system. Introduce versioned migrations before changing a deployed schema or migrating production data. SQLite is appropriate for this small CLI; the unique keys prevent duplicate identities, but the MVP is not a distributed scan scheduler. Current snapshots are stored, not a price-history ledger. Listings absent from a later bounded scan are not deleted or marked sold; `total_stored` is all retained identities, not a live-inventory count.
+`create_all` bootstraps `listings`, `listing_observations` (observation history), `products`, `variants`, and `listing_variant_candidates`. It is not a migration system. Introduce versioned migrations before changing a deployed schema or migrating production data. SQLite is appropriate for this small CLI; the unique keys prevent duplicate identities, but the MVP is not a distributed scan scheduler. Observation history records what Finder saw; it does not yet infer sales, removal reasons, or fair value. Listings absent from a later bounded scan are not deleted or marked sold; `total_stored` is all retained identities, not a live-inventory count.
+
+### Replaying sanitized eBay responses
+
+When live eBay access is available, captured API-shaped bundles can be converted into safe,
+offline regression fixtures. The input format is `schema_version: 1`, a `search_responses` list,
+and a `detail_responses` object keyed by item ID. Sanitation replaces item and seller identities,
+removes captured timestamps and pagination URLs, and substitutes non-routable example URLs.
+
+```bash
+python scripts/sanitize_ebay_fixture.py raw-ebay-bundle.json sanitized-ebay-bundle.json
+python scripts/replay_ebay_fixture.py sanitized-ebay-bundle.json
+```
+
+Replay refuses bundles not explicitly marked as sanitized. Review a generated fixture before
+committing it; titles, prices, and item specifics remain because they are needed for regression
+coverage. Never capture authorization headers, OAuth responses, credentials, or full HTTP logs.
 
 ## Failure behavior and summary semantics
 
@@ -178,11 +202,11 @@ Exit codes: **0** for a completed bounded scan (possibly with skipped listings o
 
 ```bash
 python -m pytest -q
-ruff check src tests
-ruff format --check src tests
+ruff check src tests scripts
+ruff format --check src tests scripts
 ```
 
-Tests run offline with `httpx.MockTransport` and temporary SQLite databases. Coverage includes eBay and Discogs normalization, exact monetary arithmetic, missing data, configuration, authentication, retries, pagination, deduplication, catalog persistence, deterministic match evidence, repeat scans, and both CLI flows. Fixtures are **synthetic, API-shaped examples**, not evidence of actual prices or opportunities. Live integration requires your own provider credentials and a smoke test; that is separate from mocked test success.
+Tests run offline with `httpx.MockTransport` and temporary SQLite databases. Coverage includes eBay and Discogs normalization, exact monetary arithmetic, missing data, configuration, authentication, retries, pagination, deduplication, observation history, catalog persistence, deterministic match evidence, fixture sanitation/replay, repeat scans, and both CLI flows. The 20-case vinyl evaluation set uses real album names and release years but deliberately synthetic identifiers and candidate metadata; it tests ranking and ambiguity policy, not the accuracy of Discogs community data or a real seller's description. The live workflow separately checks current Discogs response shapes and end-to-end persistence with your encrypted repository secret.
 
 ## Next phases
 

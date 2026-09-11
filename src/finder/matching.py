@@ -5,6 +5,7 @@ import unicodedata
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 
+from finder.categories.vinyl import from_listing, from_variant
 from finder.domain import Listing, ListingVariantCandidate, MatchEvidence, Variant
 
 
@@ -15,32 +16,6 @@ def _normalized(value: str) -> str:
 
 def _compact(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", _normalized(value))
-
-
-def _listing_values(listing: Listing, *names: str) -> list[str]:
-    wanted = {_normalized(name) for name in names}
-    values = []
-    for name, candidates in listing.item_specifics.items():
-        if _normalized(name) in wanted:
-            values.extend(candidate for candidate in candidates if candidate)
-    return values
-
-
-def _variant_catalog_numbers(variant: Variant) -> list[str]:
-    values = [str(label["catno"]) for label in variant.labels if label.get("catno")]
-    for name, identifiers in variant.identifiers.items():
-        if "catalog" in _normalized(name):
-            values.extend(identifiers)
-    return values
-
-
-def _variant_barcodes(variant: Variant) -> list[str]:
-    return [
-        value
-        for name, values in variant.identifiers.items()
-        if "barcode" in _normalized(name)
-        for value in values
-    ]
 
 
 def _exact_evidence(
@@ -86,32 +61,41 @@ def score_variant(
     listing: Listing, variant: Variant, observed_at: datetime | None = None
 ) -> ListingVariantCandidate:
     evidence = []
-    barcode = _exact_evidence(
-        "barcode", _listing_values(listing, "UPC", "Barcode"), _variant_barcodes(variant), 60
-    )
+    listing_vinyl = from_listing(listing)
+    variant_vinyl = from_variant(variant)
+    barcode = _exact_evidence("barcode", listing_vinyl.barcodes, variant_vinyl.barcodes, 55)
     catno = _exact_evidence(
         "catalog_number",
-        _listing_values(listing, "Catalog Number", "Catalogue Number"),
-        _variant_catalog_numbers(variant),
-        45,
+        listing_vinyl.catalog_numbers,
+        variant_vinyl.catalog_numbers,
+        40,
     )
-    artist = _similarity_evidence(
-        "artist", _listing_values(listing, "Artist"), variant.artists, 20, 0.88
-    )
-    title = _similarity_evidence("title", [listing.title], [variant.title], 25, 0.52)
-    listing_year = _listing_values(listing, "Release Year", "Year")
+    artist = _similarity_evidence("artist", listing_vinyl.artists, variant_vinyl.artists, 15, 0.88)
+    title = _similarity_evidence("title", [listing.title], [variant.title], 20, 0.52)
     year = _exact_evidence(
         "release_year",
-        listing_year,
-        [str(variant.release_year)] if variant.release_year else [],
+        [str(value) for value in listing_vinyl.release_years],
+        [str(value) for value in variant_vinyl.release_years],
         10,
     )
-    listing_format = _listing_values(listing, "Format", "Record Size", "Edition", "Color")
-    variant_format = []
-    for value in variant.formats:
-        variant_format.extend(str(item) for item in value.values() if item)
-    format_evidence = _similarity_evidence("format", listing_format, variant_format, 5, 0.75)
-    for item in (barcode, catno, artist, title, year, format_evidence):
+    format_evidence = _similarity_evidence(
+        "format",
+        [*listing_vinyl.format_descriptions, *listing_vinyl.record_sizes, *listing_vinyl.speeds],
+        variant_vinyl.format_descriptions,
+        5,
+        0.75,
+    )
+    color = _similarity_evidence("color", listing_vinyl.colors, variant_vinyl.colors, 15, 0.72)
+    edition = _similarity_evidence(
+        "edition", listing_vinyl.editions, variant_vinyl.editions, 10, 0.72
+    )
+    country = _exact_evidence(
+        "country",
+        [listing_vinyl.country] if listing_vinyl.country else [],
+        [variant_vinyl.country] if variant_vinyl.country else [],
+        5,
+    )
+    for item in (barcode, catno, artist, title, year, format_evidence, color, edition, country):
         if item is not None:
             evidence.append(item)
     score = min(100, sum(item.weight for item in evidence if item.matched))
@@ -120,6 +104,10 @@ def score_variant(
         score = min(score, 20)
     elif catno is not None and not catno.matched:
         score = min(score, 50)
+    if color is not None and not color.matched:
+        score = min(score, 65)
+    if edition is not None and not edition.matched:
+        score = min(score, 65)
     status = "strong_candidate" if score >= 70 else "candidate" if score >= 30 else "rejected"
     return ListingVariantCandidate(
         marketplace=listing.marketplace,
@@ -130,4 +118,14 @@ def score_variant(
         status=status,
         evidence=evidence,
         observed_at=(observed_at or datetime.now(UTC)),
+    )
+
+
+def rank_variants(
+    listing: Listing, variants: list[Variant], observed_at: datetime | None = None
+) -> list[ListingVariantCandidate]:
+    """Rank candidates deterministically without converting candidates into asserted matches."""
+    return sorted(
+        (score_variant(listing, variant, observed_at) for variant in variants),
+        key=lambda candidate: (-candidate.score, candidate.catalog_variant_id),
     )

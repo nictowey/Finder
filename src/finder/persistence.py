@@ -26,6 +26,7 @@ UpsertResult = Literal["new", "updated"]
 class ListingRepository(Protocol):
     def upsert(self, listing: Listing) -> UpsertResult: ...
     def count(self) -> int: ...
+    def get_observations(self, marketplace: str, item_id: str) -> list[Listing]: ...
 
 
 class CatalogRepository(Protocol):
@@ -50,6 +51,14 @@ listings = Table(
     Column("first_observed_at", String(40), nullable=False),
     Column("last_observed_at", String(40), nullable=False, index=True),
     # Pydantic encodes Decimals as strings; no binary floating-point money in SQLite.
+    Column("data", JSON, nullable=False),
+)
+listing_observations = Table(
+    "listing_observations",
+    metadata,
+    Column("marketplace", String(64), primary_key=True),
+    Column("marketplace_item_id", String(255), primary_key=True),
+    Column("observed_at", String(40), primary_key=True),
     Column("data", JSON, nullable=False),
 )
 products = Table(
@@ -109,6 +118,29 @@ class SqlAlchemyListingRepository:
         for attempt in range(2):
             try:
                 with self.engine.begin() as conn:
+                    observation_key = (
+                        (listing_observations.c.marketplace == listing.marketplace)
+                        & (
+                            listing_observations.c.marketplace_item_id
+                            == listing.marketplace_item_id
+                        )
+                        & (
+                            listing_observations.c.observed_at
+                            == listing.last_observed_at.isoformat()
+                        )
+                    )
+                    observation_exists = conn.execute(
+                        select(listing_observations.c.observed_at).where(observation_key)
+                    ).first()
+                    if observation_exists is None:
+                        conn.execute(
+                            listing_observations.insert().values(
+                                marketplace=listing.marketplace,
+                                marketplace_item_id=listing.marketplace_item_id,
+                                observed_at=listing.last_observed_at.isoformat(),
+                                data=listing.model_dump(mode="json"),
+                            )
+                        )
                     row = (
                         conn.execute(select(listings).where(key).with_for_update())
                         .mappings()
@@ -178,6 +210,25 @@ class SqlAlchemyListingRepository:
                 return conn.execute(select(func.count()).select_from(listings)).scalar_one()
         except SQLAlchemyError:
             raise PersistenceError("Cannot count stored listings.") from None
+
+    def get_observations(self, marketplace: str, item_id: str) -> list[Listing]:
+        scope = (listing_observations.c.marketplace == marketplace) & (
+            listing_observations.c.marketplace_item_id == item_id
+        )
+        try:
+            with self.engine.connect() as conn:
+                rows = conn.execute(
+                    select(listing_observations.c.data)
+                    .where(scope)
+                    .order_by(listing_observations.c.observed_at)
+                ).scalars()
+                observations = []
+                for row in rows:
+                    row.pop("total_acquisition_cost", None)
+                    observations.append(Listing.model_validate(row))
+                return observations
+        except SQLAlchemyError:
+            raise PersistenceError("Cannot load listing observation history.") from None
 
     @staticmethod
     def _catalog_key(table: Table, source: str, identifier_column: str, identifier: str):

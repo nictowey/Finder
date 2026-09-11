@@ -23,6 +23,29 @@ def test_update_preserves_identity_and_first_seen(repository, search_payload, ob
     assert stored.last_observed_at == later.last_observed_at
     assert repository.upsert(first) == "updated"
     assert repository.get("ebay", first.marketplace_item_id).current_price == Decimal("19.95")
+    observations = repository.get_observations("ebay", first.marketplace_item_id)
+    assert [item.current_price for item in observations] == [Decimal("29.99"), Decimal("19.95")]
+    observations = repository.get_observations("ebay", first.marketplace_item_id)
+    assert [item.current_price for item in observations] == [Decimal("29.99"), Decimal("19.95")]
+
+
+def test_observations_are_append_only_and_idempotent(repository, search_payload, observed_at):
+    listing = normalize_listing(search_payload["itemSummaries"][0], observed_at)
+    repository.upsert(listing)
+    repository.upsert(listing)
+    later = listing.model_copy(
+        update={
+            "current_price": Decimal("24.00"),
+            "last_observed_at": observed_at + timedelta(minutes=5),
+        }
+    )
+    repository.upsert(later)
+    repository.upsert(listing)
+
+    observations = repository.get_observations("ebay", listing.marketplace_item_id)
+    assert len(observations) == 2
+    assert [item.current_price for item in observations] == [Decimal("29.99"), Decimal("24.00")]
+    assert repository.get("ebay", listing.marketplace_item_id).current_price == Decimal("24.00")
 
 
 def test_identity_includes_marketplace(repository, search_payload, observed_at):
