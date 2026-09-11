@@ -2,11 +2,22 @@
 
 from typing import Literal, Protocol
 
-from sqlalchemy import JSON, Column, MetaData, String, Table, create_engine, func, select, update
+from sqlalchemy import (
+    JSON,
+    Column,
+    MetaData,
+    String,
+    Table,
+    create_engine,
+    delete,
+    func,
+    select,
+    update,
+)
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from finder.domain import Listing
+from finder.domain import Listing, ListingVariantCandidate, Product, Variant
 from finder.errors import PersistenceError
 
 UpsertResult = Literal["new", "updated"]
@@ -15,6 +26,18 @@ UpsertResult = Literal["new", "updated"]
 class ListingRepository(Protocol):
     def upsert(self, listing: Listing) -> UpsertResult: ...
     def count(self) -> int: ...
+
+
+class CatalogRepository(Protocol):
+    def upsert_product(self, product: Product) -> UpsertResult: ...
+    def upsert_variant(self, variant: Variant) -> UpsertResult: ...
+    def replace_candidates(
+        self,
+        marketplace: str,
+        item_id: str,
+        catalog_source: str,
+        candidates: list[ListingVariantCandidate],
+    ) -> None: ...
 
 
 metadata = MetaData()
@@ -27,6 +50,33 @@ listings = Table(
     Column("first_observed_at", String(40), nullable=False),
     Column("last_observed_at", String(40), nullable=False, index=True),
     # Pydantic encodes Decimals as strings; no binary floating-point money in SQLite.
+    Column("data", JSON, nullable=False),
+)
+products = Table(
+    "products",
+    metadata,
+    Column("catalog_source", String(64), primary_key=True),
+    Column("catalog_product_id", String(255), primary_key=True),
+    Column("observed_at", String(40), nullable=False, index=True),
+    Column("data", JSON, nullable=False),
+)
+variants = Table(
+    "variants",
+    metadata,
+    Column("catalog_source", String(64), primary_key=True),
+    Column("catalog_variant_id", String(255), primary_key=True),
+    Column("catalog_product_id", String(255), nullable=False, index=True),
+    Column("observed_at", String(40), nullable=False, index=True),
+    Column("data", JSON, nullable=False),
+)
+listing_variant_candidates = Table(
+    "listing_variant_candidates",
+    metadata,
+    Column("marketplace", String(64), primary_key=True),
+    Column("marketplace_item_id", String(255), primary_key=True),
+    Column("catalog_source", String(64), primary_key=True),
+    Column("catalog_variant_id", String(255), primary_key=True),
+    Column("observed_at", String(40), nullable=False, index=True),
     Column("data", JSON, nullable=False),
 )
 
@@ -128,3 +178,122 @@ class SqlAlchemyListingRepository:
                 return conn.execute(select(func.count()).select_from(listings)).scalar_one()
         except SQLAlchemyError:
             raise PersistenceError("Cannot count stored listings.") from None
+
+    @staticmethod
+    def _catalog_key(table: Table, source: str, identifier_column: str, identifier: str):
+        return (table.c.catalog_source == source) & (
+            getattr(table.c, identifier_column) == identifier
+        )
+
+    def upsert_product(self, product: Product) -> UpsertResult:
+        key = self._catalog_key(
+            products, product.catalog_source, "catalog_product_id", product.catalog_product_id
+        )
+        return self._upsert_catalog_document(
+            products,
+            key,
+            {
+                "catalog_source": product.catalog_source,
+                "catalog_product_id": product.catalog_product_id,
+                "observed_at": product.observed_at.isoformat(),
+                "data": product.model_dump(mode="json"),
+            },
+        )
+
+    def upsert_variant(self, variant: Variant) -> UpsertResult:
+        key = self._catalog_key(
+            variants, variant.catalog_source, "catalog_variant_id", variant.catalog_variant_id
+        )
+        return self._upsert_catalog_document(
+            variants,
+            key,
+            {
+                "catalog_source": variant.catalog_source,
+                "catalog_variant_id": variant.catalog_variant_id,
+                "catalog_product_id": variant.catalog_product_id,
+                "observed_at": variant.observed_at.isoformat(),
+                "data": variant.model_dump(mode="json"),
+            },
+        )
+
+    def _upsert_catalog_document(self, table: Table, key, values: dict) -> UpsertResult:
+        try:
+            with self.engine.begin() as conn:
+                exists = conn.execute(select(table).where(key).with_for_update()).first()
+                if exists is None:
+                    conn.execute(table.insert().values(**values))
+                    return "new"
+                conn.execute(update(table).where(key).values(**values))
+                return "updated"
+        except SQLAlchemyError:
+            raise PersistenceError("Catalog database write failed.") from None
+
+    def replace_candidates(
+        self,
+        marketplace: str,
+        item_id: str,
+        catalog_source: str,
+        candidates: list[ListingVariantCandidate],
+    ) -> None:
+        scope = (
+            (listing_variant_candidates.c.marketplace == marketplace)
+            & (listing_variant_candidates.c.marketplace_item_id == item_id)
+            & (listing_variant_candidates.c.catalog_source == catalog_source)
+        )
+        if any(
+            candidate.marketplace != marketplace
+            or candidate.marketplace_item_id != item_id
+            or candidate.catalog_source != catalog_source
+            for candidate in candidates
+        ):
+            raise PersistenceError("Candidate identities do not match the replacement scope.")
+        try:
+            with self.engine.begin() as conn:
+                conn.execute(delete(listing_variant_candidates).where(scope))
+                if candidates:
+                    conn.execute(
+                        listing_variant_candidates.insert(),
+                        [
+                            {
+                                "marketplace": candidate.marketplace,
+                                "marketplace_item_id": candidate.marketplace_item_id,
+                                "catalog_source": candidate.catalog_source,
+                                "catalog_variant_id": candidate.catalog_variant_id,
+                                "observed_at": candidate.observed_at.isoformat(),
+                                "data": candidate.model_dump(mode="json"),
+                            }
+                            for candidate in candidates
+                        ],
+                    )
+        except SQLAlchemyError:
+            raise PersistenceError("Candidate database write failed.") from None
+
+    def get_variant(self, source: str, variant_id: str) -> Variant | None:
+        key = self._catalog_key(variants, source, "catalog_variant_id", variant_id)
+        try:
+            with self.engine.connect() as conn:
+                data = conn.execute(select(variants.c.data).where(key)).scalar()
+            return Variant.model_validate(data) if data else None
+        except SQLAlchemyError:
+            raise PersistenceError("Catalog database read failed.") from None
+
+    def get_candidates(
+        self, marketplace: str, item_id: str, source: str
+    ) -> list[ListingVariantCandidate]:
+        scope = (
+            (listing_variant_candidates.c.marketplace == marketplace)
+            & (listing_variant_candidates.c.marketplace_item_id == item_id)
+            & (listing_variant_candidates.c.catalog_source == source)
+        )
+        try:
+            with self.engine.connect() as conn:
+                rows = conn.execute(
+                    select(listing_variant_candidates.c.data).where(scope)
+                ).scalars()
+                return [ListingVariantCandidate.model_validate(row) for row in rows]
+        except SQLAlchemyError:
+            raise PersistenceError("Candidate database read failed.") from None
+
+
+# Backwards-compatible name while the repository expands beyond listings.
+SqlAlchemyRepository = SqlAlchemyListingRepository

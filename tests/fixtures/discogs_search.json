@@ -1,0 +1,7 @@
+{
+  "pagination": {"page": 1, "pages": 1, "per_page": 2, "items": 2},
+  "results": [
+    {"id": 111, "type": "release", "title": "Example Artist - Example Album"},
+    {"id": 222, "type": "release", "title": "Example Artist - Example Album"}
+  ]
+}

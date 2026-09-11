@@ -2,11 +2,11 @@
 
 Finder is the foundation for a marketplace-monitoring and mispricing-detection platform. The eventual workflow is: define a monitor → discover listings → identify the exact product and variant → compare against real comparable transactions → evaluate opportunities → alert the user.
 
-**Phase 1 implements discovery and storage only:** a local Python CLI ingests active eBay listings through the official Browse API. Its first monitor targets hip-hop/rap vinyl, with an intended focus on 2010–2026 releases. No scraping, frontend, accounts, payments, notifications, LLMs, Discogs integration, matching, or valuation is included.
+The current foundation has two connected parts: a local Python CLI ingests active eBay listings through the official Browse API, and a Discogs catalog provider stores canonical release metadata and evaluates deterministic match candidates. Its first monitor targets hip-hop/rap vinyl, with an intended focus on 2010–2026 releases. There is no scraping, frontend, account system, payment flow, notification delivery, LLM matching, or valuation.
 
 ## Quick start
 
-Requires Python 3.11+ and an eBay Developer application with Browse API access. Run these commands from the repository root:
+Requires Python 3.11+. Run these commands from the repository root:
 
 ```bash
 python -m venv .venv
@@ -14,7 +14,18 @@ source .venv/bin/activate
 # Windows PowerShell: .venv\Scripts\Activate.ps1
 python -m pip install -e '.[dev]'
 cp .env.example .env
-# Edit .env and fill EBAY_CLIENT_ID and EBAY_CLIENT_SECRET.
+# Edit .env with credentials for the command you want to run.
+```
+
+Discogs catalog search can be tested while eBay access is pending:
+
+```bash
+finder catalog-search "Kendrick Lamar DAMN"
+```
+
+With eBay production access, run the marketplace scan:
+
+```bash
 finder scan
 ```
 
@@ -38,6 +49,9 @@ Other invocations:
 finder scan --monitor rap-vinyl --config config/monitors.toml
 finder scan --json
 finder scan --env-file /path/to/local.env
+finder catalog-search "Travis Scott Rodeo" --limit 10
+finder catalog-search "194398653419" --json
+finder match --marketplace ebay --item-id 'v1|123456789012|0'
 ```
 
 JSON logs go to stderr; the human or JSON summary goes to stdout. `.env` loading never overrides existing environment variables. Local database paths and the default configuration path resolve from the current working directory.
@@ -53,6 +67,17 @@ JSON logs go to stderr; the human or JSON summary goes to stdout. `.env` loading
 Finder requests an application OAuth token using `client_credentials` and the scope `https://api.ebay.com/oauth/api_scope`, caches it in memory until shortly before expiry, and renews it once on a Browse 401 response. No token is saved to disk. Never commit your `.env`, paste real credentials into tests, or put secrets in monitor configuration. `.env.example` contains empty credential values and `.gitignore` excludes local secrets and databases.
 
 Sandbox uses `finder-sandbox.db` when the default SQLite URL is unchanged. **If you customize `FINDER_DATABASE_URL`, use different databases for Sandbox and Production.** Sandbox data is not real market inventory.
+
+## Discogs catalog credentials and scope
+
+1. Sign in to Discogs and open [Settings > Developers](https://www.discogs.com/settings/developers).
+2. Generate a personal access token and put it in `DISCOGS_TOKEN`.
+3. Keep an identifying application name and project URL or contact method in `DISCOGS_USER_AGENT`.
+4. Run `finder catalog-search "artist album"` to verify access. One search with a limit of five makes one database-search request plus up to five release-detail requests.
+
+Finder calls only Discogs' `/database/search` and `/releases/{id}` catalog endpoints. It does not request seller inventory, marketplace statistics, pricing suggestions, orders, fees, or sales history. Discogs classifies titles, dates, formats, track listings, barcodes, identifiers, credits, and release relationships as CC0 catalog data. Its marketplace and pricing data is restricted and may not be used commercially under the current [Discogs API Terms of Use](https://support.discogs.com/hc/en-us/articles/360009334593-API-Terms-of-Use).
+
+The CLI attributes results to Discogs and stores the source URL and observation time. Any future interface that displays Discogs-derived data must show “Data provided by Discogs” next to the data with a link to the relevant Discogs page, and must refresh displayed data within the freshness limits in Discogs' terms. This application uses Discogs’ API but is not affiliated with, sponsored or endorsed by Discogs. “Discogs” is a trademark of Zink Media, LLC.
 
 ## Configuring discovery
 
@@ -82,18 +107,23 @@ Unknown configuration fields, duplicate monitor IDs, invalid types, and out-of-r
 
 | Module | Responsibility |
 | --- | --- |
-| `domain.py` | Category-independent `Listing` and `Monitor` models |
+| `domain.py` | Generic `Listing`, `Monitor`, `Product`, `Variant`, and match-evidence models |
+| `catalog.py` | Catalog-provider interface, separate from marketplace ingestion |
 | `adapters/base.py` | `MarketplaceAdapter` protocol and observation/scan counters |
 | `adapters/ebay/client.py` | HTTP transport, OAuth, bounded retry policy |
 | `adapters/ebay/adapter.py` | Browse search, pagination, item detail enrichment |
 | `adapters/ebay/normalize.py` | Pure eBay-to-domain normalization |
-| `persistence.py` | `ListingRepository` protocol and SQLAlchemy implementation |
+| `adapters/discogs/*` | Authenticated CC0 catalog search, release lookup, and normalization |
+| `matching.py` | Conservative deterministic candidate scoring with visible evidence |
+| `persistence.py` | Listing/catalog repository protocols and SQLAlchemy implementation |
 | `service.py` | Scan orchestration, durable writes, summary counts |
 | `config.py`, `cli.py`, `logging.py` | Settings, command wiring, JSON logging |
 
-The service depends on adapter and repository interfaces. Another marketplace can implement the adapter protocol without changing storage or scan orchestration; register it in the CLI when needed. Marketplace identity is an extensible string (`ebay` today), not a closed provider enum. An eBay site and environment are provider metadata.
+The service depends on adapter and repository interfaces. Another marketplace can implement the marketplace adapter without changing storage or scan orchestration. A catalog source implements `CatalogProvider` instead. Marketplace and catalog identities are extensible strings, rather than closed provider enums.
 
-`Product`, `Variant`, `Comparable`, `Valuation`, `Opportunity`, and `Alert` are planned concepts, deliberately not empty classes or tables in this phase. Future listings will link to canonical products/variants; observations must remain separate from inferred identity and valuation. Vinyl-specific models will own pressing, matrix/runout, label, and grading interpretation. Today, seller-supplied item specifics stay as uninterpreted metadata on the listing.
+`Product` represents a catalog work or release family. `Variant` represents one exact catalog release or edition. Discogs master and release IDs provide their current external identities. `listing_variant_candidates` connects marketplace observations to possible variants without asserting that a match is correct. `Comparable`, `Valuation`, `Opportunity`, and `Alert` remain planned concepts. Vinyl-specific interpretation of pressing, matrix/runout, label, and grading still belongs in a later category model.
+
+Candidate scoring uses only explicit, inspectable evidence: barcode, catalog number, seller-supplied artist, title similarity, release year, and format descriptors. Conflicting barcodes force rejection, while title similarity alone cannot create a strong match. A `strong_candidate` is still a candidate and requires later validation; Finder does not yet designate exact matches.
 
 ### Stored listing data
 
@@ -122,7 +152,7 @@ Updates preserve the original first-observation time and refresh current values.
 
 The default is `FINDER_DATABASE_URL=sqlite:///finder.db`. SQLAlchemy keeps SQL and engine management behind the repository. A hosted PostgreSQL deployment can use a URL such as `postgresql+psycopg://user:password@host/finder` after installing that driver's package; the service and adapter need no changes. Hosted databases have **not been integration-tested in Phase 1**. Provision the database and use a new empty schema for an initial move; changing the URL does not transfer existing data.
 
-`create_all` bootstraps this initial schema. It is not a migration system. Introduce versioned migrations before changing a deployed schema or migrating production data. SQLite is appropriate for this small CLI; the unique key prevents duplicate identities, but the MVP is not a distributed scan scheduler. Current snapshots are stored, not a price-history ledger. Listings absent from a later bounded scan are not deleted or marked sold; `total_stored` is all retained identities, not a live-inventory count.
+`create_all` bootstraps `listings`, `products`, `variants`, and `listing_variant_candidates`. It is not a migration system. Introduce versioned migrations before changing a deployed schema or migrating production data. SQLite is appropriate for this small CLI; the unique keys prevent duplicate identities, but the MVP is not a distributed scan scheduler. Current snapshots are stored, not a price-history ledger. Listings absent from a later bounded scan are not deleted or marked sold; `total_stored` is all retained identities, not a live-inventory count.
 
 ## Failure behavior and summary semantics
 
@@ -144,13 +174,13 @@ ruff check src tests
 ruff format --check src tests
 ```
 
-Tests run offline with `httpx.MockTransport` and temporary SQLite databases. Coverage includes normalization, exact monetary arithmetic, unknown/free/mismatched shipping, missing data, configuration, OAuth caching/renewal, failures and retries, pagination budgets, deduplication, repeat scans, concurrent identity insertion, timestamp preservation, stale specifics, partial failure, and the CLI acceptance flow. Fixtures are **synthetic, API-shaped examples**, not evidence of actual prices or opportunities. Live integration requires your own authorized eBay credentials and a smoke scan; that is separate from mocked test success.
+Tests run offline with `httpx.MockTransport` and temporary SQLite databases. Coverage includes eBay and Discogs normalization, exact monetary arithmetic, missing data, configuration, authentication, retries, pagination, deduplication, catalog persistence, deterministic match evidence, repeat scans, and both CLI flows. Fixtures are **synthetic, API-shaped examples**, not evidence of actual prices or opportunities. Live integration requires your own provider credentials and a smoke test; that is separate from mocked test success.
 
 ## Next phases
 
-1. Validate discovery against live inventory, refine monitors, and add durable scan-run history and database migrations as needed.
-2. Add a vinyl category model and exact Discogs release/variant matching with provenance and ambiguity handling.
-3. Ingest permitted real comparables; normalize condition, shipping, currency, and transaction dates before valuation.
+1. Validate Discogs catalog search with a personal token and eBay discovery when its developer account is approved.
+2. Refine candidate retrieval and add a vinyl-specific identity model with explicit ambiguity handling.
+3. Ingest a commercially permitted source of real sold comparables; normalize condition, shipping, currency, and transaction dates before valuation.
 4. Implement valuations and opportunity scoring with freshness, confidence, and explicit uncertainty.
 5. Add alert delivery and persistent scheduling once ingestion and scoring are dependable.
 6. Add other marketplace adapters and collectible categories, then a user-facing product when warranted.
@@ -164,3 +194,5 @@ Active asking prices alone are not sold comparables, and Phase 1 makes no profit
 - [OAuth application tokens](https://developer.ebay.com/api-docs/static/oauth-client-credentials-grant.html)
 - [Buying-format and delivery filters](https://developer.ebay.com/api-docs/buy/static/ref-buy-browse-filters.html)
 - [Shipping context headers](https://developer.ebay.com/api-docs/buy/static/api-browse.html)
+- [Discogs API documentation](https://www.discogs.com/developers)
+- [Discogs API Terms of Use](https://support.discogs.com/hc/en-us/articles/360009334593-API-Terms-of-Use)

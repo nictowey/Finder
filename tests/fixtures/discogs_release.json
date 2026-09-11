@@ -1,0 +1,19 @@
+{
+  "id": 111,
+  "master_id": 99,
+  "title": "Example Album",
+  "artists": [{"name": "Example Artist"}],
+  "year": 2018,
+  "country": "US",
+  "genres": ["Hip Hop"],
+  "styles": ["Trap"],
+  "formats": [{"name": "Vinyl", "qty": "1", "descriptions": ["LP", "Album"], "text": "Blue"}],
+  "labels": [{"id": 7, "name": "Example Records", "catno": "EX-101"}],
+  "identifiers": [
+    {"type": "Barcode", "value": "0123456789012"},
+    {"type": "Matrix / Runout", "value": "EX-101-A"}
+  ],
+  "uri": "/release/111-Example-Artist-Example-Album",
+  "status": "Accepted",
+  "data_quality": "Correct"
+}

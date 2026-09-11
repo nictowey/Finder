@@ -39,3 +39,23 @@ class InvalidListingError(FinderError):
 
 class PersistenceError(FinderError):
     pass
+
+
+class CatalogError(FinderError):
+    pass
+
+
+class CatalogAuthenticationError(CatalogError):
+    pass
+
+
+class CatalogRateLimitError(CatalogError):
+    pass
+
+
+class CatalogRequestError(CatalogError):
+    pass
+
+
+class CatalogResponseError(CatalogError):
+    pass

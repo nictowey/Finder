@@ -1,10 +1,14 @@
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
 
 from finder import cli
+from finder.adapters.discogs.client import DiscogsClient
 from finder.adapters.ebay.client import EbayClient
+from finder.adapters.ebay.normalize import normalize_listing
+from finder.persistence import SqlAlchemyRepository
 
 
 def test_cli_acceptance_scan_twice(tmp_path, monkeypatch, capsys, search_payload):
@@ -53,3 +57,85 @@ def test_env_example_contains_no_credentials():
     for line in Path(".env.example").read_text().splitlines():
         if line.startswith(("EBAY_CLIENT_ID=", "EBAY_CLIENT_SECRET=")):
             assert line.endswith("=")
+    assert "DISCOGS_TOKEN=" in Path(".env.example").read_text().splitlines()
+
+
+def test_catalog_search_cli(tmp_path, monkeypatch, capsys, discogs_release):
+    monkeypatch.setenv("DISCOGS_TOKEN", "fake-token")
+    monkeypatch.setenv("DISCOGS_USER_AGENT", "Finder/0.2 test@example.com")
+    monkeypatch.setenv("FINDER_DATABASE_URL", f"sqlite:///{tmp_path / 'catalog.db'}")
+
+    def handler(request):
+        if request.url.path == "/database/search":
+            return httpx.Response(
+                200,
+                json={"pagination": {"items": 1}, "results": [{"id": 111}]},
+            )
+        return httpx.Response(200, json=discogs_release)
+
+    monkeypatch.setattr(
+        cli,
+        "DiscogsClient",
+        lambda settings: DiscogsClient(settings, transport=httpx.MockTransport(handler)),
+    )
+    assert cli.main(["catalog-search", "Example Artist Example Album", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["results"] == 1
+    assert result["attribution"] == "Data provided by Discogs"
+    assert result["new_variants"] == 1
+    assert result["variants"][0]["discogs_release_id"] == "111"
+
+
+def test_match_cli_persists_auditable_candidate(
+    tmp_path, monkeypatch, capsys, search_payload, discogs_release
+):
+    database_url = f"sqlite:///{tmp_path / 'match.db'}"
+    repository = SqlAlchemyRepository.from_url(database_url)
+    listing = normalize_listing(
+        {
+            **search_payload["itemSummaries"][0],
+            "title": "Example Artist Example Album vinyl LP",
+            "localizedAspects": [
+                {"name": "Artist", "value": "Example Artist"},
+                {"name": "UPC", "value": "0123456789012"},
+            ],
+        },
+        datetime(2026, 9, 11, tzinfo=UTC),
+    )
+    repository.upsert(listing)
+    repository.close()
+    monkeypatch.setenv("DISCOGS_TOKEN", "fake-token")
+    monkeypatch.setenv("DISCOGS_USER_AGENT", "Finder/0.2 test@example.com")
+    monkeypatch.setenv("FINDER_DATABASE_URL", database_url)
+
+    def handler(request):
+        if request.url.path == "/database/search":
+            return httpx.Response(200, json={"results": [{"id": 111}]})
+        return httpx.Response(200, json=discogs_release)
+
+    monkeypatch.setattr(
+        cli,
+        "DiscogsClient",
+        lambda settings: DiscogsClient(settings, transport=httpx.MockTransport(handler)),
+    )
+    assert (
+        cli.main(
+            [
+                "match",
+                "--marketplace",
+                "ebay",
+                "--item-id",
+                listing.marketplace_item_id,
+                "--json",
+            ]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["candidates"][0]["status"] == "strong_candidate"
+    repository = SqlAlchemyRepository.from_url(database_url)
+    try:
+        saved = repository.get_candidates("ebay", listing.marketplace_item_id, "discogs")
+        assert saved[0].catalog_variant_id == "111"
+    finally:
+        repository.close()

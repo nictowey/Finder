@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from finder.adapters.ebay.options import EbayOptions
-from finder.config import load_monitor, load_settings
+from finder.config import load_discogs_settings, load_monitor, load_settings
 from finder.errors import ConfigurationError
 
 
@@ -13,7 +13,7 @@ def clean_env(monkeypatch):
     import os
 
     for key in list(os.environ):
-        if key.startswith(("EBAY_", "FINDER_")):
+        if key.startswith(("EBAY_", "FINDER_", "DISCOGS_")):
             monkeypatch.delenv(key)
 
 
@@ -94,3 +94,21 @@ def test_missing_and_duplicate_monitor(tmp_path):
 def test_bad_ebay_options(options):
     with pytest.raises(ValidationError):
         EbayOptions.model_validate(options)
+
+
+def test_discogs_settings_are_independent_of_ebay(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text(
+        "DISCOGS_TOKEN=discogs-secret\nDISCOGS_USER_AGENT=Finder/0.2 owner@example.com\n"
+    )
+    settings = load_discogs_settings(env)
+    assert settings.token.get_secret_value() == "discogs-secret"
+    assert settings.user_agent == "Finder/0.2 owner@example.com"
+    assert "discogs-secret" not in repr(settings)
+
+
+def test_discogs_token_is_required(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("")
+    with pytest.raises(ConfigurationError, match="DISCOGS_TOKEN"):
+        load_discogs_settings(env)

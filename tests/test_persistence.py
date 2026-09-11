@@ -2,7 +2,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from decimal import Decimal
 
+from finder.adapters.discogs.normalize import normalize_release, product_from_variant
 from finder.adapters.ebay.normalize import normalize_listing
+from finder.matching import score_variant
 from finder.persistence import SqlAlchemyListingRepository
 
 
@@ -73,3 +75,22 @@ def test_concurrent_insert_has_one_identity(repository, search_payload, observed
         results = list(pool.map(repository.upsert, [listing, listing]))
     assert sorted(results) == ["new", "updated"]
     assert repository.count() == 1
+
+
+def test_catalog_and_match_candidate_persistence(
+    repository, search_payload, discogs_release, observed_at
+):
+    listing = normalize_listing(search_payload["itemSummaries"][0], observed_at)
+    variant = normalize_release(discogs_release, observed_at)
+    product = product_from_variant(variant)
+    assert repository.upsert(listing) == "new"
+    assert repository.upsert_product(product) == "new"
+    assert repository.upsert_variant(variant) == "new"
+    assert repository.upsert_product(product) == "updated"
+    assert repository.upsert_variant(variant) == "updated"
+    candidate = score_variant(listing, variant, observed_at)
+    repository.replace_candidates("ebay", listing.marketplace_item_id, "discogs", [candidate])
+    assert repository.get_variant("discogs", "111") == variant
+    assert repository.get_candidates("ebay", listing.marketplace_item_id, "discogs") == [candidate]
+    repository.replace_candidates("ebay", listing.marketplace_item_id, "discogs", [])
+    assert repository.get_candidates("ebay", listing.marketplace_item_id, "discogs") == []

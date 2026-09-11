@@ -71,3 +71,75 @@ class Listing(BaseModel):
         ):
             return None
         return self.current_price + self.shipping_cost
+
+
+class Product(BaseModel):
+    """A catalog work/release family, independent of a marketplace listing."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    catalog_source: str
+    catalog_product_id: str
+    title: str
+    artists: list[str] = Field(default_factory=list)
+    resource_url: str | None = None
+    observed_at: AwareDatetime
+    source_metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("observed_at")
+    @classmethod
+    def normalize_product_timezone(cls, value: datetime) -> datetime:
+        return value.astimezone(UTC)
+
+
+class Variant(BaseModel):
+    """One exact catalog release/edition that a listing may represent."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    catalog_source: str
+    catalog_variant_id: str
+    catalog_product_id: str
+    title: str
+    artists: list[str] = Field(default_factory=list)
+    release_year: int | None = None
+    country: str | None = None
+    formats: list[dict[str, Any]] = Field(default_factory=list)
+    labels: list[dict[str, Any]] = Field(default_factory=list)
+    identifiers: dict[str, list[str]] = Field(default_factory=dict)
+    genres: list[str] = Field(default_factory=list)
+    styles: list[str] = Field(default_factory=list)
+    resource_url: str | None = None
+    observed_at: AwareDatetime
+    source_metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("observed_at")
+    @classmethod
+    def normalize_variant_timezone(cls, value: datetime) -> datetime:
+        return value.astimezone(UTC)
+
+
+class MatchEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    field: str
+    listing_values: list[str] = Field(default_factory=list)
+    variant_values: list[str] = Field(default_factory=list)
+    matched: bool
+    weight: int = Field(ge=0)
+
+
+class ListingVariantCandidate(BaseModel):
+    """Auditable deterministic evidence; this does not assert an exact match."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    marketplace: str
+    marketplace_item_id: str
+    catalog_source: str
+    catalog_variant_id: str
+    score: int = Field(ge=0, le=100)
+    status: Literal["candidate", "strong_candidate", "rejected"]
+    evidence: list[MatchEvidence] = Field(default_factory=list)
+    observed_at: AwareDatetime
+
+    @field_validator("observed_at")
+    @classmethod
+    def normalize_candidate_timezone(cls, value: datetime) -> datetime:
+        return value.astimezone(UTC)

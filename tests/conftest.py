@@ -20,6 +20,11 @@ def detail_payload():
 
 
 @pytest.fixture
+def discogs_release():
+    return json.loads((Path(__file__).parent / "fixtures/discogs_release.json").read_text())
+
+
+@pytest.fixture
 def observed_at():
     return datetime(2026, 9, 11, 12, tzinfo=UTC)
 
