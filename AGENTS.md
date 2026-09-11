@@ -21,6 +21,9 @@ behind adapters. Category-specific identity rules belong in category modules.
 
 ## Current project state
 
+The accuracy-gated development sequence and product decisions are maintained in `ROADMAP.md`.
+Read it before proposing or implementing a new phase.
+
 ### Completed
 
 1. Phase 1 — eBay ingestion foundation
@@ -143,13 +146,13 @@ A material change is complete only when:
 
 ## Near-term priorities
 
-1. Validate eBay Browse ingestion with approved production credentials.
-2. Turn sanitized real eBay responses into regression fixtures.
-3. Measure candidate ranking against messy seller titles and incomplete item specifics.
-4. Refine vinyl identity evidence based on observed failures, not guesses.
-5. Identify a commercially permitted source of sold comparables.
-6. Add valuation and opportunity scoring only after identity quality and comparable rights are
-   established.
+1. Define the `VinylFingerprint`, `CollectibleAttribute`, `EvidenceRecord`, and `MatchDecision`
+   contracts described in `ROADMAP.md`.
+2. Separate release-family matching from exact-variant matching and version the match policy.
+3. Expand ambiguity and collectible-attribute evaluations while eBay approval is pending.
+4. Validate eBay Browse ingestion with approved production credentials when available.
+5. Turn sanitized real eBay responses into labeled regression fixtures.
+6. Qualify a commercially permitted sold-comparables source before implementing valuation.
 
 Do not build hosting, scheduling, alerts, or a frontend until live ingestion and identity
 matching are demonstrably reliable.
@@ -157,5 +160,6 @@ matching are demonstrably reliable.
 ## Maintaining this file
 
 Update **Current project state**, **Verified baseline**, **Active blocker**, and
-**Near-term priorities** after each material phase. Keep detailed implementation history in Git
-commits and the README; do not turn this file into a line-by-line changelog.
+**Near-term priorities** after each material phase. Update `ROADMAP.md` when a phase, gate, or
+product decision changes. Keep detailed implementation history in Git commits and the README;
+do not turn this file into a line-by-line changelog.

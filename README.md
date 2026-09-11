@@ -4,6 +4,10 @@ Finder is the foundation for a marketplace-monitoring and mispricing-detection p
 
 The current foundation has two connected parts: a local Python CLI ingests active eBay listings through the official Browse API, and a Discogs catalog provider stores canonical release metadata and evaluates deterministic match candidates. Its first monitor targets hip-hop/rap vinyl, with an intended focus on 2010–2026 releases. There is no scraping, frontend, account system, payment flow, notification delivery, LLM matching, or valuation.
 
+See [ROADMAP.md](ROADMAP.md) for the accuracy-gated development plan, pressing-versus-copy
+identity model, provider constraints, and criteria that must be met before valuation, alerts,
+hosting, or expansion into other collectible categories.
+
 ## Quick start
 
 Requires Python 3.11+. Run these commands from the repository root:
