@@ -1,0 +1,15 @@
+{
+  "itemId": "v1|123456789012|0",
+  "title": "Example Artist - Modern Rap Album 2018 Vinyl LP",
+  "price": {"value": "29.99", "currency": "USD"},
+  "categoryId": "176985",
+  "categoryPath": "Music|Vinyl Records",
+  "localizedAspects": [
+    {"name": "Artist", "value": "Example Artist"},
+    {"name": "Genre", "value": "Rap & Hip-Hop"},
+    {"name": "Release Year", "value": "2018"},
+    {"name": "Record Grading", "value": "Near Mint (NM or M-)"},
+    {"name": "Sleeve Grading", "value": "Very Good Plus (VG+)"},
+    {"name": "Color", "value": "Blue"}
+  ]
+}

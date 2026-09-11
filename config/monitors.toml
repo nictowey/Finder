@@ -1,0 +1,19 @@
+[[monitors]]
+id = "rap-vinyl"
+name = "Hip-hop / rap vinyl discovery (2010–2026 focus)"
+marketplace = "ebay"
+query = "vinyl (rap,hip-hop,hip hop)"
+# Intent only: do not infer release years or pressings from listing titles.
+# A hard year filter would exclude listings whose sellers omit release years.
+description = "Broad discovery for modern rap vinyl; release year and variant unverified."
+
+[monitors.source_options]
+marketplace_id = "EBAY_US"
+category_ids = ["176985"] # US Music > Vinyl Records; configurable for other eBay sites.
+buying_options = ["FIXED_PRICE", "AUCTION"]
+sort = "newlyListed"
+page_size = 50
+max_pages = 2
+fetch_details = true
+# Optional eBay aspect filter. Validate names/values against live category taxonomy.
+# aspect_filter = "categoryId:176985,Genre:{Rap & Hip-Hop}"
