@@ -43,7 +43,7 @@ behind adapters. Category-specific identity rules belong in category modules.
 
 ### Verified baseline
 
-- Main branch baseline: commit `51c6a8f`
+- Latest verified implementation baseline: commit `51c6a8f`
 - Offline suite: 107 tests passing
 - Ruff lint and formatting checks passing
 - Live Discogs validation passing through GitHub Actions
