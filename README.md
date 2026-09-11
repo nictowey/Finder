@@ -75,6 +75,14 @@ Sandbox uses `finder-sandbox.db` when the default SQLite URL is unchanged. **If 
 3. Keep an identifying application name and project URL or contact method in `DISCOGS_USER_AGENT`.
 4. Run `finder catalog-search "artist album"` to verify access. One search with a limit of five makes one database-search request plus up to five release-detail requests.
 
+For repository-level testing, save the token as a GitHub Actions repository secret named
+`DISCOGS_TOKEN`, then run **Discogs smoke test** from the repository's Actions tab. The workflow
+runs the offline test suite, synthesizes an eBay-shaped listing from a live barcode-bearing
+Discogs release, scores the returned candidates, persists them, and verifies that an intentionally
+conflicting barcode is rejected. It reports whether more than one release remains a strong
+candidate; a passing test does not claim that a barcode uniquely identifies a pressing. Never
+place the token in `.env.example`, workflow YAML, command output, issues, or commit history.
+
 Finder calls only Discogs' `/database/search` and `/releases/{id}` catalog endpoints. It does not request seller inventory, marketplace statistics, pricing suggestions, orders, fees, or sales history. Discogs classifies titles, dates, formats, track listings, barcodes, identifiers, credits, and release relationships as CC0 catalog data. Its marketplace and pricing data is restricted and may not be used commercially under the current [Discogs API Terms of Use](https://support.discogs.com/hc/en-us/articles/360009334593-API-Terms-of-Use).
 
 The CLI attributes results to Discogs and stores the source URL and observation time. Any future interface that displays Discogs-derived data must show “Data provided by Discogs” next to the data with a link to the relevant Discogs page, and must refresh displayed data within the freshness limits in Discogs' terms. This application uses Discogs’ API but is not affiliated with, sponsored or endorsed by Discogs. “Discogs” is a trademark of Zink Media, LLC.

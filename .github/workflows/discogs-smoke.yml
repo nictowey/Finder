@@ -1,0 +1,53 @@
+name: Discogs smoke test
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/discogs-smoke.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: discogs-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DISCOGS_TOKEN: ${{ secrets.DISCOGS_TOKEN }}
+      DISCOGS_USER_AGENT: Finder/0.2 +https://github.com/nictowey/Finder
+      FINDER_DATABASE_URL: sqlite:///finder-smoke.db
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Finder
+        run: python -m pip install -e '.[dev]'
+
+      - name: Run offline tests
+        run: python -m pytest -q
+
+      - name: Verify secret is configured
+        shell: bash
+        run: |
+          if [[ -z "${DISCOGS_TOKEN}" ]]; then
+            echo "DISCOGS_TOKEN repository secret is not configured."
+            exit 1
+          fi
+
+      - name: Run authenticated Discogs matching validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/validate_live_matching.py
