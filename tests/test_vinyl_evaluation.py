@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from finder.domain import Listing, Variant
-from finder.matching import rank_variants
+from finder.matching import decide_match, rank_variants
 
 CASES = json.loads((Path(__file__).parents[1] / "evaluations" / "vinyl_matching.json").read_text())
 
@@ -76,7 +76,11 @@ def _evaluation(case):
         first_observed_at=datetime(2026, 1, 1, tzinfo=UTC),
         last_observed_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
-    return target, rank_variants(listing, [target, distractor])
+    return (
+        target,
+        rank_variants(listing, [target, distractor]),
+        decide_match(listing, [target, distractor]),
+    )
 
 
 def test_curated_evaluation_set_has_twenty_real_album_scenarios():
@@ -87,14 +91,17 @@ def test_curated_evaluation_set_has_twenty_real_album_scenarios():
 
 def test_curated_vinyl_matching_expectations():
     for case in CASES:
-        target, ranked = _evaluation(case)
+        target, ranked, decision = _evaluation(case)
         strong = [candidate for candidate in ranked if candidate.status == "strong_candidate"]
         if case["scenario"] in {"exact_barcode", "catalog_color", "edition"}:
             assert ranked[0].catalog_variant_id == target.catalog_variant_id, case["id"]
             assert ranked[0].status == "strong_candidate", case["id"]
             assert len(strong) == 1, case["id"]
+            assert decision.outcome == "probable_variant", case["id"]
         elif case["scenario"] == "ambiguous_shared_barcode":
             assert len(strong) == 2, case["id"]
             assert strong[0].score == strong[1].score, case["id"]
+            assert decision.outcome == "ambiguous", case["id"]
         else:
             assert not strong, case["id"]
+            assert decision.outcome in {"insufficient_data", "rejected"}, case["id"]

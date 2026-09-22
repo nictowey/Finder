@@ -149,9 +149,32 @@ def test_match_cli_persists_auditable_candidate(
     )
     result = json.loads(capsys.readouterr().out)
     assert result["candidates"][0]["status"] == "strong_candidate"
+    assert result["decision"]["outcome"] == "probable_variant"
     repository = SqlAlchemyRepository.from_url(database_url)
     try:
         saved = repository.get_candidates("ebay", listing.marketplace_item_id, "discogs")
         assert saved[0].catalog_variant_id == "111"
     finally:
         repository.close()
+
+
+def test_listings_cli_reads_recent_snapshots_without_api_keys(
+    tmp_path, monkeypatch, capsys, search_payload
+):
+    database_url = f"sqlite:///{tmp_path / 'review.db'}"
+    repository = SqlAlchemyRepository.from_url(database_url)
+    listing = normalize_listing(
+        search_payload["itemSummaries"][0], datetime(2026, 9, 11, tzinfo=UTC)
+    )
+    repository.upsert(listing)
+    repository.close()
+    monkeypatch.setenv("FINDER_DATABASE_URL", database_url)
+    monkeypatch.delenv("DISCOGS_TOKEN", raising=False)
+    monkeypatch.delenv("EBAY_PRODUCTION_CLIENT_ID", raising=False)
+    assert cli.main(["listings", "--json"]) == 0
+    rows = json.loads(capsys.readouterr().out)["listings"]
+    assert len(rows) == 1
+    assert rows[0]["item_id"] == listing.marketplace_item_id
+    assert rows[0]["delivered_subtotal"] == (
+        str(listing.total_acquisition_cost) if listing.total_acquisition_cost is not None else None
+    )

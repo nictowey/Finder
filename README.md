@@ -55,10 +55,18 @@ finder scan --json
 finder scan --env-file /path/to/local.env
 finder catalog-search "Travis Scott Rodeo" --limit 10
 finder catalog-search "194398653419" --json
+finder listings --limit 20
 finder match --marketplace ebay --item-id 'v1|123456789012|0'
+finder match --marketplace ebay --item-id 'v1|123456789012|0' --json
 ```
 
 JSON logs go to stderr; the human or JSON summary goes to stdout. `.env` loading never overrides existing environment variables. Local database paths and the default configuration path resolve from the current working directory.
+
+`finder listings` shows recent stored snapshots and the exact item IDs accepted by
+`finder match`. It needs only `FINDER_DATABASE_URL`, not API credentials. Prices show the quoted
+pre-tax delivered subtotal when shipping is known; unknown shipping remains unknown. Point it
+at your private database and keep listing-level output out of public CI logs. The command does
+not search eBay or infer that retained listings are still active.
 
 ## eBay credentials and access
 
@@ -164,6 +172,16 @@ The service depends on adapter and repository interfaces. Another marketplace ca
 
 Candidate scoring uses only explicit, inspectable evidence: barcode, catalog number, seller-supplied artist, title similarity, release year, and format descriptors. Conflicting barcodes force rejection, while title similarity alone cannot create a strong match. A `strong_candidate` is still a candidate and requires later validation; Finder does not yet designate exact matches.
 
+`finder match` also returns a versioned `decision` alongside ranked candidates. It separates
+release-family evidence from pressing evidence and reports `probable_variant`, `family_only`,
+`ambiguous`, `rejected`, or `insufficient_data`, with source values, conflicts, and missing
+evidence. The `exact_variant` outcome is reserved until the 99% precision gate is measured on
+real labeled listings; a high score or one returned Discogs result does not satisfy that gate.
+The decision currently requires a structured artist and an album title contained in the listing
+for family recognition, then an unconflicted barcode or catalog number for a probable pressing.
+The result covers only the bounded Discogs search, so unreturned pressings may exist. The JSON
+output contains seller listing values and is intended for private local review, not public logs.
+
 Vinyl-specific extraction is isolated in `categories/vinyl.py`. It maps listing specifics and
 Discogs release fields into artist, year, label, catalog number, barcode, color, edition, country,
 format, size, speed, and matrix/runout evidence. Color or edition conflicts prevent a candidate
@@ -241,7 +259,8 @@ Tests run offline with `httpx.MockTransport` and temporary SQLite databases. Cov
 ## Next phases
 
 1. Validate Discogs catalog search with a personal token and eBay discovery when its developer account is approved.
-2. Refine candidate retrieval and add a vinyl-specific identity model with explicit ambiguity handling.
+2. Label real eBay listings, expand Discogs candidate retrieval, and measure family and pressing
+   precision. The current decision policy is provisional and never asserts an exact pressing.
 3. Ingest a commercially permitted source of real sold comparables; normalize condition, shipping, currency, and transaction dates before valuation.
 4. Implement valuations and opportunity scoring with freshness, confidence, and explicit uncertainty.
 5. Add alert delivery and persistent scheduling once ingestion and scoring are dependable.

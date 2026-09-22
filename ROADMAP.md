@@ -235,6 +235,12 @@ Do not increase scan breadth until the bounded scans are reliable.
 
 Status: **In progress; useful work can continue before eBay approval**
 
+`vinyl-decision-v1` now implements the first provisional outcome contract. The match CLI reports
+family-only, probable variant, ambiguity, rejection, or insufficient evidence with provenance,
+conflicts, and missing evidence. It never emits `exact_variant`: the synthetic evaluation cases
+are policy tests, not a measured live-listing precision gate. Candidate retrieval remains a
+bounded single title query, so a sole candidate does not establish unique pressing identity.
+
 ### 2.1 Target ontology
 
 Add explicit category models without changing the generic core:

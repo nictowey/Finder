@@ -27,6 +27,7 @@ class ListingRepository(Protocol):
     def upsert(self, listing: Listing) -> UpsertResult: ...
     def count(self) -> int: ...
     def get_observations(self, marketplace: str, item_id: str) -> list[Listing]: ...
+    def list_recent(self, marketplace: str, limit: int) -> list[Listing]: ...
     def delete_ebay_seller(self, seller_id: str) -> int: ...
 
 
@@ -224,6 +225,33 @@ class SqlAlchemyListingRepository:
             return Listing.model_validate(data)
         except SQLAlchemyError:
             raise PersistenceError("Database read failed.") from None
+
+    def list_recent(self, marketplace: str, limit: int) -> list[Listing]:
+        """Return bounded current snapshots, newest first; history remains untouched."""
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        try:
+            with self.engine.connect() as conn:
+                rows = (
+                    conn.execute(
+                        select(listings.c.data)
+                        .where(listings.c.marketplace == marketplace)
+                        .order_by(
+                            listings.c.last_observed_at.desc(),
+                            listings.c.marketplace_item_id.asc(),
+                        )
+                        .limit(limit)
+                    )
+                    .scalars()
+                    .all()
+                )
+            result = []
+            for data in rows:
+                data.pop("total_acquisition_cost", None)
+                result.append(Listing.model_validate(data))
+            return result
+        except SQLAlchemyError:
+            raise PersistenceError("Cannot list stored listings.") from None
 
     def count(self) -> int:
         try:

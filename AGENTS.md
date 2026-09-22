@@ -52,6 +52,10 @@ Read it before proposing or implementing a new phase.
    - Stable eBay seller IDs on Production listings
    - Shared PostgreSQL storage and signed deletion endpoint on Neon Functions
    - Seller tombstones to prevent reimport after deletion
+6. Provisional pressing decision contracts
+   - VinylFingerprint and copy-level CollectibleAttribute models
+   - Versioned MatchDecision with source EvidenceRecords, conflicts, and missing evidence
+   - Separate family and probable-variant decisions in the match CLI; exact outcome withheld
 
 ### Verified baseline
 
@@ -103,6 +107,8 @@ Discogs behavior in the eBay adapter or marketplace behavior in catalog provider
 - Total acquisition cost is price plus same-currency shipping only; it excludes tax, duties,
   and fees.
 - A strong candidate is not an asserted exact match.
+- `probable_variant` is provisional; never turn it into `exact_variant` before the labeled
+  precision gate and representative catalog coverage are established.
 - Conflicting barcodes force rejection. Color and edition conflicts prevent strong status.
 - Shared identifiers may produce ambiguity and must not be resolved with arbitrary tie-breaking.
 - Active asking prices are not sold comparables or fair market value.
@@ -167,13 +173,12 @@ A material change is complete only when:
 
 ## Near-term priorities
 
-1. Define the `VinylFingerprint`, `CollectibleAttribute`, `EvidenceRecord`, and `MatchDecision`
-   contracts described in `ROADMAP.md`.
-2. Separate release-family matching from exact-variant matching and version the match policy.
-3. Expand ambiguity and collectible-attribute evaluations while eBay approval is pending.
-4. Validate eBay Browse ingestion with approved production credentials when available.
-5. Turn sanitized real eBay responses into labeled regression fixtures.
-6. Qualify a commercially permitted sold-comparables source before implementing valuation.
+1. Collect representative sanitized Production eBay responses and manually label real listings.
+2. Measure `vinyl-decision-v1` on a development and held-out evaluation set; report precision,
+   abstention, and catalog candidate-retrieval failures separately.
+3. Expand bounded Discogs candidate retrieval, including variants sharing identifiers.
+4. Complete seven bounded Production scans and field-quality measurements.
+5. Qualify a commercially permitted sold-comparables source before implementing valuation.
 
 The eBay deletion endpoint and manual bounded cloud scans support Production data validation.
 Do not build recurring scheduling, alerts, or a frontend until live ingestion and identity

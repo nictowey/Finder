@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Iterable
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -40,8 +41,8 @@ def _identifier_values(variant: Variant, text: str) -> list[str]:
     )
 
 
-class VinylMetadata(BaseModel):
-    """Category metadata used to distinguish physical vinyl editions."""
+class VinylFingerprint(BaseModel):
+    """Evidence about a manufactured pressing, separate from the offered copy."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     artists: list[str] = Field(default_factory=list)
@@ -59,13 +60,27 @@ class VinylMetadata(BaseModel):
     matrix_runouts: list[str] = Field(default_factory=list)
 
 
-def from_listing(listing: Listing) -> VinylMetadata:
+class CollectibleAttribute(BaseModel):
+    """A seller's copy-level claim; a claim is never proof of authenticity."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    kind: Literal["autograph", "numbered", "sealed", "obi", "insert", "hype_sticker"]
+    claimed_value: str
+    source_field: str
+    verification: Literal["unverified", "verified", "rejected"] = "unverified"
+
+
+# Keep the original public name for callers that use the existing extractor.
+VinylMetadata = VinylFingerprint
+
+
+def from_listing(listing: Listing) -> VinylFingerprint:
     years = []
     for value in _specifics(listing, "Release Year", "Year"):
         match = re.search(r"\b(?:19|20)\d{2}\b", value)
         if match:
             years.append(int(match.group()))
-    return VinylMetadata(
+    return VinylFingerprint(
         artists=_specifics(listing, "Artist"),
         title=listing.title,
         release_years=list(dict.fromkeys(years)),
@@ -82,7 +97,7 @@ def from_listing(listing: Listing) -> VinylMetadata:
     )
 
 
-def from_variant(variant: Variant) -> VinylMetadata:
+def from_variant(variant: Variant) -> VinylFingerprint:
     descriptions = []
     format_text = []
     for value in variant.formats:
@@ -106,7 +121,7 @@ def from_variant(variant: Variant) -> VinylMetadata:
         "pressing",
         "numbered",
     )
-    return VinylMetadata(
+    return VinylFingerprint(
         artists=variant.artists,
         title=variant.title,
         release_years=[variant.release_year] if variant.release_year else [],
