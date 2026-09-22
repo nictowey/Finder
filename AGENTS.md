@@ -25,6 +25,11 @@ behind adapters. Category-specific identity rules belong in category modules.
 The accuracy-gated development sequence and product decisions are maintained in `ROADMAP.md`.
 Read it before proposing or implementing a new phase.
 
+The current product blocker is permission for a buyer-facing eBay deal signal and a lawful,
+commercially usable source of sold transactions. Production Browse access by itself does not
+authorize price modeling or prove that an undervalued-listing product is viable. The collector
+watchlist without a fair-value claim can be developed and tested while this is resolved.
+
 ### Completed
 
 1. Phase 1 — eBay ingestion foundation
@@ -118,6 +123,11 @@ Discogs behavior in the eBay adapter or marketplace behavior in catalog provider
 - Use official APIs; do not add scraping.
 - Discogs access is limited to `/database/search` and `/releases/{id}`.
 - Do not use Discogs marketplace, pricing, sales-history, seller, order, or fee data for Finder.
+- eBay's API agreement restricts using eBay content to suggest or model prices for eBay items;
+  obtain a written provider-use decision before deal scoring, price-based alerts, or paid launch.
+- Review eBay's intermediate-copy and algorithm-training restrictions before retaining real
+  labeled listings, publishing sanitized real fixtures, or tuning matching policy on them.
+- Review Discogs' API conditions for paid apps and display freshness before a commercial UI.
 - Preserve “Data provided by Discogs” attribution wherever Discogs-derived data is displayed.
 - Never log credentials, authorization headers, OAuth responses, or full sensitive payloads.
 - Live smoke logs are public; do not log listing IDs, titles, sellers, URLs, or seller-provided
@@ -168,17 +178,21 @@ A material change is complete only when:
 - Existing tests, lint, and formatting pass.
 - Documentation and `.env.example` are updated when configuration changes.
 - No secrets or unsanitized marketplace identities are committed.
-- The change is committed to `main` with a clear message.
+- The change is reviewable in a PR, then merged to `main` with a clear message when authorized.
 - Any applicable live smoke test passes.
 
 ## Near-term priorities
 
-1. Collect representative sanitized Production eBay responses and manually label real listings.
-2. Measure `vinyl-decision-v2` on a development and held-out evaluation set; report precision,
+1. Resolve and record eBay's intended-use, retention, and evaluation rights and qualify a
+   permitted sold-comparables source before treating price-based deal detection as buildable.
+2. Audit bounded Production scans with aggregate statistics; collect real fixtures and manually
+   label listings only after the relevant data-use decision.
+3. Measure `vinyl-decision-v2` on a development and held-out evaluation set; report precision,
    abstention, and catalog candidate-retrieval failures separately.
-3. Expand bounded Discogs candidate retrieval, including variants sharing identifiers.
-4. Complete seven bounded Production scans and field-quality measurements.
-5. Qualify a commercially permitted sold-comparables source before implementing valuation.
+4. Expand bounded Discogs candidate retrieval, including variants sharing identifiers.
+5. Complete seven bounded Production scans and field-quality measurements.
+6. Build a private exact-item watchlist pilot with user-set maximum delivered prices after the
+   ingestion and identity gates; withhold fair-value or "steal" claims.
 
 The eBay deletion endpoint and manual bounded cloud scans support Production data validation.
 Do not build recurring scheduling, alerts, or a frontend until live ingestion and identity
