@@ -2,6 +2,14 @@ name: eBay smoke test
 
 on:
   workflow_dispatch:
+    inputs:
+      environment:
+        description: "eBay environment to validate"
+        type: choice
+        options:
+          - sandbox
+          - production
+        default: sandbox
   push:
     paths:
       - ".github/workflows/ebay-smoke.yml"
@@ -11,17 +19,20 @@ permissions:
   contents: read
 
 concurrency:
-  group: ebay-smoke-${{ github.ref }}
+  group: ebay-smoke-${{ github.ref }}-${{ inputs.environment || 'sandbox' }}
   cancel-in-progress: true
 
 jobs:
-  sandbox:
+  validate:
+    name: validate (${{ inputs.environment || 'sandbox' }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Credentials are scoped to the live steps only; offline tests never see them.
+    # Pushes always validate Sandbox; Production runs only on explicit manual dispatch.
+    # Credentials are scoped to the live steps only; offline tests never see them, and only
+    # the selected environment's keyset is ever exposed.
     env:
-      EBAY_ENVIRONMENT: sandbox
-      FINDER_DATABASE_URL: sqlite:///finder-ebay-sandbox-smoke.db
+      EBAY_ENVIRONMENT: ${{ inputs.environment || 'sandbox' }}
+      FINDER_DATABASE_URL: sqlite:///finder-ebay-${{ inputs.environment || 'sandbox' }}-smoke.db
 
     steps:
       - name: Check out repository
@@ -42,14 +53,18 @@ jobs:
           ruff check src tests scripts
           ruff format --check src tests scripts
 
-      - name: Verify Sandbox secrets are configured
+      - name: Verify ${{ env.EBAY_ENVIRONMENT }} secrets are configured
         shell: bash
         env:
-          EBAY_SANDBOX_CLIENT_ID: ${{ secrets.EBAY_SANDBOX_CLIENT_ID }}
-          EBAY_SANDBOX_CLIENT_SECRET: ${{ secrets.EBAY_SANDBOX_CLIENT_SECRET }}
+          EBAY_SANDBOX_CLIENT_ID: ${{ env.EBAY_ENVIRONMENT == 'sandbox' && secrets.EBAY_SANDBOX_CLIENT_ID || '' }}
+          EBAY_SANDBOX_CLIENT_SECRET: ${{ env.EBAY_ENVIRONMENT == 'sandbox' && secrets.EBAY_SANDBOX_CLIENT_SECRET || '' }}
+          EBAY_PRODUCTION_CLIENT_ID: ${{ env.EBAY_ENVIRONMENT == 'production' && secrets.EBAY_PRODUCTION_CLIENT_ID || '' }}
+          EBAY_PRODUCTION_CLIENT_SECRET: ${{ env.EBAY_ENVIRONMENT == 'production' && secrets.EBAY_PRODUCTION_CLIENT_SECRET || '' }}
         run: |
+          prefix="EBAY_${EBAY_ENVIRONMENT^^}_"
           missing=0
-          for name in EBAY_SANDBOX_CLIENT_ID EBAY_SANDBOX_CLIENT_SECRET; do
+          for suffix in CLIENT_ID CLIENT_SECRET; do
+            name="${prefix}${suffix}"
             if [[ -z "${!name}" ]]; then
               echo "${name} repository secret is not configured."
               missing=1
@@ -57,11 +72,13 @@ jobs:
           done
           exit "${missing}"
 
-      - name: Run live eBay Sandbox validation
+      - name: Run live eBay ${{ env.EBAY_ENVIRONMENT }} validation
         shell: bash
         env:
-          EBAY_SANDBOX_CLIENT_ID: ${{ secrets.EBAY_SANDBOX_CLIENT_ID }}
-          EBAY_SANDBOX_CLIENT_SECRET: ${{ secrets.EBAY_SANDBOX_CLIENT_SECRET }}
+          EBAY_SANDBOX_CLIENT_ID: ${{ env.EBAY_ENVIRONMENT == 'sandbox' && secrets.EBAY_SANDBOX_CLIENT_ID || '' }}
+          EBAY_SANDBOX_CLIENT_SECRET: ${{ env.EBAY_ENVIRONMENT == 'sandbox' && secrets.EBAY_SANDBOX_CLIENT_SECRET || '' }}
+          EBAY_PRODUCTION_CLIENT_ID: ${{ env.EBAY_ENVIRONMENT == 'production' && secrets.EBAY_PRODUCTION_CLIENT_ID || '' }}
+          EBAY_PRODUCTION_CLIENT_SECRET: ${{ env.EBAY_ENVIRONMENT == 'production' && secrets.EBAY_PRODUCTION_CLIENT_SECRET || '' }}
         run: |
           set -euo pipefail
           python scripts/validate_live_ebay.py

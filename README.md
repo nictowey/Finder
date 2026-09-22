@@ -81,7 +81,7 @@ EBAY_ENVIRONMENT=sandbox FINDER_DATABASE_URL=sqlite:///finder-ebay-smoke.db \
   python scripts/validate_live_ebay.py
 ```
 
-The **eBay smoke test** GitHub Actions workflow runs the same script against Sandbox using the `EBAY_SANDBOX_CLIENT_ID` and `EBAY_SANDBOX_CLIENT_SECRET` repository secrets. Sandbox success proves OAuth, request shape, and normalization plumbing only; Sandbox inventory is test data, not market data.
+The **eBay smoke test** GitHub Actions workflow runs the same script. Pushes to the workflow or script validate Sandbox with the `EBAY_SANDBOX_CLIENT_ID`/`EBAY_SANDBOX_CLIENT_SECRET` repository secrets. Production runs only when the workflow is dispatched manually with `environment: production`, using the separate `EBAY_PRODUCTION_CLIENT_ID`/`EBAY_PRODUCTION_CLIENT_SECRET` secrets; only the selected keyset is exposed to the job. Sandbox success proves OAuth, request shape, and normalization plumbing only; Sandbox inventory is test data, not market data.
 
 ## Discogs catalog credentials and scope
 

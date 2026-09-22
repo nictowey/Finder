@@ -43,6 +43,10 @@ Read it before proposing or implementing a new phase.
    - Twenty-case hip-hop vinyl policy evaluation set using synthetic identifiers
    - Append-only listing observation history
    - Sanitized eBay response replay tooling
+4. Live eBay Sandbox validation
+   - Environment-scoped keysets (`EBAY_SANDBOX_*`, `EBAY_PRODUCTION_*`) that are never mixed
+   - Bounded OAuth → Browse search → normalization → persistence round-trip script
+   - **eBay smoke test** workflow: Sandbox on push, Production on manual dispatch only
 
 ### Verified baseline
 
@@ -52,11 +56,16 @@ Read it before proposing or implementing a new phase.
 - Live Discogs validation passing through GitHub Actions
 - Live validation: five releases persisted, one unambiguous strong candidate scored 100,
   and a conflicting barcode was rejected
+- Live eBay Sandbox validation passing through GitHub Actions: application OAuth token issued,
+  `vinyl` search returned 10 items, 9 normalized and round-tripped through persistence
+  (1 skipped as ended). Sandbox inventory is test data, not vinyl market data.
 
 ### Active blocker
 
-Live eBay validation requires approved eBay developer credentials. Until approval, do not claim
-that ingestion or matching has been validated against real eBay seller data.
+Sandbox plumbing is validated, but Production validation requires approved eBay Production
+credentials stored as `EBAY_PRODUCTION_CLIENT_ID`/`EBAY_PRODUCTION_CLIENT_SECRET` repository
+secrets. Until a Production smoke run passes, do not claim that ingestion or matching has been
+validated against real eBay seller data.
 
 ## Architecture boundaries
 
