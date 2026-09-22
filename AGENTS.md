@@ -67,12 +67,12 @@ Read it before proposing or implementing a new phase.
 ### Active blocker
 
 The free Neon Production branch and deletion Function are deployed. Its public GET challenge
-and shared PostgreSQL deletion transaction have been checked with synthetic data. Production
-validation still requires eBay Marketplace Account Deletion registration, the Production
-key pair, and a passing eBay test notification. The September 22,
-2026 Production workflow stopped at the missing-secret check; it did not call the Production API.
-Until a Production smoke run passes, do not claim that ingestion or matching has been validated
-against real eBay seller data.
+and shared PostgreSQL deletion transaction have been checked with synthetic data. eBay accepted
+the Production deletion endpoint, and the September 22, 2026 Production smoke workflow fetched,
+normalized, stored, and read back 10 live listings. The Function still needs the Production
+key pair deployed to Neon, followed by a passing signed eBay test notification. Do not claim
+production deletion handling is validated until that test passes. The smoke workflow validates
+ingestion and persistence, not exact vinyl matching or real seller deletion.
 
 ## Architecture boundaries
 

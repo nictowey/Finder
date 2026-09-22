@@ -1,0 +1,101 @@
+name: Deploy eBay deletion endpoint
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ebay-deletion-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      EBAY_DELETION_ENDPOINT_URL: https://br-soft-forest-b4fo15q2-ebaydeletion.compute.c-6.us-east-2.aws.neon.tech/
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Test endpoint offline
+        run: |
+          npm ci
+          npm test
+          npm run typecheck
+
+      - name: Install pinned Neon CLI
+        run: npm install --no-save neon@5.0.1
+
+      - name: Deploy to Neon
+        shell: bash
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          EBAY_PRODUCTION_CLIENT_ID: ${{ secrets.EBAY_PRODUCTION_CLIENT_ID }}
+          EBAY_PRODUCTION_CLIENT_SECRET: ${{ secrets.EBAY_PRODUCTION_CLIENT_SECRET }}
+          EBAY_DELETION_VERIFICATION_TOKEN: ${{ secrets.EBAY_DELETION_VERIFICATION_TOKEN }}
+        run: |
+          set -euo pipefail
+          for name in NEON_API_KEY EBAY_PRODUCTION_CLIENT_ID EBAY_PRODUCTION_CLIENT_SECRET EBAY_DELETION_VERIFICATION_TOKEN; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required secret: ${name}"
+              exit 1
+            fi
+          done
+          # Neon CLI output is kept out of this public repository's Actions logs.
+          if ! ./node_modules/.bin/neon deploy \
+            --project-id billowing-queen-56301477 \
+            --branch br-soft-forest-b4fo15q2 \
+            --no-env-pull --update-existing > neon-deploy.log 2>&1; then
+            echo 'Neon deployment failed; inspect it locally with the Neon CLI.'
+            rm -f neon-deploy.log
+            exit 1
+          fi
+          rm -f neon-deploy.log
+          echo 'Neon deployment completed.'
+
+      - name: Verify public challenge and unsigned rejection
+        env:
+          EBAY_DELETION_VERIFICATION_TOKEN: ${{ secrets.EBAY_DELETION_VERIFICATION_TOKEN }}
+        run: |
+          node --input-type=module <<'JS'
+          import { createHash, randomBytes } from 'node:crypto';
+
+          const endpoint = process.env.EBAY_DELETION_ENDPOINT_URL;
+          const token = process.env.EBAY_DELETION_VERIFICATION_TOKEN;
+          const challenge = randomBytes(12).toString('hex');
+          const expected = createHash('sha256').update(challenge + token + endpoint).digest('hex');
+          let passed = false;
+          for (let attempt = 0; attempt < 8; attempt++) {
+            try {
+              const response = await fetch(`${endpoint}?challenge_code=${challenge}`);
+              const body = await response.json();
+              if (response.status === 200 && body.challengeResponse === expected) {
+                passed = true;
+                break;
+              }
+            } catch { /* Neon may still be activating the new revision. */ }
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+          }
+          if (!passed) throw new Error('eBay challenge verification failed');
+          const unsigned = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: '{}',
+          });
+          if (unsigned.status !== 412) throw new Error('Unsigned notification was not rejected');
+          console.log('Public challenge and unsigned rejection passed.');
+          JS
