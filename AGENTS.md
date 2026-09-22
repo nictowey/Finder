@@ -17,7 +17,7 @@ behind adapters. Category-specific identity rules belong in category modules.
 - Marketplace: eBay Browse API only; never scrape eBay
 - Catalog identity source: Discogs CC0 catalog endpoints only
 - Persistence: SQLAlchemy with SQLite locally and portable repository boundaries
-- Interface: Python CLI; no frontend, accounts, payments, notifications, or hosting yet
+- Interface: Python CLI, plus a narrowly scoped hosted eBay deletion endpoint
 
 ## Current project state
 
@@ -47,11 +47,15 @@ Read it before proposing or implementing a new phase.
    - Environment-scoped keysets (`EBAY_SANDBOX_*`, `EBAY_PRODUCTION_*`) that are never mixed
    - Bounded OAuth → Browse search → normalization → persistence round-trip script
    - **eBay smoke test** workflow: Sandbox on push, Production on manual dispatch only
+5. Production deletion-compliance foundation
+   - Stable eBay seller IDs on Production listings
+   - Shared PostgreSQL storage and signed deletion endpoint on Neon Functions
+   - Seller tombstones to prevent reimport after deletion
 
 ### Verified baseline
 
 - Latest verified implementation baseline: current `main` after required checks
-- Offline suite: 123 tests passing
+- Offline suite: Python and Node tests passing; rerun required checks before commit
 - Ruff lint and formatting checks passing
 - Live Discogs validation passing through GitHub Actions
 - Live validation: five releases persisted, one unambiguous strong candidate scored 100,
@@ -62,11 +66,11 @@ Read it before proposing or implementing a new phase.
 
 ### Active blocker
 
-Sandbox plumbing is validated, but Production validation requires eBay Browse Production access
-and credentials stored as `EBAY_PRODUCTION_CLIENT_ID`/`EBAY_PRODUCTION_CLIENT_SECRET` repository
-secrets. The September 22, 2026 Production workflow stopped at the missing-secret check; it did
-not call the Production API. Until a Production smoke run passes, do not claim that ingestion or
-matching has been validated against real eBay seller data.
+Production validation requires eBay Marketplace Account Deletion registration, the Production
+key pair, shared Neon database setup, and a passing eBay test notification. The September 22,
+2026 Production workflow stopped at the missing-secret check; it did not call the Production API.
+Until a Production smoke run passes, do not claim that ingestion or matching has been validated
+against real eBay seller data.
 
 ## Architecture boundaries
 
@@ -79,6 +83,7 @@ matching has been validated against real eBay seller data.
 - `persistence.py`: repository protocols, current listing snapshots, observation history,
   catalog entities, and candidate persistence
 - `service.py`: scan orchestration and summary semantics
+- `functions/ebay-deletion.ts`: eBay challenge, signed deletion notices, and tombstones
 - `config/monitors.toml`: monitor definitions; do not hard-code discovery queries elsewhere
 - `evaluations/`: deterministic policy evaluations, not claims about real market value
 - `scripts/`: live validation and sanitized fixture utilities
@@ -116,7 +121,7 @@ Real credentials belong only in:
 
 - A local untracked `.env` file
 - Encrypted GitHub Actions repository secrets
-- A future hosting provider's secret manager
+- Neon Function environment variables for the Production deletion endpoint
 
 Never put real values in `.env.example`, workflow YAML, fixtures, documentation, issues,
 prompts, or commit history. If a credential is committed, revoke it first and then remove it
@@ -130,6 +135,8 @@ Run from the repository root before committing:
 python -m pytest -q
 ruff check src tests scripts
 ruff format --check src tests scripts
+npm test
+npm run typecheck
 ```
 
 When Discogs behavior changes, also run the **Discogs smoke test** workflow and confirm both the
@@ -166,8 +173,9 @@ A material change is complete only when:
 5. Turn sanitized real eBay responses into labeled regression fixtures.
 6. Qualify a commercially permitted sold-comparables source before implementing valuation.
 
-Do not build hosting, scheduling, alerts, or a frontend until live ingestion and identity
-matching are demonstrably reliable.
+The eBay deletion endpoint is the sole hosting exception needed to activate Production keys.
+Do not build scheduling, alerts, or a frontend until live ingestion and identity matching are
+demonstrably reliable.
 
 ## Maintaining this file
 

@@ -84,6 +84,37 @@ def test_details_and_context(
     assert listing.details_observed_at == observed_at
 
 
+@pytest.mark.parametrize("include_user_id", [True, False])
+def test_production_requires_deletable_seller_id(
+    settings, monitor, repository, search_payload, detail_payload, observed_at, include_user_id
+):
+    settings = settings.model_copy(update={"ebay_environment": "production"})
+    monitor = monitor.model_copy(update={"source_options": {"fetch_details": True}})
+    search_payload["itemSummaries"] = search_payload["itemSummaries"][:1]
+    search_payload["total"] = 1
+    detail_payload["seller"] = {"username": "fixture-records"}
+    if include_user_id:
+        detail_payload["seller"]["userId"] = "fixture-seller-id"
+
+    def handler(request):
+        if request.method == "POST":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        if request.url.path.endswith("/search"):
+            return httpx.Response(200, json=search_payload)
+        assert request.url.params["fieldgroups"] == "ADDITIONAL_SELLER_DETAILS"
+        return httpx.Response(200, json=detail_payload)
+
+    with EbayClient(settings, transport=httpx.MockTransport(handler)) as client:
+        summary = run_scan(monitor, EbayAdapter(client, now=lambda: observed_at), repository)
+    if include_user_id:
+        assert summary.new == 1
+        assert repository.get("ebay", detail_payload["itemId"]).seller_id == "fixture-seller-id"
+    else:
+        assert summary.new == 0
+        assert summary.skip_reasons == {"missing_seller_id": 1}
+        assert repository.count() == 0
+
+
 def test_pagination_duplicate_cap_and_safe_urls(
     settings, monitor, repository, search_payload, observed_at
 ):
@@ -96,7 +127,7 @@ def test_pagination_duplicate_cap_and_safe_urls(
     def handler(request):
         if request.method == "POST":
             return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
-        assert request.url.host == "api.ebay.com"
+        assert request.url.host == "api.sandbox.ebay.com"
         offsets.append(request.url.params["offset"])
         return httpx.Response(
             200,

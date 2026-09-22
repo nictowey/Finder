@@ -90,7 +90,13 @@ class EbayAdapter:
                 if options.fetch_details:
                     try:
                         detail = self.client.get(
-                            f"/buy/browse/v1/item/{quote(item_id, safe='')}", headers=headers
+                            f"/buy/browse/v1/item/{quote(item_id, safe='')}",
+                            headers=headers,
+                            params=(
+                                {"fieldgroups": "ADDITIONAL_SELLER_DETAILS"}
+                                if settings.ebay_environment == "production"
+                                else None
+                            ),
                         )
                         if detail.get("itemId") != item_id:
                             raise ResponseError(
@@ -133,6 +139,9 @@ class EbayAdapter:
                     )
                     if listing.listing_ends_at and listing.listing_ends_at <= now:
                         yield ListingObservation(skip_reason="listing_ended")
+                        continue
+                    if settings.ebay_environment == "production" and not listing.seller_id:
+                        yield ListingObservation(skip_reason="missing_seller_id")
                         continue
                 except InvalidListingError:
                     yield ListingObservation(skip_reason="invalid_listing")

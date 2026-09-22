@@ -14,19 +14,20 @@ from sqlalchemy import (
     select,
     update,
 )
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from finder.domain import Listing, ListingVariantCandidate, Product, Variant
 from finder.errors import PersistenceError
 
-UpsertResult = Literal["new", "updated"]
+UpsertResult = Literal["new", "updated", "suppressed"]
 
 
 class ListingRepository(Protocol):
     def upsert(self, listing: Listing) -> UpsertResult: ...
     def count(self) -> int: ...
     def get_observations(self, marketplace: str, item_id: str) -> list[Listing]: ...
+    def delete_ebay_seller(self, seller_id: str) -> int: ...
 
 
 class CatalogRepository(Protocol):
@@ -88,6 +89,11 @@ listing_variant_candidates = Table(
     Column("observed_at", String(40), nullable=False, index=True),
     Column("data", JSON, nullable=False),
 )
+ebay_deleted_users = Table(
+    "ebay_deleted_users",
+    metadata,
+    Column("seller_id", String(255), primary_key=True),
+)
 
 
 class SqlAlchemyListingRepository:
@@ -97,7 +103,10 @@ class SqlAlchemyListingRepository:
     @classmethod
     def from_url(cls, url: str) -> "SqlAlchemyListingRepository":
         try:
-            engine = create_engine(url, pool_pre_ping=True, hide_parameters=True)
+            parsed = make_url(url)
+            if parsed.drivername in ("postgres", "postgresql"):
+                parsed = parsed.set(drivername="postgresql+psycopg")
+            engine = create_engine(parsed, pool_pre_ping=True, hide_parameters=True)
             metadata.create_all(engine)
             return cls(engine)
         except (SQLAlchemyError, ImportError, ValueError):
@@ -118,6 +127,18 @@ class SqlAlchemyListingRepository:
         for attempt in range(2):
             try:
                 with self.engine.begin() as conn:
+                    if listing.marketplace == "ebay" and listing.seller_id:
+                        if conn.dialect.name == "postgresql":
+                            # The deletion endpoint takes the same lock before tombstoning.
+                            conn.execute(
+                                select(func.pg_advisory_xact_lock(func.hashtext(listing.seller_id)))
+                            )
+                        if conn.execute(
+                            select(ebay_deleted_users.c.seller_id).where(
+                                ebay_deleted_users.c.seller_id == listing.seller_id
+                            )
+                        ).first():
+                            return "suppressed"
                     observation_key = (
                         (listing_observations.c.marketplace == listing.marketplace)
                         & (
@@ -210,6 +231,49 @@ class SqlAlchemyListingRepository:
                 return conn.execute(select(func.count()).select_from(listings)).scalar_one()
         except SQLAlchemyError:
             raise PersistenceError("Cannot count stored listings.") from None
+
+    def delete_ebay_seller(self, seller_id: str) -> int:
+        """Remove all stored eBay records for a notified user in one transaction."""
+        if not seller_id:
+            raise PersistenceError("Cannot delete listings without a seller ID.")
+        try:
+            with self.engine.begin() as conn:
+                if conn.dialect.name == "postgresql":
+                    conn.execute(select(func.pg_advisory_xact_lock(func.hashtext(seller_id))))
+                if not conn.execute(
+                    select(ebay_deleted_users.c.seller_id).where(
+                        ebay_deleted_users.c.seller_id == seller_id
+                    )
+                ).first():
+                    conn.execute(ebay_deleted_users.insert().values(seller_id=seller_id))
+                item_ids = (
+                    conn.execute(
+                        select(listings.c.marketplace_item_id).where(
+                            (listings.c.marketplace == "ebay")
+                            & (listings.c.data["seller_id"].as_string() == seller_id)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if not item_ids:
+                    return 0
+                scope = (listings.c.marketplace == "ebay") & (
+                    listings.c.marketplace_item_id.in_(item_ids)
+                )
+                for table in (listing_variant_candidates, listing_observations):
+                    conn.execute(
+                        delete(table).where(
+                            (table.c.marketplace == "ebay")
+                            & (table.c.marketplace_item_id.in_(item_ids))
+                        )
+                    )
+                conn.execute(delete(listings).where(scope))
+                return len(item_ids)
+        except SQLAlchemyError:
+            raise PersistenceError(
+                "Cannot delete eBay seller data; notification must be retried."
+            ) from None
 
     def get_observations(self, marketplace: str, item_id: str) -> list[Listing]:
         scope = (listing_observations.c.marketplace == marketplace) & (

@@ -17,6 +17,7 @@ class ScanSummary:
     new: int = 0
     updated: int = 0
     skipped_invalid: int = 0
+    suppressed_deleted: int = 0
     total_stored: int | None = None
     partial_details: int = 0
     limit_reached: bool = False
@@ -46,6 +47,9 @@ def run_scan(
             result = repository.upsert(observation.listing)
             if result == "new":
                 summary.new += 1
+            elif result == "suppressed":
+                summary.suppressed_deleted += 1
+                continue
             else:
                 summary.updated += 1
             if "details_unavailable" in observation.listing.quality_flags:
@@ -67,7 +71,13 @@ def run_scan(
         log.error("scan_failed", extra={"fields": {"error_type": type(exc).__name__}})
     summary.fetched = adapter.stats.fetched
     summary.limit_reached = adapter.stats.limit_reached
-    summary.unprocessed = summary.fetched - summary.new - summary.updated - summary.skipped_invalid
+    summary.unprocessed = (
+        summary.fetched
+        - summary.new
+        - summary.updated
+        - summary.skipped_invalid
+        - summary.suppressed_deleted
+    )
     summary.skip_reasons = dict(reasons)
     try:
         summary.total_stored = repository.count()

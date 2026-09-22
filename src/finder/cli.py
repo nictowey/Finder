@@ -4,6 +4,8 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from sqlalchemy.engine import make_url
+
 from finder.adapters.discogs.adapter import DiscogsCatalogProvider
 from finder.adapters.discogs.client import DiscogsClient
 from finder.adapters.ebay.adapter import EbayAdapter
@@ -51,6 +53,13 @@ def _scan(args: argparse.Namespace) -> int:
     settings = load_settings(args.env_file)
     configure_logging(settings.log_level)
     database_url = settings.database_url.get_secret_value()
+    if settings.ebay_environment == "production" and make_url(
+        database_url
+    ).get_backend_name() not in ("postgres", "postgresql"):
+        raise ConfigurationError(
+            "Production eBay scans require the shared PostgreSQL database "
+            "used by the deletion endpoint."
+        )
     if settings.ebay_environment == "sandbox" and database_url == "sqlite:///finder.db":
         database_url = "sqlite:///finder-sandbox.db"
     repository = SqlAlchemyRepository.from_url(database_url)
@@ -67,6 +76,8 @@ def _scan(args: argparse.Namespace) -> int:
         print(f"New listings: {summary.new}")
         print(f"Updated listings: {summary.updated}")
         print(f"Skipped/invalid listings: {summary.skipped_invalid}")
+        if summary.suppressed_deleted:
+            print(f"Suppressed deleted sellers: {summary.suppressed_deleted}")
         print(f"Total listings currently stored: {summary.total_stored}")
         if summary.partial_details:
             print(f"Listings with failed detail enrichment: {summary.partial_details}")

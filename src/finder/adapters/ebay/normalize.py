@@ -147,6 +147,7 @@ def normalize_listing(
         shipping_currency=shipping_currency,
         condition=_text(raw.get("condition")),
         condition_id=_text(raw.get("conditionId")),
+        seller_id=_text(seller.get("userId")),
         seller_username=_text(seller.get("username")),
         seller_feedback_percentage=feedback_percentage,
         seller_feedback_score=score,

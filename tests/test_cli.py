@@ -17,9 +17,9 @@ def test_cli_acceptance_scan_twice(tmp_path, monkeypatch, capsys, search_payload
         '[[monitors]]\nid="rap-vinyl"\nname="Rap"\nmarketplace="ebay"\nquery="vinyl"\n'
         "[monitors.source_options]\nfetch_details=false\n"
     )
-    monkeypatch.setenv("EBAY_PRODUCTION_CLIENT_ID", "fake-client")
-    monkeypatch.setenv("EBAY_PRODUCTION_CLIENT_SECRET", "fake-secret")
-    monkeypatch.setenv("EBAY_ENVIRONMENT", "production")
+    monkeypatch.setenv("EBAY_SANDBOX_CLIENT_ID", "fake-client")
+    monkeypatch.setenv("EBAY_SANDBOX_CLIENT_SECRET", "fake-secret")
+    monkeypatch.setenv("EBAY_ENVIRONMENT", "sandbox")
     monkeypatch.setenv("FINDER_DATABASE_URL", f"sqlite:///{tmp_path / 'cli.db'}")
 
     def handler(request):
@@ -51,6 +51,15 @@ def test_missing_credentials_is_actionable(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("EBAY_PRODUCTION_CLIENT_SECRET", raising=False)
     assert cli.main(["scan", "--env-file", str(tmp_path / "absent.env")]) == 2
     assert "EBAY_PRODUCTION_CLIENT_ID" in capsys.readouterr().err
+
+
+def test_production_scan_requires_shared_postgres(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("EBAY_ENVIRONMENT", "production")
+    monkeypatch.setenv("EBAY_PRODUCTION_CLIENT_ID", "fake-client")
+    monkeypatch.setenv("EBAY_PRODUCTION_CLIENT_SECRET", "fake-secret")
+    monkeypatch.setenv("FINDER_DATABASE_URL", f"sqlite:///{tmp_path / 'production.db'}")
+    assert cli.main(["scan", "--env-file", str(tmp_path / "absent.env")]) == 2
+    assert "shared PostgreSQL database" in capsys.readouterr().err
 
 
 def test_env_example_contains_no_credentials():

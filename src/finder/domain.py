@@ -29,6 +29,7 @@ class Listing(BaseModel):
     shipping_currency: str | None = None
     condition: str | None = None
     condition_id: str | None = None
+    seller_id: str | None = None
     seller_username: str | None = None
     seller_feedback_percentage: Decimal | None = None
     seller_feedback_score: int | None = None

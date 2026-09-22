@@ -2,7 +2,7 @@
 
 Finder is the foundation for a marketplace-monitoring and mispricing-detection platform. The eventual workflow is: define a monitor → discover listings → identify the exact product and variant → compare against real comparable transactions → evaluate opportunities → alert the user.
 
-The current foundation has two connected parts: a local Python CLI ingests active eBay listings through the official Browse API, and a Discogs catalog provider stores canonical release metadata and evaluates deterministic match candidates. Its first monitor targets hip-hop/rap vinyl, with an intended focus on 2010–2026 releases. There is no scraping, frontend, account system, payment flow, notification delivery, LLM matching, or valuation.
+The current foundation has two connected parts: a local Python CLI ingests active eBay listings through the official Browse API, and a Discogs catalog provider stores canonical release metadata and evaluates deterministic match candidates. A small Neon Function handles eBay's required Production account-deletion notices. Its first monitor targets hip-hop/rap vinyl, with an intended focus on 2010–2026 releases. There is no scraping, frontend, account system, payment flow, general notification delivery, LLM matching, or valuation.
 
 See [ROADMAP.md](ROADMAP.md) for the accuracy-gated development plan, pressing-versus-copy
 identity model, provider constraints, and criteria that must be met before valuation, alerts,
@@ -70,7 +70,17 @@ JSON logs go to stderr; the human or JSON summary goes to stdout. `.env` loading
 
 Finder requests an application OAuth token using `client_credentials` and the scope `https://api.ebay.com/oauth/api_scope`, caches it in memory until shortly before expiry, and renews it once on a Browse 401 response. No token is saved to disk. Never commit your `.env`, paste real credentials into tests, or put secrets in monitor configuration. `.env.example` contains empty credential values and `.gitignore` excludes local secrets and databases.
 
-Sandbox uses `finder-sandbox.db` when the default SQLite URL is unchanged. **If you customize `FINDER_DATABASE_URL`, use different databases for Sandbox and Production.** Sandbox data is not real market inventory.
+Sandbox uses `finder-sandbox.db` when the default SQLite URL is unchanged. **If you customize `FINDER_DATABASE_URL`, use different databases for Sandbox and Production.** Production CLI scans require the shared PostgreSQL database used by the deletion endpoint; they cannot write to a separate local SQLite file. Sandbox data is not real market inventory.
+
+### Production account-deletion compliance
+
+Finder retains seller data, so the eBay Production application must receive Marketplace Account Deletion notifications. The `functions/ebay-deletion.ts` Neon Function answers eBay's HTTPS challenge and verifies each signed POST using eBay's public key before deleting the seller's eBay listings, observation history, and listing match candidates. It records the stable `seller.userId` in `ebay_deleted_users`; future scans suppress that seller. A database or eBay key-service failure returns a retryable error, rather than acknowledging a deletion it did not complete. The endpoint does not log seller IDs or notice bodies.
+
+Production scans request `ADDITIONAL_SELLER_DETAILS` and skip items without a stable seller ID, since those items could not be matched safely to a future deletion notice. The eBay application token used for notification signature verification needs the Production `EBAY_PRODUCTION_CLIENT_ID` and `EBAY_PRODUCTION_CLIENT_SECRET`. The same pair is used by the Python scanner. Keep Sandbox and Production keys in separate variables; **keep the Sandbox GitHub secrets** for its ongoing smoke test.
+
+The shared backend is a free Neon project with PostgreSQL and Functions. `neon.ts` declares the function. Deploy it with the [Neon CLI](https://neon.com/docs/reference/neon-cli), supplying the exact public function URL as `EBAY_DELETION_ENDPOINT_URL`, a random 32–80 character `EBAY_DELETION_VERIFICATION_TOKEN`, and the Production key pair as function environment variables. Store actual values in an untracked `.env.local` and use `neon deploy --env .env.local --no-env-pull`; never commit them. The exact URL and same verification token must be saved in eBay Developer Portal → Production → Alerts & Notifications → Marketplace Account Deletion. eBay validates the URL with a GET challenge; then send its test notification and confirm the endpoint acknowledges it. Until that succeeds, do not run real Production scans.
+
+Run `finder scan` with `FINDER_DATABASE_URL` set to the *same Neon production database* used by the Function. Finder accepts Neon's `postgresql://` connection string and selects the installed `psycopg` driver. A different database would leave Production data outside the deletion handler's reach. Neon's Free plan has resource limits and no production SLA; monitor its usage and eBay's endpoint-down alert email, and move to a paid service if delivery reliability requires it.
 
 ### Live eBay validation
 
@@ -182,7 +192,7 @@ Updates preserve the original first-observation time and refresh current values.
 
 The default is `FINDER_DATABASE_URL=sqlite:///finder.db`. SQLAlchemy keeps SQL and engine management behind the repository. A hosted PostgreSQL deployment can use a URL such as `postgresql+psycopg://user:password@host/finder` after installing that driver's package; the service and adapter need no changes. Hosted databases have **not been integration-tested in Phase 1**. Provision the database and use a new empty schema for an initial move; changing the URL does not transfer existing data.
 
-`create_all` bootstraps `listings`, `listing_observations` (observation history), `products`, `variants`, and `listing_variant_candidates`. It is not a migration system. Introduce versioned migrations before changing a deployed schema or migrating production data. SQLite is appropriate for this small CLI; the unique keys prevent duplicate identities, but the MVP is not a distributed scan scheduler. Observation history records what Finder saw; it does not yet infer sales, removal reasons, or fair value. Listings absent from a later bounded scan are not deleted or marked sold; `total_stored` is all retained identities, not a live-inventory count.
+`create_all` bootstraps `listings`, `listing_observations` (observation history), `products`, `variants`, `listing_variant_candidates`, and `ebay_deleted_users` (deletion tombstones). It is not a migration system. Introduce versioned migrations before changing a deployed schema or migrating production data. SQLite is appropriate for local Sandbox work; the unique keys prevent duplicate identities, but the MVP is not a distributed scan scheduler. Observation history records what Finder saw; it does not yet infer sales, removal reasons, or fair value. Listings absent from a later bounded scan are not deleted or marked sold; `total_stored` is all retained identities, not a live-inventory count.
 
 ### Replaying sanitized eBay responses
 
@@ -208,7 +218,7 @@ coverage. Never capture authorization headers, OAuth responses, credentials, or 
 - Missing optional fields retain nulls/quality flags. A malformed listing does not stop other listings.
 - Deliberate log fields exclude credentials, auth headers, full request/response bodies, and database URLs. Logs include item IDs and scan metadata; treat stored listings as marketplace data.
 
-`fetched` counts search summary entries returned, including duplicates and invalid entries. `new` counts committed inserts. `updated` counts existing identities re-observed, even when their prices are unchanged. `skipped_invalid` includes malformed, duplicate-in-scan, unavailable, and ended items; JSON includes reason counts. `unprocessed` reports fetched entries left unwritten after a fatal error. `partial_details` counts stored observations whose optional detail lookup failed. `limit_reached` means further results may exist beyond the configured budget.
+`fetched` counts search summary entries returned, including duplicates and invalid entries. `new` counts committed inserts. `updated` counts existing identities re-observed, even when their prices are unchanged. `skipped_invalid` includes malformed, duplicate-in-scan, unavailable, and ended items; JSON includes reason counts. `suppressed_deleted` counts sellers excluded by a deletion tombstone. `unprocessed` reports fetched entries left unwritten after a fatal error. `partial_details` counts stored observations whose optional detail lookup failed. `limit_reached` means further results may exist beyond the configured budget.
 
 Exit codes: **0** for a completed bounded scan (possibly with skipped listings or optional detail failures), **1** for a failed scan, **2** for setup/configuration errors, and **130** for interruption. Check the summary's limit and detail-failure fields even on exit 0. A zero-result response is a successful scan; it does not prove no matching inventory exists elsewhere.
 

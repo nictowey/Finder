@@ -1,0 +1,18 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx --test functions/*.test.ts",
+    "typecheck": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --types node functions/*.ts neon.ts"
+  },
+  "dependencies": {
+    "@neon/config": "1.7.2",
+    "pg": "8.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.2",
+    "@types/pg": "8.23.1",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
+  }
+}

@@ -100,6 +100,24 @@ def test_concurrent_insert_has_one_identity(repository, search_payload, observed
     assert repository.count() == 1
 
 
+def test_deleted_ebay_seller_is_not_reimported(repository, search_payload, observed_at):
+    raw = search_payload["itemSummaries"][0]
+    raw["seller"]["userId"] = "stable-user-id"
+    affected = normalize_listing(raw, observed_at)
+    other = affected.model_copy(
+        update={"marketplace_item_id": "other-item", "seller_id": "another-user"}
+    )
+    assert repository.upsert(affected) == "new"
+    assert repository.upsert(other) == "new"
+    assert repository.delete_ebay_seller("stable-user-id") == 1
+    assert repository.delete_ebay_seller("stable-user-id") == 0
+    assert repository.get("ebay", affected.marketplace_item_id) is None
+    assert repository.get_observations("ebay", affected.marketplace_item_id) == []
+    assert repository.upsert(affected) == "suppressed"
+    assert repository.count() == 1
+    assert repository.get("ebay", other.marketplace_item_id) == other
+
+
 def test_catalog_and_match_candidate_persistence(
     repository, search_payload, discogs_release, observed_at
 ):

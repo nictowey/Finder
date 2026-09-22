@@ -15,6 +15,11 @@ on:
       - ".github/workflows/ebay-smoke.yml"
       - "scripts/validate_live_ebay.py"
       - "src/finder/**"
+      - "functions/**"
+      - "neon.ts"
+      - "package.json"
+      - "package-lock.json"
+      - "tests/**"
       - "config/monitors.toml"
       - "pyproject.toml"
 
@@ -54,6 +59,18 @@ jobs:
           python -m pytest -q
           ruff check src tests scripts
           ruff format --check src tests scripts
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Test deletion endpoint
+        run: |
+          npm ci
+          npm test
+          npm run typecheck
 
       - name: Verify ${{ env.EBAY_ENVIRONMENT }} secrets are configured
         shell: bash

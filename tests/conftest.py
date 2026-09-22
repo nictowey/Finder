@@ -46,7 +46,9 @@ def observed_at():
 
 @pytest.fixture
 def settings():
-    return Settings(ebay_client_id="test-client", ebay_client_secret="test-secret")
+    return Settings(
+        ebay_client_id="test-client", ebay_client_secret="test-secret", ebay_environment="sandbox"
+    )
 
 
 @pytest.fixture
