@@ -23,7 +23,10 @@ For each date, check:
 
 | UTC date | Run URL | Fetched / new / updated | Invalid / suppressed / unprocessed | Unknown shipping / fixed delivered subtotal known / auctions | Detail failures / Browse requests / retries | Outcome or issue |
 | --- | --- | --- | --- | --- | --- | --- |
-| 2026-09-22 | Prior first scan and repeat; see Actions history | 10 fetched in each | Check logged results | Check logged results | Check logged results | Passed as ingestion/persistence checks; one distinct day |
+| 2026-09-22 | [Successful repeat scan #4](https://github.com/nictowey/Finder/actions/runs/35786205343) | 10 / 0 / 10 | 0 / 0 / 0 | 0 / 10 / 0 | 0 / not instrumented / not instrumented | Passed with no persistence drift; bounded limit reached. Earlier scans on this date count as the same day. |
+
+The September 22 report predates the new request counters and destination-context field.
+Those values are unknown for this baseline; do not infer a destination from shipping coverage.
 
 Do not mark the seven-day gate complete until seven distinct dates have verified results,
 including inspection of failures and repeat identities. Do not collect real labeled fixtures
