@@ -66,8 +66,10 @@ Read it before proposing or implementing a new phase.
 
 ### Active blocker
 
-Production validation requires eBay Marketplace Account Deletion registration, the Production
-key pair, shared Neon database setup, and a passing eBay test notification. The September 22,
+The free Neon Production branch and deletion Function are deployed. Its public GET challenge
+and shared PostgreSQL deletion transaction have been checked with synthetic data. Production
+validation still requires eBay Marketplace Account Deletion registration, the Production
+key pair, and a passing eBay test notification. The September 22,
 2026 Production workflow stopped at the missing-secret check; it did not call the Production API.
 Until a Production smoke run passes, do not claim that ingestion or matching has been validated
 against real eBay seller data.

@@ -144,7 +144,7 @@ async function verifySignature(
   }
 }
 
-async function deleteSeller(db: Queryable, sellerId: string): Promise<void> {
+export async function deleteSeller(db: Queryable, sellerId: string): Promise<void> {
   const connection = await db.connect();
   try {
     await connection.query("BEGIN");
