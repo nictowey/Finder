@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -7,6 +8,14 @@ import pytest
 from finder.config import Settings
 from finder.domain import Monitor
 from finder.persistence import SqlAlchemyListingRepository
+
+
+@pytest.fixture(autouse=True)
+def isolate_provider_environment(monkeypatch):
+    """Unit tests must never see real credentials or reach live provider APIs."""
+    for key in list(os.environ):
+        if key.startswith(("EBAY_", "FINDER_", "DISCOGS_")):
+            monkeypatch.delenv(key)
 
 
 @pytest.fixture

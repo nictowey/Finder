@@ -18,10 +18,9 @@ jobs:
   sandbox:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Credentials are scoped to the live steps only; offline tests never see them.
     env:
       EBAY_ENVIRONMENT: sandbox
-      EBAY_SANDBOX_CLIENT_ID: ${{ secrets.EBAY_SANDBOX_CLIENT_ID }}
-      EBAY_SANDBOX_CLIENT_SECRET: ${{ secrets.EBAY_SANDBOX_CLIENT_SECRET }}
       FINDER_DATABASE_URL: sqlite:///finder-ebay-sandbox-smoke.db
 
     steps:
@@ -45,6 +44,9 @@ jobs:
 
       - name: Verify Sandbox secrets are configured
         shell: bash
+        env:
+          EBAY_SANDBOX_CLIENT_ID: ${{ secrets.EBAY_SANDBOX_CLIENT_ID }}
+          EBAY_SANDBOX_CLIENT_SECRET: ${{ secrets.EBAY_SANDBOX_CLIENT_SECRET }}
         run: |
           missing=0
           for name in EBAY_SANDBOX_CLIENT_ID EBAY_SANDBOX_CLIENT_SECRET; do
@@ -57,6 +59,9 @@ jobs:
 
       - name: Run live eBay Sandbox validation
         shell: bash
+        env:
+          EBAY_SANDBOX_CLIENT_ID: ${{ secrets.EBAY_SANDBOX_CLIENT_ID }}
+          EBAY_SANDBOX_CLIENT_SECRET: ${{ secrets.EBAY_SANDBOX_CLIENT_SECRET }}
         run: |
           set -euo pipefail
           python scripts/validate_live_ebay.py
