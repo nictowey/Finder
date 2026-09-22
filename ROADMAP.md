@@ -1,6 +1,95 @@
-# Finder Development Roadmap
+# Finder Product Roadmap
 
 Last updated: 2026-09-22
+
+## What Finder should do for a collector
+
+The first useful product is a small, trustworthy vinyl watchlist. A collector names an album or
+exact pressing, the maximum delivered price and acceptable condition; Finder checks newly listed
+eBay items, explains which pressing each might be, and links to the listing while it is still
+available. If lawful sold transactions and permission for this use are secured, Finder can also
+show a conservative value range and flag unusually cheap copies. It must never call a listing a
+"steal" because its current asking price is below another seller's asking price.
+
+Start with roughly 20 target pressings across modern hip-hop/rap, including colored, limited,
+test, and unofficial variants. This is a pilot set for learning, not a promise that every rare
+record will have enough comparable sales. A user should be able to answer four questions quickly:
+
+1. Is this the pressing I asked for, or is the identity uncertain?
+2. What will I actually pay, including quoted shipping, and what costs remain unknown?
+3. What independent, recent sold evidence supports any value claim?
+4. Why did Finder show this listing now, and what should I verify before buying?
+
+## Current state and the critical feasibility gate
+
+**Working:** eBay Production OAuth/Browse ingestion, bounded scans, normalized listing snapshots
+and observation history in the shared Neon database, deletion-notification handling, Discogs
+catalog search, and an evidence-bearing provisional match decision. The first ten-item Production
+scan and a repeat passed. `finder listings` and `finder match` support manual inspection.
+
+**Unproven:** coverage of relevant new listings over time, real-world pressing-match precision,
+any authorized sold-comparables feed, fair-value estimates, and alerts. The twenty synthetic
+matching cases test policy mechanics, not market accuracy. No listing should be advertised as a
+deal today.
+
+**Before building a price-based deal product, resolve these rights questions in writing:**
+
+| Question | Current evidence | Decision needed |
+| --- | --- | --- |
+| Can Finder compare an eBay listing with external sold prices and label it undervalued for a buyer? | eBay's API agreement restricts using eBay content with third-party information to suggest or model prices for items listed on eBay. | Obtain eBay's explicit permission or qualified review of the exact proposed display, alerts, data retention, and business model before implementing or launching deal scoring. |
+| Where do actual sold transactions come from? | Browse exposes active offers; eBay Marketplace Insights is restricted and closed to new users. Discogs classifies marketplace prices and sales history as restricted data. | Secure a source with written commercial, retention, derived-data, and display rights; test its pressing and condition coverage. |
+| May Finder retain and use real eBay listings for labeled evaluation and matcher development? | eBay's agreement limits intermediate copies and restricts use of eBay content to train algorithms. | Review the existing observation retention, sanitized fixtures, labeling, model/heuristic tuning, and deletion plan before building a permanent real-listing dataset. |
+| Can a paid Finder display Discogs catalog data? | Discogs permits CC0 catalog fields but its API terms put conditions on charging for an app that integrates its API and require attribution, linking, and data freshness. | Review the paid-product design with Discogs or qualified counsel before charging; keep restricted marketplace data outside Finder. |
+
+This is a product gate, not just a compliance task. If price-based comparisons are not permitted,
+ship only the permitted exact-item discovery/watchlist workflow and assess another licensed
+marketplace or data partnership. Do not disguise a valuation as an "interesting listing" score.
+Do not use scraping, sold badges inferred from disappeared listings, or active asking prices as a
+substitute for authorized sold transactions. The present assumption is buyer-side collecting,
+not automated purchasing or seller repricing; a resale-focused business model needs its own
+provider review.
+
+## Release ladder
+
+The estimates below are rough for one active builder and exclude provider approval and data
+licensing delays. Exit gates control progression; calendar dates do not override failed gates.
+
+| Milestone | Build and measure | Collector-visible result | Exit gate |
+| --- | --- | --- | --- |
+| A. Feasibility and data audit | Resolve the rights questions; complete seven bounded Production scans; measure field coverage, missing shipping, request cost, lifecycle, and failures. | A private, inspectable feed of real listings with honest freshness and cost flags. | Written rights decision for the intended next use; seven scans without silent loss or duplicate identities; permitted sanitized replay or synthetic contract fixtures. |
+| B. Pressing identity | Broaden bounded Discogs retrieval beyond one title query; subject to data-use clearance, label at least 200 real listings across 40 families and difficult variants; measure family, exact-pressing, and abstention separately. | Correct pressing or explicit uncertainty, with the evidence to verify it. | At least 98% family and 99% exact-variant precision on a held-out labeled set; conflicts never silently promoted. |
+| C. Personal watchlist | Store family/exact pressing targets, acceptable variants, excluded attributes, condition floor, delivered-price ceiling, shipping destination, and buying format. Map each target to bounded eBay searches. | "Show me this pressing under my own maximum price" without claiming market value. | Repeat scans do not lose targets or duplicate listings; missed-listing audits and manual buyer reviews show useful coverage. |
+| D. Sold data and valuation | Obtain permitted transactions; normalize variant, media/sleeve condition, shipping, currency, date, lots, and accepted-offer uncertainty. Backtest value ranges against later sales. | A dated range and comparable count only where evidence is strong enough. | Written data rights plus measured coverage on the pilot set; no value emitted for sparse, stale, or incompatible comps. |
+| E. Opportunity pilot | If eBay permits it, compare fresh, buyable listing cost with conservative value; run shadow mode; manually review every candidate. | "Worth reviewing" leads with price, pressing, condition, and risk reasons. | False-positive causes and missed opportunities recorded; no alert without identity, sold-data, freshness, and delivered-cost gates. |
+| F. Reliable alerts and private product | Add leased scheduled jobs, freshness monitoring, idempotent alerts, one delivery channel, and a minimal watchlist/evidence view. | A collector gets a timely, non-repeated lead and can open the listing. | Fourteen days of reliable shadow scans, backup/restore test, and a small pilot with collectors who use the results. |
+| G. Next collectible | Qualify exactly one new category and its data providers. Reuse generic listing, observation, monitor, and opportunity contracts. | A second category with its own identity and condition rules. | Vinyl shows repeatable collector value and the new category independently passes source, rights, accuracy, and economics gates. |
+
+Rough sequencing: A's technical audit and a synthetic labeling framework can run in the next
+2–4 weeks. Real labeling waits for a data-use decision; B and a private C pilot may then take
+another 1–3 months. D through F have no credible delivery date until the rights and sold-data
+questions are answered. Do not spend heavily on a public UI or subscription checkout while
+those gates are open.
+
+### What "genuinely useful" means in the pilot
+
+Track outcomes that reflect collector value, not just API calls or database rows:
+
+- **Discovery coverage:** For each target, compare Finder's surfaced items with a manually
+  checked eBay sample over the same window; record missed relevant listings and why.
+- **Identity precision:** Count confirmed family and pressing matches, incorrect matches, and
+  abstentions on separate development and holdout sets. Never report precision only on items
+  Finder chose to inspect manually.
+- **Cost accuracy:** Track known delivered subtotals, missing or location-dependent shipping,
+  auction bids versus final purchase prices, and stale/unavailable items.
+- **Lead quality and speed:** Have several collectors review a small shadow feed for four weeks;
+  record how many listings they would seriously consider, how many were false leads, and whether
+  Finder surfaced them before they became unavailable. A purchase is strong evidence of value,
+  but not required for every rare target in a short pilot.
+- **Economics:** Measure API and sold-data cost per inspected listing and per credible lead,
+  including support and human review, before deciding on pricing or affiliate revenue.
+
+Use the detailed engineering phases below to implement these milestones. A phase can progress
+internally while a later release remains blocked by provider permission.
 
 ## North star
 
@@ -31,8 +120,8 @@ label the result ambiguous rather than guess.
    proof of market value.
 6. **Provider boundaries stay strict.** Official APIs only. Marketplace logic, catalog logic,
    category logic, and valuation logic remain separate.
-7. **Schema changes remain deliberate.** Add migrations before a hosted database or any schema
-   change that must preserve production data.
+7. **Schema changes remain deliberate.** A hosted Neon database already exists; add migrations
+   and backup/restore checks before the next production schema change.
 8. **Build from observed failures.** Do not add matching heuristics merely because they sound
    useful; add them after labeled examples demonstrate the need.
 9. **No silent degradation.** Stale feeds, partial details, failed enrichment, and missing
@@ -159,13 +248,17 @@ Before production alerts, the evaluation set should contain at least:
 - 25 intentionally incomplete or misleading listings
 
 Use separate development and holdout sets. Matching-weight changes may improve the development
-set, but the holdout set determines whether the change is accepted.
+set, but the holdout set determines whether the change is accepted. Report the number of
+auto-match decisions and errors for each tier; a 200-listing corpus alone cannot substantiate
+a 99% exact-pressing precision claim if only a few listings receive exact decisions. Grow the
+holdout and test across families and variants before enabling exact-match deal alerts.
 
 ## Roadmap overview
 
 | Phase | Status | Exit gate |
 | --- | --- | --- |
 | 0. Foundations | Complete | Offline tests and live Discogs smoke test pass |
+| Rights and commercial feasibility | Blocking for price-based product | Written permission or reviewed approval for the intended buyer comparison/alert use, plus a permitted sold-data source |
 | 1. Real eBay data validation | In progress | Bounded scans and sanitized replays pass |
 | 2. Pressing identity engine | In progress | Labeled precision gates met |
 | 3. User-defined vinyl monitors | Planned | Exact/family targets produce stable discovery plans |
@@ -208,7 +301,8 @@ responses for replay and measure field quality. The seven-scan exit gate below i
 
 1. Run small production scans with strict request and result caps.
 2. Record API response-field presence rates without logging credentials or prohibited payloads.
-3. Sanitize representative responses and commit replay fixtures.
+3. Sanitize representative responses and commit replay fixtures only after the retention and
+   fixture-use rights are reviewed; use wholly synthetic contract fixtures in the meantime.
 4. Measure availability and quality of:
    - UPC/barcode
    - artist and album
@@ -233,7 +327,7 @@ Do not increase scan breadth until the bounded scans are reliable.
 
 ## Phase 2 — Pressing identity engine
 
-Status: **In progress; useful work can continue before eBay approval**
+Status: **In progress; eBay Production access is working, real labels are missing**
 
 `vinyl-decision-v2` now implements the first provisional outcome contract. The match CLI reports
 family-only, probable variant, ambiguity, rejection, or insufficient evidence with provenance,
@@ -243,7 +337,8 @@ bounded single title query, so a sole candidate does not establish unique pressi
 
 ### 2.1 Target ontology
 
-Add explicit category models without changing the generic core:
+The initial contracts exist; complete their use in durable decisions without changing the
+generic core:
 
 - `VinylFingerprint`: normalized manufacturing evidence for a pressing
 - `CollectibleAttribute`: autograph, number, sealed status, obi, insert, hype sticker, or other
@@ -258,6 +353,9 @@ Add explicit category models without changing the generic core:
 - Normalize aliases, punctuation, featured artists, alternate catalog-number formatting, and
   barcode formatting without discarding original values.
 - Bound candidate counts and API use; cache catalog releases with freshness metadata.
+- Before any public display, recheck Discogs' current freshness and retention terms; do not show
+  stale API-derived catalog content as live data. Its current terms prohibit displaying content
+  more than six hours older than the information on Discogs.
 - Never assume the first Discogs search result is the correct pressing.
 
 ### 2.3 Deterministic matching
@@ -334,11 +432,15 @@ Status: **Planned; required before valuation**
 The eBay Browse API supplies active listings, not a dependable general sold-comparables feed.
 eBay currently states that Marketplace Insights is restricted and not open to new users. Discogs
 catalog identifiers are useful for identity, but Discogs marketplace pricing and sales history
-are restricted data and are outside Finder's current permitted scope.
+are restricted data and are outside Finder's current permitted scope. Qualifying a separate sold
+feed does **not** by itself resolve eBay's restriction on using its content to suggest or model
+prices for eBay items. Treat feed rights and the intended Finder output as separate approvals.
 
 Before writing valuation code, document candidate sources against:
 
 - Written commercial-use rights and retention rights
+- Permission to combine the source with eBay Browse content in a buyer-facing valuation or lead
+  (including display, alerts, and paid access)
 - Sold versus merely listed status
 - Exact item/variant identifiers
 - Transaction date, sale price, shipping, currency, and condition
@@ -354,12 +456,13 @@ scraping or active asking prices and call the result fair market value.
 ### Exit gate
 
 - A written data-source decision records terms, fields, cost, retention, and failure modes.
-- Legal/commercial use is clear enough for the intended product.
+- eBay's intended-use restriction and the sold source's commercial use are resolved in writing
+  for the actual product flow.
 - A representative sample maps to Finder identities with measured coverage.
 
 ## Phase 5 — Valuation and opportunity scoring
 
-Status: **Planned after Phase 4**
+Status: **Planned after Phase 4 and explicit eBay product-use clearance**
 
 ### Comparable normalization
 
@@ -410,7 +513,9 @@ Finder should explain why an opportunity qualifies. A low asking price alone is 
 
 Status: **Planned after ingestion, identity, and valuation gates**
 
-Introduce infrastructure in this order:
+Introduce unattended product infrastructure in this order, after the bounded Production and
+identity gates. The existing Neon Production database and deletion endpoint are already hosted;
+they are not evidence that unattended deal alerts are ready:
 
 1. Idempotent scheduled scans
 2. Persistent job state and leases
@@ -418,7 +523,7 @@ Introduce infrastructure in this order:
 4. Shadow-mode opportunity generation without notifications
 5. Alert deduplication, cooldowns, and state transitions
 6. One delivery channel
-7. Hosted database migrations, backups, and restore tests
+7. Production backup and restore drills (schema migrations must precede the next schema change)
 
 Run shadow mode long enough to inspect false positives, missed updates, and duplicate alerts.
 Hosting is not a milestone by itself; dependable unattended behavior is.
@@ -444,12 +549,34 @@ Only after the monitoring pipeline is dependable:
 - Manual correction/feedback flow for ambiguous matches
 - Alert preferences and delivery history
 - Privacy, retention, rate limiting, abuse controls, and account deletion
+- A small collector pilot with repeated weekly use, manually checked leads, and measured time
+  saved; then test subscription or affiliate economics only within provider permissions
 
-Do not optimize onboarding or payments before users can trust the matches and valuations.
+Do not optimize onboarding or payments before users can trust the matches and valuations. A
+subscription requires a separate Discogs API use decision; affiliate links, if used, require
+the relevant eBay Partner Network setup and tracking rules. Neither is assumed to be approved.
 
 ## Phase 8 — Additional marketplaces and categories
 
 Status: **Planned**
+
+Expansion order is a hypothesis, not a promise: evaluate trading cards first because set,
+number, parallel, and grading identifiers can support an explicit fingerprint; then compare
+sneakers, whose size/colorway/condition matter; leave watches and autographs until provenance,
+counterfeit risk, and sparse comparable sales can be handled. Do not commit to any category
+until its official/licensed listing and sold-data routes are checked.
+
+| Candidate | Identity to resolve | Major uncertainty to test |
+| --- | --- | --- |
+| Trading cards | Set, year, card number, parallel, serial number, grading company/grade | Licensed sold data, graded versus raw comparables, counterfeit and altered cards |
+| Sneakers | Model SKU, colorway, size, release, condition, box and accessories | Size-specific sold data and authorized marketplace feeds |
+| Watches | Reference, dial, year, completeness, service and provenance | Authenticity, condition, sparse comps, and high financial exposure |
+
+Select a second category only after a short provider and label pilot demonstrates that one
+category can pass the same identity, data-rights, delivered-cost, and opportunity gates as
+vinyl. eBay's pricing-use restriction follows eBay content into every category; switching
+collectibles does not solve it. Build one new `categories/<name>` package and adapters as
+needed, preserving generic Listing/Variant/Monitor contracts and separate policy versions.
 
 ### Marketplace qualification
 
@@ -486,7 +613,8 @@ may be needed to explain a match.
 
 ### Database evolution
 
-- Introduce Alembic before deploying a persistent hosted database.
+- A persistent Neon database is already deployed. Introduce versioned migrations before the
+  next Production schema change, with a rollback plan and a verified backup/restore procedure.
 - Require forward and rollback tests for schema migrations.
 - Keep current snapshots separate from immutable observations.
 - Add price-history queries only after observation semantics are stable.
@@ -516,23 +644,34 @@ credentials or unnecessary personal data.
 - Add dependency and secret scanning before hosting.
 - Define data deletion and incident-response procedures before user accounts.
 
-## Immediate work while eBay approval is pending
+## Next six concrete work packages
 
-The following work is useful without pretending real eBay accuracy is already known:
+1. **Provider-rights decision record.** Describe Finder's buyer journey, proposed valuation and
+   alert examples, paid versus free use, retention, and whether users may buy for collecting or
+   resale. Seek eBay's written position and review Discogs' paid-app terms. Record a go/no-go
+   before building price-based output.
+2. **Production data audit.** Finish seven bounded rap-vinyl scans on different days, use
+   synthetic contract fixtures until retention rights are reviewed, and publish aggregate
+   field-presence, shipping, request-budget, and failure statistics. No listing identities in
+   public CI logs.
+3. **Real-label workflow.** After the listing-use decision, make a private labeling form and
+   adjudication guide. Sample at least 200 real listings across at least 40 release families,
+   including shared identifiers, unofficial copies, signed claims, misleading titles, lots,
+   and unknown shipping. Separate development from holdout before tuning the matcher.
+4. **Candidate-retrieval and identity fixes.** Measure how often the true Discogs release is
+   absent from the bounded title search. Add identifier and family queries under strict budgets;
+   test artist/title aliases, duplicate masters, color/edition conflicts, and refusal to guess.
+5. **Watchlist pilot.** After scan reliability, let a small private cohort specify target
+   release/family, maximum delivered subtotal, condition floor, and exclusions. Show uncertain
+   identity and unknown shipping plainly; do not label a price as undervalued.
+6. **Sold-source qualification.** Approach rights holders or licensed vendors with a concrete
+   schema and pilot set. Test transaction coverage, accepted-offer accuracy, pressing identity,
+   condition, fees, currency, and cost. If no lawful source and eBay use clearance exist, keep
+   valuation and price-based alerts blocked.
 
-1. Define `VinylFingerprint`, `CollectibleAttribute`, `EvidenceRecord`, and `MatchDecision`
-   contracts with serialization tests.
-2. Split family matching from exact-variant matching.
-3. Add matching-policy versioning and explicit missing/conflicting evidence.
-4. Expand deterministic evaluations for shared barcodes, catalog-number reuse, colored variants,
-   unofficial releases, signed claims, and numbered copies.
-5. Build the labeled-evaluation format and annotation guide so real eBay fixtures can be added
-   consistently after approval.
-6. Add a comparable-source decision template; do not implement valuation yet.
-7. Prepare migration tooling before any hosted database exists.
-
-Avoid frontend, hosting, alerts, payment infrastructure, scraping, automated image/LLM matching,
-and valuation until their preceding gates are met.
+Do not add a public frontend, subscription billing, broad scheduling, scraping, automated
+image/LLM matching, or deal scoring merely because Production ingestion works. The earlier
+decision contracts are complete, but their real-world accuracy has not been established.
 
 ## Decisions that require explicit review
 
@@ -542,9 +681,13 @@ Do not make these decisions implicitly in a feature commit:
 - Treating a seller claim as authenticated
 - Treating active asking prices as sold comparables
 - Adding a provider endpoint or data field with new terms restrictions
+- Combining eBay content with external sold data to score, rank, or alert on underpriced eBay
+  listings without an explicit provider-use decision
+- Charging for an application that displays Discogs API content without reviewing its paid-app
+  terms and obtaining any needed permission
 - Adding image/OCR/LLM evidence to automatic exact matching
 - Persisting raw marketplace responses
-- Migrating to hosted infrastructure
+- Replacing or expanding the existing hosted infrastructure
 - Supporting a new marketplace or category
 
 Record the evidence, tradeoffs, and approval in the pull request or a dedicated decision record.
@@ -553,6 +696,8 @@ Record the evidence, tradeoffs, and approval in the pull request or a dedicated 
 
 - [eBay Browse API search](https://developer.ebay.com/api-docs/buy/browse/resources/item_summary/methods/search)
 - [eBay Buy API support and Marketplace Insights restriction](https://developer.ebay.com/api-docs/buy/static/ref-marketplace-supported.html)
+- [eBay API License Agreement, pricing-model and restricted-use clauses](https://developer.ebay.com/join/api-license-agreement)
+- [eBay Buy API Production and business-model requirements](https://developer.ebay.com/api-docs/buy/buy-requirements.html)
 - [Discogs API Terms of Use](https://support.discogs.com/hc/en-us/articles/360009334593-API-Terms-of-Use)
 - [Discogs unique-release guidelines](https://support.discogs.com/hc/en-us/articles/360005006334-Database-Guidelines-1-General-Rules)
 - [Discogs vinyl identification guide](https://support.discogs.com/hc/en-us/articles/360008602254-How-To-Find-Information-On-A-Vinyl-Record)
