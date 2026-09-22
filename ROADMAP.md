@@ -199,9 +199,10 @@ the availability of lawful sold comparables.
 Status: **In progress; Production credentials and deletion compliance are active**
 
 The first Production OAuth → Browse → normalization smoke run passed on September 22, 2026.
-The next step is repeated ten-item scans of the rap-vinyl monitor against the shared Neon
-database, followed by sanitized response replays and field-quality measurement. The seven-scan
-exit gate below is still open.
+On September 22, 2026, the first ten-item rap-vinyl scan and a repeat passed against the
+shared Neon database. The repeat updated the same ten listing identities without duplicates;
+all observations persisted. Continue bounded scans over time, then sanitize representative
+responses for replay and measure field quality. The seven-scan exit gate below is still open.
 
 ### Deliverables
 
