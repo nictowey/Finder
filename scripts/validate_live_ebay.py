@@ -12,6 +12,7 @@ Exit codes: 0 passed, 1 a validation stage failed.
 import argparse
 import json
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -63,10 +64,18 @@ def main(env_file: Path = Path(".env"), monitor_id: str = "ebay-api-smoke") -> i
         return _finish(report, "configuration", str(exc))
     configure_logging(settings.log_level)
     report.update(
+        scan_date_utc=datetime.now(UTC).date().isoformat(),
         environment=settings.ebay_environment,
         api_host=settings.ebay_base_url,
         monitor=monitor.id,
         query=monitor.query,
+        destination_context=(
+            "country_and_postal"
+            if settings.delivery_country and settings.delivery_postal_code
+            else "country_only"
+            if settings.delivery_country
+            else "none"
+        ),
         credentials_loaded=True,
     )
 
@@ -96,10 +105,17 @@ def main(env_file: Path = Path(".env"), monitor_id: str = "ebay-api-smoke") -> i
             "status": summary.status,
             "fetched": summary.fetched,
             "normalized_and_stored": summary.new + summary.updated,
+            "new": summary.new,
+            "updated": summary.updated,
             "skipped": summary.skipped_invalid,
             "skip_reasons": summary.skip_reasons,
+            "suppressed_deleted_sellers": summary.suppressed_deleted,
+            "unprocessed": summary.unprocessed,
+            "total_stored": summary.total_stored,
             "detail_enrichment_failures": summary.partial_details,
             "limit_reached": summary.limit_reached,
+            "browse_requests": client.browse_requests,
+            "browse_retries": client.browse_retries,
         }
         if summary.status != "completed":
             return _finish(report, "browse", summary.error)

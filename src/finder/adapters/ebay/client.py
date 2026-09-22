@@ -45,6 +45,9 @@ class EbayClient:
         self.max_retries = max_retries
         self._token: str | None = None
         self._expires_at = 0.0
+        # Aggregate request counts only; never retain request paths, IDs, or headers.
+        self.browse_requests = 0
+        self.browse_retries = 0
 
     def close(self) -> None:
         self.http.close()
@@ -81,6 +84,9 @@ class EbayClient:
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         for attempt in range(self.max_retries + 1):
             response = None
+            if path.startswith("/buy/"):
+                self.browse_requests += 1
+                self.browse_retries += attempt > 0
             try:
                 response = self.http.request(method, path, **kwargs)
             except httpx.RequestError:

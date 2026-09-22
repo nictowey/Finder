@@ -108,6 +108,24 @@ def test_retry_after_respected(settings):
     assert delays == [7]
 
 
+def test_browse_request_count_includes_retries_but_excludes_oauth(settings):
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        if request.method == "POST":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        calls += 1
+        return httpx.Response(500 if calls == 1 else 200, json={"total": 0})
+
+    with EbayClient(
+        settings, transport=httpx.MockTransport(handler), sleep=lambda _: None
+    ) as client:
+        client.get("/buy/browse/v1/item_summary/search", headers={})
+        assert client.browse_requests == 2
+        assert client.browse_retries == 1
+
+
 def test_long_retry_after_fails_without_early_retry(settings):
     delays = []
     with EbayClient(
