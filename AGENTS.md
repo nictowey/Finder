@@ -17,7 +17,8 @@ behind adapters. Category-specific identity rules belong in category modules.
 - Marketplace: eBay Browse API only; never scrape eBay
 - Catalog identity source: Discogs CC0 catalog endpoints only
 - Persistence: SQLAlchemy with SQLite locally and portable repository boundaries
-- Interface: Python CLI, plus a narrowly scoped hosted eBay deletion endpoint
+- Interface: Python CLI, manual bounded cloud validation, and a narrowly scoped hosted eBay
+  deletion endpoint
 
 ## Current project state
 
@@ -174,9 +175,9 @@ A material change is complete only when:
 5. Turn sanitized real eBay responses into labeled regression fixtures.
 6. Qualify a commercially permitted sold-comparables source before implementing valuation.
 
-The eBay deletion endpoint is the sole hosting exception needed to activate Production keys.
-Do not build scheduling, alerts, or a frontend until live ingestion and identity matching are
-demonstrably reliable.
+The eBay deletion endpoint and manual bounded cloud scans support Production data validation.
+Do not build recurring scheduling, alerts, or a frontend until live ingestion and identity
+matching are demonstrably reliable.
 
 ## Maintaining this file
 

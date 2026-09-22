@@ -19,6 +19,22 @@ fetch_details = true
 # aspect_filter = "categoryId:176985,Genre:{Rap & Hip-Hop}"
 
 [[monitors]]
+id = "rap-vinyl-validation"
+name = "Bounded hip-hop / rap vinyl validation"
+marketplace = "ebay"
+query = "vinyl (rap,hip-hop,hip hop)"
+description = "Ten-item Production sample of the main monitor before expanding scan breadth."
+
+[monitors.source_options]
+marketplace_id = "EBAY_US"
+category_ids = ["176985"]
+buying_options = ["FIXED_PRICE", "AUCTION"]
+sort = "newlyListed"
+page_size = 10
+max_pages = 1
+fetch_details = true
+
+[[monitors]]
 id = "ebay-api-smoke"
 name = "eBay Browse API smoke test"
 marketplace = "ebay"

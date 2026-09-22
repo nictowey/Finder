@@ -1,13 +1,15 @@
 """Bounded live eBay Browse validation: OAuth, one search, normalization, and persistence.
 
 Run with ``EBAY_ENVIRONMENT=sandbox`` (or ``production``) and the matching scoped credentials,
-for example ``EBAY_SANDBOX_CLIENT_ID``/``EBAY_SANDBOX_CLIENT_SECRET``. The search comes from the
-``ebay-api-smoke`` monitor in ``config/monitors.toml``.
+for example ``EBAY_SANDBOX_CLIENT_ID``/``EBAY_SANDBOX_CLIENT_SECRET``. By default, the search
+comes from the ``ebay-api-smoke`` monitor in ``config/monitors.toml``.
 
+Pass ``--monitor rap-vinyl-validation`` for a bounded sample of the main discovery monitor.
 Output is aggregate and non-identifying because this repository's Actions logs are public.
 Exit codes: 0 passed, 1 a validation stage failed.
 """
 
+import argparse
 import json
 from collections.abc import Iterator
 from pathlib import Path
@@ -52,10 +54,10 @@ def _finish(report: dict[str, Any], stage: str | None = None, error: str | None 
     return 0 if stage is None else 1
 
 
-def main(env_file: Path = Path(".env")) -> int:
+def main(env_file: Path = Path(".env"), monitor_id: str = "ebay-api-smoke") -> int:
     report: dict[str, Any] = {}
     try:
-        monitor = load_monitor(Path("config/monitors.toml"), "ebay-api-smoke")
+        monitor = load_monitor(Path("config/monitors.toml"), monitor_id)
         settings = load_settings(env_file)
     except FinderError as exc:
         return _finish(report, "configuration", str(exc))
@@ -141,4 +143,7 @@ def main(env_file: Path = Path(".env")) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--monitor", default="ebay-api-smoke")
+    args = parser.parse_args()
+    raise SystemExit(main(monitor_id=args.monitor))

@@ -94,6 +94,8 @@ The **eBay smoke test** GitHub Actions workflow runs the same script. Pushes to 
 
 The September 22, 2026 manual Production run passed: eBay returned 10 live items, all 10 normalized and round-tripped through persistence. Two listings had unknown shipping cost and were flagged rather than assigned a guessed value. This check does not validate exact-match quality or the signed account-deletion notification path.
 
+The manual **Production bounded scan** workflow uses the separate `rap-vinyl-validation` monitor: the main rap-vinyl query and category with a one-page, ten-item cap. It stores normalized listings in the same Neon Production database used by the deletion endpoint, using `FINDER_DATABASE_URL` from the GitHub `production` environment. The workflow prints aggregate field coverage and persistence results, never item identities or credentials. It is deliberately unscheduled while the Phase 1 repeat-scan and identity-quality gates in `ROADMAP.md` remain open. The broader `rap-vinyl` monitor still caps at two pages of 50 and should not be automated until bounded scans are reliable.
+
 ## Discogs catalog credentials and scope
 
 1. Sign in to Discogs and open [Settings > Developers](https://www.discogs.com/settings/developers).

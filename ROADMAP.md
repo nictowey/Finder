@@ -1,6 +1,6 @@
 # Finder Development Roadmap
 
-Last updated: 2026-09-11
+Last updated: 2026-09-22
 
 ## North star
 
@@ -166,7 +166,7 @@ set, but the holdout set determines whether the change is accepted.
 | Phase | Status | Exit gate |
 | --- | --- | --- |
 | 0. Foundations | Complete | Offline tests and live Discogs smoke test pass |
-| 1. Real eBay data validation | Blocked on credentials | Bounded scans and sanitized replays pass |
+| 1. Real eBay data validation | In progress | Bounded scans and sanitized replays pass |
 | 2. Pressing identity engine | In progress | Labeled precision gates met |
 | 3. User-defined vinyl monitors | Planned | Exact/family targets produce stable discovery plans |
 | 4. Comparable-source qualification | Planned | Commercial rights and data quality documented |
@@ -196,7 +196,12 @@ the availability of lawful sold comparables.
 
 ## Phase 1 — Real eBay data validation
 
-Status: **Blocked on approved eBay credentials**
+Status: **In progress; Production credentials and deletion compliance are active**
+
+The first Production OAuth → Browse → normalization smoke run passed on September 22, 2026.
+The next step is repeated ten-item scans of the rap-vinyl monitor against the shared Neon
+database, followed by sanitized response replays and field-quality measurement. The seven-scan
+exit gate below is still open.
 
 ### Deliverables
 

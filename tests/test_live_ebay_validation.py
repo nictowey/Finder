@@ -33,7 +33,11 @@ def script(monkeypatch, tmp_path):
     spec.loader.exec_module(module)
     # Never read a developer's real .env during tests.
     original = module.main
-    monkeypatch.setattr(module, "main", lambda: original(tmp_path / "absent.env"))
+    monkeypatch.setattr(
+        module,
+        "main",
+        lambda monitor_id="ebay-api-smoke": original(tmp_path / "absent.env", monitor_id),
+    )
     return module
 
 
@@ -56,6 +60,39 @@ def test_smoke_monitor_is_bounded():
     assert monitor.query == "vinyl"
     assert monitor.source_options["max_pages"] == 1
     assert monitor.source_options["page_size"] == 10
+
+
+def test_production_validation_monitor_matches_main_scope_with_ten_item_cap():
+    main = load_monitor(ROOT / "config/monitors.toml", "rap-vinyl")
+    sample = load_monitor(ROOT / "config/monitors.toml", "rap-vinyl-validation")
+    assert sample.query == main.query
+    assert sample.source_options["category_ids"] == main.source_options["category_ids"]
+    assert sample.source_options["buying_options"] == main.source_options["buying_options"]
+    assert sample.source_options["page_size"] == 10
+    assert sample.source_options["max_pages"] == 1
+    assert sample.source_options["fetch_details"]
+
+
+def test_live_validation_selects_bounded_vinyl_monitor(
+    monkeypatch, capsys, script, search_payload, detail_payload
+):
+    def handler(request):
+        if request.method == "POST":
+            return httpx.Response(200, json={"access_token": "token-value", "expires_in": 7200})
+        if request.url.path.endswith("/item_summary/search"):
+            assert request.url.params["q"] == "vinyl (rap,hip-hop,hip hop)"
+            assert request.url.params["limit"] == "10"
+            assert request.url.params["category_ids"] == "176985"
+            return httpx.Response(200, json=_future(search_payload))
+        if detail_payload["itemId"] in str(request.url.raw_path, "ascii").replace("%7C", "|"):
+            return httpx.Response(200, json=_future(detail_payload))
+        return httpx.Response(404)
+
+    _use_transport(monkeypatch, script, handler)
+    assert script.main("rap-vinyl-validation") == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["monitor"] == "rap-vinyl-validation"
+    assert report["status"] == "passed"
 
 
 def test_live_validation_passes_and_prints_no_identities(
