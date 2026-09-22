@@ -11,6 +11,7 @@ from finder.adapters.ebay.normalize import normalize_listing
 from finder.config import load_monitor
 from finder.diagnostics import changed_fields, summarize_listings
 from finder.errors import PersistenceError
+from finder.persistence import SqlAlchemyRepository
 
 ROOT = Path(__file__).resolve().parents[1]
 SECRET_VALUES = ("sandbox-id-value", "sandbox-secret-value", "token-value")
@@ -93,6 +94,19 @@ def test_live_validation_selects_bounded_vinyl_monitor(
     report = json.loads(capsys.readouterr().out)
     assert report["monitor"] == "rap-vinyl-validation"
     assert report["status"] == "passed"
+    assert script.main("rap-vinyl-validation") == 0
+    repeat = json.loads(capsys.readouterr().out)
+    assert repeat["status"] == "passed"
+    assert repeat["persistence"]["missing_observations"] == 0
+    repository = SqlAlchemyRepository.from_url(os.environ["FINDER_DATABASE_URL"])
+    try:
+        assert repository.count() == 1
+        observations = repository.get_observations("ebay", detail_payload["itemId"])
+        assert len(observations) == 2
+        stored = repository.get("ebay", detail_payload["itemId"])
+        assert stored.first_observed_at == observations[0].first_observed_at
+    finally:
+        repository.close()
 
 
 def test_live_validation_passes_and_prints_no_identities(
@@ -122,7 +136,12 @@ def test_live_validation_passes_and_prints_no_identities(
     assert report["oauth"]["status"] == "ok"
     assert report["normalization"]["listings"] == 1
     assert report["browse"]["skip_reasons"] == {"item_unavailable": 1}
-    assert report["persistence"] == {"missing": 0, "fields_changed_on_reload": []}
+    assert report["persistence"] == {
+        "missing": 0,
+        "fields_changed_on_reload": [],
+        "missing_observations": 0,
+        "observation_fields_changed_on_reload": [],
+    }
     for forbidden in (*SECRET_VALUES, detail_payload["itemId"], detail_payload["title"]):
         assert forbidden not in output + captured.err
 

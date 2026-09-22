@@ -128,14 +128,45 @@ def main(env_file: Path = Path(".env"), monitor_id: str = "ebay-api-smoke") -> i
             return _finish(report, "normalization", "No listing produced a usable price.")
         drift: set[str] = set()
         missing = 0
+        missing_observations = 0
+        observation_drift: set[str] = set()
         for listing in adapter.listings:
             stored = repository.get(listing.marketplace, listing.marketplace_item_id)
+            observations = repository.get_observations(
+                listing.marketplace, listing.marketplace_item_id
+            )
+            current_observation = next(
+                (
+                    item
+                    for item in observations
+                    if item.last_observed_at == listing.last_observed_at
+                ),
+                None,
+            )
+            if current_observation is None:
+                missing_observations += 1
+            else:
+                observation_drift.update(changed_fields(listing, current_observation))
             if stored is None:
                 missing += 1
             else:
-                drift.update(changed_fields(listing, stored))
-        report["persistence"] = {"missing": missing, "fields_changed_on_reload": sorted(drift)}
-        if missing or drift:
+                # The current row retains the first scan's timestamp on repeat scans.
+                expected = listing.model_copy(
+                    update={"first_observed_at": stored.first_observed_at}
+                )
+                drift.update(changed_fields(expected, stored))
+                if (
+                    not observations
+                    or stored.first_observed_at != observations[0].first_observed_at
+                ):
+                    drift.add("first_observed_at")
+        report["persistence"] = {
+            "missing": missing,
+            "fields_changed_on_reload": sorted(drift),
+            "missing_observations": missing_observations,
+            "observation_fields_changed_on_reload": sorted(observation_drift),
+        }
+        if missing or drift or missing_observations or observation_drift:
             return _finish(report, "persistence", "Stored listings do not round-trip exactly.")
         return _finish(report)
     finally:
