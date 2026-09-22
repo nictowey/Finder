@@ -41,13 +41,40 @@ class DiscogsSettings(BaseModel):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
 
+def _ebay_credentials(environment: str) -> tuple[str, str]:
+    """Prefer environment-scoped keysets so Sandbox keys never reach Production.
+
+    ``EBAY_SANDBOX_CLIENT_ID``/``EBAY_PRODUCTION_CLIENT_ID`` (and matching secrets) take
+    precedence over the generic ``EBAY_CLIENT_ID``/``EBAY_CLIENT_SECRET`` pair. A scoped pair
+    must be complete; it is never mixed with the generic pair.
+    """
+    prefix = f"EBAY_{environment.upper()}_"
+    scoped = [
+        os.environ.get(f"{prefix}{name}", "").strip() for name in ("CLIENT_ID", "CLIENT_SECRET")
+    ]
+    if any(scoped):
+        if not all(scoped):
+            raise ConfigurationError(
+                f"Set both {prefix}CLIENT_ID and {prefix}CLIENT_SECRET, or neither."
+            )
+        return scoped[0], scoped[1]
+    return (
+        os.environ.get("EBAY_CLIENT_ID", "").strip(),
+        os.environ.get("EBAY_CLIENT_SECRET", "").strip(),
+    )
+
+
 def load_settings(env_file: Path = Path(".env")) -> Settings:
     load_dotenv(env_file, override=False)
+    environment = os.environ.get("EBAY_ENVIRONMENT", "production").strip().lower()
+    if environment not in ("production", "sandbox"):
+        raise ConfigurationError("Invalid environment settings: ebay_environment")
+    client_id, client_secret = _ebay_credentials(environment)
     try:
         settings = Settings(
-            ebay_client_id=os.environ.get("EBAY_CLIENT_ID", "").strip(),
-            ebay_client_secret=os.environ.get("EBAY_CLIENT_SECRET", "").strip(),
-            ebay_environment=os.environ.get("EBAY_ENVIRONMENT", "production"),
+            ebay_client_id=client_id,
+            ebay_client_secret=client_secret,
+            ebay_environment=environment,
             database_url=os.environ.get("FINDER_DATABASE_URL", "sqlite:///finder.db"),
             log_level=os.environ.get("FINDER_LOG_LEVEL", "INFO").upper(),
             delivery_country=os.environ.get("EBAY_DELIVERY_COUNTRY") or None,
@@ -59,8 +86,9 @@ def load_settings(env_file: Path = Path(".env")) -> Settings:
     if not all(
         x.get_secret_value() for x in (settings.ebay_client_id, settings.ebay_client_secret)
     ):
+        scoped = f"EBAY_{environment.upper()}_CLIENT_ID/_CLIENT_SECRET"
         raise ConfigurationError(
-            "Set EBAY_CLIENT_ID and EBAY_CLIENT_SECRET in .env or environment."
+            f"Set {scoped} (or EBAY_CLIENT_ID and EBAY_CLIENT_SECRET) in .env or environment."
         )
     if settings.delivery_postal_code and not settings.delivery_country:
         raise ConfigurationError("EBAY_DELIVERY_POSTAL_CODE also requires EBAY_DELIVERY_COUNTRY.")

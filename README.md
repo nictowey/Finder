@@ -64,13 +64,24 @@ JSON logs go to stderr; the human or JSON summary goes to stdout. `.env` loading
 
 1. Register at the [eBay Developers Program](https://developer.ebay.com/).
 2. Create an application keyset in [Application Keys](https://developer.ebay.com/my/keys).
-3. Put its **App ID / Client ID** in `EBAY_CLIENT_ID` and **Cert ID / Client Secret** in `EBAY_CLIENT_SECRET`. A Dev ID, your eBay username/password, a redirect URI, and a user refresh token are not used by this implementation.
+3. Put its **App ID / Client ID** and **Cert ID / Client Secret** in the environment-scoped variables `EBAY_SANDBOX_CLIENT_ID`/`EBAY_SANDBOX_CLIENT_SECRET` or `EBAY_PRODUCTION_CLIENT_ID`/`EBAY_PRODUCTION_CLIENT_SECRET`. `EBAY_ENVIRONMENT` selects which pair is used; the generic `EBAY_CLIENT_ID`/`EBAY_CLIENT_SECRET` pair is a fallback only when the selected environment has no scoped keys. A Dev ID, your eBay username/password, a redirect URI, and a user refresh token are not used by this implementation.
 4. Use the matching environment: `EBAY_ENVIRONMENT=production` for live inventory or `sandbox` for eBay test data. Ensure your application has Browse access; valid keys alone do not resolve API access restrictions. Consult eBay's [Buy API access requirements](https://developer.ebay.com/api-docs/buy/static/buy-requirements.html) for current production eligibility and onboarding requirements.
 5. Optionally set **both** `EBAY_DELIVERY_COUNTRY` and `EBAY_DELIVERY_POSTAL_CODE` for destination-aware shipping estimates. The example sets country to `US` but leaves postal code blank. Without a complete destination, calculated shipping can be absent or less useful.
 
 Finder requests an application OAuth token using `client_credentials` and the scope `https://api.ebay.com/oauth/api_scope`, caches it in memory until shortly before expiry, and renews it once on a Browse 401 response. No token is saved to disk. Never commit your `.env`, paste real credentials into tests, or put secrets in monitor configuration. `.env.example` contains empty credential values and `.gitignore` excludes local secrets and databases.
 
 Sandbox uses `finder-sandbox.db` when the default SQLite URL is unchanged. **If you customize `FINDER_DATABASE_URL`, use different databases for Sandbox and Production.** Sandbox data is not real market inventory.
+
+### Live eBay validation
+
+`scripts/validate_live_ebay.py` runs a bounded end-to-end check: it loads the selected keyset, obtains an application OAuth token, searches the `ebay-api-smoke` monitor (`vinyl`, one page of ten, with item details) through the normal scan path, and verifies that listings normalize and round-trip through persistence. It prints only aggregate, non-identifying JSON because the repository's Actions logs are public.
+
+```bash
+EBAY_ENVIRONMENT=sandbox FINDER_DATABASE_URL=sqlite:///finder-ebay-smoke.db \
+  python scripts/validate_live_ebay.py
+```
+
+The **eBay smoke test** GitHub Actions workflow runs the same script against Sandbox using the `EBAY_SANDBOX_CLIENT_ID` and `EBAY_SANDBOX_CLIENT_SECRET` repository secrets. Sandbox success proves OAuth, request shape, and normalization plumbing only; Sandbox inventory is test data, not market data.
 
 ## Discogs catalog credentials and scope
 

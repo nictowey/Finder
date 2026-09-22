@@ -112,3 +112,42 @@ def test_discogs_token_is_required(tmp_path):
     env.write_text("")
     with pytest.raises(ConfigurationError, match="DISCOGS_TOKEN"):
         load_discogs_settings(env)
+
+
+def test_scoped_sandbox_credentials_take_precedence(tmp_path, monkeypatch):
+    monkeypatch.setenv("EBAY_ENVIRONMENT", "Sandbox")
+    monkeypatch.setenv("EBAY_CLIENT_ID", "generic-id")
+    monkeypatch.setenv("EBAY_CLIENT_SECRET", "generic-secret")
+    monkeypatch.setenv("EBAY_SANDBOX_CLIENT_ID", "sandbox-id")
+    monkeypatch.setenv("EBAY_SANDBOX_CLIENT_SECRET", "sandbox-secret")
+    monkeypatch.setenv("EBAY_PRODUCTION_CLIENT_ID", "production-id")
+    monkeypatch.setenv("EBAY_PRODUCTION_CLIENT_SECRET", "production-secret")
+    settings = load_settings(tmp_path / "absent.env")
+    assert settings.ebay_environment == "sandbox"
+    assert settings.ebay_client_id.get_secret_value() == "sandbox-id"
+    assert settings.ebay_client_secret.get_secret_value() == "sandbox-secret"
+    assert settings.ebay_base_url == "https://api.sandbox.ebay.com"
+
+
+def test_scoped_production_credentials_never_use_sandbox_keys(tmp_path, monkeypatch):
+    monkeypatch.setenv("EBAY_SANDBOX_CLIENT_ID", "sandbox-id")
+    monkeypatch.setenv("EBAY_SANDBOX_CLIENT_SECRET", "sandbox-secret")
+    with pytest.raises(ConfigurationError) as exc:
+        load_settings(tmp_path / "absent.env")
+    assert "EBAY_PRODUCTION_CLIENT_ID" in str(exc.value)
+    monkeypatch.setenv("EBAY_PRODUCTION_CLIENT_ID", "production-id")
+    monkeypatch.setenv("EBAY_PRODUCTION_CLIENT_SECRET", "production-secret")
+    settings = load_settings(tmp_path / "absent.env")
+    assert settings.ebay_client_id.get_secret_value() == "production-id"
+    assert settings.ebay_base_url == "https://api.ebay.com"
+
+
+def test_partial_scoped_credentials_are_not_mixed_with_generic(tmp_path, monkeypatch):
+    monkeypatch.setenv("EBAY_ENVIRONMENT", "sandbox")
+    monkeypatch.setenv("EBAY_CLIENT_ID", "generic-id")
+    monkeypatch.setenv("EBAY_CLIENT_SECRET", "generic-secret")
+    monkeypatch.setenv("EBAY_SANDBOX_CLIENT_ID", "sandbox-id")
+    with pytest.raises(ConfigurationError) as exc:
+        load_settings(tmp_path / "absent.env")
+    assert "sandbox-id" not in str(exc.value)
+    assert "EBAY_SANDBOX_CLIENT_SECRET" in str(exc.value)

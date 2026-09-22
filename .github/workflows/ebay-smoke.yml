@@ -1,0 +1,62 @@
+name: eBay smoke test
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/ebay-smoke.yml"
+      - "scripts/validate_live_ebay.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ebay-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sandbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      EBAY_ENVIRONMENT: sandbox
+      EBAY_SANDBOX_CLIENT_ID: ${{ secrets.EBAY_SANDBOX_CLIENT_ID }}
+      EBAY_SANDBOX_CLIENT_SECRET: ${{ secrets.EBAY_SANDBOX_CLIENT_SECRET }}
+      FINDER_DATABASE_URL: sqlite:///finder-ebay-sandbox-smoke.db
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Finder
+        run: python -m pip install -e '.[dev]'
+
+      - name: Run offline tests
+        run: |
+          python -m pytest -q
+          ruff check src tests scripts
+          ruff format --check src tests scripts
+
+      - name: Verify Sandbox secrets are configured
+        shell: bash
+        run: |
+          missing=0
+          for name in EBAY_SANDBOX_CLIENT_ID EBAY_SANDBOX_CLIENT_SECRET; do
+            if [[ -z "${!name}" ]]; then
+              echo "${name} repository secret is not configured."
+              missing=1
+            fi
+          done
+          exit "${missing}"
+
+      - name: Run live eBay Sandbox validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/validate_live_ebay.py

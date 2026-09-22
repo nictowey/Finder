@@ -17,3 +17,19 @@ max_pages = 2
 fetch_details = true
 # Optional eBay aspect filter. Validate names/values against live category taxonomy.
 # aspect_filter = "categoryId:176985,Genre:{Rap & Hip-Hop}"
+
+[[monitors]]
+id = "ebay-api-smoke"
+name = "eBay Browse API smoke test"
+marketplace = "ebay"
+query = "vinyl"
+description = "Bounded connectivity and normalization check used by scripts/validate_live_ebay.py; not a discovery monitor."
+
+[monitors.source_options]
+marketplace_id = "EBAY_US"
+# No category filter: Sandbox inventory is sparse and its category coverage is not guaranteed.
+buying_options = ["FIXED_PRICE", "AUCTION"]
+sort = "newlyListed"
+page_size = 10
+max_pages = 1
+fetch_details = true

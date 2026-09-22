@@ -151,6 +151,14 @@ class EbayClient:
         self._expires_at = self.clock() + max(0, expiry - 60)
         return token
 
+    def authenticate(self) -> float:
+        """Obtain (or reuse) an application token; return seconds until planned renewal.
+
+        The token itself is never returned, so callers cannot log it by accident.
+        """
+        self._access_token()
+        return max(0.0, self._expires_at - self.clock())
+
     def get(self, path: str, *, headers: dict[str, str], params: dict | None = None) -> dict:
         # Paths are constructed internally; never follow provider-supplied pagination/item URLs.
         for refresh in range(2):

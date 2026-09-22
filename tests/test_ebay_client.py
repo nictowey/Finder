@@ -170,3 +170,22 @@ def test_json_logs_do_not_contain_credentials(settings, capsys):
     assert "test-secret" not in output
     assert "test-client" not in output
     assert json.loads(output)["event"] == "ebay_request_retry"
+
+
+def test_authenticate_returns_lifetime_not_token(settings):
+    now = [100.0]
+    token_calls = []
+
+    def handler(request):
+        token_calls.append(request.url.path)
+        return httpx.Response(200, json={"access_token": "token-value", "expires_in": 7200})
+
+    with EbayClient(
+        settings, transport=httpx.MockTransport(handler), clock=lambda: now[0]
+    ) as client:
+        lifetime = client.authenticate()
+        assert lifetime == 7140
+        now[0] += 40
+        assert client.authenticate() == 7100
+    assert token_calls == ["/identity/v1/oauth2/token"]
+    assert "token-value" not in repr(lifetime)
