@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -16,6 +17,11 @@ def isolate_provider_environment(monkeypatch):
     for key in list(os.environ):
         if key.startswith(("EBAY_", "FINDER_", "DISCOGS_")):
             monkeypatch.delenv(key)
+
+    def deny_network(*args, **kwargs):
+        raise AssertionError("Offline tests must not open network connections")
+
+    monkeypatch.setattr(socket.socket, "connect", deny_network)
 
 
 @pytest.fixture

@@ -2,15 +2,13 @@
 
 Run with ``EBAY_ENVIRONMENT=sandbox`` (or ``production``) and the matching scoped credentials,
 for example ``EBAY_SANDBOX_CLIENT_ID``/``EBAY_SANDBOX_CLIENT_SECRET``. The search comes from the
-``ebay-api-smoke`` monitor in ``config/monitors.toml`` unless ``FINDER_EBAY_SMOKE_MONITOR`` names
-another monitor.
+``ebay-api-smoke`` monitor in ``config/monitors.toml``.
 
 Output is aggregate and non-identifying because this repository's Actions logs are public.
 Exit codes: 0 passed, 1 a validation stage failed.
 """
 
 import json
-import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -25,8 +23,6 @@ from finder.errors import FinderError
 from finder.logging import configure_logging
 from finder.persistence import SqlAlchemyRepository
 from finder.service import run_scan
-
-DEFAULT_MONITOR = "ebay-api-smoke"
 
 
 class RecordingAdapter:
@@ -59,8 +55,7 @@ def _finish(report: dict[str, Any], stage: str | None = None, error: str | None 
 def main(env_file: Path = Path(".env")) -> int:
     report: dict[str, Any] = {}
     try:
-        monitor_id = os.environ.get("FINDER_EBAY_SMOKE_MONITOR", DEFAULT_MONITOR)
-        monitor = load_monitor(Path("config/monitors.toml"), monitor_id)
+        monitor = load_monitor(Path("config/monitors.toml"), "ebay-api-smoke")
         settings = load_settings(env_file)
     except FinderError as exc:
         return _finish(report, "configuration", str(exc))
@@ -73,7 +68,13 @@ def main(env_file: Path = Path(".env")) -> int:
         credentials_loaded=True,
     )
 
-    repository = SqlAlchemyRepository.from_url(settings.database_url.get_secret_value())
+    database_url = settings.database_url.get_secret_value()
+    if database_url == "sqlite:///finder.db":
+        database_url = "sqlite:///:memory:"
+    try:
+        repository = SqlAlchemyRepository.from_url(database_url)
+    except FinderError as exc:
+        return _finish(report, "persistence", str(exc))
     try:
         with EbayClient(settings) as client:
             # Step 2: client-credentials OAuth application token.
@@ -85,7 +86,10 @@ def main(env_file: Path = Path(".env")) -> int:
 
             # Step 3: bounded Browse search through the production scan path.
             adapter = RecordingAdapter(EbayAdapter(client))
-            summary = run_scan(monitor, adapter, repository)
+            try:
+                summary = run_scan(monitor, adapter, repository)
+            except FinderError as exc:
+                return _finish(report, "browse", str(exc))
         report["browse"] = {
             "status": summary.status,
             "fetched": summary.fetched,

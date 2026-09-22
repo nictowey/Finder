@@ -28,8 +28,10 @@ def test_default_monitor():
 
 def test_env_file_and_environment_precedence(tmp_path, monkeypatch):
     env = tmp_path / ".env"
-    env.write_text("EBAY_CLIENT_ID=file-id\nEBAY_CLIENT_SECRET=secret\nEBAY_ENVIRONMENT=sandbox\n")
-    monkeypatch.setenv("EBAY_CLIENT_ID", "environment-id")
+    env.write_text(
+        "EBAY_SANDBOX_CLIENT_ID=file-id\nEBAY_SANDBOX_CLIENT_SECRET=secret\nEBAY_ENVIRONMENT=sandbox\n"
+    )
+    monkeypatch.setenv("EBAY_SANDBOX_CLIENT_ID", "environment-id")
     settings = load_settings(env)
     assert settings.ebay_client_id.get_secret_value() == "environment-id"
     assert settings.ebay_base_url == "https://api.sandbox.ebay.com"
@@ -47,7 +49,7 @@ def test_env_file_and_environment_precedence(tmp_path, monkeypatch):
 )
 def test_invalid_environment(tmp_path, extra):
     env = tmp_path / ".env"
-    base = "EBAY_CLIENT_ID=id\nEBAY_CLIENT_SECRET=secret\n" if extra else ""
+    base = "EBAY_PRODUCTION_CLIENT_ID=id\nEBAY_PRODUCTION_CLIENT_SECRET=secret\n" if extra else ""
     env.write_text(base + extra)
     with pytest.raises(ConfigurationError):
         load_settings(env)
@@ -114,7 +116,7 @@ def test_discogs_token_is_required(tmp_path):
         load_discogs_settings(env)
 
 
-def test_scoped_sandbox_credentials_take_precedence(tmp_path, monkeypatch):
+def test_scoped_sandbox_credentials_are_selected(tmp_path, monkeypatch):
     monkeypatch.setenv("EBAY_ENVIRONMENT", "Sandbox")
     monkeypatch.setenv("EBAY_CLIENT_ID", "generic-id")
     monkeypatch.setenv("EBAY_CLIENT_SECRET", "generic-secret")
@@ -151,3 +153,14 @@ def test_partial_scoped_credentials_are_not_mixed_with_generic(tmp_path, monkeyp
         load_settings(tmp_path / "absent.env")
     assert "sandbox-id" not in str(exc.value)
     assert "EBAY_SANDBOX_CLIENT_SECRET" in str(exc.value)
+
+
+@pytest.mark.parametrize("environment", ["sandbox", "production"])
+def test_generic_credentials_cannot_cross_environment_boundary(tmp_path, monkeypatch, environment):
+    monkeypatch.setenv("EBAY_ENVIRONMENT", environment)
+    monkeypatch.setenv("EBAY_CLIENT_ID", "legacy-id")
+    monkeypatch.setenv("EBAY_CLIENT_SECRET", "legacy-secret")
+    with pytest.raises(ConfigurationError) as exc:
+        load_settings(tmp_path / "absent.env")
+    assert f"EBAY_{environment.upper()}_CLIENT_ID" in str(exc.value)
+    assert "legacy-secret" not in str(exc.value)

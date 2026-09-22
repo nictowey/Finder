@@ -50,22 +50,23 @@ Read it before proposing or implementing a new phase.
 
 ### Verified baseline
 
-- Latest verified implementation baseline: commit `51c6a8f`
-- Offline suite: 107 tests passing
+- Latest verified implementation baseline: current `main` after required checks
+- Offline suite: 123 tests passing
 - Ruff lint and formatting checks passing
 - Live Discogs validation passing through GitHub Actions
 - Live validation: five releases persisted, one unambiguous strong candidate scored 100,
   and a conflicting barcode was rejected
-- Live eBay Sandbox validation passing through GitHub Actions: application OAuth token issued,
+- Live eBay Sandbox validation passed through GitHub Actions: application OAuth token issued,
   `vinyl` search returned 10 items, 9 normalized and round-tripped through persistence
   (1 skipped as ended). Sandbox inventory is test data, not vinyl market data.
 
 ### Active blocker
 
-Sandbox plumbing is validated, but Production validation requires approved eBay Production
-credentials stored as `EBAY_PRODUCTION_CLIENT_ID`/`EBAY_PRODUCTION_CLIENT_SECRET` repository
-secrets. Until a Production smoke run passes, do not claim that ingestion or matching has been
-validated against real eBay seller data.
+Sandbox plumbing is validated, but Production validation requires eBay Browse Production access
+and credentials stored as `EBAY_PRODUCTION_CLIENT_ID`/`EBAY_PRODUCTION_CLIENT_SECRET` repository
+secrets. The September 22, 2026 Production workflow stopped at the missing-secret check; it did
+not call the Production API. Until a Production smoke run passes, do not claim that ingestion or
+matching has been validated against real eBay seller data.
 
 ## Architecture boundaries
 
@@ -106,6 +107,8 @@ Discogs behavior in the eBay adapter or marketplace behavior in catalog provider
 - Do not use Discogs marketplace, pricing, sales-history, seller, order, or fee data for Finder.
 - Preserve “Data provided by Discogs” attribution wherever Discogs-derived data is displayed.
 - Never log credentials, authorization headers, OAuth responses, or full sensitive payloads.
+- Live smoke logs are public; do not log listing IDs, titles, sellers, URLs, or seller-provided
+  item-specific names there.
 
 ## Secrets
 

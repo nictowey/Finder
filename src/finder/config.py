@@ -42,26 +42,14 @@ class DiscogsSettings(BaseModel):
 
 
 def _ebay_credentials(environment: str) -> tuple[str, str]:
-    """Prefer environment-scoped keysets so Sandbox keys never reach Production.
-
-    ``EBAY_SANDBOX_CLIENT_ID``/``EBAY_PRODUCTION_CLIENT_ID`` (and matching secrets) take
-    precedence over the generic ``EBAY_CLIENT_ID``/``EBAY_CLIENT_SECRET`` pair. A scoped pair
-    must be complete; it is never mixed with the generic pair.
-    """
+    """Require the selected environment's complete keyset."""
     prefix = f"EBAY_{environment.upper()}_"
     scoped = [
         os.environ.get(f"{prefix}{name}", "").strip() for name in ("CLIENT_ID", "CLIENT_SECRET")
     ]
-    if any(scoped):
-        if not all(scoped):
-            raise ConfigurationError(
-                f"Set both {prefix}CLIENT_ID and {prefix}CLIENT_SECRET, or neither."
-            )
-        return scoped[0], scoped[1]
-    return (
-        os.environ.get("EBAY_CLIENT_ID", "").strip(),
-        os.environ.get("EBAY_CLIENT_SECRET", "").strip(),
-    )
+    if any(scoped) and not all(scoped):
+        raise ConfigurationError(f"Set both {prefix}CLIENT_ID and {prefix}CLIENT_SECRET.")
+    return scoped[0], scoped[1]
 
 
 def load_settings(env_file: Path = Path(".env")) -> Settings:
@@ -87,9 +75,7 @@ def load_settings(env_file: Path = Path(".env")) -> Settings:
         x.get_secret_value() for x in (settings.ebay_client_id, settings.ebay_client_secret)
     ):
         scoped = f"EBAY_{environment.upper()}_CLIENT_ID/_CLIENT_SECRET"
-        raise ConfigurationError(
-            f"Set {scoped} (or EBAY_CLIENT_ID and EBAY_CLIENT_SECRET) in .env or environment."
-        )
+        raise ConfigurationError(f"Set {scoped} in .env or environment.")
     if settings.delivery_postal_code and not settings.delivery_country:
         raise ConfigurationError("EBAY_DELIVERY_POSTAL_CODE also requires EBAY_DELIVERY_COUNTRY.")
     try:

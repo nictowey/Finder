@@ -55,7 +55,6 @@ def run_scan(
                     "listing_partial_data",
                     extra={
                         "fields": {
-                            "item_id": observation.listing.marketplace_item_id,
                             "flags": observation.listing.quality_flags,
                         }
                     },

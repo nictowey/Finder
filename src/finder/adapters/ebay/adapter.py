@@ -108,7 +108,6 @@ class EbayAdapter:
                             "ebay_details_unavailable",
                             extra={
                                 "fields": {
-                                    "item_id": item_id,
                                     "error_type": type(exc).__name__,
                                 }
                             },

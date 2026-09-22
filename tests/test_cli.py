@@ -17,8 +17,8 @@ def test_cli_acceptance_scan_twice(tmp_path, monkeypatch, capsys, search_payload
         '[[monitors]]\nid="rap-vinyl"\nname="Rap"\nmarketplace="ebay"\nquery="vinyl"\n'
         "[monitors.source_options]\nfetch_details=false\n"
     )
-    monkeypatch.setenv("EBAY_CLIENT_ID", "fake-client")
-    monkeypatch.setenv("EBAY_CLIENT_SECRET", "fake-secret")
+    monkeypatch.setenv("EBAY_PRODUCTION_CLIENT_ID", "fake-client")
+    monkeypatch.setenv("EBAY_PRODUCTION_CLIENT_SECRET", "fake-secret")
     monkeypatch.setenv("EBAY_ENVIRONMENT", "production")
     monkeypatch.setenv("FINDER_DATABASE_URL", f"sqlite:///{tmp_path / 'cli.db'}")
 
@@ -47,15 +47,22 @@ def test_cli_acceptance_scan_twice(tmp_path, monkeypatch, capsys, search_payload
 
 
 def test_missing_credentials_is_actionable(tmp_path, monkeypatch, capsys):
-    monkeypatch.delenv("EBAY_CLIENT_ID", raising=False)
-    monkeypatch.delenv("EBAY_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("EBAY_PRODUCTION_CLIENT_ID", raising=False)
+    monkeypatch.delenv("EBAY_PRODUCTION_CLIENT_SECRET", raising=False)
     assert cli.main(["scan", "--env-file", str(tmp_path / "absent.env")]) == 2
-    assert "EBAY_CLIENT_ID" in capsys.readouterr().err
+    assert "EBAY_PRODUCTION_CLIENT_ID" in capsys.readouterr().err
 
 
 def test_env_example_contains_no_credentials():
     for line in Path(".env.example").read_text().splitlines():
-        if line.startswith(("EBAY_CLIENT_ID=", "EBAY_CLIENT_SECRET=")):
+        if line.startswith(
+            (
+                "EBAY_SANDBOX_CLIENT_ID=",
+                "EBAY_SANDBOX_CLIENT_SECRET=",
+                "EBAY_PRODUCTION_CLIENT_ID=",
+                "EBAY_PRODUCTION_CLIENT_SECRET=",
+            )
+        ):
             assert line.endswith("=")
     assert "DISCOGS_TOKEN=" in Path(".env.example").read_text().splitlines()
 

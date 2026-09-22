@@ -14,6 +14,9 @@ on:
     paths:
       - ".github/workflows/ebay-smoke.yml"
       - "scripts/validate_live_ebay.py"
+      - "src/finder/**"
+      - "config/monitors.toml"
+      - "pyproject.toml"
 
 permissions:
   contents: read
@@ -32,7 +35,6 @@ jobs:
     # the selected environment's keyset is ever exposed.
     env:
       EBAY_ENVIRONMENT: ${{ inputs.environment || 'sandbox' }}
-      FINDER_DATABASE_URL: sqlite:///finder-ebay-${{ inputs.environment || 'sandbox' }}-smoke.db
 
     steps:
       - name: Check out repository

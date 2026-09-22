@@ -33,12 +33,11 @@ def _present(value: Any) -> bool:
     return value is not None and value != [] and value != {}
 
 
-def summarize_listings(listings: Iterable[Listing], *, top_specifics: int = 15) -> dict[str, Any]:
+def summarize_listings(listings: Iterable[Listing]) -> dict[str, Any]:
     items = list(listings)
     price_kinds: Counter[str] = Counter()
     currencies: set[str] = set()
     flags: Counter[str] = Counter()
-    specifics: Counter[str] = Counter()
     environments: Counter[str] = Counter()
     coverage = dict.fromkeys(COVERAGE_FIELDS, 0)
     for listing in items:
@@ -46,7 +45,6 @@ def summarize_listings(listings: Iterable[Listing], *, top_specifics: int = 15) 
         if listing.currency:
             currencies.add(listing.currency)
         flags.update(listing.quality_flags)
-        specifics.update(listing.item_specifics.keys())
         environments[str(listing.source_metadata.get("environment"))] += 1
         for name in COVERAGE_FIELDS:
             coverage[name] += _present(getattr(listing, name))
@@ -57,7 +55,6 @@ def summarize_listings(listings: Iterable[Listing], *, top_specifics: int = 15) 
         "currencies": sorted(currencies),
         "field_coverage": coverage,
         "quality_flags": dict(sorted(flags.items())),
-        "item_specific_names": [name for name, _ in specifics.most_common(top_specifics)],
     }
 
 

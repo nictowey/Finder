@@ -10,6 +10,7 @@ from finder.adapters.ebay.client import EbayClient
 from finder.adapters.ebay.normalize import normalize_listing
 from finder.config import load_monitor
 from finder.diagnostics import changed_fields, summarize_listings
+from finder.errors import PersistenceError
 
 ROOT = Path(__file__).resolve().parents[1]
 SECRET_VALUES = ("sandbox-id-value", "sandbox-secret-value", "token-value")
@@ -54,7 +55,7 @@ def test_smoke_monitor_is_bounded():
     monitor = load_monitor(ROOT / "config/monitors.toml", "ebay-api-smoke")
     assert monitor.query == "vinyl"
     assert monitor.source_options["max_pages"] == 1
-    assert monitor.source_options["page_size"] <= 50
+    assert monitor.source_options["page_size"] == 10
 
 
 def test_live_validation_passes_and_prints_no_identities(
@@ -75,7 +76,8 @@ def test_live_validation_passes_and_prints_no_identities(
 
     _use_transport(monkeypatch, script, handler)
     assert script.main() == 0
-    output = capsys.readouterr().out
+    captured = capsys.readouterr()
+    output = captured.out
     report = json.loads(output)
     assert seen_hosts == {"api.sandbox.ebay.com"}
     assert report["status"] == "passed"
@@ -85,7 +87,7 @@ def test_live_validation_passes_and_prints_no_identities(
     assert report["browse"]["skip_reasons"] == {"item_unavailable": 1}
     assert report["persistence"] == {"missing": 0, "fields_changed_on_reload": []}
     for forbidden in (*SECRET_VALUES, detail_payload["itemId"], detail_payload["title"]):
-        assert forbidden not in output
+        assert forbidden not in output + captured.err
 
 
 def test_live_validation_reports_oauth_failure(monkeypatch, capsys, script):
@@ -116,6 +118,49 @@ def test_live_validation_reports_missing_credentials(monkeypatch, capsys, script
     report = json.loads(capsys.readouterr().out)
     assert report["failed_stage"] == "configuration"
     assert "EBAY_SANDBOX_CLIENT_SECRET" in report["error"]
+
+
+def test_live_validation_reports_database_failure(monkeypatch, capsys, script):
+    class BrokenRepository:
+        @staticmethod
+        def from_url(url):
+            raise PersistenceError("Cannot initialize database.")
+
+    monkeypatch.setattr(script, "SqlAlchemyRepository", BrokenRepository)
+    assert script.main() == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["failed_stage"] == "persistence"
+
+
+def test_smoke_defaults_to_temporary_database(monkeypatch, capsys, script):
+    monkeypatch.delenv("FINDER_DATABASE_URL")
+    urls = []
+
+    class RecordingRepository:
+        @staticmethod
+        def from_url(url):
+            urls.append(url)
+            raise PersistenceError("Cannot initialize database.")
+
+    monkeypatch.setattr(script, "SqlAlchemyRepository", RecordingRepository)
+    assert script.main() == 1
+    assert urls == ["sqlite:///:memory:"]
+    assert json.loads(capsys.readouterr().out)["failed_stage"] == "persistence"
+
+
+def test_detail_failure_logs_do_not_reveal_listing_id(monkeypatch, capsys, script, search_payload):
+    def handler(request):
+        if request.method == "POST":
+            return httpx.Response(200, json={"access_token": "token-value", "expires_in": 7200})
+        if request.url.path.endswith("/item_summary/search"):
+            return httpx.Response(200, json=_future(search_payload))
+        return httpx.Response(400)
+
+    _use_transport(monkeypatch, script, handler)
+    assert script.main() == 0
+    captured = capsys.readouterr()
+    for item in search_payload["itemSummaries"]:
+        assert item["itemId"] not in captured.out + captured.err
 
 
 def test_summary_is_aggregate(search_payload, observed_at):
