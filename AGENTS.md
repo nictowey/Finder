@@ -64,15 +64,14 @@ Read it before proposing or implementing a new phase.
   `vinyl` search returned 10 items, 9 normalized and round-tripped through persistence
   (1 skipped as ended). Sandbox inventory is test data, not vinyl market data.
 
-### Active blocker
+### Production status
 
-The free Neon Production branch and deletion Function are deployed. Its public GET challenge
-and shared PostgreSQL deletion transaction have been checked with synthetic data. eBay accepted
-the Production deletion endpoint, and the September 22, 2026 Production smoke workflow fetched,
-normalized, stored, and read back 10 live listings. The Function still needs the Production
-key pair deployed to Neon, followed by a passing signed eBay test notification. Do not claim
-production deletion handling is validated until that test passes. The smoke workflow validates
-ingestion and persistence, not exact vinyl matching or real seller deletion.
+The free Neon Production branch and deletion Function are deployed with Production credentials.
+eBay accepted the endpoint and sent test notifications; new deletion tombstones appeared in the
+shared PostgreSQL database. The September 22, 2026 Production smoke workflow fetched,
+normalized, stored, and read back 10 live listings. This validates ingestion, persistence, and
+the signed deletion test path. It does not prove exact vinyl matching or deletion of a real
+seller's data. Keep the Production and Sandbox keysets separate.
 
 ## Architecture boundaries
 
