@@ -29,6 +29,8 @@ The current product blocker is permission for a buyer-facing eBay deal signal an
 commercially usable source of sold transactions. Production Browse access by itself does not
 authorize price modeling or prove that an undervalued-listing product is viable. The collector
 watchlist without a fair-value claim can be developed and tested while this is resolved.
+The open provider-use decision and bounded Production audit are documented in
+`docs/decisions/0001-provider-use.md` and `docs/production-audit.md`.
 
 ### Completed
 

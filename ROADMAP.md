@@ -34,6 +34,11 @@ deal today.
 
 **Before building a price-based deal product, resolve these rights questions in writing:**
 
+The proposed buyer flow and open provider questions are recorded in
+[`docs/decisions/0001-provider-use.md`](docs/decisions/0001-provider-use.md). The bounded scan
+measurement procedure and distinct-day log are in
+[`docs/production-audit.md`](docs/production-audit.md).
+
 | Question | Current evidence | Decision needed |
 | --- | --- | --- |
 | Can Finder compare an eBay listing with external sold prices and label it undervalued for a buyer? | eBay's API agreement restricts using eBay content with third-party information to suggest or model prices for items listed on eBay. | Obtain eBay's explicit permission or qualified review of the exact proposed display, alerts, data retention, and business model before implementing or launching deal scoring. |

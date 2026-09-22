@@ -38,6 +38,7 @@ def summarize_listings(listings: Iterable[Listing]) -> dict[str, Any]:
     price_kinds: Counter[str] = Counter()
     currencies: set[str] = set()
     flags: Counter[str] = Counter()
+    cost_readiness: Counter[str] = Counter()
     environments: Counter[str] = Counter()
     coverage = dict.fromkeys(COVERAGE_FIELDS, 0)
     for listing in items:
@@ -45,6 +46,19 @@ def summarize_listings(listings: Iterable[Listing]) -> dict[str, Any]:
         if listing.currency:
             currencies.add(listing.currency)
         flags.update(listing.quality_flags)
+        if listing.price_kind == "current_bid":
+            cost_readiness["auction_current_bid"] += 1
+        elif listing.price_kind == "fixed_price":
+            if listing.total_acquisition_cost is None:
+                cost_readiness["fixed_price_delivered_subtotal_unknown"] += 1
+            else:
+                cost_readiness["fixed_price_delivered_subtotal_known"] += 1
+        else:
+            cost_readiness["price_kind_unknown"] += 1
+        if listing.shipping_cost is None:
+            cost_readiness["shipping_unknown"] += 1
+        if listing.condition is None:
+            cost_readiness["condition_unknown"] += 1
         environments[str(listing.source_metadata.get("environment"))] += 1
         for name in COVERAGE_FIELDS:
             coverage[name] += _present(getattr(listing, name))
@@ -55,6 +69,7 @@ def summarize_listings(listings: Iterable[Listing]) -> dict[str, Any]:
         "currencies": sorted(currencies),
         "field_coverage": coverage,
         "quality_flags": dict(sorted(flags.items())),
+        "cost_readiness": dict(sorted(cost_readiness.items())),
     }
 
 

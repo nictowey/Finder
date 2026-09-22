@@ -133,9 +133,16 @@ def test_live_validation_passes_and_prints_no_identities(
     assert seen_hosts == {"api.sandbox.ebay.com"}
     assert report["status"] == "passed"
     assert report["environment"] == "sandbox"
+    assert report["destination_context"] in {"none", "country_only", "country_and_postal"}
     assert report["oauth"]["status"] == "ok"
     assert report["normalization"]["listings"] == 1
     assert report["browse"]["skip_reasons"] == {"item_unavailable": 1}
+    assert report["browse"]["browse_requests"] == 3
+    assert report["browse"]["browse_retries"] == 0
+    assert report["browse"]["new"] == 1
+    assert report["browse"]["total_stored"] == 1
+    assert report["browse"]["unprocessed"] == 0
+    assert report["scan_date_utc"]
     assert report["persistence"] == {
         "missing": 0,
         "fields_changed_on_reload": [],
@@ -228,10 +235,48 @@ def test_summary_is_aggregate(search_payload, observed_at):
     assert summary["listings"] == 2
     assert summary["environments"] == {"sandbox": 2}
     assert summary["field_coverage"]["current_price"] == 2
+    assert sum(summary["price_kinds"].values()) == 2
+    assert (
+        sum(
+            summary["cost_readiness"].get(key, 0)
+            for key in (
+                "auction_current_bid",
+                "fixed_price_delivered_subtotal_known",
+                "fixed_price_delivered_subtotal_unknown",
+                "price_kind_unknown",
+            )
+        )
+        == 2
+    )
+    assert summary["cost_readiness"]["shipping_unknown"] == sum(
+        listing.shipping_cost is None for listing in listings
+    )
     rendered = json.dumps(summary, default=str)
     for listing in listings:
         assert listing.marketplace_item_id not in rendered
         assert listing.title not in rendered
+
+
+def test_cost_readiness_does_not_treat_unknown_shipping_as_delivered_cost(
+    search_payload, observed_at
+):
+    base = normalize_listing(search_payload["itemSummaries"][0], observed_at)
+    with_shipping = base.model_copy(
+        update={
+            "price_kind": "fixed_price",
+            "shipping_cost": base.current_price,
+            "shipping_currency": base.currency,
+        }
+    )
+    without_shipping = with_shipping.model_copy(update={"shipping_cost": None})
+    auction = with_shipping.model_copy(update={"price_kind": "current_bid"})
+    summary = summarize_listings([with_shipping, without_shipping, auction])
+    assert summary["cost_readiness"] == {
+        "auction_current_bid": 1,
+        "fixed_price_delivered_subtotal_known": 1,
+        "fixed_price_delivered_subtotal_unknown": 1,
+        "shipping_unknown": 1,
+    }
 
 
 def test_changed_fields_names_only(search_payload, observed_at):

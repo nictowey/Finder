@@ -104,6 +104,14 @@ The September 22, 2026 manual Production run passed: eBay returned 10 live items
 
 The manual **Production bounded scan** workflow uses the separate `rap-vinyl-validation` monitor: the main rap-vinyl query and category with a one-page, ten-item cap. It stores normalized listings in the same Neon Production database used by the deletion endpoint, using `FINDER_DATABASE_URL` from the GitHub `production` environment. The workflow prints aggregate field coverage and persistence results, never item identities or credentials. It is deliberately unscheduled while the Phase 1 repeat-scan and identity-quality gates in `ROADMAP.md` remain open. The broader `rap-vinyl` monitor still caps at two pages of 50 and should not be automated until bounded scans are reliable.
 
+The bounded report now includes UTC date, destination-context completeness (never the postal
+code), new versus re-observed identities, suppressed/invalid/unprocessed counts, request and
+retry totals, and separate cost-readiness counts for fixed-price items, auctions, and unknown
+shipping. Its `total_stored` count includes older snapshots; it is not a live-inventory count.
+The sample is the newest ten returned by this broad query, so its field rates do not establish
+coverage of a collector's target pressing. Record separate-day runs using
+[`docs/production-audit.md`](docs/production-audit.md); public logs contain aggregate counts only.
+
 The first bounded Production scan and a repeat passed on September 22, 2026. Both fetched ten listings; the repeat updated the same ten identities, and the database retained all 30 observations from three live scans (including one whose validation check initially failed). No duplicate listing identities appeared. This sample had complete price, shipping, seller, condition, and item-specific coverage, but no listing end times. Broader response shapes and long-term stability remain unverified.
 
 ## Discogs catalog credentials and scope
