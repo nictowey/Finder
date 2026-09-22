@@ -109,6 +109,22 @@ def load_discogs_settings(env_file: Path = Path(".env")) -> DiscogsSettings:
     return settings
 
 
+def load_database_url(env_file: Path = Path(".env")) -> str:
+    """Read stored listings without requiring marketplace or catalog credentials."""
+    load_dotenv(env_file, override=False)
+    url = os.environ.get("FINDER_DATABASE_URL", "sqlite:///finder.db")
+    if (
+        os.environ.get("EBAY_ENVIRONMENT", "").strip().lower() == "sandbox"
+        and url == "sqlite:///finder.db"
+    ):
+        url = "sqlite:///finder-sandbox.db"
+    try:
+        make_url(url)
+    except ArgumentError:
+        raise ConfigurationError("FINDER_DATABASE_URL must be a SQLAlchemy database URL.") from None
+    return url
+
+
 def load_monitor(path: Path, monitor_id: str) -> Monitor:
     try:
         with path.open("rb") as file:

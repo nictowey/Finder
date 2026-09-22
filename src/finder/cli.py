@@ -10,10 +10,10 @@ from finder.adapters.discogs.adapter import DiscogsCatalogProvider
 from finder.adapters.discogs.client import DiscogsClient
 from finder.adapters.ebay.adapter import EbayAdapter
 from finder.adapters.ebay.client import EbayClient
-from finder.config import load_discogs_settings, load_monitor, load_settings
+from finder.config import load_database_url, load_discogs_settings, load_monitor, load_settings
 from finder.errors import ConfigurationError, FinderError
 from finder.logging import configure_logging
-from finder.matching import score_variant
+from finder.matching import decide_match, rank_variants
 from finder.persistence import SqlAlchemyRepository
 from finder.service import run_scan
 
@@ -43,6 +43,11 @@ def _parser() -> argparse.ArgumentParser:
     match.add_argument("--limit", type=int, default=10, choices=range(1, 26))
     match.add_argument("--env-file", type=Path, default=Path(".env"))
     match.add_argument("--json", action="store_true", help="Print machine-readable results")
+    stored = commands.add_parser("listings", help="Browse recent stored listings for review")
+    stored.add_argument("--marketplace", default="ebay")
+    stored.add_argument("--limit", type=int, default=20, choices=range(1, 101))
+    stored.add_argument("--env-file", type=Path, default=Path(".env"))
+    stored.add_argument("--json", action="store_true", help="Print machine-readable results")
     return parser
 
 
@@ -95,6 +100,40 @@ def _catalog_components(args: argparse.Namespace):
     configure_logging(settings.log_level)
     repository = SqlAlchemyRepository.from_url(settings.database_url.get_secret_value())
     return settings, repository
+
+
+def _listings(args: argparse.Namespace) -> int:
+    repository = SqlAlchemyRepository.from_url(load_database_url(args.env_file))
+    try:
+        listings = repository.list_recent(args.marketplace, args.limit)
+    finally:
+        repository.close()
+    rows = [
+        {
+            "marketplace": listing.marketplace,
+            "item_id": listing.marketplace_item_id,
+            "title": listing.title,
+            "price": str(listing.current_price) if listing.current_price is not None else None,
+            "shipping": str(listing.shipping_cost) if listing.shipping_cost is not None else None,
+            "delivered_subtotal": (
+                str(listing.total_acquisition_cost)
+                if listing.total_acquisition_cost is not None
+                else None
+            ),
+            "currency": listing.currency,
+            "quality_flags": listing.quality_flags,
+            "last_observed_at": listing.last_observed_at.isoformat(),
+        }
+        for listing in listings
+    ]
+    if args.json:
+        print(json.dumps({"listings": rows}))
+    else:
+        for row in rows:
+            cost = row["delivered_subtotal"] or "unknown delivered subtotal"
+            print(f"{row['item_id']} | {row['title']} | {cost} {row['currency'] or ''}")
+        print(f"Stored {args.marketplace} listings shown: {len(rows)}")
+    return 0
 
 
 def _catalog_search(args: argparse.Namespace) -> int:
@@ -158,12 +197,11 @@ def _match(args: argparse.Namespace) -> int:
         with DiscogsClient(settings) as client:
             provider = DiscogsCatalogProvider(client)
             variants = provider.search_releases(listing.title, limit=args.limit)
-            candidates = []
+            candidates = rank_variants(listing, variants)
             for variant in variants:
                 repository.upsert_product(provider.product_for(variant))
                 repository.upsert_variant(variant)
-                candidates.append(score_variant(listing, variant))
-            candidates.sort(key=lambda candidate: candidate.score, reverse=True)
+            decision = decide_match(listing, variants)
             repository.replace_candidates(
                 listing.marketplace,
                 listing.marketplace_item_id,
@@ -178,6 +216,7 @@ def _match(args: argparse.Namespace) -> int:
         "listing_title": listing.title,
         "attribution": "Candidate catalog data provided by Discogs",
         "attribution_url": "https://www.discogs.com",
+        "decision": decision.model_dump(mode="json"),
         "candidates": [
             {
                 **candidate.model_dump(mode="json"),
@@ -195,6 +234,11 @@ def _match(args: argparse.Namespace) -> int:
     else:
         print("Candidate catalog data provided by Discogs: https://www.discogs.com")
         print(f"Listing: {listing.title}")
+        print(f"Decision: {decision.outcome} ({decision.policy_version})")
+        if decision.conflicts:
+            print(f"Conflicting fields: {', '.join(decision.conflicts)}")
+        if decision.missing_evidence:
+            print(f"Missing evidence: {', '.join(decision.missing_evidence)}")
         print(f"Candidates evaluated: {len(candidates)}")
         for candidate in candidates:
             variant = next(
@@ -215,6 +259,8 @@ def main(argv: list[str] | None = None) -> int:
             return _scan(args)
         if args.command == "catalog-search":
             return _catalog_search(args)
+        if args.command == "listings":
+            return _listings(args)
         return _match(args)
     except FinderError as exc:
         print(f"Finder: {exc}", file=sys.stderr)
