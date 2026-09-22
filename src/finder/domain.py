@@ -153,6 +153,7 @@ class EvidenceRecord(BaseModel):
     field: str
     value: str
     source: Literal["marketplace_listing", "catalog_release"]
+    source_id: str
     method: Literal["seller_structured", "seller_title", "catalog_structured"]
     reliability_class: Literal["seller_claim", "catalog_metadata"]
     observed_at: AwareDatetime
@@ -171,6 +172,8 @@ class MatchDecision(BaseModel):
         "insufficient_data",
     ]
     policy_version: str
+    marketplace: str
+    marketplace_item_id: str
     catalog_source: str
     family_ids: list[str] = Field(default_factory=list)
     candidate_ids: list[str] = Field(default_factory=list)

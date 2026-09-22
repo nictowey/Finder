@@ -179,6 +179,9 @@ evidence. The `exact_variant` outcome is reserved until the 99% precision gate i
 real labeled listings; a high score or one returned Discogs result does not satisfy that gate.
 The decision currently requires a structured artist and an album title contained in the listing
 for family recognition, then an unconflicted barcode or catalog number for a probable pressing.
+Explicit CD or other non-vinyl format claims in the title or item specifics reject the listing,
+and a catalog result must name
+Vinyl as its format. Each evidence value includes the listing or release ID that supplied it.
 The result covers only the bounded Discogs search, so unreturned pressings may exist. The JSON
 output contains seller listing values and is intended for private local review, not public logs.
 

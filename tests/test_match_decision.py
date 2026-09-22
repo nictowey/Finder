@@ -26,9 +26,15 @@ def test_single_identifier_candidate_is_probable_not_exact(
     decision = decide_match(listing, [variant])
     assert decision.outcome == "probable_variant"
     assert decision.policy_version == MATCH_POLICY_VERSION
+    assert (decision.marketplace, decision.marketplace_item_id) == (
+        listing.marketplace,
+        listing.marketplace_item_id,
+    )
     assert decision.candidate_ids == [variant.catalog_variant_id]
     assert any(
-        item.field == "barcode" and item.source == "marketplace_listing"
+        item.field == "barcode"
+        and item.source == "marketplace_listing"
+        and item.source_id == listing.marketplace_item_id
         for item in decision.evidence
     )
     assert MatchDecision.model_validate_json(decision.model_dump_json()) == decision
@@ -42,6 +48,41 @@ def test_shared_identifier_stays_ambiguous(search_payload, discogs_release, obse
     assert decision.outcome == "ambiguous"
     assert set(decision.candidate_ids) == {"111", "222"}
     assert decision.family_ids == [first.catalog_product_id]
+    assert {item.source_id for item in decision.evidence if item.source == "catalog_release"} == {
+        "111",
+        "222",
+    }
+
+
+def test_cd_listing_cannot_become_probable_vinyl(search_payload, discogs_release, observed_at):
+    listing = _listing(
+        search_payload, observed_at, Artist="Example Artist", UPC="0123456789012", Format="CD"
+    )
+    decision = decide_match(listing, [_variant(discogs_release, observed_at)])
+    assert decision.outcome == "rejected"
+    assert "non_vinyl_listing" in decision.conflicts
+
+
+def test_cd_in_seller_title_blocks_pressing_even_without_format_specific(
+    search_payload, discogs_release, observed_at
+):
+    listing = _listing(
+        search_payload, observed_at, Artist="Example Artist", UPC="0123456789012"
+    ).model_copy(update={"title": "Example Artist Example Album CD"})
+    decision = decide_match(listing, [_variant(discogs_release, observed_at)])
+    assert decision.outcome == "rejected"
+    assert "non_vinyl_listing" in decision.conflicts
+
+
+def test_non_vinyl_catalog_release_cannot_become_probable(
+    search_payload, discogs_release, observed_at
+):
+    listing = _listing(search_payload, observed_at, Artist="Example Artist", UPC="0123456789012")
+    raw = dict(discogs_release)
+    raw["formats"] = [{"name": "CD", "qty": "1", "descriptions": ["Album"]}]
+    decision = decide_match(listing, [_variant(raw, observed_at)])
+    assert decision.outcome == "insufficient_data"
+    assert "vinyl_catalog_release" in decision.missing_evidence
 
 
 def test_color_conflict_blocks_pressing_decision(search_payload, discogs_release, observed_at):

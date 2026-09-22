@@ -174,7 +174,7 @@ A material change is complete only when:
 ## Near-term priorities
 
 1. Collect representative sanitized Production eBay responses and manually label real listings.
-2. Measure `vinyl-decision-v1` on a development and held-out evaluation set; report precision,
+2. Measure `vinyl-decision-v2` on a development and held-out evaluation set; report precision,
    abstention, and catalog candidate-retrieval failures separately.
 3. Expand bounded Discogs candidate retrieval, including variants sharing identifiers.
 4. Complete seven bounded Production scans and field-quality measurements.
