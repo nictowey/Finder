@@ -98,12 +98,14 @@ finder scan-target --release 1234 --mode refresh --show-listings --json
 It accepts releases cataloged as Vinyl regardless of genre, removes Discogs artist-name
 disambiguation suffixes, and normally searches eBay for artist plus album title in the vinyl
 category. It adds a second broad spelling when dollar signs or apostrophes differ, such as
-`A$AP` and `ASAP`. Compilation releases credited to Various search by title alone. For alternative names
-or unusually long titles, replace the generated query with
+`A$AP` and `ASAP`. Compilation releases credited to Various search by title alone. When
+the catalog release has multiple named disc colors, the plan adds a third color-specific
+query while keeping the broader searches. For alternative names or unusually long titles,
+replace the generated queries with
 one to three bounded searches using repeated `--query` flags on both plan and scan; inspect the
 plan before scanning. `initial` samples eBay best match; `refresh` samples newest listings.
 Each query sees at most ten results and may miss relevant active inventory. Search terms do not
-include a pressing attribute by default, because sellers often omit it.
+require a pressing attribute in every query, because sellers often omit it.
 
 `--show-listings` adds the item IDs found in **this run** and their current stored titles,
 quoted delivered subtotals when available, and quality flags. The scan itself does not verify

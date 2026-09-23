@@ -4,8 +4,10 @@ import re
 from urllib.parse import urlsplit
 
 from finder.adapters.ebay.target_search import EbaySearchTarget
+from finder.categories.vinyl import from_variant
 from finder.domain import Variant
 from finder.errors import ConfigurationError
+from finder.matching import _palette
 
 
 def parse_discogs_release_id(value: str) -> int:
@@ -46,6 +48,16 @@ def target_from_release(variant: Variant, *, queries: list[str] | None = None) -
         # original broad search too; neither query requires pressing details.
         alias = default_query.replace("$", "S").replace("’", "").replace("'", "")
         chosen = list(dict.fromkeys([default_query, alias]))
+        catalog_colors = from_variant(variant).colors
+        color_text = " ".join(catalog_colors).casefold()
+        colors = sorted(
+            _palette(catalog_colors),
+            key=lambda color: color_text.find(color) if color in color_text else len(color_text),
+        )
+        if len(colors) > 1:
+            color_query = f"{alias} {' '.join(colors)}"
+            if len(color_query) <= 100 and color_query not in chosen:
+                chosen.append(color_query)
     else:
         chosen = queries
     if not 1 <= len(chosen) <= 3 or any(not q.strip() or len(q.strip()) > 100 for q in chosen):

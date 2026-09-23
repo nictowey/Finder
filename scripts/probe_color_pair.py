@@ -35,13 +35,7 @@ def _both_colors(values: list[str]) -> bool:
 
 
 def _queries(variant: Variant) -> list[str]:
-    artist = re.sub(r"\s+\(\d+\)$", "", variant.artists[0]) if variant.artists else ""
-    primary = f"{artist} {variant.title}".strip()
-    alias = primary.replace("$", "S").replace("'", "")
-    queries = list(dict.fromkeys([primary, alias]))
-    if _both_colors(from_variant(variant).colors):
-        queries.append(f"{alias} pink green")
-    return queries
+    return target_from_release(variant).queries
 
 
 def _claims(listing: Listing) -> dict[str, bool]:
