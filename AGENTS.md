@@ -40,8 +40,8 @@ manifest and a rate-limited, owner-only test notification support device activat
 notification logs report push-service acceptance, not device receipt.
 
 Read `docs/pilot-acceptance.md` for the next evidence and usability gates. Current checks:
-292 Python and 29 Node tests, Ruff and TypeScript pass locally. Production upgrade, synthetic
-backup/restore rehearsal, and actual device display must be verified separately. These changes
+292 Python and 29 Node tests, Ruff and TypeScript pass locally. Production deployment #13 passed the additive upgrade, isolated synthetic backup/restore
+rehearsal, and private-access checks. Actual device display remains unverified. These changes
 add no paid services and do not raise the three-watch cap.
 
 
@@ -144,7 +144,7 @@ The open provider-use decision and bounded Production audit are documented in
 ### Verified baseline
 
 - Latest verified implementation baseline: current `main` after required checks
-- Offline suite: 285 Python and 19 Node tests passing; rerun required checks before commit
+- Offline suite: 292 Python and 29 Node tests passing; rerun required checks before commit
 - Ruff lint and formatting checks passing
 - Live Discogs validation passing through GitHub Actions
 - Multi-query Discogs smoke passed on the `discogs-candidate-retrieval-2026` branch; this uses
@@ -181,6 +181,15 @@ The open provider-use decision and bounded Production audit are documented in
   a due-time `workflow_dispatch` at 20:05:03 UTC subsequently completed three watches with
   zero failures or quota pauses and ten new inbox rows. The signed-in dashboard showed fresh
   last-success times; sustained scheduler reliability remains unmeasured.
+
+- [Production deployment #13](https://github.com/nictowey/Finder/actions/runs/35920314329)
+  deployed PR #59 at `16c82ba8d0da2e7bcc2ec10bea2e43b0bb71b370`. All required checks,
+  isolated PostgreSQL migration/deletion and synthetic restore/upgrade checks, and anonymous
+  access/CSRF checks passed. Production history began at 21:07:25 UTC on September 23.
+  No watches were due during deployment: zero scans attempted, not three successful scans.
+  The signed-in dashboard shows the health/history panel, review-mode settings and zero
+  registered notification devices. The first new correlated unattended dispatch remains
+  pending, as do sustained timing, discovery accuracy, and phone delivery evidence.
 
 ### Production status
 
