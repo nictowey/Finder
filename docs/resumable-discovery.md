@@ -122,7 +122,8 @@ pauses work with visible partial coverage rather than reducing depth or incurrin
 
 Deploy through **Deploy private watchlist** after the normal Python, Node, lint, format, type,
 and isolated PostgreSQL gates. `discovery_slots=1` enables one existing slot; `1,2,3` expands
-only after bounded live validation. `unchanged` preserves the rollout. `off` restores the old
+only after bounded live validation. `unchanged` preserves the rollout. An explicit slot selection makes those unleased watches
+due for one bounded validation chunk without changing revisions or prior successes. `off` restores the old
 scanner for rollback without dropping data. Old and new scanners never run for the same watch
 in one invocation, and both use the shared budget guard. Rolling back code leaves additive
 tables intact. Never invoke destructive pilot-schema rollback on production.

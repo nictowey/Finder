@@ -4,13 +4,14 @@ import json
 import logging
 import os
 import sys
+from datetime import UTC, datetime
 
 from sqlalchemy import insert, select, update
 from sqlalchemy.engine import make_url
 
 from finder.config import load_discogs_settings, load_settings
 from finder.persistence import SqlAlchemyRepository
-from finder.watch_store import SavedWatch, WatchStore, migrate
+from finder.watch_store import SavedWatch, WatchStore, migrate, watches
 from finder.watch_store import settings as private_settings
 from finder.watch_worker import run_due_watches
 
@@ -45,6 +46,18 @@ def main():
                                 key="discovery_rollout", data={"slots": slots}
                             )
                         )
+                # An explicit rollout selection starts a bounded validation chunk without
+                # changing revisions, last success, leases, or any user history.
+                with repo.engine.begin() as conn:
+                    conn.execute(
+                        update(watches)
+                        .where(
+                            watches.c.slot.in_(slots),
+                            watches.c.lease_token.is_(None),
+                            watches.c.enabled.is_(True),
+                        )
+                        .values(next_scan_at=datetime.now(UTC).isoformat())
+                    )
             # Optional secret-backed bootstrap. Never commit real catalog identities.
             if "--seed" in sys.argv:
                 store = WatchStore(repo.engine)
