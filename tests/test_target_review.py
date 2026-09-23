@@ -135,6 +135,66 @@ def test_inverted_artist_alias_must_agree_exactly(
 
 
 @pytest.mark.parametrize(
+    ("artist", "expected"),
+    [
+        ("Larry June, 2 Chainz & The Alchemist", "possible_pressing"),
+        ("Larry June and The Alchemist", "possible_pressing"),
+        ("Larry June / 2 Chainz", "possible_pressing"),
+        ("Larry June, 2 Chainz & Other", "conflicting"),
+        ("Larry June, Alchemist", "conflicting"),
+        ("Larry June,", "possible_pressing"),
+    ],
+)
+def test_exact_collaborator_credit_without_accepting_extra_or_approximate_names(
+    search_payload, discogs_release, observed_at, artist, expected
+):
+    from finder.matching import score_variant
+
+    variant = normalize_release(
+        {
+            **discogs_release,
+            "title": "Life Is Beautiful",
+            "artists": [
+                {"name": "Larry June"},
+                {"name": "2 Chainz"},
+                {"name": "The Alchemist"},
+            ],
+        },
+        observed_at,
+    )
+    listing = _listing(
+        search_payload,
+        observed_at,
+        "Larry June 2 Chainz The Alchemist Life Is Beautiful LP",
+        (("Artist", artist), ("Barcode", "0123456789012")),
+    )
+    review = review_target_listing(listing, variant)
+    assert review.status == expected
+    if expected == "possible_pressing":
+        assert next(
+            item for item in score_variant(listing, variant).evidence if item.field == "artist"
+        ).matched
+    else:
+        assert "artist_conflict" in review.verify
+
+
+def test_contradictory_second_structured_artist_is_not_ignored(
+    search_payload, discogs_release, observed_at
+):
+    variant = normalize_release(
+        {**discogs_release, "artists": [{"name": "Larry June"}, {"name": "2 Chainz"}]},
+        observed_at,
+    )
+    listing = _listing(
+        search_payload,
+        observed_at,
+        "Larry June Example Album LP",
+        (("Artist", "Larry June"), ("Artist", "Other Artist")),
+    )
+    assert review_target_listing(listing, variant).verify == ["artist_conflict"]
+
+
+@pytest.mark.parametrize(
     ("title", "specifics", "expected"),
     [
         ("Dean Blunt Black Metal 2 sealed LP", (), "conflicting"),

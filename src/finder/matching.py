@@ -45,19 +45,28 @@ def _album_title_in_listing(listing_title: str, catalog_title: str) -> bool:
 
 
 def _artist_matches_catalog(listing_artist: str, catalog_artists: list[str]) -> bool:
-    """Accept an exact catalog name or an explicit 'last, first' seller inversion.
+    """Accept exact names, an inversion, or an exact joined collaborator credit.
 
-    Do not reorder unpunctuated names or treat an approximate spelling as proof
-    that a structured seller artist agrees with the selected catalog artist.
+    A joined credit only agrees when every component is an exact catalog artist.
+    Do not treat an approximate spelling or an unlisted collaborator as agreement.
     """
     names = {_normalized(re.sub(r"\s+\(\d+\)$", "", name)) for name in catalog_artists}
     if _normalized(listing_artist) in names:
         return True
     parts = listing_artist.split(",")
-    return (
+    if (
         len(parts) == 2
         and bool(parts[0].strip() and parts[1].strip())
         and _normalized(f"{parts[1]} {parts[0]}") in names
+    ):
+        return True
+    if len(names) < 2:
+        return False
+    # Only explicit separators represent a collaboration. A catalog artist with
+    # internal punctuation was already accepted by the full-name check above.
+    components = re.split(r"\s*(?:,|&|/|\band\b)\s*", listing_artist, flags=re.I)
+    return len({_normalized(part) for part in components}) >= 2 and all(
+        _normalized(part) in names for part in components
     )
 
 

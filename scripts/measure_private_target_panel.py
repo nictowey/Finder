@@ -16,9 +16,11 @@ from finder.adapters.ebay.adapter import EbayAdapter
 from finder.adapters.ebay.client import EbayClient
 from finder.adapters.ebay.target_search import plan_target_search
 from finder.categories.target_review import review_target_with_alternatives
+from finder.categories.vinyl import from_listing
 from finder.categories.vinyl_target import parse_discogs_release_id, target_from_release
 from finder.config import load_discogs_settings, load_settings
 from finder.errors import ConfigurationError, FinderError
+from finder.matching import _artist_matches_catalog
 
 BATCH_SIZE = 4
 PAGE_SIZE = 5
@@ -49,7 +51,12 @@ def parse_private_ids(raw: str) -> list[int]:
 
 
 def probe_batch(
-    ids: list[int], *, batch: int, catalog: DiscogsCatalogProvider, adapter: EbayAdapter
+    ids: list[int],
+    *,
+    batch: int,
+    catalog: DiscogsCatalogProvider,
+    adapter: EbayAdapter,
+    coverage_audit: bool = False,
 ) -> dict:
     """Review up to four exact catalog targets against small, current eBay pages."""
     selected = ids[batch * BATCH_SIZE : (batch + 1) * BATCH_SIZE]
@@ -64,14 +71,17 @@ def probe_batch(
             alternatives = catalog.search_alternatives(variant)
             monitors = plan_target_search(target, mode="initial", page_size=PAGE_SIZE)
             seen: set[str] = set()
+            baseline_observed: set[str] = set()
             counts: Counter[str] = Counter()
             conflicts: Counter[str] = Counter()
+            artist_credit_shapes: Counter[str] = Counter()
             possible_with_catalog_uncertainty = 0
             capped = 0
             for monitor in monitors:
                 for observation in adapter.search(monitor, seen_item_ids=seen):
                     if observation.listing is None:
                         continue
+                    baseline_observed.add(observation.listing.marketplace_item_id)
                     review = review_target_with_alternatives(
                         observation.listing,
                         variant,
@@ -79,6 +89,26 @@ def probe_batch(
                         search_incomplete=alternatives.search_incomplete,
                     )
                     counts[review.status] += 1
+                    if len(variant.artists) > 1:
+                        seller_artists = from_listing(observation.listing).artists
+                        if seller_artists:
+                            exact_single = any(
+                                _artist_matches_catalog(value, [name])
+                                for value in seller_artists
+                                for name in variant.artists
+                            )
+                            joined = any(
+                                _artist_matches_catalog(value, variant.artists)
+                                for value in seller_artists
+                            )
+                            shape = (
+                                "single_catalog_artist"
+                                if exact_single
+                                else "joined_catalog_artists"
+                                if joined
+                                else "unresolved_artist_credit"
+                            )
+                            artist_credit_shapes[shape] += 1
                     if review.status == "conflicting":
                         conflicts.update(
                             reason for reason in review.verify if reason in CONFLICT_REASONS
@@ -88,6 +118,60 @@ def probe_batch(
                     ):
                         possible_with_catalog_uncertainty += 1
                 capped += adapter.stats.limit_reached
+            if coverage_audit:
+                # A deliberately different, still bounded search sample. These are
+                # additional API observations, not an independent market census.
+                broad = monitors[0]
+                audit_monitors = [
+                    broad.model_copy(
+                        update={
+                            "id": f"{broad.id}-audit-newest",
+                            "source_options": {
+                                **broad.source_options,
+                                "sort": "newlyListed",
+                                "offset": PAGE_SIZE,
+                            },
+                        }
+                    )
+                ]
+                if len(variant.artists) > 1:
+                    alternate = f"{variant.artists[1]} {variant.title}".strip()
+                    if len(alternate) <= 100 and alternate.casefold() not in {
+                        query.casefold() for query in target.queries
+                    }:
+                        audit_monitors.append(
+                            broad.model_copy(
+                                update={"id": f"{broad.id}-audit-artist", "query": alternate}
+                            )
+                        )
+                audit_seen: set[str] = set()
+                audit_counts: Counter[str] = Counter()
+                audit_overlap = 0
+                audit_capped = 0
+                for monitor in audit_monitors:
+                    for observation in adapter.search(monitor, seen_item_ids=audit_seen):
+                        if observation.listing is None:
+                            continue
+                        if observation.listing.marketplace_item_id in baseline_observed:
+                            audit_overlap += 1
+                            continue
+                        review = review_target_with_alternatives(
+                            observation.listing,
+                            variant,
+                            alternatives.variants,
+                            search_incomplete=alternatives.search_incomplete,
+                        )
+                        audit_counts[review.status] += 1
+                    audit_capped += adapter.stats.limit_reached
+                row["coverage_audit"] = {
+                    "queries": len(audit_monitors),
+                    "queries_capped": audit_capped,
+                    "overlap_with_initial": audit_overlap,
+                    "additional_sampled": sum(audit_counts.values()),
+                    "additional_review_counts": {
+                        status: audit_counts[status] for status in STATUSES
+                    },
+                }
             row.update(
                 {
                     "queries": len(monitors),
@@ -99,6 +183,7 @@ def probe_batch(
                         for reason in CONFLICT_REASONS
                         if conflicts[reason]
                     },
+                    "multi_artist_credit_shapes": dict(artist_credit_shapes),
                     "possible_with_catalog_uncertainty": possible_with_catalog_uncertainty,
                     "catalog_alternatives_checked": len(alternatives.variants),
                     "catalog_alternative_search_incomplete": alternatives.search_incomplete,
@@ -119,12 +204,16 @@ def probe_batch(
         "scope": "private_catalog_targets_bounded_ebay_us_pages",
         "batch": batch,
         "targets_expected": len(selected),
-        "maximum_browse_requests_without_retries": len(selected) * 3 * (1 + PAGE_SIZE),
+        "maximum_browse_requests_without_retries": len(selected)
+        * (3 + (2 if coverage_audit else 0))
+        * (1 + PAGE_SIZE),
         "results": rows,
         "limitations": (
             "Seller claims are unverified. One initial best-match page of five per query; "
             "up to five catalog alternatives. No independent listing denominator, "
-            "pressing truth labels, sold prices, destination quote, or persisted listings."
+            "pressing truth labels, sold prices, destination quote, or persisted listings. "
+            "Optional alternate-sort/artist sample is same-API incremental coverage only, "
+            "not marketplace-wide recall or a stable snapshot."
         ),
         "attribution": "Data provided by Discogs",
         "attribution_url": "https://www.discogs.com",
@@ -134,6 +223,7 @@ def probe_batch(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Bounded private target evaluation")
     parser.add_argument("--batch", type=int, choices=range(3), required=True)
+    parser.add_argument("--coverage-audit", action="store_true")
     args = parser.parse_args()
     ids = parse_private_ids(os.environ.get("FINDER_EVAL_RELEASE_IDS", ""))
     if args.batch * BATCH_SIZE >= len(ids):
@@ -146,6 +236,7 @@ def main() -> int:
                 batch=args.batch,
                 catalog=DiscogsCatalogProvider(discogs_client),
                 adapter=EbayAdapter(ebay_client),
+                coverage_audit=args.coverage_audit,
             )
             result["browse_requests"] = ebay_client.browse_requests
     print(json.dumps(result, indent=2))

@@ -69,7 +69,7 @@ def review_target_listing(listing: Listing, variant: Variant) -> TargetReview:
         artist not in ("various", "various artists") and f" {artist} " in f" {title} "
         for artist in artist_names
     )
-    artist_in_specifics = any(
+    artist_in_specifics = bool(seller.artists) and all(
         _artist_matches_catalog(value, variant.artists) for value in seller.artists
     )
     artist_conflict = bool(seller.artists and not artist_in_specifics)
