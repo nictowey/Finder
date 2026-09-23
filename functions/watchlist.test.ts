@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHandler, validateWatch, validPush } from "./watchlist.js";
-import { javascript, serviceWorker } from "./watchlist-ui.js";
+import { html, javascript, serviceWorker } from "./watchlist-ui.js";
 
 const origin = "https://finder.example";
 function setup(authenticated=false, owner=true) {
@@ -38,6 +38,9 @@ test("push delivery rejects arbitrary endpoints and malformed keys",()=>{
 test("frontend scripts parse and do not use HTML insertion for notices",()=>{
   new Function(javascript);new Function(serviceWorker);
   assert.ok(javascript.includes("$('#notice').textContent=s"));
+  assert.ok(html.includes("Scheduled scans can be delayed"));
+  assert.ok(!html.includes("Checks about every 30 minutes"));
+  assert.ok(javascript.includes("newestCount===1?'query':'queries'"));
 });
 test("OTP cookie proxy keeps credentials out of response JSON",async()=>{
   const db={query:async()=>({rows:[{data:{email:"owner@example.com"}}]})};
