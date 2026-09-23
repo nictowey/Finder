@@ -67,6 +67,12 @@ previous evaluations. Confirmed 404/410, ended time or explicit out-of-stock res
 unavailable and invalidates pending alerts; API failures stay separate. No public certainty or
 valuation claims change.
 
+The inbox defaults to each watch's current item-plus-shipping ceiling. Filtering happens
+before pagination, using fresh fixed-price amounts in the saved currency and destination.
+Unknown shipping, auction bids, stale evidence and unconfirmed quotes remain accessible in
+an explicit **All prices** view. Watches without a ceiling retain all prices. Changing the
+view does not alter discovery, dismissals, notification eligibility or watch settings.
+
 The six-hour provider-content display limit remains. Older references stay in the paginated
 inbox with content and prices withheld and availability explicitly unverified; owners can
 request a fresh check. Fresh content exposes its detail timestamp. The inbox has server-side

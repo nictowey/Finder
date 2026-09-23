@@ -26,6 +26,9 @@ and deliver alerts.
 Keep the core domain marketplace- and category-neutral. Marketplace-specific behavior belongs
 behind adapters. Category-specific identity rules belong in category modules.
 
+The default inbox now respects saved price ceilings before pagination; **All prices** retains
+access to higher, unknown, auction and stale references. See `docs/resumable-discovery.md`.
+
 ## Current scope
 
 - Category: vinyl records

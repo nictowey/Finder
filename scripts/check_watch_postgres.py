@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -26,6 +27,9 @@ from finder.watch_store import (
 
 
 def main():
+    # Read-only synthetic CTEs exercise the same SQL used by the inbox, including
+    # decimal boundaries, unknown totals, watch edits and filtering before paging.
+    subprocess.run(["node", "--import", "tsx", "scripts/check_inbox_prices.ts"], check=True)
     url = make_url(os.environ["FINDER_DATABASE_URL"]).set(drivername="postgresql+psycopg")
     # A transaction pool cannot preserve an isolated search_path between transactions.
     # Neon's direct endpoint has the same hostname without the -pooler suffix.
