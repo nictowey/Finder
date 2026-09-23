@@ -71,6 +71,9 @@ The open provider-use decision and bounded Production audit are documented in
    - Incomplete search coverage prevents a provisional probable-variant decision
    - Authenticated synthetic-listing validation passed on September 23, 2026; ten releases
      included four strong candidates, so live catalog ambiguity is real
+8. Internal exact-target eBay discovery prototype
+   - Versioned, configurable, at most three queries of ten items, with initial and refresh modes
+   - DS2 title-alias plan and cross-query item deduplication; no measured live target recall yet
 
 ### Verified baseline
 
@@ -103,6 +106,7 @@ seller's data. Keep the Production and Sandbox keysets separate.
 - `domain.py`: generic Listing, Monitor, Product, Variant, and candidate evidence
 - `adapters/base.py`: marketplace adapter protocol
 - `adapters/ebay/`: eBay transport, discovery, normalization, and offline replay
+- `config/watch_targets.toml`: versioned internal exact-target search plans
 - `adapters/discogs/`: Discogs catalog transport and normalization
 - `categories/vinyl.py`: vinyl-specific identity extraction
 - `matching.py`: deterministic, auditable candidate scoring and ranking
@@ -217,6 +221,8 @@ A material change is complete only when:
 6. Build an internal exact-item watchlist prototype with synthetic listings; involve outside
    collectors only after ingestion, identity, listing-use, and Discogs outbound-use gates.
    Withhold fair-value or "steal" claims.
+7. Compare target search results with a permitted manual sample to measure misses, including
+   sellers that omit the artist, title alias, or edition, before suggesting coverage.
 
 The eBay deletion endpoint and manual bounded cloud scans support Production data validation.
 Do not build recurring scheduling, alerts, or a frontend until live ingestion and identity

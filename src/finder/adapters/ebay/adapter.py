@@ -29,7 +29,9 @@ class EbayAdapter:
         self.now = now
         self.stats = AdapterStats()
 
-    def search(self, monitor: Monitor) -> Iterator[ListingObservation]:
+    def search(
+        self, monitor: Monitor, *, seen_item_ids: set[str] | None = None
+    ) -> Iterator[ListingObservation]:
         self.stats = AdapterStats()
         if monitor.marketplace != "ebay":
             raise ConfigurationError("This adapter only supports eBay monitors.")
@@ -55,7 +57,7 @@ class EbayAdapter:
             params["category_ids"] = ",".join(options.category_ids)
         if options.aspect_filter:
             params["aspect_filter"] = options.aspect_filter
-        seen = set()
+        seen = seen_item_ids if seen_item_ids is not None else set()
         for page in range(options.max_pages):
             offset = page * options.page_size
             payload = self.client.get(
