@@ -79,6 +79,10 @@ The open provider-use decision and bounded Production audit are documented in
    - A saved release is hydrated directly and a bounded catalog-derived artist/title query
      adds potential competing releases alongside seller-derived searches
    - The catalog query does not count as seller-text recall or prove complete family coverage
+10. Anonymous pressing comparison prototype
+   - Manual target check reports target and same-family candidate positions, field-level
+     agreement, seller/catalog disagreements, missing evidence and unscored runouts
+   - Public job summary contains no listing, seller or release identities or evidence values
 
 ### Verified baseline
 
@@ -157,6 +161,7 @@ Discogs behavior in the eBay adapter or marketplace behavior in catalog provider
 - For a catalog-numbered pressing, a shared barcode/color or a seller title serial claim alone
   must not promote the candidate; an explicit structured numbered claim is still unverified.
   Keep the individual copy number separate from the catalog release identity.
+- An explicitly negated seller claim such as "Not Numbered" is not a positive numbered claim.
 - An exact watch target can reserve one Discogs detail slot even when seller-text search misses
   the release. A directly fetched target is a candidate to assess, never proof that the eBay
   listing is that release. Preserve target search-miss and missing numbered-claim reasons.

@@ -41,6 +41,19 @@ def _identifier_values(variant: Variant, text: str) -> list[str]:
     )
 
 
+def has_numbered_claim(values: Iterable[str]) -> bool:
+    """Detect a positive numbered-edition claim, abstaining on explicit negation."""
+    values = list(values)
+    negated = re.compile(
+        r"\b(?:not|no|non)\W+(?:(?:an?|individually|hand)\W+)?numbered\b"
+        r"|\bwithout\W+(?:(?:a|copy)\W+)?number(?:ing)?\b",
+        re.IGNORECASE,
+    )
+    if any(negated.search(value) for value in values):
+        return False
+    return any(re.search(r"\bnumbered\b", value, re.IGNORECASE) for value in values)
+
+
 class VinylFingerprint(BaseModel):
     """Evidence about a manufactured pressing, separate from the offered copy."""
 

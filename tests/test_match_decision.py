@@ -59,6 +59,15 @@ def test_numbered_seller_claim_is_not_exact_proof(search_payload, observed_at):
     assert decision.outcome != "exact_variant"
 
 
+def test_explicitly_not_numbered_seller_specific_cannot_promote_numbered_release(
+    search_payload, observed_at
+):
+    listing, numbered, _ = _numbered_case(search_payload, observed_at, features="Not Numbered")
+    decision = decide_match(listing, [numbered])
+    assert decision.outcome == "family_only"
+    assert "numbered_structured_claim_missing" in decision.missing_evidence
+
+
 def test_numbered_claim_without_pressing_identifier_stays_family_only(search_payload, observed_at):
     listing, numbered, _ = _numbered_case(search_payload, observed_at, features="Numbered")
     listing = listing.model_copy(

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from finder.adapters.discogs.adapter import CandidateRetrieval, DiscogsCatalogProvider
 from finder.adapters.discogs.client import DiscogsClient
+from finder.categories.vinyl_review import compare_pressings
 from finder.config import load_discogs_settings, load_search_target
 from finder.domain import Listing
 from finder.errors import ConfigurationError, FinderError
@@ -39,6 +40,7 @@ def summarize_match(listing: Listing, retrieval: CandidateRetrieval, target_id: 
         (item for item in retrieval.variants if item.catalog_variant_id == str(target_id)), None
     )
     decision = decide_match(listing, retrieval.variants, retrieval_incomplete=retrieval.incomplete)
+    comparison = compare_pressings(listing, retrieval.variants, ranked, target_id)
     return {
         "status": "completed",
         "attribution": "Data provided by Discogs",
@@ -98,7 +100,76 @@ def summarize_match(listing: Listing, retrieval: CandidateRetrieval, target_id: 
             "conflicts": decision.conflicts,
             "missing_evidence": decision.missing_evidence,
         },
+        "comparison": comparison,
     }
+
+
+def render_comparison_markdown(summary: dict) -> str:
+    """Render only the sanitized projection into a GitHub Actions job summary."""
+    comparison = summary["comparison"]
+
+    def fields(values: list[str]) -> str:
+        return ", ".join(values) if values else "—"
+
+    structured_claim = str(comparison.get("seller_structured_numbered_claim", False)).lower()
+    title_claim = str(comparison.get("seller_title_numbered_claim", False)).lower()
+    headers = (
+        "Candidate",
+        "Score",
+        "Catalog numbered",
+        "Matched",
+        "Seller/catalog disagreements",
+        "Missing seller evidence",
+        "Soft text misses",
+        "Unscored present",
+    )
+    lines = [
+        "## Internal pressing comparison",
+        "",
+        f"Decision: **{summary['decision']['outcome']}**. "
+        "Review required for exact pressing identity.",
+        "The target was selected by the collector; its direct retrieval is not "
+        "evidence from the seller.",
+        "",
+        f"Evaluated {summary['retrieval']['releases_evaluated']} releases: "
+        f"{comparison['same_family_competitors']} same-family alternatives, "
+        f"{comparison['other_family_releases']} other-family releases. "
+        f"Search incomplete: {str(summary['retrieval']['incomplete']).lower()}.",
+        f"Seller structured numbered claim: {structured_claim}; "
+        f"seller title numbered claim: {title_claim}.",
+        "",
+        "| " + " | ".join(headers) + " |",
+        "| --- | ---: | --- | --- | --- | --- | --- | --- |",
+    ]
+    for candidate in comparison["candidates"]:
+        lines.append(
+            "| "
+            + " | ".join(
+                (
+                    candidate["role"],
+                    str(candidate["heuristic_score"]),
+                    "yes" if candidate["catalog_numbered"] else "no",
+                    fields(candidate["matched_fields"]),
+                    fields(candidate["seller_catalog_disagreements"]),
+                    fields(candidate["missing_seller_evidence"]),
+                    fields(candidate["unmatched_soft_text"]),
+                    fields(candidate["unscored_present_fields"]),
+                )
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            "Missing seller evidence is a review gap, not a required listing field. "
+            "A score or seller claim does not verify an individual numbered copy. "
+            "Runout text is displayed as unscored when present on both sides.",
+            "",
+            "Data provided by Discogs",
+            "",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def main() -> int:
@@ -115,7 +186,11 @@ def main() -> int:
                 retrieval = DiscogsCatalogProvider(client).search_for_listing(
                     listing, limit=10, target_release_id=target.catalog_variant_id
                 )
-            print(json.dumps(summarize_match(listing, retrieval, target.catalog_variant_id)))
+            summary = summarize_match(listing, retrieval, target.catalog_variant_id)
+            if report_path := os.environ.get("GITHUB_STEP_SUMMARY"):
+                with open(report_path, "a", encoding="utf-8") as report:
+                    report.write(render_comparison_markdown(summary))
+            print(json.dumps(summary))
             return 0
         finally:
             repository.close()
