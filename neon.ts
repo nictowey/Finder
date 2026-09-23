@@ -8,6 +8,16 @@ function requiredEnv(name: string): string {
 
 export default defineConfig({
   functions: {
+    ...(process.env.FINDER_AUTH_URL ? {
+      watchlist: {
+        name: "Finder private watchlist",
+        source: "./functions/watchlist.ts",
+        env: {
+          FINDER_AUTH_URL: requiredEnv("FINDER_AUTH_URL"),
+          FINDER_APP_ORIGIN: requiredEnv("FINDER_APP_ORIGIN"),
+        },
+      },
+    } : {}),
     ebaydeletion: {
       name: "Finder eBay account deletion",
       source: "./functions/ebay-deletion.ts",

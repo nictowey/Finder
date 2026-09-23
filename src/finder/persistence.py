@@ -10,6 +10,7 @@ from sqlalchemy import (
     Table,
     create_engine,
     delete,
+    event,
     func,
     select,
     update,
@@ -108,6 +109,12 @@ class SqlAlchemyListingRepository:
             if parsed.drivername in ("postgres", "postgresql"):
                 parsed = parsed.set(drivername="postgresql+psycopg")
             engine = create_engine(parsed, pool_pre_ping=True, hide_parameters=True)
+            if parsed.get_backend_name() == "sqlite":
+
+                @event.listens_for(engine, "connect")
+                def enable_foreign_keys(connection, _):
+                    connection.execute("PRAGMA foreign_keys=ON")
+
             metadata.create_all(engine)
             return cls(engine)
         except (SQLAlchemyError, ImportError, ValueError):

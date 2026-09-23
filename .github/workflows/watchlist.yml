@@ -1,0 +1,46 @@
+name: Private watchlist scans
+
+on:
+  schedule:
+    - cron: '17,47 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: finder-production-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment: production
+    env:
+      EBAY_ENVIRONMENT: production
+      DISCOGS_USER_AGENT: Finder/0.3 +https://github.com/nictowey/Finder
+      EBAY_PRODUCTION_CLIENT_ID: ${{ secrets.EBAY_PRODUCTION_CLIENT_ID }}
+      EBAY_PRODUCTION_CLIENT_SECRET: ${{ secrets.EBAY_PRODUCTION_CLIENT_SECRET }}
+      FINDER_DATABASE_URL: ${{ secrets.FINDER_DATABASE_URL }}
+      DISCOGS_TOKEN: ${{ secrets.DISCOGS_TOKEN }}
+      FINDER_APP_ORIGIN: https://br-soft-forest-b4fo15q2-watchlist.compute.c-6.us-east-2.aws.neon.tech
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+          cache: pip
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: npm
+      - run: python -m pip install -e .
+      - run: npm ci --omit=dev
+      - name: Scan saved watches
+        run: python scripts/run_watchlist.py
+      - name: Deliver private review notifications
+        if: success() || failure()
+        run: node scripts/send_watch_notifications.mjs
