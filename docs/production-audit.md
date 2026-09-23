@@ -56,4 +56,15 @@ Record counts of found/missed and reasons privately, subject to the provider-use
 not copy real item identities or labeled examples into the repository or public workflow logs.
 The manual workflow also accepts an optional `TARGET_PROBE_LEGACY_ID` **Production environment
 secret** for a private yes/no check. The workflow never puts the ID in a dispatch input, command
-literal, or report. Remove or replace that secret when the one-off check is finished.
+literal, or report. Keep it scoped to this environment while repeating this target check;
+remove or replace it when that check is no longer needed.
+
+| UTC date | Run | Result | Target discovery |
+| --- | --- | --- | --- |
+| 2026-09-23 | [Initial scan #1](https://github.com/nictowey/Finder/actions/runs/35809931034) | Passed, both queries complete. First query fetched 10 and hit the page cap; second fetched 4, with 2 overlaps. Twelve distinct listings were normalized, with no partial details or unprocessed items. | No item-level probe in this run. |
+| 2026-09-23 | [Private probe scan #2](https://github.com/nictowey/Finder/actions/runs/35810295262) | Passed. The same 10 + 4 summaries and 2 overlaps were returned; all 12 distinct items updated. First query again hit the page cap. | `probe_found_in_this_run: true` for the user-supplied DS2 example. This verifies discovery in this run, not the numbered pressing identity. |
+
+The two runs share one date and do not count as another day of the seven-day **broad-monitor**
+audit. The first query's ten-item cap means target recall remains unmeasured. An item outside
+the first page, a differently worded listing, or a new listing between samples may still be
+missed. A positive probe does not establish a catalog match, condition, or market value.
