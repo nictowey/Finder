@@ -184,6 +184,7 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                     i, lane, rotation = task
                     current = state["queries"][i][lane]
                     part = current["frontier"][0]
+                    before_search = getattr(client, "search_requests", 0)
                     try:
                         page = search_page(
                             client,
@@ -227,6 +228,11 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                         queue.checkpoint(claim, state, now_fn())
                         failure = True
                         break
+                    finally:
+                        metric = f"{lane}_search_requests"
+                        requests[metric] = requests.get(metric, 0) + (
+                            getattr(client, "search_requests", 0) - before_search
+                        )
                 # Reserve a quarter of detail slots for oldest existing leads. Pending
                 # failures are delayed, so one bad item cannot monopolize the queue.
                 old = queue.due(claim, now_fn(), limit=4, pending=False)

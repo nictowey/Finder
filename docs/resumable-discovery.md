@@ -145,3 +145,25 @@ evidence separately. Do not reset the existing observation window.
 The current documentation site's search page sometimes resolves to its API overview; indexed
 official search documentation still states the 200-item/10,000-result bounds. Live window
 validation is required rather than relying on documentation alone.
+
+## Controlled production evidence, September 23
+
+Deployment #14 installed migration 3 and the paginated dashboard, but no watch was due;
+that successful deployment did not validate retrieval. Deployment #15 recorded one quota
+pause before any Browse request: its new shared parser rejected differently capitalized API
+metadata that the preflight parser accepted. The reserve was not bypassed. PR #63 aligns the
+parsers and adds synthetic regression coverage and fixed, content-free diagnostics.
+
+Deployment #16 then retrieved 276 unique references for one existing watch: eight search
+requests (three committed initial pages plus five incremental pages), 16 detail requests,
+16 evaluations and 260 durable pending evaluations. The preflight reading was 4,230 remaining.
+All returned origin timestamps passed the requested start-window validation on EBAY_US.
+The initial pass was still partial (zero of three queries exhausted), accurately displayed.
+This is independently searched inventory, not manually supplied item URLs; no pressing
+accuracy or relevant-lead recovery claim is inferred from the larger count. Existing device
+registration and the operational observation start remained intact, including the quota pause.
+
+316 Python tests and 32 Node tests pass, together with Ruff/formatting/TypeScript. The deployment
+also passed isolated PostgreSQL migration, deletion, shared concurrent budgeting and synthetic
+backup/restore checks. Authenticated Discogs validation passed in smoke run #43. Further
+resume, full rollout and unattended invocation evidence must be assessed separately.

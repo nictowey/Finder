@@ -107,6 +107,9 @@ test('inbox pagination keeps older references without exposing stale provider co
 test('coverage wording separates worker success, page exhaustion, and pending evaluation',()=>{
  assert.ok(javascript.includes('awaiting details/evaluation'));
  assert.ok(javascript.includes('Search exhaustion is for this pass'));
+ assert.ok(javascript.includes('covered through'));
+ assert.ok(javascript.includes('query_passes'));
+ assert.ok(javascript.includes('min overdue'));
  assert.ok(html.includes('Next page'));
  assert.ok(javascript.includes('details_observed_at'));
 });
