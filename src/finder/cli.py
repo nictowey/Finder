@@ -12,6 +12,7 @@ from finder.adapters.discogs.client import DiscogsClient
 from finder.adapters.ebay.adapter import EbayAdapter
 from finder.adapters.ebay.client import EbayClient
 from finder.adapters.ebay.target_search import plan_target_search, run_target_scan
+from finder.categories.vinyl_target import parse_discogs_release_id, target_from_release
 from finder.config import (
     load_database_url,
     load_discogs_settings,
@@ -36,18 +37,28 @@ def _parser() -> argparse.ArgumentParser:
     scan.add_argument("--json", action="store_true", help="Print machine-readable summary")
 
     for command, help_text in (
-        ("target-plan", "Inspect a bounded eBay discovery plan without API credentials"),
-        ("scan-target", "Scan the bounded searches for one saved catalog target"),
+        ("target-plan", "Inspect bounded searches for a saved or Discogs vinyl target"),
+        ("scan-target", "Scan bounded searches for a saved or Discogs vinyl target"),
     ):
         target_command = commands.add_parser(command, help=help_text)
         target_command.add_argument(
             "--config", type=Path, default=Path("config/watch_targets.toml")
         )
-        target_command.add_argument("--target", required=True)
+        selection = target_command.add_mutually_exclusive_group(required=True)
+        selection.add_argument("--target", help="Saved target ID from the configuration file")
+        selection.add_argument("--release", help="Discogs vinyl release ID or HTTPS release URL")
+        target_command.add_argument(
+            "--query", action="append", help="Replace the catalog-derived search (1–3 times)"
+        )
         target_command.add_argument("--mode", choices=("initial", "refresh"), default="refresh")
         target_command.add_argument("--json", action="store_true")
+        target_command.add_argument("--env-file", type=Path, default=Path(".env"))
         if command == "scan-target":
-            target_command.add_argument("--env-file", type=Path, default=Path(".env"))
+            target_command.add_argument(
+                "--show-listings",
+                action="store_true",
+                help="Show newly discovered listing identities privately for follow-up review",
+            )
             target_command.add_argument(
                 "--probe-legacy-id",
                 help="Privately report whether this legacy eBay item appeared in this run",
@@ -127,7 +138,18 @@ def _scan(args: argparse.Namespace) -> int:
 
 
 def _target(args: argparse.Namespace) -> int:
-    target = load_search_target(args.config, args.target)
+    if args.target:
+        if args.query:
+            raise ConfigurationError(
+                "--query requires --release; saved targets use configured queries."
+            )
+        target = load_search_target(args.config, args.target)
+    else:
+        release_id = parse_discogs_release_id(args.release)
+        discogs_settings = load_discogs_settings(args.env_file)
+        with DiscogsClient(discogs_settings) as client:
+            variant = DiscogsCatalogProvider(client).get_release(release_id)
+        target = target_from_release(variant, queries=args.query)
     monitors = plan_target_search(target, mode=args.mode)
     payload = {
         "target": target.id,
@@ -142,6 +164,9 @@ def _target(args: argparse.Namespace) -> int:
         "maximum_search_requests": len(monitors),
         "maximum_detail_requests": 10 * len(monitors),
     }
+    if args.release:
+        payload["attribution"] = "Data provided by Discogs"
+        payload["attribution_url"] = "https://www.discogs.com"
     if args.command == "target-plan":
         if args.json:
             print(json.dumps(payload))
@@ -168,6 +193,22 @@ def _target(args: argparse.Namespace) -> int:
     try:
         with EbayClient(settings) as client:
             run = run_target_scan(target, EbayAdapter(client), repository, mode=args.mode)
+        if args.show_listings:
+            payload["discovered_listings"] = [
+                {
+                    "item_id": listing.marketplace_item_id,
+                    "title": listing.title,
+                    "delivered_subtotal": (
+                        str(listing.total_acquisition_cost)
+                        if listing.total_acquisition_cost is not None
+                        else None
+                    ),
+                    "currency": listing.currency,
+                    "quality_flags": listing.quality_flags,
+                }
+                for item_id in sorted(run.discovered_item_ids)
+                if (listing := repository.get("ebay", item_id)) is not None
+            ]
     finally:
         repository.close()
     payload["results"] = [asdict(summary) for summary in run.summaries]

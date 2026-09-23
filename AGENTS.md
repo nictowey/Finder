@@ -13,7 +13,7 @@ behind adapters. Category-specific identity rules belong in category modules.
 ## Current scope
 
 - Category: vinyl records
-- Initial genre focus: hip-hop/rap releases from roughly 2010–2026
+- Any genre of vinyl; the first broad monitor and historical evaluation set focus on hip-hop/rap
 - Marketplace: eBay Browse API only; never scrape eBay
 - Catalog identity source: Discogs CC0 catalog endpoints only
 - Persistence: SQLAlchemy with SQLite locally and portable repository boundaries

@@ -51,6 +51,12 @@ class DiscogsCatalogProvider:
         results, _ = self._search({"q": query.strip()}, limit)
         return self._hydrate(self._ids(results)[:limit])
 
+    def get_release(self, release_id: int) -> Variant:
+        """Fetch one collector-selected release through the permitted catalog endpoint."""
+        if isinstance(release_id, bool) or not isinstance(release_id, int) or release_id <= 0:
+            raise ConfigurationError("Discogs release ID must be a positive integer.")
+        return self._hydrate([release_id])[0]
+
     def search_for_listing(
         self, listing: Listing, *, limit: int = 10, target_release_id: int | None = None
     ) -> CandidateRetrieval:
@@ -92,7 +98,7 @@ class DiscogsCatalogProvider:
             raise ConfigurationError("Listing has no usable catalog search value.")
         identifiers_omitted = len(barcodes) > 1 or len(catnos) > 1
         per_page = min(limit, 10)
-        target = self._hydrate([target_release_id])[0] if target_release_id else None
+        target = self.get_release(target_release_id) if target_release_id else None
         result_lists = []
         truncated = False
         for name, value in plans:
@@ -142,7 +148,6 @@ class DiscogsCatalogProvider:
                 **query,
                 "type": "release",
                 "format": "Vinyl",
-                "genre": "Hip Hop",
                 "per_page": limit,
                 "page": 1,
             },

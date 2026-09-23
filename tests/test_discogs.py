@@ -60,7 +60,7 @@ def test_catalog_search_uses_only_database_and_release_endpoints(
         if request.url.path == "/database/search":
             assert request.url.params["type"] == "release"
             assert request.url.params["format"] == "Vinyl"
-            assert request.url.params["genre"] == "Hip Hop"
+            assert "genre" not in request.url.params
             return httpx.Response(200, json=discogs_search)
         detail = dict(discogs_release)
         detail["id"] = int(request.url.path.rsplit("/", 1)[1])

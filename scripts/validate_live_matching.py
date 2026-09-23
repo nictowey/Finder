@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from finder.adapters.discogs.adapter import DiscogsCatalogProvider
 from finder.adapters.discogs.client import DiscogsClient
+from finder.categories.vinyl_target import target_from_release
 from finder.config import load_discogs_settings
 from finder.domain import Listing, Variant
 from finder.matching import rank_variants, score_variant
@@ -67,6 +68,16 @@ def main() -> int:
         with DiscogsClient(settings) as client:
             provider = DiscogsCatalogProvider(client, now=lambda: observed_at)
             initial = provider.search_releases("Kendrick Lamar DAMN", limit=5)
+            other_genre = provider.search_releases("Miles Davis Kind of Blue", limit=5)
+        other_genre_vinyl = [
+            variant
+            for variant in other_genre
+            if "Jazz" in variant.genres
+            and any(str(fmt.get("name", "")).casefold() == "vinyl" for fmt in variant.formats)
+        ]
+        if not other_genre_vinyl:
+            raise AssertionError("No other-genre vinyl release was returned")
+        assert target_from_release(other_genre_vinyl[0]).queries
         selected = next((variant for variant in initial if _barcodes(variant)), None)
         if selected is None:
             raise AssertionError("No barcode-bearing Discogs release was returned")
@@ -139,6 +150,7 @@ def main() -> int:
                     "ambiguous": len(strong) > 1,
                     "conflicting_barcode_status": rejected.status,
                     "persisted_candidates": len(stored),
+                    "other_genre_vinyl_results": len(other_genre_vinyl),
                 }
             )
         )

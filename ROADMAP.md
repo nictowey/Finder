@@ -11,8 +11,10 @@ available. If lawful sold transactions and permission for this use are secured, 
 show a conservative value range and flag unusually cheap copies. It must never call a listing a
 "steal" because its current asking price is below another seller's asking price.
 
-Start with roughly 20 target pressings across modern hip-hop/rap, including colored, limited,
-test, and unofficial variants. This is a pilot set for learning, not a promise that every rare
+Start with roughly 20 target pressings across genres and eras, including colored, limited,
+test, and unofficial variants. Include difficult neighboring pressings and ordinary records,
+then report discovery and identity results by genre and era. This is a pilot set for learning,
+not a promise that every rare
 record will have enough comparable sales. A user should be able to answer four questions quickly:
 
 1. Is this the pressing I asked for, or is the identity uncertain?
@@ -107,8 +109,10 @@ marketplaces, distinguish the correct collectible variant, estimate a defensible
 value from lawful comparable data, and surface only opportunities that meet explicit confidence
 and price thresholds.
 
-The first vertical is hip-hop/rap vinyl, primarily releases from 2010–2026, using eBay for active
-listings and Discogs for catalog identity. Later categories and marketplaces must fit the same
+The first vertical is vinyl across genres and eras, using eBay for active listings and Discogs
+for catalog identity. The first broad monitor and early evaluation examples focused on recent
+hip-hop/rap; that sample alone cannot establish accuracy on all vinyl. Later categories and
+marketplaces must fit the same
 generic pipeline without weakening the accuracy standards established for vinyl.
 
 Finder is not an automated buying system. It must show its evidence, uncertainty, data age, and
