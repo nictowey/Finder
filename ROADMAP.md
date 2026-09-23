@@ -14,6 +14,16 @@ accounting and a private adjudication workflow.
 The roadmap below retains the architecture and provider decisions; where sequencing differs,
 the active execution plan takes precedence. UI completion is not an accuracy milestone.
 
+## Current product decision and acceptance
+
+September 23 owner decisions: the first useful product is a private exact-target **review
+watchlist**, operated on free services. Review alerts may include uncertain pressings with
+explicit wording; the optional strict mode retains the complete-comparison gate. Deal detection
+and paid/public launch remain separate decisions. The next delivery is governed by
+[the private pilot acceptance scorecard](docs/pilot-acceptance.md): durable operational evidence,
+actual device activation, permitted miss/identity review, and a collector-value decision.
+No watch-capacity increase or paid infrastructure is authorized.
+
 ## Current delivery: private watchlist loop
 
 The owner authorized completion of an internal usable product on September 23, 2026.

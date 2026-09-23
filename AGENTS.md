@@ -22,6 +22,29 @@ behind adapters. Category-specific identity rules belong in category modules.
 
 ## Current project state
 
+### Current owner decisions and operational delivery
+
+The owner reconfirmed on September 23: build the private pressing watchlist first, keep
+hosting free, and send clearly labeled **review leads** even when retrieved pressings remain
+ambiguous or catalog search is capped. Policy v4 defaults to `review_leads`; `strict` is a
+per-watch option. Failed alternative retrieval, explicit conflicts, stale details, and invalid
+ceiling/destination/condition evidence still block alerts. Never promote a review alert to an
+exact pressing, bargain, or valuation claim. This supersedes the v3 incomplete-search alert
+hold for review mode only.
+
+Operational history is now implemented in additive migration 2: due/start/finish timestamps,
+expired and superseded attempts, quota pauses, bounded counters and dispatch correlations.
+The protected dashboard exposes current overdue/stale state and a 14-day history view.
+It never certifies reliability from elapsed days or successful workflow counts. A Home Screen
+manifest and a rate-limited, owner-only test notification support device activation. Public
+notification logs report push-service acceptance, not device receipt.
+
+Read `docs/pilot-acceptance.md` for the next evidence and usability gates. Current checks:
+292 Python and 29 Node tests, Ruff and TypeScript pass locally. Production upgrade, synthetic
+backup/restore rehearsal, and actual device display must be verified separately. These changes
+add no paid services and do not raise the three-watch cap.
+
+
 The accuracy-gated development sequence and product decisions are maintained in `ROADMAP.md`.
 Read it before proposing or implementing a new phase.
 The active delivery order is `docs/identification-roadmap.md`: identify competing pressings,

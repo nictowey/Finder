@@ -25,6 +25,19 @@ performance on any vinyl. Other marketplaces and market-value estimates are sepa
 | Do identification rules work on real listings? | Synthetic rule tests pass. | No approved real-listing holdout, measured wrong-pressing rate, or missed-listing audit. |
 | Does a low price mean a deal? | Optional buyer ceiling and shipping checks exist. | No qualified sold-transaction source or measured valuation model. |
 
+## September 23 owner update
+
+The owner selected a free private pressing watchlist as the first useful product and explicitly
+chose review alerts for plausible but uncertain editions. Policy v4 therefore permits a labeled
+review lead when search is capped or another pressing remains plausible; strict mode still
+holds it. Lookup failures, conflicts and stale evidence still block. This changes notification
+eligibility, not the accuracy or exact-identity gates below.
+
+Operational measurement is now a concrete implementation: additive scan/dispatch ledgers,
+correlated trigger IDs, current overdue/expired-lease reporting, bounded request accounting,
+and a protected 14-day history view. Device test flow and Home Screen setup are included.
+Use `pilot-acceptance.md` to review evidence; neither time elapsed nor a green run is a pass.
+
 ## Delivery order
 
 ### 1. Make ambiguity visible in the running product — first implementation

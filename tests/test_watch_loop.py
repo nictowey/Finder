@@ -68,10 +68,10 @@ def test_expired_lease_recovery_rejects_old_worker_and_edits(repository, store, 
     old = store.claim(now=observed_at)
     recovered = store.claim(now=observed_at + timedelta(minutes=13))
     assert recovered["lease_token"] != old["lease_token"]
-    assert store.finish(old, [], now=observed_at) == 0
+    assert store.finish(old, [], now=observed_at) is None
     with repository.engine.begin() as conn:
         conn.execute(update(watches).where(watches.c.id == key).values(revision=2))
-    assert store.finish(recovered, [], now=observed_at) == 0
+    assert store.finish(recovered, [], now=observed_at) is None
     with repository.engine.connect() as conn:
         assert conn.execute(select(watches.c.last_success_at)).scalar() is None
 
@@ -129,7 +129,7 @@ def test_sparse_lead_can_notify_but_unknown_shipping_and_condition_cannot(
             "listing_ends_at": None,
         }
     )
-    watch = SavedWatch(release_id=123)
+    watch = SavedWatch(release_id=123, alert_mode="strict")
     result = assess_review(
         watch, row, variant, now=observed_at, alternatives=[], search_incomplete=False
     )
@@ -175,7 +175,7 @@ def test_ambiguous_and_unchecked_leads_stay_visible_without_alerts(
             "listing_ends_at": None,
         }
     )
-    watch = SavedWatch(release_id=123)
+    watch = SavedWatch(release_id=123, alert_mode="strict")
     unchecked = assess_review(watch, row, variant, now=observed_at)
     assert unchecked["status"] == "possible_pressing" and not unchecked["notify"]
     competitor = variant.model_copy(update={"catalog_variant_id": "222"})
@@ -183,7 +183,7 @@ def test_ambiguous_and_unchecked_leads_stay_visible_without_alerts(
     assert ambiguous["status"] == "possible_pressing" and not ambiguous["notify"]
     assert "other_pressings_not_ruled_out" in ambiguous["verify"]
     assert ambiguous["alternatives_not_ruled_out"] == 1
-    assert ambiguous["policy"] == "private-target-review-v3"
+    assert ambiguous["policy"] == "private-target-review-v4"
 
 
 def test_pilot_capacity(store):
@@ -260,7 +260,7 @@ def test_worker_reuses_alternatives_and_keeps_review_when_catalog_fails(
         "EbayClient",
         lambda config: EbayClient(config, transport=httpx.MockTransport(handler)),
     )
-    store.add(SavedWatch(release_id=111), now=now)
+    store.add(SavedWatch(release_id=111, alert_mode="strict"), now=now)
     report = watch_worker.run_due_watches(repository, settings, None)
     assert report == {
         "attempted": 1,
@@ -268,6 +268,7 @@ def test_worker_reuses_alternatives_and_keeps_review_when_catalog_fails(
         "failed": 0,
         "quota_paused": 0,
         "new_inbox_rows": 2,
+        "superseded": 0,
     }
     assert calls == ["111"]  # Once for the watch, not once per listing.
     with repository.engine.connect() as conn:
@@ -361,11 +362,12 @@ def test_first_refresh_recovers_prior_lead_outside_newest_page(
         "failed": 0,
         "quota_paused": 0,
         "new_inbox_rows": 0,
+        "superseded": 0,
     }
     assert searches == [("newlyListed", "0"), (None, "0")]
     with repository.engine.connect() as conn:
         record = conn.execute(select(inbox.c.data, inbox.c.last_seen_at)).one()
-        assert record.data["policy"] == "private-target-review-v3"
+        assert record.data["policy"] == "private-target-review-v4"
         assert record.data["alternatives_checked"] == 0
         assert datetime.fromisoformat(record.last_seen_at) > started
         summary = conn.execute(select(watches.c.summary)).scalar_one()
@@ -382,6 +384,7 @@ def test_first_refresh_recovers_prior_lead_outside_newest_page(
         "failed": 0,
         "quota_paused": 0,
         "new_inbox_rows": 0,
+        "superseded": 0,
     }
     assert searches == [("newlyListed", "0"), (None, "0"), ("newlyListed", "0")]
     with repository.engine.connect() as conn:
@@ -481,7 +484,7 @@ def test_insufficient_or_unavailable_quota_preserves_due_watch(
     repository, store, settings, discogs_release, monkeypatch, remaining, reason
 ):
     now = datetime.now(UTC) - timedelta(minutes=31)
-    store.add(SavedWatch(release_id=111), now=now)
+    store.add(SavedWatch(release_id=111, alert_mode="strict"), now=now)
     before = store.claim(now=now)
     store.finish(before, [], summary={"inventory": {"cursor": "unchanged"}}, now=now)
     with repository.engine.connect() as conn:
@@ -537,6 +540,7 @@ def test_insufficient_or_unavailable_quota_preserves_due_watch(
         "failed": 0,
         "quota_paused": 1,
         "new_inbox_rows": 0,
+        "superseded": 0,
     }
     with repository.engine.connect() as conn:
         row = conn.execute(select(watches)).mappings().one()
@@ -573,3 +577,33 @@ def test_failed_scan_preserves_inventory_cursor_for_retry(
         summary = conn.execute(select(watches.c.summary)).scalar_one()
     assert summary["inventory"] == saved
     assert InventoryCursor.load(plan, 1, summary).offsets == (6,)
+
+
+def test_review_alerts_keep_uncertainty_but_block_conflicts_failures_and_staleness(
+    search_payload, discogs_release, observed_at
+):
+    variant = normalize_release(discogs_release, observed_at)
+    row = listing(search_payload, observed_at).model_copy(
+        update={
+            "title": "Example Artist Example Album LP",
+            "item_specifics": {"Barcode": ["0123456789012"]},
+            "quality_flags": [],
+            "price_kind": "fixed_price",
+            "listing_ends_at": None,
+        }
+    )
+    watch = SavedWatch(release_id=123, alert_mode="review_leads")
+    competitor = variant.model_copy(update={"catalog_variant_id": "222"})
+    review = assess_review(
+        watch, row, variant, now=observed_at, alternatives=[competitor], search_incomplete=True
+    )
+    assert review["notify"]
+    assert review["status"] == "possible_pressing"
+    assert "other_pressings_not_ruled_out" in review["verify"]
+    assert "catalog_alternative_search_incomplete" in review["verify"]
+    assert not assess_review(watch, row, variant, now=observed_at, alternatives=None)["notify"]
+    assert not assess_review(
+        watch, row, variant, now=observed_at + timedelta(hours=2), alternatives=[competitor]
+    )["notify"]
+    conflict = row.model_copy(update={"item_specifics": {"Barcode": ["9999999999999"]}})
+    assert not assess_review(watch, conflict, variant, now=observed_at, alternatives=[])["notify"]
