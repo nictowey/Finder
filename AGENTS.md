@@ -73,7 +73,8 @@ The open provider-use decision and bounded Production audit are documented in
      included four strong candidates, so live catalog ambiguity is real
 8. Internal exact-target eBay discovery prototype
    - Versioned, configurable, at most three queries of ten items, with initial and refresh modes
-   - DS2 title-alias plan and cross-query item deduplication; no measured live target recall yet
+   - DS2 title-alias plan and cross-query item deduplication; a bounded Production scan found
+     the user-supplied example on September 23, 2026, but target recall is unmeasured
 
 ### Verified baseline
 
@@ -100,6 +101,10 @@ shared PostgreSQL database. The September 22, 2026 Production smoke workflow fet
 normalized, stored, and read back 10 live listings. This validates ingestion, persistence, and
 the signed deletion test path. It does not prove exact vinyl matching or deletion of a real
 seller's data. Keep the Production and Sandbox keysets separate.
+The September 23 manual DS2 target scan completed two bounded queries, with 12 distinct
+normalized results and two overlaps. A private probe found the known listing in that run.
+The first query reached its ten-item cap; exact pressing identity and broader recall remain
+unverified. See `docs/production-audit.md` for aggregate run records.
 
 ## Architecture boundaries
 

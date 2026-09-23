@@ -435,7 +435,10 @@ grade translation, saved buyer targets, and a public view remain future work. A 
 versioned eBay query plan can scan one configured exact-release target with up to three searches
 of ten items each. The DS2 plan uses two title aliases without mandatory edition words;
 initial best-match and newest-first refresh samples dedupe overlapping items. This is a bounded
-retrieval prototype, not measured recall or automated matching to the selected release.
+retrieval prototype, not measured recall or automated matching to the selected release. On
+September 23, 2026, an initial Production scan found the known DS2 eBay example in its bounded
+results. The first query hit its ten-item cap, so this is one positive discovery check rather
+than a coverage estimate or confirmation of the numbered edition.
 
 A monitor should eventually contain:
 
