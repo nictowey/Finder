@@ -99,9 +99,9 @@ The open provider-use decision and bounded Production audit are documented in
      provisional leads for both saved targets, including the known DS2 listing
    - Watch creation and inbox filters passed in the hosted dashboard; push delivery on the
      owner's own device is still unverified
-   - Scheduled policy v2 retrieves up to five alternatives once per watch; unresolved
-     competing pressings remain visible and suppress notifications. Lookup failures also
-     withhold notifications without dropping discovery. Catalog coverage is still bounded.
+   - Scheduled policy v3 retrieves up to five alternatives once per watch; unresolved
+     competing pressings and explicitly incomplete or failed alternative searches remain
+     visible but suppress notifications. Catalog coverage is still bounded.
 13. Bounded inventory reconciliation and known-lead refresh
    - Per-query caps, request counts and cursor progress persist in the private watch summary
    - Eight newest items per query; alternating six-item older samples and one direct known-lead
@@ -113,7 +113,7 @@ The open provider-use decision and bounded Production audit are documented in
 ### Verified baseline
 
 - Latest verified implementation baseline: current `main` after required checks
-- Offline suite: 271 Python and 16 Node tests passing; rerun required checks before commit
+- Offline suite: 273 Python and 16 Node tests passing; rerun required checks before commit
 - Ruff lint and formatting checks passing
 - Live Discogs validation passing through GitHub Actions
 - Multi-query Discogs smoke passed on the `discogs-candidate-retrieval-2026` branch; this uses
@@ -136,6 +136,9 @@ The open provider-use decision and bounded Production audit are documented in
   rows with identifier conflicts, none with the false artist-conflict reason. No positive
   exact-pressing call was validated. Scheduled workflow runs were roughly five hours apart
   on September 23, so scan freshness is unproven.
+- A non-retaining panel sampled all eleven owner-supplied targets across three successful
+  batches. Ten of twelve five-result query pages were capped; its possible/family/conflicting
+  counts are unverified policy output, not measured pressing accuracy or discovery recall.
 
 ### Production status
 

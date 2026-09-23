@@ -37,8 +37,11 @@ def assess_review(watch, listing, variant, *, now, alternatives=None, search_inc
     blocked = []
     if review.alternatives_checked is None:
         blocked.append("catalog_alternatives_not_checked")
-    elif review.alternatives_not_ruled_out:
-        blocked.append("other_pressings_not_ruled_out")
+    else:
+        if search_incomplete:
+            blocked.append("catalog_alternative_search_incomplete")
+        if review.alternatives_not_ruled_out:
+            blocked.append("other_pressings_not_ruled_out")
     if listing.price_kind != "fixed_price":
         blocked.append("auction_final_price_unknown")
     if watch.condition_ids and listing.condition_id not in watch.condition_ids:
@@ -72,7 +75,7 @@ def assess_review(watch, listing, variant, *, now, alternatives=None, search_inc
         "notify": review.status == "possible_pressing"
         and not blocked
         and budget in ("no_ceiling", "within_ceiling"),
-        "policy": "private-target-review-v2",
+        "policy": "private-target-review-v3",
     }
 
 

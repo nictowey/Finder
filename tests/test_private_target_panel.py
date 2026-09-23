@@ -10,7 +10,7 @@ from finder.adapters.discogs.adapter import AlternativeRetrieval
 from finder.adapters.discogs.normalize import normalize_release
 from finder.adapters.ebay.normalize import normalize_listing
 from finder.errors import ConfigurationError
-from scripts.measure_private_target_panel import parse_private_ids, probe_batch
+from scripts.measure_private_target_panel import CONFLICT_REASONS, parse_private_ids, probe_batch
 
 
 def test_private_target_list_rejects_duplicates_and_oversized_input():
@@ -74,6 +74,11 @@ def test_panel_aggregates_one_batch_without_serializing_identity(
     assert result["results"][0]["distinct_listings"] == 1
     assert result["results"][0]["ordinal"] == 5
     assert result["results"][0]["queries_capped"] == adapter.queries
+    assert set(result["results"][0]["conflict_reasons"]) <= set(CONFLICT_REASONS)
+    assert (
+        result["results"][0]["possible_with_catalog_uncertainty"]
+        == result["results"][0]["review_counts"]["possible_pressing"]
+    )
     assert "55555" not in serialized
     assert "987654321" not in serialized
     assert "Example Album" not in serialized
