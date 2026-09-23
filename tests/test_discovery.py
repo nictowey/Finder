@@ -242,6 +242,10 @@ def test_atomic_detail_evaluation_digest_dedup_dismissal_and_deletion(setup, sea
         state=state,
     )
     assert status == "suppressed" and repo.count() == 0
+    with repo.engine.connect() as conn:
+        assert not conn.execute(select(work)).all()
+    assert queue.coverage(claim, state)["suppression_events"] == 1
+    assert queue.coverage(claim, state)["unique_retrieved"] == 0
 
 
 def test_detail_failure_remains_pending_and_cannot_count_as_evaluated(setup):
