@@ -164,7 +164,8 @@ def test_exact_numbered_target_survives_zero_search_results_for_buyer_review(
         retrieval = DiscogsCatalogProvider(client, now=lambda: observed_at).search_for_listing(
             listing, target_release_id=333
         )
-    assert calls == ["/database/search", "/releases/333"]
+    assert calls == ["/releases/333", "/database/search", "/database/search"]
+    assert retrieval.query_kinds == ["q", "target_family"]
     assert [variant.catalog_variant_id for variant in retrieval.variants] == ["333"]
     assert retrieval.target_not_in_search and retrieval.incomplete
     decision = decide_match(listing, retrieval.variants, retrieval_incomplete=retrieval.incomplete)
@@ -240,6 +241,41 @@ def test_target_reserves_one_detail_slot_when_search_returns_competitors(
     assert details == [333]
     assert result.target_not_in_search and result.candidate_limit_reached
     assert result.incomplete
+
+
+def test_target_catalog_search_adds_competing_pressings_without_claiming_seller_recall(
+    discogs_settings, discogs_release, search_payload, observed_at
+):
+    listing = normalize_listing(
+        {
+            **search_payload["itemSummaries"][0],
+            "title": "Example Artist Example Album numbered vinyl sealed collectible copy",
+            "localizedAspects": [{"name": "Artist", "value": "Example Artist"}],
+        },
+        observed_at,
+    )
+    queries = []
+
+    def handler(request):
+        if request.url.path == "/database/search":
+            query = request.url.params["q"]
+            queries.append(query)
+            ids = [111, 222] if query == "Example Artist Example Album" else []
+            return httpx.Response(200, json={"results": [{"id": id} for id in ids]})
+        id = int(request.url.path.rsplit("/", 1)[1])
+        return httpx.Response(200, json={**discogs_release, "id": id})
+
+    with DiscogsClient(discogs_settings, transport=httpx.MockTransport(handler)) as client:
+        retrieval = DiscogsCatalogProvider(client).search_for_listing(
+            listing, target_release_id=111
+        )
+    assert queries == [listing.title, "Example Artist Example Album"]
+    assert retrieval.query_kinds == ["q", "target_family"]
+    assert [variant.catalog_variant_id for variant in retrieval.variants] == ["111", "222"]
+    assert retrieval.target_not_in_search and retrieval.incomplete
+    decision = decide_match(listing, retrieval.variants, retrieval_incomplete=retrieval.incomplete)
+    assert decision.outcome == "family_only"
+    assert set(decision.candidate_ids) == {"111", "222"}
 
 
 @pytest.mark.parametrize("invalid", [0, -1, True, "333"])

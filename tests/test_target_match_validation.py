@@ -31,7 +31,7 @@ def test_target_match_summary_never_emits_provider_values(
     )
     variant = normalize_release(discogs_release, observed_at)
     retrieval = CandidateRetrieval(
-        variants=[variant],
+        variants=[variant, variant.model_copy(update={"catalog_variant_id": "222"})],
         query_kinds=["q"],
         search_truncated=True,
         candidate_limit_reached=False,
@@ -43,8 +43,15 @@ def test_target_match_summary_never_emits_provider_values(
     public_log = json.dumps(summary)
     assert summary["target_retrieved"]
     assert summary["retrieval"]["incomplete"]
+    assert summary["retrieval"]["same_family_competitors"] == 1
     assert summary["decision"]["outcome"] != "exact_variant"
     assert "format" in summary["target_unmatched_soft_fields"]
     assert "format" not in summary["target_conflicting_fields"]
-    for sensitive in ("123456789012", "private listing marker", listing.title, "Example Artist"):
+    for sensitive in (
+        "123456789012",
+        "private listing marker",
+        listing.title,
+        "Example Artist",
+        '"222"',
+    ):
         assert sensitive not in public_log

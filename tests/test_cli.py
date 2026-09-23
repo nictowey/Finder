@@ -152,7 +152,7 @@ def test_match_cli_persists_auditable_candidate(
     result = json.loads(capsys.readouterr().out)
     assert result["candidates"][0]["status"] == "strong_candidate"
     assert result["decision"]["outcome"] == "probable_variant"
-    assert result["retrieval"]["query_kinds"] == ["barcode", "q"]
+    assert result["retrieval"]["query_kinds"] == ["barcode", "q", "target_family"]
     assert result["retrieval"]["incomplete"] is False
     assert result["retrieval"]["target_release_id"] == 111
     assert result["retrieval"]["target_not_in_search"] is False
