@@ -89,10 +89,16 @@ The open provider-use decision and bounded Production audit are documented in
    - A bounded Discogs title probe checks catalog-derived seller-like titles without pinning
      the selected release. See `docs/vinyl-measurement-2026-09-23.md` for its limits.
 
+12. Private collector watchlist loop
+   - Persistent targets, bounded 30-minute schedule, leases, review inbox and browser push outbox
+   - Owner-only verified-email login; access remains locked until owner setup
+   - Live migration/deletion checks and one seeded target scan passed; 22 review rows persisted
+   - End-user sign-in and real-device notification checks await owner setup
+
 ### Verified baseline
 
 - Latest verified implementation baseline: current `main` after required checks
-- Offline suite: Python and Node tests passing; rerun required checks before commit
+- Offline suite: 239 Python and 15 Node tests passing; rerun required checks before commit
 - Ruff lint and formatting checks passing
 - Live Discogs validation passing through GitHub Actions
 - Multi-query Discogs smoke passed on the `discogs-candidate-retrieval-2026` branch; this uses
@@ -107,7 +113,8 @@ The open provider-use decision and bounded Production audit are documented in
 
 The free Neon Production branch and deletion Function are deployed with Production credentials.
 Candidate persistence now guards against recreating eBay-derived evidence after a seller
-deletion. PostgreSQL concurrency behavior still needs an integration check; see the data
+deletion. Isolated PostgreSQL migration, lease, deduplication and deletion-cascade checks now pass.
+Simultaneous seller-deletion races remain unmeasured; see the data
 inventory in `docs/decisions/0001-provider-use.md` before expanding retention.
 eBay accepted the endpoint and sent test notifications; new deletion tombstones appeared in the
 shared PostgreSQL database. The September 22, 2026 Production smoke workflow fetched,

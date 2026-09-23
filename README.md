@@ -2,7 +2,18 @@
 
 Finder is the foundation for a marketplace-monitoring and mispricing-detection platform. The eventual workflow is: define a monitor → discover listings → identify the exact product and variant → compare against real comparable transactions → evaluate opportunities → alert the user.
 
-The current foundation has two connected parts: a local Python CLI ingests active eBay listings through the official Browse API, and a Discogs catalog provider stores canonical release metadata and evaluates deterministic match candidates. A small Neon Function handles eBay's required Production account-deletion notices. The legacy broad monitor targets hip-hop/rap vinyl; release-specific discovery and catalog matching now accept any genre of vinyl. There is no scraping, frontend, account system, payment flow, general notification delivery, LLM matching, or valuation.
+The private collector pilot now has a hosted watchlist dashboard, saved Discogs pressing targets,
+recurring eBay scans, an evidence-aware review inbox, optional buyer price ceilings, and browser
+push delivery. It uses the official eBay Browse and Discogs catalog APIs. Possible pressing
+leads remain unverified; there is no sold-comparables valuation or automatic exact-match claim.
+
+**[Open the private Finder dashboard](https://br-soft-forest-b4fo15q2-watchlist.compute.c-6.us-east-2.aws.neon.tech/)**
+
+Access requires the configured owner email and its verification code. Owner setup is pending;
+the deployed app fails closed until the address is supplied. See
+[private watchlist setup and limits](docs/private-watchlist.md). The pilot supports three watches
+and checks about every 30 minutes, subject to scheduler delay. Discogs marketplace listings,
+public signup, payments, and additional collectible categories remain future work.
 
 See [ROADMAP.md](ROADMAP.md) for the accuracy-gated development plan, pressing-versus-copy
 identity model, provider constraints, and criteria that must be met before valuation, alerts,
@@ -17,7 +28,8 @@ currency, explicit accepted provider condition IDs, and destination. It yields `
 matcher can establish only a probable pressing; auctions, unknown shipping, unverified
 destination quotes, stale listings, and incomplete catalog retrieval also require review.
 `candidate` means the internal rules passed, **not** a verified live offer, market value, or
-collector alert. No watchlist storage, scheduling, public display, or user accounts are enabled.
+collector alert. The separate private `watch_store` / `watch_worker` loop deliberately surfaces
+uncertain leads through an owner-only review inbox; it does not promote these to exact matches.
 The caller must establish that shipping was quoted for the saved destination; the presence of
 a numeric shipping amount does not prove that. Provider-use gates are in
 [`docs/decisions/0001-provider-use.md`](docs/decisions/0001-provider-use.md).
