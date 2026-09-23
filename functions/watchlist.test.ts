@@ -101,7 +101,7 @@ test('inbox pagination keeps older references without exposing stale provider co
  assert.ok(!JSON.stringify(data).includes('private old title'));assert.ok(!JSON.stringify(data).includes('123.45'));
  assert.ok(sql.includes('LIMIT 51'));assert.ok(!sql.includes('i.last_seen_at >= $1'));
  await handler(new Request(origin+'/api/dashboard?filter=possible_pressing&cursor='+encodeURIComponent(data.next_cursor)));
- assert.deepEqual(values.slice(1),JSON.parse(data.next_cursor));
+ assert.deepEqual(values.slice(1,4),JSON.parse(data.next_cursor));
 });
 
 test('coverage wording separates worker success, page exhaustion, and pending evaluation',()=>{
@@ -112,4 +112,23 @@ test('coverage wording separates worker success, page exhaustion, and pending ev
  assert.ok(javascript.includes('min overdue'));
  assert.ok(html.includes('Next page'));
  assert.ok(javascript.includes('details_observed_at'));
+});
+
+
+test('price scope defaults to saved ceilings and all-prices is explicit', async()=>{
+ let values:unknown[]=[];
+ const db={query:async(q:string,v:unknown[]=[])=>{
+  if(q.includes('owner_email'))return {rows:[{data:{email:'owner@example.com'}}]};
+  if(q.includes('FROM finder_inbox i JOIN listings'))values=v;
+  return {rows:[]};
+ }};
+ const handler=createHandler({db,origin,authURL:'https://auth.example',fetch:async()=>new Response(JSON.stringify({user:{email:'owner@example.com',emailVerified:true},session:{expiresAt:new Date(Date.now()+60000).toISOString()}}))});
+ assert.equal((await handler(new Request(origin+'/api/dashboard'))).status,200);
+ assert.equal(values[4],'watch');
+ assert.ok(Number.isFinite(Date.parse(String(values[5]))));
+ assert.equal((await handler(new Request(origin+'/api/dashboard?prices=all'))).status,200);
+ assert.equal(values[4],'all');
+ assert.equal((await handler(new Request(origin+'/api/dashboard?prices=invalid'))).status,400);
+ assert.ok(html.includes('Within each watch’s ceiling'));
+ assert.ok(html.includes('All prices'));
 });

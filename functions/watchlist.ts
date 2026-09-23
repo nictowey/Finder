@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Pool } from "pg";
+import { inboxQuery } from "./inbox-query.js";
 import { readOperations } from "./operations.js";
 import webpush from "web-push";
 import { html, javascript, serviceWorker, stylesheet } from "./watchlist-ui.js";
@@ -123,13 +124,9 @@ export function createHandler(deps: Deps) {
           try { cursor = JSON.parse(url.searchParams.get("cursor")!); } catch { return reply({error:"Invalid cursor"},400); }
           if (!Array.isArray(cursor) || cursor.length !== 3 || cursor.some(v=>typeof v!=="string" || v.length>255)) return reply({error:"Invalid cursor"},400);
         }
-        const leads = (await deps.db.query(`SELECT i.watch_id,i.marketplace,i.marketplace_item_id,i.data,i.first_seen_at,i.last_seen_at,i.dismissed,l.data AS listing,w.revision
-          FROM finder_inbox i JOIN listings l USING(marketplace,marketplace_item_id)
-          JOIN finder_watches w ON w.id=i.watch_id
-          WHERE ($1='dismissed' AND i.dismissed OR $1='unavailable' AND NOT i.dismissed AND i.data->>'availability'='unavailable_on_recheck'
-            OR $1 NOT IN ('dismissed','unavailable') AND NOT i.dismissed AND i.data->>'availability' IS DISTINCT FROM 'unavailable_on_recheck' AND i.data->>'status'=$1)
-          AND ($2::text IS NULL OR (i.first_seen_at,i.watch_id,i.marketplace_item_id)<($2,$3,$4))
-          ORDER BY i.first_seen_at DESC,i.watch_id DESC,i.marketplace_item_id DESC LIMIT 51`, [filter,...(cursor || [null,null,null])])).rows;
+        const priceScope = url.searchParams.get("prices") || "watch";
+        if (!["watch", "all"].includes(priceScope)) return reply({error:"Invalid price filter"},400);
+        const leads = (await deps.db.query(inboxQuery, [filter,...(cursor || [null,null,null]),priceScope,new Date(cutoff).toISOString()])).rows;
         const more = leads.length > 50;
         if (more) leads.pop();
         const tail = leads.at(-1);
