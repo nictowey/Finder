@@ -60,7 +60,8 @@ between requests remain limitations. Search absence never implies sold or unavai
 
 `FINDER_RECONCILIATION_HOURS` defaults provisionally to 24 (minimum 6). Final cadence should be
 reviewed against live request counts. Four detail slots per chunk are reserved for the oldest
-known due leads; remaining slots process pending work. Plausible/uncertain items become due
+known due leads; remaining slots process pending work, then any spare capacity refreshes more older due leads.
+A remaining due-refresh backlog also resumes at the next catch-up tick. Plausible/uncertain items become due
 in four hours, rejected items in 24. Changed summaries or catalog/policy evidence requeue
 previous evaluations. Confirmed 404/410, ended time or explicit out-of-stock response marks
 unavailable and invalidates pending alerts; API failures stay separate. No public certainty or
@@ -167,3 +168,21 @@ registration and the operational observation start remained intact, including th
 also passed isolated PostgreSQL migration, deletion, shared concurrent budgeting and synthetic
 backup/restore checks. Authenticated Discogs validation passed in smoke run #43. Further
 resume, full rollout and unattended invocation evidence must be assessed separately.
+
+
+Deployment #17 expanded the rollout to all three existing slots. All six configured queries
+exhausted their baseline passes: 16 baseline page responses including replay, 434 unique
+watch/listing references, 64 evaluated and 370 pending. The original watch resumed from three
+to ten baseline pages and from 276 to 355 references without restarting its completed work.
+The new path used 78 Browse calls across the two validations (28 search, 50 detail); cached
+fresh details accounted for evaluations that did not need a new detail call. Latest preflight
+readings ranged from 4,200 to 4,160 in the expansion. Existing watch settings and the registered
+device were verified through the authenticated dashboard. There was no periodic reconciliation
+or real-device delivery claim in these deployment runs.
+
+For the observed inventory size, a conservative estimate treating all 434 references as
+four-hour refresh candidates is `434 * 6 + 576 + 16 = 3,196` Browse calls/day before retries,
+new items, changed page counts, and unrelated consumers. Rejected candidates instead refresh
+at 24 hours, reducing that estimate. The 24-hour reconciliation proposal is retained: its
+observed search cost is 16 calls/pass including replay, approximately 0.3% of the observed
+5,000-call daily pool. This is not a measured full-day burn rate or a freshness guarantee.
