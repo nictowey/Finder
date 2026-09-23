@@ -116,6 +116,9 @@ unverified. See `docs/production-audit.md` for aggregate run records.
 The private DS2 match check now identifies the album family and a bounded catalog query surfaced
 five other same-family releases among ten evaluated. The catalog query hit its cap; the specific
 numbered copy, catalog coverage, and any real-listing precision remain unverified.
+The September 23 anonymous pressing comparison rendered successfully in the manual workflow.
+Seller title and item specifics claimed numbering, and the pinned target alone was catalog-marked
+numbered among six sampled same-family releases. No individual-copy verification was performed.
 
 ## Architecture boundaries
 
