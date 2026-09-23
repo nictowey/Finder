@@ -17,12 +17,17 @@ def summarize_browse_quota(payload: dict) -> dict:
             continue
         if not isinstance(api.get("resources"), list):
             raise ValueError("Missing Browse resources")
-        for resource in api["resources"]:
+        for index, resource in enumerate(api["resources"], 1):
             if not isinstance(resource, dict) or not isinstance(resource.get("rates"), list):
                 raise ValueError("Malformed Browse resource")
             name = resource.get("name")
-            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_]{1,64}", name):
+            if not isinstance(name, str) or not name:
                 raise ValueError("Malformed Browse resource name")
+            # API resource paths may contain slashes, hyphens and digits. Never emit an
+            # unexpected arbitrary string in a public workflow log.
+            public_name = (
+                name if re.fullmatch(r"[A-Za-z0-9_./ -]{1,96}", name) else f"resource_{index}"
+            )
             rates = []
             for rate in resource["rates"]:
                 if not isinstance(rate, dict):
@@ -43,7 +48,7 @@ def summarize_browse_quota(payload: dict) -> dict:
                 )
             if not rates:
                 raise ValueError("Missing Browse rate windows")
-            resources.append({"name": name, "rates": rates})
+            resources.append({"name": public_name, "rates": rates})
     if not resources:
         raise ValueError("No Browse quota returned")
     return {"status": "available", "api": "buy.browse", "resources": resources}
