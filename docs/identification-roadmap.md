@@ -213,8 +213,13 @@ when both schedulers fire. The trigger's actual delivery, quota usage, and watch
 14 days of production observation before the reliability gate can pass.
 The [first Production run under this gate](https://github.com/nictowey/Finder/actions/runs/35905240731)
 completed three due watches without errors or quota pauses and inserted eight new inbox rows.
-It passed 285 Python and 19 Node tests. The live catch-up trigger and 14-day cadence remain
-unverified because the scoped dispatch credential has not been installed.
+The [follow-up deployment](https://github.com/nictowey/Finder/actions/runs/35910197545)
+passed the same gates after the repository-scoped dispatch credential was stored in the
+production environment, completing three due watches with zero failures or quota pauses
+and five new inbox rows. The Neon schedule is configured, but a live automatic dispatch and
+its latency have not yet been verified; the 14-day observation requirement still applies.
+The deployment passed 285 Python and 19 Node tests. The live catch-up trigger and 14-day
+cadence remain unverified until automatic runs are observed.
 
 Stages 1–2 and synthetic tooling can proceed immediately. The existing
 [provider-use record](decisions/0001-provider-use.md) governs real evaluation retention,

@@ -29,8 +29,9 @@ six hours. A dedicated production auth email sender is needed before an external
    `FINDER_GITHUB_DISPATCH_TOKEN` in GitHub's **production environment** and rerun **Deploy
    private watchlist**. Deployment injects the credential into a private Neon Function, never
    the browser. The Neon schedule checks for due watches every ten minutes and dispatches the
-   existing worker only when a watch is due and no worker lease is active. The credential is
-   currently absent as of September 23, so this backup is not yet active. Rotate it before expiration.
+   existing worker only when a watch is due and no worker lease is active. The credential was
+   installed September 23 and deployment #12 passed; the first automatic dispatch remains
+   unverified. The current token expires October 23, 2026; rotate it before expiration.
 
 An unset owner email fails closed. Sign-in uses the managed provider's rate-limited email OTP;
 the Function proxies only the two needed login endpoints and never returns credentials in JSON.
@@ -179,9 +180,12 @@ the pink/green release are discovery examples, not enough to estimate accuracy a
 - [Quota-guard deployment #11](https://github.com/nictowey/Finder/actions/runs/35905240731)
   passed 285 Python and 19 Node tests, isolated PostgreSQL migration checks, three due live
   watch scans and private-access checks. The worker reported three completed scans, zero
-  failures, zero quota pauses, and eight new inbox rows. The independent Neon trigger has not
-  been deployed because its repository-limited GitHub dispatch credential is not configured.
-  Observe later automatic runs and latency before making a timing claim.
+  failures, zero quota pauses, and eight new inbox rows.
+- [Catch-up deployment #12](https://github.com/nictowey/Finder/actions/runs/35910197545)
+  used the production environment dispatch secret and passed the same offline, PostgreSQL,
+  live-scan and access gates. The worker completed three due watches with zero failures or
+  quota pauses and five new inbox rows. The independent Neon schedule is configured, but
+  a due-time automatic dispatch has not yet been observed; measure latency before a timing claim.
 - [Policy v3 deployment #8](https://github.com/nictowey/Finder/actions/runs/35898807819)
   passed 273 Python and 16 Node tests, isolated PostgreSQL checks and private access checks.
   It completed three due watches with zero scan failures and six new inbox rows. The policy
