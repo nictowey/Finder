@@ -7,8 +7,11 @@ incremental windows, periodic reconciliation, a deletion-aware evaluation queue,
 request debits and a paginated inbox. See [the discovery contract](docs/resumable-discovery.md) for scope,
 completion states, failure behavior, estimates and rollout/rollback controls. Earlier sampled
 scan descriptions below are historical and remain applicable only while rollout is disabled.
-Local validation: 313 Python and 32 Node tests, Ruff and TypeScript; live deployment and cadence
-validation are still pending and must be recorded separately. Existing operational history
+Validation: 317 Python and 32 Node tests, Ruff and TypeScript. Deployment #19 passed the
+PostgreSQL upgrade/deletion/budget rehearsal and private-access gates. All six current queries
+exhausted their initial passes (434 retained references); 175 evaluated and 259 pending at the
+last observation. The 22:15 UTC scheduled catch-up resumed evaluation successfully. Daily
+reconciliation and real-listing phone delivery remain unobserved. Existing operational history
 is retained. No marketplace recall or pressing-accuracy claim follows from this change.
 
 

@@ -7,10 +7,12 @@ incremental windows, periodic reconciliation, a deletion-aware evaluation queue,
 request debits and a paginated inbox. See [the discovery contract](docs/resumable-discovery.md) for scope,
 completion states, failure behavior, estimates and rollout/rollback controls. Earlier sampled
 scan descriptions below are historical and remain applicable only while rollout is disabled.
-Local validation: 317 Python and 32 Node tests, Ruff and TypeScript. Controlled deployment #16
-retrieved 276 references with 16 evaluated and 260 pending using 24 Browse requests; search
-coverage remained partial. See the discovery contract for the recorded quota-parser correction.
-Unattended cadence and full rollout evidence remain separate. Existing operational history
+Validation: 317 Python and 32 Node tests, Ruff and TypeScript. Deployment #19 at f9ab586 passed
+all gates. All six current queries exhausted their initial passes: 434 retained references,
+175 evaluated and 259 pending at the last observation. A scheduled Neon catch-up at 22:15 UTC
+resumed evaluation; the notification step had no eligible alerts. See the discovery contract
+for request counts and the earlier recorded quota-parser pause. Daily reconciliation and
+real-listing phone delivery remain unobserved. Existing operational history
 is retained. No marketplace recall or pressing-accuracy claim follows from this change.
 
 
