@@ -91,6 +91,8 @@ def assess_watch_target(
         review.append("catalog_source_unconfirmed")
     if "catalog_search_incomplete" in decision.missing_evidence:
         review.append("catalog_search_incomplete")
+    if "numbered_structured_claim_missing" in decision.missing_evidence:
+        review.append("numbered_structured_claim_missing")
     if decision.outcome == "rejected":
         excluded.append("identity_rejected")
     elif target.family_id:

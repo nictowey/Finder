@@ -370,6 +370,10 @@ generic core:
 ### 2.2 Candidate retrieval
 
 - Generate multiple Discogs queries from artist/title plus strong identifiers when present.
+- For an exact target selected by a collector, reserve one bounded release-detail request for
+  that release even if seller-text search misses it. Record the search miss, keep competing
+  search results under the same limit, and send a no-identifier match to human review rather
+  than silently dropping a known target or asserting an exact pressing.
 - Measure whether these first-page searches actually return the true release on a permitted,
   labeled dataset; a seller's barcode or catalog number remains an unverified claim.
 - Retrieve candidates at the master/family level before ranking exact releases.

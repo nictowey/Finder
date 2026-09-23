@@ -142,6 +142,8 @@ def test_match_cli_persists_auditable_candidate(
                 "ebay",
                 "--item-id",
                 listing.marketplace_item_id,
+                "--target-release-id",
+                "111",
                 "--json",
             ]
         )
@@ -152,6 +154,8 @@ def test_match_cli_persists_auditable_candidate(
     assert result["decision"]["outcome"] == "probable_variant"
     assert result["retrieval"]["query_kinds"] == ["barcode", "q"]
     assert result["retrieval"]["incomplete"] is False
+    assert result["retrieval"]["target_release_id"] == 111
+    assert result["retrieval"]["target_not_in_search"] is False
     repository = SqlAlchemyRepository.from_url(database_url)
     try:
         saved = repository.get_candidates("ebay", listing.marketplace_item_id, "discogs")

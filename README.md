@@ -70,9 +70,19 @@ finder catalog-search "194398653419" --json
 finder listings --limit 20
 finder match --marketplace ebay --item-id 'v1|123456789012|0'
 finder match --marketplace ebay --item-id 'v1|123456789012|0' --json
+finder match --marketplace ebay --item-id 'v1|123456789012|0' --target-release-id 111 --json
 ```
 
 JSON logs go to stderr; the human or JSON summary goes to stdout. `.env` loading never overrides existing environment variables. Local database paths and the default configuration path resolve from the current working directory.
+
+For an exact-release watch target, `--target-release-id` reserves one of the bounded Discogs
+detail slots for that known release even when its ID does not appear in the first search page.
+The response reports `target_not_in_search` and treats that search as incomplete. This prevents
+a long or aliased seller title from hiding the collector's selected release; it does **not**
+verify that the marketplace item is that pressing. A numbered-edition listing with seller color
+and numbered claims but no pressing identifier remains a review candidate, not an exact match.
+Run this command privately: listing-level output and candidate evidence should not go into
+public CI logs or real-data fixtures until the provider-use decision is resolved.
 
 `finder listings` shows recent stored snapshots and the exact item IDs accepted by
 `finder match`. It needs only `FINDER_DATABASE_URL`, not API credentials. Prices show the quoted

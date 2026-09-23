@@ -18,10 +18,17 @@ class CandidateRetrieval:
     search_truncated: bool
     candidate_limit_reached: bool
     identifiers_omitted: bool
+    target_release_id: int | None
+    target_not_in_search: bool
 
     @property
     def incomplete(self) -> bool:
-        return self.search_truncated or self.candidate_limit_reached or self.identifiers_omitted
+        return (
+            self.search_truncated
+            or self.candidate_limit_reached
+            or self.identifiers_omitted
+            or self.target_not_in_search
+        )
 
 
 class DiscogsCatalogProvider:
@@ -44,14 +51,23 @@ class DiscogsCatalogProvider:
         results, _ = self._search({"q": query.strip()}, limit)
         return self._hydrate(self._ids(results)[:limit])
 
-    def search_for_listing(self, listing: Listing, *, limit: int = 10) -> CandidateRetrieval:
+    def search_for_listing(
+        self, listing: Listing, *, limit: int = 10, target_release_id: int | None = None
+    ) -> CandidateRetrieval:
         """Use at most three searches and `limit` detail requests for provisional candidates.
 
         All search values are seller claims. Diversifying retrieval is not verification of an
-        identifier and does not establish complete coverage of a release family.
+        identifier and does not establish complete coverage of a release family. A user-saved
+        exact release is retrieved directly, but never treated as a confirmed listing match.
         """
         if not 1 <= limit <= 25:
             raise ConfigurationError("Catalog result limit must be between 1 and 25.")
+        if target_release_id is not None and (
+            isinstance(target_release_id, bool)
+            or not isinstance(target_release_id, int)
+            or target_release_id <= 0
+        ):
+            raise ConfigurationError("Target Discogs release ID must be a positive integer.")
         fingerprint = from_listing(listing)
         barcodes = list(
             dict.fromkeys(
@@ -80,13 +96,25 @@ class DiscogsCatalogProvider:
             results, possibly_more = self._search({name: value}, per_page)
             result_lists.append(self._ids(results))
             truncated |= possibly_more
-        unique = list(dict.fromkeys(id for row in zip_longest(*result_lists) for id in row if id))
+        search_ids = list(
+            dict.fromkeys(id for row in zip_longest(*result_lists) for id in row if id)
+        )
+        target_not_in_search = target_release_id is not None and target_release_id not in search_ids
+        # Reserve one bounded detail slot for the user's target. Otherwise broad title search
+        # can crowd out the release the collector actually requested.
+        unique = (
+            [target_release_id, *(id for id in search_ids if id != target_release_id)]
+            if target_release_id is not None
+            else search_ids
+        )
         return CandidateRetrieval(
             variants=self._hydrate(unique[:limit]),
             query_kinds=[name for name, _ in plans],
             search_truncated=truncated,
             candidate_limit_reached=len(unique) > limit,
             identifiers_omitted=identifiers_omitted,
+            target_release_id=target_release_id,
+            target_not_in_search=target_not_in_search,
         )
 
     def _search(self, query: dict[str, str], limit: int) -> tuple[list, bool]:

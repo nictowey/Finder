@@ -41,6 +41,11 @@ def _parser() -> argparse.ArgumentParser:
     match.add_argument("--marketplace", default="ebay")
     match.add_argument("--item-id", required=True)
     match.add_argument("--limit", type=int, default=10, choices=range(1, 26))
+    match.add_argument(
+        "--target-release-id",
+        type=int,
+        help="Include this saved Discogs release in the bounded candidate set for review",
+    )
     match.add_argument("--env-file", type=Path, default=Path(".env"))
     match.add_argument("--json", action="store_true", help="Print machine-readable results")
     stored = commands.add_parser("listings", help="Browse recent stored listings for review")
@@ -196,7 +201,9 @@ def _match(args: argparse.Namespace) -> int:
             )
         with DiscogsClient(settings) as client:
             provider = DiscogsCatalogProvider(client)
-            retrieval = provider.search_for_listing(listing, limit=args.limit)
+            retrieval = provider.search_for_listing(
+                listing, limit=args.limit, target_release_id=args.target_release_id
+            )
             variants = retrieval.variants
             candidates = rank_variants(listing, variants)
             for variant in variants:
@@ -222,6 +229,8 @@ def _match(args: argparse.Namespace) -> int:
             "search_truncated": retrieval.search_truncated,
             "candidate_limit_reached": retrieval.candidate_limit_reached,
             "identifiers_omitted": retrieval.identifiers_omitted,
+            "target_release_id": retrieval.target_release_id,
+            "target_not_in_search": retrieval.target_not_in_search,
             "incomplete": retrieval.incomplete,
         },
         "decision": decision.model_dump(mode="json"),
@@ -245,6 +254,8 @@ def _match(args: argparse.Namespace) -> int:
         print(f"Decision: {decision.outcome} ({decision.policy_version})")
         if retrieval.incomplete:
             print("Catalog search was bounded; other pressings may be missing.")
+        if retrieval.target_not_in_search:
+            print("Saved release was not found by the listing search; it was checked directly.")
         if decision.conflicts:
             print(f"Conflicting fields: {', '.join(decision.conflicts)}")
         if decision.missing_evidence:

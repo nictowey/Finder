@@ -141,6 +141,9 @@ Discogs behavior in the eBay adapter or marketplace behavior in catalog provider
 - For a catalog-numbered pressing, a shared barcode/color or a seller title serial claim alone
   must not promote the candidate; an explicit structured numbered claim is still unverified.
   Keep the individual copy number separate from the catalog release identity.
+- An exact watch target can reserve one Discogs detail slot even when seller-text search misses
+  the release. A directly fetched target is a candidate to assess, never proof that the eBay
+  listing is that release. Preserve target search-miss and missing numbered-claim reasons.
 - eBay's API agreement restricts using eBay content to suggest or model prices for eBay items;
   obtain a written provider-use decision before deal scoring, price-based alerts, or paid launch.
 - Review eBay's intermediate-copy and algorithm-training restrictions before retaining real
