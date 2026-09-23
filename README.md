@@ -74,6 +74,7 @@ finder match --marketplace ebay --item-id 'v1|123456789012|0' --target-release-i
 finder target-plan --target future-ds2-7609839 --mode initial --json
 finder scan-target --target future-ds2-7609839 --mode initial --json
 finder scan-target --target future-ds2-7609839 --mode refresh --json
+finder scan-target --target future-ds2-7609839 --mode initial --probe-legacy-id 123456789012 --json
 ```
 
 JSON logs go to stderr; the human or JSON summary goes to stdout. `.env` loading never overrides existing environment variables. Local database paths and the default configuration path resolve from the current working directory.
@@ -101,6 +102,11 @@ Neither mode guarantees retrieval of a particular active listing, including the 
 DS2 example. A found listing must be checked with `finder match --target-release-id 7609839`;
 discovery alone does not establish the edition, availability, or value. Production runs still
 require the shared PostgreSQL database for seller-deletion handling. No target scan is scheduled.
+The manual **Production target scan** workflow runs this two-query plan from `main` using
+Production environment secrets. Its public output is aggregate only. Inspect individual
+results privately and distinguish items discovered by this run from items stored earlier.
+The optional private probe reports `probe_found_in_this_run` without echoing the supplied
+numeric legacy item ID. Do not pass real item IDs in public workflow inputs or logs.
 
 `finder listings` shows recent stored snapshots and the exact item IDs accepted by
 `finder match`. It needs only `FINDER_DATABASE_URL`, not API credentials. Prices show the quoted

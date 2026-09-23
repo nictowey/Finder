@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -63,13 +64,32 @@ class _SharedSearch:
     def __init__(self, adapter: EbayAdapter):
         self.adapter = adapter
         self.seen: set[str] = set()
+        self.observed: set[str] = set()
 
     @property
     def stats(self) -> AdapterStats:
         return self.adapter.stats
 
     def search(self, monitor: Monitor):
-        return self.adapter.search(monitor, seen_item_ids=self.seen)
+        for observation in self.adapter.search(monitor, seen_item_ids=self.seen):
+            if observation.listing is not None:
+                self.observed.add(observation.listing.marketplace_item_id)
+            yield observation
+
+
+@dataclass
+class TargetScanRun:
+    summaries: list[ScanSummary] = field(default_factory=list)
+    # Ephemeral only: never serialize item identities to public workflow output.
+    discovered_item_ids: set[str] = field(default_factory=set)
+
+    def found_legacy_item(self, legacy_item_id: str) -> bool:
+        """Match the numeric part of a Browse ID, or a plain legacy ID."""
+        return any(
+            item_id == legacy_item_id
+            or (len(parts := item_id.split("|")) == 3 and parts[1] == legacy_item_id)
+            for item_id in self.discovered_item_ids
+        )
 
 
 def run_target_scan(
@@ -78,13 +98,13 @@ def run_target_scan(
     repository: ListingRepository,
     *,
     mode: Literal["initial", "refresh"],
-) -> list[ScanSummary]:
+) -> TargetScanRun:
     """Stop after a failed query; dedupe identity and detail requests across queries."""
     shared = _SharedSearch(adapter)
-    results: list[ScanSummary] = []
+    results = TargetScanRun(discovered_item_ids=shared.observed)
     for monitor in plan_target_search(target, mode=mode):
         result = run_scan(monitor, shared, repository)
-        results.append(result)
+        results.summaries.append(result)
         if result.status != "completed":
             break
     return results

@@ -34,3 +34,23 @@ until the retention/evaluation decision in
 [`0001-provider-use.md`](decisions/0001-provider-use.md) is resolved. For target-level discovery
 coverage, compare a future private watchlist against a manually checked eBay sample; the
 ten-item broad scan cannot measure that outcome.
+
+## Exact-target discovery sample
+
+The manual `Production target scan` workflow runs from `main` with the existing Production
+credentials and shared deletion-aware Neon database. Select `initial` once to sample existing
+active listings ranked by eBay best match; `refresh` samples the newest listings. It executes
+the two configured Future DS2 alias queries, one page of ten items each. The public run log
+contains only the plan and aggregate outcomes; it must never print listing IDs, seller data,
+titles, or listing URLs. Check `complete`, `coverage_truncated`, fetched/new/updated counts,
+`skip_reasons`, and whether both query results completed. A successful bounded run does not
+establish recall of the user-supplied listing or a reliable pressing match.
+
+For a privately known listing, `finder scan-target --target future-ds2-7609839 --mode initial
+--probe-legacy-id <numeric eBay item ID> --json` reports `probe_found_in_this_run` without
+printing the ID. Run this only in a private environment with Production credentials and the
+shared database; do not paste the ID into a public workflow input or log. The probe checks
+items normalized during **this scan**, not items already stored by an earlier broad scan.
+An absent result identifies a miss within this bounded sample, not a permanent search miss.
+Record counts of found/missed and reasons privately, subject to the provider-use review; do
+not copy real item identities or labeled examples into the repository or public workflow logs.
