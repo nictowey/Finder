@@ -10,7 +10,14 @@ from finder.adapters.discogs.adapter import DiscogsCatalogProvider
 from finder.adapters.discogs.client import DiscogsClient
 from finder.adapters.ebay.adapter import EbayAdapter
 from finder.adapters.ebay.client import EbayClient
-from finder.config import load_database_url, load_discogs_settings, load_monitor, load_settings
+from finder.adapters.ebay.target_search import plan_target_search, run_target_scan
+from finder.config import (
+    load_database_url,
+    load_discogs_settings,
+    load_monitor,
+    load_search_target,
+    load_settings,
+)
 from finder.errors import ConfigurationError, FinderError
 from finder.logging import configure_logging
 from finder.matching import decide_match, rank_variants
@@ -26,6 +33,20 @@ def _parser() -> argparse.ArgumentParser:
     scan.add_argument("--monitor", default="rap-vinyl")
     scan.add_argument("--env-file", type=Path, default=Path(".env"))
     scan.add_argument("--json", action="store_true", help="Print machine-readable summary")
+
+    for command, help_text in (
+        ("target-plan", "Inspect a bounded eBay discovery plan without API credentials"),
+        ("scan-target", "Scan the bounded searches for one saved catalog target"),
+    ):
+        target_command = commands.add_parser(command, help=help_text)
+        target_command.add_argument(
+            "--config", type=Path, default=Path("config/watch_targets.toml")
+        )
+        target_command.add_argument("--target", required=True)
+        target_command.add_argument("--mode", choices=("initial", "refresh"), default="refresh")
+        target_command.add_argument("--json", action="store_true")
+        if command == "scan-target":
+            target_command.add_argument("--env-file", type=Path, default=Path(".env"))
 
     catalog = commands.add_parser(
         "catalog-search", help="Search Discogs catalog releases and store normalized variants"
@@ -98,6 +119,59 @@ def _scan(args: argparse.Namespace) -> int:
         if summary.error:
             print(f"Error: {summary.error}")
     return 1 if summary.status == "failed" else 0
+
+
+def _target(args: argparse.Namespace) -> int:
+    target = load_search_target(args.config, args.target)
+    monitors = plan_target_search(target, mode=args.mode)
+    payload = {
+        "target": target.id,
+        "catalog_source": target.catalog_source,
+        "catalog_variant_id": target.catalog_variant_id,
+        "plan_version": target.plan_version,
+        "mode": args.mode,
+        "searches": [
+            {"monitor": monitor.id, "query": monitor.query, "options": monitor.source_options}
+            for monitor in monitors
+        ],
+        "maximum_search_requests": len(monitors),
+        "maximum_detail_requests": 10 * len(monitors),
+    }
+    if args.command == "target-plan":
+        if args.json:
+            print(json.dumps(payload))
+        else:
+            print(json.dumps(payload, indent=2))
+        return 0
+
+    settings = load_settings(args.env_file)
+    configure_logging(settings.log_level)
+    database_url = settings.database_url.get_secret_value()
+    if settings.ebay_environment == "production" and make_url(
+        database_url
+    ).get_backend_name() not in ("postgres", "postgresql"):
+        raise ConfigurationError(
+            "Production eBay scans require the shared PostgreSQL database "
+            "used by the deletion endpoint."
+        )
+    if settings.ebay_environment == "sandbox" and database_url == "sqlite:///finder.db":
+        database_url = "sqlite:///finder-sandbox.db"
+    repository = SqlAlchemyRepository.from_url(database_url)
+    try:
+        with EbayClient(settings) as client:
+            summaries = run_target_scan(target, EbayAdapter(client), repository, mode=args.mode)
+    finally:
+        repository.close()
+    payload["results"] = [asdict(summary) for summary in summaries]
+    payload["complete"] = len(summaries) == len(monitors) and all(
+        summary.status == "completed" for summary in summaries
+    )
+    payload["coverage_truncated"] = any(summary.limit_reached for summary in summaries)
+    if args.json:
+        print(json.dumps(payload))
+    else:
+        print(json.dumps(payload, indent=2))
+    return 0 if payload["complete"] else 1
 
 
 def _catalog_components(args: argparse.Namespace):
@@ -278,6 +352,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "scan":
             return _scan(args)
+        if args.command in ("target-plan", "scan-target"):
+            return _target(args)
         if args.command == "catalog-search":
             return _catalog_search(args)
         if args.command == "listings":

@@ -71,6 +71,9 @@ finder listings --limit 20
 finder match --marketplace ebay --item-id 'v1|123456789012|0'
 finder match --marketplace ebay --item-id 'v1|123456789012|0' --json
 finder match --marketplace ebay --item-id 'v1|123456789012|0' --target-release-id 111 --json
+finder target-plan --target future-ds2-7609839 --mode initial --json
+finder scan-target --target future-ds2-7609839 --mode initial --json
+finder scan-target --target future-ds2-7609839 --mode refresh --json
 ```
 
 JSON logs go to stderr; the human or JSON summary goes to stdout. `.env` loading never overrides existing environment variables. Local database paths and the default configuration path resolve from the current working directory.
@@ -83,6 +86,21 @@ verify that the marketplace item is that pressing. A numbered-edition listing wi
 and numbered claims but no pressing identifier remains a review candidate, not an exact match.
 Run this command privately: listing-level output and candidate evidence should not go into
 public CI logs or real-data fixtures until the provider-use decision is resolved.
+
+`config/watch_targets.toml` holds a versioned, internal eBay search plan for the numbered
+Future DS2 release (Discogs release 7609839). It searches `Future DS2` and `Future Dirty Sprite 2`
+without requiring the seller to say “numbered” or “purple.” `target-plan` shows the queries,
+category, ordering, and request budget without credentials. `scan-target` runs those searches
+privately and persists results through the same deletion-aware repository as `scan`.
+`initial` uses eBay best match to inspect an existing active sample; `refresh` uses newest first
+for subsequent samples. Each query fetches at most one page of ten, for at most two searches and
+20 unique item-detail requests in this example (plus OAuth and possible retries). Overlapping
+results are only enriched once per run. The summary reports failed queries and whether a page
+cap left more results; `total_stored` counts the whole database, not just this target.
+Neither mode guarantees retrieval of a particular active listing, including the user-supplied
+DS2 example. A found listing must be checked with `finder match --target-release-id 7609839`;
+discovery alone does not establish the edition, availability, or value. Production runs still
+require the shared PostgreSQL database for seller-deletion handling. No target scan is scheduled.
 
 `finder listings` shows recent stored snapshots and the exact item IDs accepted by
 `finder match`. It needs only `FINDER_DATABASE_URL`, not API credentials. Prices show the quoted

@@ -1,0 +1,10 @@
+# Internal discovery plans. A query retrieves possible listings; it never asserts a pressing.
+# Avoid requiring edition or color in the query: sellers often omit those attributes.
+[[targets]]
+id = "future-ds2-7609839"
+catalog_source = "discogs"
+catalog_variant_id = 7609839
+plan_version = 1
+marketplace_id = "EBAY_US"
+category_id = "176985"
+queries = ["Future DS2", "Future Dirty Sprite 2"]

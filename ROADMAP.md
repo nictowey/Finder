@@ -276,7 +276,7 @@ holdout and test across families and variants before enabling exact-match deal a
 | Rights and commercial feasibility | Blocking for price-based product | Written permission or reviewed approval for the intended buyer comparison/alert use, plus a permitted sold-data source |
 | 1. Real eBay data validation | In progress | Bounded scans and sanitized replays pass |
 | 2. Pressing identity engine | In progress | Labeled precision gates met |
-| 3. User-defined vinyl monitors | Planned | Exact/family targets produce stable discovery plans |
+| 3. User-defined vinyl monitors | Internal discovery prototype | Exact/family targets produce stable discovery plans and measured coverage |
 | 4. Comparable-source qualification | Planned | Commercial rights and data quality documented |
 | 5. Valuation and opportunity scoring | Planned | Backtests and uncertainty gates pass |
 | 6. Scheduling, alerts, and hosting | Planned | Shadow-mode reliability and deduplication pass |
@@ -431,7 +431,11 @@ buyer-ceiling triage on supplied listing and match evidence. It abstains on an u
 destination quote, unknown subtotal, auction final price, stale listing, incomplete catalog
 retrieval, and probable identity for an exact-release target. This internal candidate is not a
 live availability or valuation claim. Condition IDs are an explicit allow-list; record/media
-grade translation, saved targets, search planning, and a public view remain future work.
+grade translation, saved buyer targets, and a public view remain future work. A separate
+versioned eBay query plan can scan one configured exact-release target with up to three searches
+of ten items each. The DS2 plan uses two title aliases without mandatory edition words;
+initial best-match and newest-first refresh samples dedupe overlapping items. This is a bounded
+retrieval prototype, not measured recall or automated matching to the selected release.
 
 A monitor should eventually contain:
 
@@ -451,6 +455,10 @@ A monitor should eventually contain:
 One monitor may produce multiple provider-specific searches. Query planning should combine broad
 recall searches with deterministic post-filtering. Store the query plan and version so a missed
 or included listing can be explained.
+The current `config/watch_targets.toml` prototype keeps its query wording and version alongside
+the selected Discogs release. Its results are persisted by the normal scan path and may be
+inspected privately with `finder match --target-release-id`; target-specific post-filtering,
+missed-listing audits, and buyer target storage remain open.
 
 ### Exit gate
 

@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
+from finder.adapters.ebay.target_search import EbaySearchTarget
 from finder.domain import Monitor
 from finder.errors import ConfigurationError
 
@@ -143,3 +144,22 @@ def load_monitor(path: Path, monitor_id: str) -> Monitor:
         if monitor.id == monitor_id:
             return monitor
     raise ConfigurationError(f"Monitor '{monitor_id}' not found in configuration.")
+
+
+def load_search_target(path: Path, target_id: str) -> EbaySearchTarget:
+    try:
+        with path.open("rb") as file:
+            data = tomllib.load(file)
+        if set(data) != {"targets"} or not isinstance(data["targets"], list):
+            raise ValueError("Expected only a [[targets]] list")
+        targets = [EbaySearchTarget.model_validate(value) for value in data["targets"]]
+        if len({target.id for target in targets}) != len(targets):
+            raise ValueError("Duplicate target IDs")
+    except (OSError, ValueError, TypeError) as exc:
+        raise ConfigurationError(
+            f"Cannot load target search configuration ({type(exc).__name__})."
+        ) from None
+    for target in targets:
+        if target.id == target_id:
+            return target
+    raise ConfigurationError(f"Search target '{target_id}' not found in configuration.")
