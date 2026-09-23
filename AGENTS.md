@@ -130,6 +130,10 @@ The open provider-use decision and bounded Production audit are documented in
 - Read-only Developer Analytics quota check #3 reported a 5,000-call daily `buy.browse` limit
   with 4,940 remaining at approximately 11:54 UTC on September 23. The nominal three-watch
   daily refresh maximum of 4,464 calls does not reserve capacity for other work or retries.
+- Third live watch first scan completed all three watches but exposed a false artist conflict
+  on an inverted seller name. A synthetic correction for exact comma inversion and competing
+  album-title claims is under test; a subsequent live run must verify it. Scheduled workflow
+  runs were roughly five hours apart on September 23, so scan freshness is unproven.
 
 ### Production status
 

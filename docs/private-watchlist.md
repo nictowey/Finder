@@ -147,3 +147,13 @@ the pink/green release are discovery examples, not enough to estimate accuracy a
   four remained plausible and the alert was withheld. This does not measure discovery recall or
   confirm the numbered pressing. The previous successful scheduled scan was around 10:00 UTC
   and the deployment scan around 11:39 UTC, so a 30-minute freshness promise is not yet supported.
+- The owner added a third watch for an older, non-rap album. Its
+  [first manual scan](https://github.com/nictowey/Finder/actions/runs/35887951829)
+  completed all three watches with zero failures and ten new inbox rows. The one-query newest
+  page hit its cap. Inspection found a seller-artist inversion that the deployed review policy
+  incorrectly treated as a conflict. A matching correction is pending live deployment and
+  verification; these rows cannot be used to estimate pressing precision.
+- The scheduled workflow ran around 06:00 and 11:02 EDT on September 23, approximately five
+  hours apart. Manual dispatches filled some gaps, but the schedule has not met a 30-minute
+  freshness expectation. [Quota check #4](https://github.com/nictowey/Finder/actions/runs/35887651796)
+  reported 4,880 Browse calls remaining at approximately 16:17 UTC.
