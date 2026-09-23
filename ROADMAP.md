@@ -1,6 +1,6 @@
 # Finder Product Roadmap
 
-Last updated: 2026-09-22
+Last updated: 2026-09-23
 
 ## What Finder should do for a collector
 
@@ -32,7 +32,7 @@ any authorized sold-comparables feed, fair-value estimates, and alerts. The twen
 matching cases test policy mechanics, not market accuracy. No listing should be advertised as a
 deal today.
 
-**Before building a price-based deal product, resolve these rights questions in writing:**
+**Before a public Discogs-backed watchlist or a price-based deal product, resolve these rights questions in writing:**
 
 The proposed buyer flow and open provider questions are recorded in
 [`docs/decisions/0001-provider-use.md`](docs/decisions/0001-provider-use.md). The bounded scan
@@ -44,10 +44,14 @@ measurement procedure and distinct-day log are in
 | Can Finder compare an eBay listing with external sold prices and label it undervalued for a buyer? | eBay's API agreement restricts using eBay content with third-party information to suggest or model prices for items listed on eBay. | Obtain eBay's explicit permission or qualified review of the exact proposed display, alerts, data retention, and business model before implementing or launching deal scoring. |
 | Where do actual sold transactions come from? | Browse exposes active offers; eBay Marketplace Insights is restricted and closed to new users. Discogs classifies marketplace prices and sales history as restricted data. | Secure a source with written commercial, retention, derived-data, and display rights; test its pressing and condition coverage. |
 | May Finder retain and use real eBay listings for labeled evaluation and matcher development? | eBay's agreement limits intermediate copies and restricts use of eBay content to train algorithms. | Review the existing observation retention, sanitized fixtures, labeling, model/heuristic tuning, and deletion plan before building a permanent real-listing dataset. |
-| Can a paid Finder display Discogs catalog data? | Discogs permits CC0 catalog fields but its API terms put conditions on charging for an app that integrates its API and require attribution, linking, and data freshness. | Review the paid-product design with Discogs or qualified counsel before charging; keep restricted marketplace data outside Finder. |
+| May Finder show Discogs API catalog evidence beside outbound eBay listing links, even in a free watchlist? May it charge for that app? | Discogs identifies CC0 catalog fields, but its API terms also identify use intended to drive traffic to non-Discogs services as a prohibited commercial use and require written permission to charge for API-integrated access offered free by Discogs. Attribution, linking, and freshness have separate requirements. | Ask Discogs to review the exact free outbound-link journey and any paid model in writing before public display; keep restricted marketplace data outside Finder. |
+
+Ready-to-send questions and the official contact routes are in
+[`docs/decisions/provider-outreach.md`](docs/decisions/provider-outreach.md). No provider approval
+has been received.
 
 This is a product gate, not just a compliance task. If price-based comparisons are not permitted,
-ship only the permitted exact-item discovery/watchlist workflow and assess another licensed
+ship only an expressly permitted exact-item discovery/watchlist workflow and assess another licensed
 marketplace or data partnership. Do not disguise a valuation as an "interesting listing" score.
 Do not use scraping, sold badges inferred from disappeared listings, or active asking prices as a
 substitute for authorized sold transactions. The present assumption is buyer-side collecting,
@@ -63,17 +67,17 @@ licensing delays. Exit gates control progression; calendar dates do not override
 | --- | --- | --- | --- |
 | A. Feasibility and data audit | Resolve the rights questions; complete seven bounded Production scans; measure field coverage, missing shipping, request cost, lifecycle, and failures. | A private, inspectable feed of real listings with honest freshness and cost flags. | Written rights decision for the intended next use; seven scans without silent loss or duplicate identities; permitted sanitized replay or synthetic contract fixtures. |
 | B. Pressing identity | Broaden bounded Discogs retrieval beyond one title query; subject to data-use clearance, label at least 200 real listings across 40 families and difficult variants; measure family, exact-pressing, and abstention separately. | Correct pressing or explicit uncertainty, with the evidence to verify it. | At least 98% family and 99% exact-variant precision on a held-out labeled set; conflicts never silently promoted. |
-| C. Personal watchlist | Store family/exact pressing targets, acceptable variants, excluded attributes, condition floor, delivered-price ceiling, shipping destination, and buying format. Map each target to bounded eBay searches. | "Show me this pressing under my own maximum price" without claiming market value. | Repeat scans do not lose targets or duplicate listings; missed-listing audits and manual buyer reviews show useful coverage. |
+| C. Personal watchlist | Store family/exact pressing targets, acceptable variants, excluded attributes, condition floor, delivered-price ceiling, shipping destination, and buying format. Map each target to bounded eBay searches. | In a cleared release, "show me this pressing under my own maximum price" without claiming market value. | Repeat scans do not lose targets or duplicate listings; missed-listing audits and manual buyer reviews show useful coverage; public Discogs-backed display and outbound links have a documented provider-use decision. |
 | D. Sold data and valuation | Obtain permitted transactions; normalize variant, media/sleeve condition, shipping, currency, date, lots, and accepted-offer uncertainty. Backtest value ranges against later sales. | A dated range and comparable count only where evidence is strong enough. | Written data rights plus measured coverage on the pilot set; no value emitted for sparse, stale, or incompatible comps. |
 | E. Opportunity pilot | If eBay permits it, compare fresh, buyable listing cost with conservative value; run shadow mode; manually review every candidate. | "Worth reviewing" leads with price, pressing, condition, and risk reasons. | False-positive causes and missed opportunities recorded; no alert without identity, sold-data, freshness, and delivered-cost gates. |
 | F. Reliable alerts and private product | Add leased scheduled jobs, freshness monitoring, idempotent alerts, one delivery channel, and a minimal watchlist/evidence view. | A collector gets a timely, non-repeated lead and can open the listing. | Fourteen days of reliable shadow scans, backup/restore test, and a small pilot with collectors who use the results. |
 | G. Next collectible | Qualify exactly one new category and its data providers. Reuse generic listing, observation, monitor, and opportunity contracts. | A second category with its own identity and condition rules. | Vinyl shows repeatable collector value and the new category independently passes source, rights, accuracy, and economics gates. |
 
 Rough sequencing: A's technical audit and a synthetic labeling framework can run in the next
-2–4 weeks. Real labeling waits for a data-use decision; B and a private C pilot may then take
-another 1–3 months. D through F have no credible delivery date until the rights and sold-data
-questions are answered. Do not spend heavily on a public UI or subscription checkout while
-those gates are open.
+2–4 weeks. Real labeling waits for a data-use decision; B and an internal C prototype may then
+take another 1–3 months. A public C release requires a Discogs outbound-use decision. D through
+F have no credible delivery date until the rights and sold-data questions are answered. Do not
+spend heavily on a public UI or subscription checkout while those gates are open.
 
 ### What "genuinely useful" means in the pilot
 
@@ -659,10 +663,11 @@ credentials or unnecessary personal data.
 
 ## Next six concrete work packages
 
-1. **Provider-rights decision record.** Describe Finder's buyer journey, proposed valuation and
-   alert examples, paid versus free use, retention, and whether users may buy for collecting or
-   resale. Seek eBay's written position and review Discogs' paid-app terms. Record a go/no-go
-   before building price-based output.
+1. **Provider-rights decision record.** Send the concrete inquiries in
+   [`docs/decisions/provider-outreach.md`](docs/decisions/provider-outreach.md) through the
+   official support channels. Record eBay's position on buyer-set price ceilings, valuation,
+   alerts, retention, and business model, and Discogs' position on free outbound eBay links,
+   display, caching, and paid use. Record separate go/no-go decisions for each release.
 2. **Production data audit.** Finish seven bounded rap-vinyl scans on different days, use
    synthetic contract fixtures until retention rights are reviewed, and publish aggregate
    field-presence, shipping, request-budget, and failure statistics. No listing identities in
@@ -674,9 +679,10 @@ credentials or unnecessary personal data.
 4. **Candidate-retrieval and identity fixes.** Measure how often the true Discogs release is
    absent from the bounded title search. Add identifier and family queries under strict budgets;
    test artist/title aliases, duplicate masters, color/edition conflicts, and refusal to guess.
-5. **Watchlist pilot.** After scan reliability, let a small private cohort specify target
-   release/family, maximum delivered subtotal, condition floor, and exclusions. Show uncertain
-   identity and unknown shipping plainly; do not label a price as undervalued.
+5. **Watchlist pilot.** Build and test target rules internally with synthetic listings. After
+   scan reliability, data-use clearance, and Discogs outbound-use review, let a small cohort
+   specify target release/family, maximum delivered subtotal, condition floor, and exclusions.
+   Show uncertain identity and unknown shipping plainly; do not label a price as undervalued.
 6. **Sold-source qualification.** Approach rights holders or licensed vendors with a concrete
    schema and pilot set. Test transaction coverage, accepted-offer accuracy, pressing identity,
    condition, fees, currency, and cost. If no lawful source and eBay use clearance exist, keep
@@ -698,6 +704,8 @@ Do not make these decisions implicitly in a feature commit:
   listings without an explicit provider-use decision
 - Charging for an application that displays Discogs API content without reviewing its paid-app
   terms and obtaining any needed permission
+- Showing Discogs API-derived evidence in a public Finder view that sends buyers to eBay without
+  resolving Discogs' non-Discogs traffic restriction for the exact journey
 - Adding image/OCR/LLM evidence to automatic exact matching
 - Persisting raw marketplace responses
 - Replacing or expanding the existing hosted infrastructure

@@ -1,6 +1,6 @@
 # Decision record 0001: buyer-facing eBay deal discovery
 
-Status: **open; price-based deal output blocked**
+Status: **open; public Discogs-backed outbound watchlist and price-based deal output blocked**
 
 Opened: 2026-09-22
 
@@ -23,17 +23,19 @@ Owner: Finder product owner
    separate proposed use, not an approved feature.
 
 This description is intentionally specific: approval for a generic API application or access to
-Browse does not answer whether the proposed comparison, ranking, alert, retention, and paid use
-are allowed. Do not implement steps 2 or a paid version until the relevant written decisions.
+Browse does not answer whether the proposed outbound watchlist, comparison, ranking, alert,
+retention, and paid use are allowed. Do not implement step 2 or a paid version until the relevant
+written decisions; keep the watchlist technical prototype internal until outbound use is cleared.
 
 ## Questions requiring written answers
 
 | Provider or source | Exact question | Required decision/evidence |
 | --- | --- | --- |
+| eBay developer/business contact | May a free collector watchlist show a listing below the buyer's own maximum delivered price and link to eBay, without an inferred fair value? What Buy API business-model review is required? | Written decision for the free watchlist and any applicable Production agreement. |
 | eBay developer/business contact | May Finder show a buyer-facing value range, rank or label an eBay listing as underpriced using external sold data, and send a price-based link alert? Does the answer change for a private pilot, subscription, affiliate revenue, or buyers who resell? | Written answer for each proposed display and business model; API agreement exception or qualifying terms if needed. |
 | eBay developer/business contact | May Finder keep current listing snapshots and observation history in Neon as designed? For how long? May a private human label real listings, keep derived labels/features, and use those records to measure or tune a deterministic matcher? Can sanitized real fixtures be committed publicly? | Document retention limits, permitted evaluation uses, deletion handling, and whether any algorithm-training restriction applies. Do not publish captured real fixtures before review. |
 | Sold-transaction rights holder | Can Finder access sold price, date, shipping, condition, identifiers and offer-price certainty for commercial valuation and cross-source comparisons? | Agreement covering API access, combination with eBay content, display, derived values, retention, attribution, fees, and deletion. Check pressing-level pilot coverage before integration. |
-| Discogs | May a paid Finder display CC0 catalog data obtained through its API, linked to the Discogs release and refreshed within its current terms? Is a separate written permission needed? | Written paid-use and display decision. Keep marketplace sales history and prices out of current integration. |
+| Discogs | May even a free Finder combine Discogs API-derived pressing evidence with links to buy on eBay, given the API terms' restriction on intended traffic to non-Discogs services? May a paid Finder display that catalog data? What retention, freshness, link and attribution requirements apply? | Written decision for the free outbound watchlist, paid use, and display/storage behavior. Keep marketplace sales history and prices out of current integration. |
 
 Current public documentation points to substantive restrictions, not approval: the
 [eBay API License Agreement](https://developer.ebay.com/join/api-license-agreement) includes
@@ -41,15 +43,18 @@ limits on pricing models, intermediate copies and algorithm training;
 [Marketplace Insights](https://developer.ebay.com/api-docs/buy/static/ref-marketplace-supported.html)
 is restricted;
 [Discogs API terms](https://support.discogs.com/hc/en-us/articles/360009334593-API-Terms-of-Use)
-put conditions on paid use and display freshness. Terms and provider answers must be checked
+raise a non-Discogs traffic question even for the free watchlist, and put conditions on paid use,
+display freshness, caching, linking, and attribution. Terms and provider answers must be checked
 again at decision time. This record is a product decision request, not a legal determination.
 
 ## Decision branches
 
 - **Price-based use explicitly permitted, sold source licensed:** qualify coverage and cost on
   the pilot pressing set; build valuation only after documented accuracy and display gates.
-- **Discovery/watchlist permitted, comparison unavailable:** ship the user-set price-ceiling
+- **Discovery/watchlist expressly permitted, comparison unavailable:** ship the user-set price-ceiling
   watchlist without fair-value or undervaluation claims; do not hide a deal score in its ranking.
+- **Discogs outbound use denied:** keep its API-derived catalog evidence out of an eBay-linked
+  public UI and assess a separately cleared catalog source or product design.
 - **Required eBay retention or matching use denied:** remove or redesign dependent persistence
   and evaluation before wider scanning; qualify a different licensed marketplace.
 
@@ -61,6 +66,7 @@ again at decision time. This record is a product decision request, not a legal d
 - Explicit go/no-go for the private watchlist, real-label evaluation, valuation, alerts,
   subscription, and any affiliate use separately.
 
+Draft inquiries and official contact routes are in [`provider-outreach.md`](provider-outreach.md).
 No provider outreach or approval is recorded yet. A future decision must record its evidence
 and update `ROADMAP.md` and `AGENTS.md` before crossing a gate.
 

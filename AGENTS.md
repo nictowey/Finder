@@ -25,10 +25,12 @@ behind adapters. Category-specific identity rules belong in category modules.
 The accuracy-gated development sequence and product decisions are maintained in `ROADMAP.md`.
 Read it before proposing or implementing a new phase.
 
-The current product blocker is permission for a buyer-facing eBay deal signal and a lawful,
-commercially usable source of sold transactions. Production Browse access by itself does not
+The current product blockers are permission for a buyer-facing eBay deal signal, a lawful,
+commercially usable source of sold transactions, and a decision on using Discogs API-derived
+catalog data in a public view linking to eBay. Production Browse access by itself does not
 authorize price modeling or prove that an undervalued-listing product is viable. The collector
-watchlist without a fair-value claim can be developed and tested while this is resolved.
+watchlist without a fair-value claim can be developed and tested internally while these are
+resolved; public display requires the outbound-use decision.
 The open provider-use decision and bounded Production audit are documented in
 `docs/decisions/0001-provider-use.md` and `docs/production-audit.md`.
 
@@ -140,7 +142,9 @@ Discogs behavior in the eBay adapter or marketplace behavior in catalog provider
   obtain a written provider-use decision before deal scoring, price-based alerts, or paid launch.
 - Review eBay's intermediate-copy and algorithm-training restrictions before retaining real
   labeled listings, publishing sanitized real fixtures, or tuning matching policy on them.
-- Review Discogs' API conditions for paid apps and display freshness before a commercial UI.
+- Resolve Discogs' non-Discogs traffic restriction before publicly showing API-derived catalog
+  evidence beside outbound eBay listing links, including in a free watchlist.
+- Review Discogs' API conditions for paid apps, display freshness, caching, and required notices.
 - Preserve “Data provided by Discogs” attribution wherever Discogs-derived data is displayed.
 - Never log credentials, authorization headers, OAuth responses, or full sensitive payloads.
 - Live smoke logs are public; do not log listing IDs, titles, sellers, URLs, or seller-provided
@@ -204,8 +208,9 @@ A material change is complete only when:
    abstention, and catalog candidate-retrieval failures separately.
 4. Expand bounded Discogs candidate retrieval, including variants sharing identifiers.
 5. Complete seven bounded Production scans and field-quality measurements.
-6. Build a private exact-item watchlist pilot with user-set maximum delivered prices after the
-   ingestion and identity gates; withhold fair-value or "steal" claims.
+6. Build an internal exact-item watchlist prototype with synthetic listings; involve outside
+   collectors only after ingestion, identity, listing-use, and Discogs outbound-use gates.
+   Withhold fair-value or "steal" claims.
 
 The eBay deletion endpoint and manual bounded cloud scans support Production data validation.
 Do not build recurring scheduling, alerts, or a frontend until live ingestion and identity
