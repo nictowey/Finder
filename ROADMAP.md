@@ -449,7 +449,7 @@ When introduced:
 
 ## Phase 3 — User-defined vinyl monitors
 
-Status: **Internal rule prototype in progress; storage, discovery plans, and release gated**
+Status: **Private saved-watch pilot deployed; owner activation and real usage validation pending**
 
 Users should be able to monitor at three levels:
 
@@ -590,7 +590,7 @@ Finder should explain why an opportunity qualifies. A low asking price alone is 
 
 ## Phase 6 — Scheduling, alerts, and hosting
 
-Status: **Planned after ingestion, identity, and valuation gates**
+Status: **Private review scheduling and push implemented; deal alerts and wider release gated**
 
 Introduce unattended product infrastructure in this order, after the bounded Production and
 identity gates. The existing Neon Production database and deletion endpoint are already hosted;
@@ -617,7 +617,7 @@ Hosting is not a milestone by itself; dependable unattended behavior is.
 
 ## Phase 7 — User product
 
-Status: **Planned**
+Status: **Owner-only review dashboard deployed; multi-user product planned**
 
 Only after the monitoring pipeline is dependable:
 

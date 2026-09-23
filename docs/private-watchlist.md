@@ -78,3 +78,19 @@ This proves the software loop when the live checks pass. It does not establish p
 precision, recall, immediate marketplace coverage, or market value. Manually check surfaced
 listings before buying, especially numbered copies and variants sharing identifiers. DS2 and
 the pink/green release are discovery examples, not enough to estimate accuracy across vinyl.
+
+## Verified deployment — September 23, 2026
+
+- [Deployment run](https://github.com/nictowey/Finder/actions/runs/35820533927) passed:
+  239 Python tests, 15 Node tests, lint, format, type checks, isolated live PostgreSQL migration,
+  rollback, leases, deduplication, deletion cascades, deploy and anonymous-access checks.
+- The first live target scan in the preceding run completed with 22 inbox rows. Repeated deploy
+  work respected the due time and performed zero additional scans / inserts.
+- [Recurring worker smoke](https://github.com/nictowey/Finder/actions/runs/35820668287) passed.
+  No device subscription exists yet, so no actual push was sent.
+- The hosted sign-in page was inspected in the browser. The data API remains locked because
+  the owner email is not yet supplied. Signed-in CRUD and real-device push delivery still need
+  user-assisted acceptance; do not describe those as end-to-end verified.
+- The original eBay deletion endpoint still rejects unsigned requests with HTTP 412.
+- A direct database connection is required for the isolated schema integration check; the
+  ordinary application retains its existing pooled connection.
