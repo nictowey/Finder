@@ -72,3 +72,19 @@ def test_numbered_variant_without_numbered_seller_claim_needs_review(
     row = review_target_listing(with_claim, numbered)
     assert row.status == "possible_pressing"
     assert "seller_numbered_claim" in row.clues
+
+
+def test_identifier_can_surface_uncolored_vinyl_for_review(
+    search_payload, discogs_release, observed_at
+):
+    variant = normalize_release(discogs_release, observed_at)
+    listing = _listing(
+        search_payload,
+        observed_at,
+        "Example Artist Example Album LP",
+        (("Barcode", "0123456789012"),),
+    )
+    row = review_target_listing(listing, variant)
+    assert row.status == "possible_pressing"
+    assert "seller_identifier_claim" in row.clues
+    assert "catalog_alternatives_not_checked" in row.verify

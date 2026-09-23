@@ -127,7 +127,8 @@ public CI logs or real-data fixtures until the provider-use decision is resolved
 
 `--review` creates a private, ordered review list from the listings in that scan. It compares
 the selected release's artist, album, and color claims (including colors in the seller title)
-without requiring a barcode or runout. A complete color claim can yield `possible_pressing`;
+without requiring a barcode or runout. A complete color or matching seller identifier claim
+can yield `possible_pressing`;
 missing or partial color yields `family_review`, and an explicitly different color or
 identifier is `conflicting`. It also counts unrelated results. These labels are **leads**, not
 exact matches: the review checks only the selected release, does not establish that alternative

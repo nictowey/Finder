@@ -269,8 +269,8 @@ def test_arbitrary_vinyl_release_plan_scan_and_private_listing_review(
     assert result["complete"] is True
     assert len(result["discovered_listings"]) == 1
     assert result["discovered_listings"][0]["item_id"] == item["itemId"]
-    assert result["review"]["counts"]["family_review"] == 1
-    assert result["review"]["listings"][0]["status"] == "family_review"
+    assert result["review"]["counts"]["possible_pressing"] == 1
+    assert result["review"]["listings"][0]["status"] == "possible_pressing"
     assert result["review"]["listings"][0]["url"]
     assert result["review"]["not_verified_pressings"] is True
     assert ebay_searches == ["Sample Quartet Invented String Record"]
