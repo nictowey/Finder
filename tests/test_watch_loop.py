@@ -226,6 +226,26 @@ def test_worker_reuses_alternatives_and_keeps_review_when_catalog_fails(
     ]
 
     def handler(request):
+        if request.url.path.endswith("/rate_limit/"):
+            return httpx.Response(
+                200,
+                json={
+                    "rateLimits": [
+                        {
+                            "apiContext": "buy",
+                            "apiName": "browse",
+                            "resources": [
+                                {
+                                    "name": "buy.browse",
+                                    "rates": [
+                                        {"limit": 5000, "remaining": 4500, "timeWindow": 86400}
+                                    ],
+                                }
+                            ],
+                        }
+                    ]
+                },
+            )
         if request.method == "POST":
             return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
         if request.url.path.endswith("/search"):
@@ -242,7 +262,13 @@ def test_worker_reuses_alternatives_and_keeps_review_when_catalog_fails(
     )
     store.add(SavedWatch(release_id=111), now=now)
     report = watch_worker.run_due_watches(repository, settings, None)
-    assert report == {"attempted": 1, "completed": 1, "failed": 0, "new_inbox_rows": 2}
+    assert report == {
+        "attempted": 1,
+        "completed": 1,
+        "failed": 0,
+        "quota_paused": 0,
+        "new_inbox_rows": 2,
+    }
     assert calls == ["111"]  # Once for the watch, not once per listing.
     with repository.engine.connect() as conn:
         rows = conn.execute(select(inbox.c.data)).scalars().all()
@@ -289,6 +315,26 @@ def test_first_refresh_recovers_prior_lead_outside_newest_page(
     searches = []
 
     def handler(request):
+        if request.url.path.endswith("/rate_limit/"):
+            return httpx.Response(
+                200,
+                json={
+                    "rateLimits": [
+                        {
+                            "apiContext": "buy",
+                            "apiName": "browse",
+                            "resources": [
+                                {
+                                    "name": "buy.browse",
+                                    "rates": [
+                                        {"limit": 5000, "remaining": 4500, "timeWindow": 86400}
+                                    ],
+                                }
+                            ],
+                        }
+                    ]
+                },
+            )
         if request.method == "POST":
             return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
         if request.url.path.endswith("/search"):
@@ -309,7 +355,13 @@ def test_first_refresh_recovers_prior_lead_outside_newest_page(
         lambda config: EbayClient(config, transport=httpx.MockTransport(handler)),
     )
     report = watch_worker.run_due_watches(repository, settings, None)
-    assert report == {"attempted": 1, "completed": 1, "failed": 0, "new_inbox_rows": 0}
+    assert report == {
+        "attempted": 1,
+        "completed": 1,
+        "failed": 0,
+        "quota_paused": 0,
+        "new_inbox_rows": 0,
+    }
     assert searches == [("newlyListed", "0"), (None, "0")]
     with repository.engine.connect() as conn:
         record = conn.execute(select(inbox.c.data, inbox.c.last_seen_at)).one()
@@ -324,7 +376,13 @@ def test_first_refresh_recovers_prior_lead_outside_newest_page(
     with repository.engine.begin() as conn:
         conn.execute(update(watches).values(next_scan_at=started.isoformat()))
     report = watch_worker.run_due_watches(repository, settings, None)
-    assert report == {"attempted": 1, "completed": 1, "failed": 0, "new_inbox_rows": 0}
+    assert report == {
+        "attempted": 1,
+        "completed": 1,
+        "failed": 0,
+        "quota_paused": 0,
+        "new_inbox_rows": 0,
+    }
     assert searches == [("newlyListed", "0"), (None, "0"), ("newlyListed", "0")]
     with repository.engine.connect() as conn:
         summary = conn.execute(select(watches.c.summary)).scalar_one()
@@ -367,6 +425,26 @@ def test_known_lead_404_withholds_pending_alert_and_stops_rechecks(
             return AlternativeRetrieval([], True)
 
     def handler(request):
+        if request.url.path.endswith("/rate_limit/"):
+            return httpx.Response(
+                200,
+                json={
+                    "rateLimits": [
+                        {
+                            "apiContext": "buy",
+                            "apiName": "browse",
+                            "resources": [
+                                {
+                                    "name": "buy.browse",
+                                    "rates": [
+                                        {"limit": 5000, "remaining": 4500, "timeWindow": 86400}
+                                    ],
+                                }
+                            ],
+                        }
+                    ]
+                },
+            )
         if request.method == "POST":
             return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
         if request.url.path.endswith("/search"):
@@ -394,6 +472,81 @@ def test_known_lead_404_withholds_pending_alert_and_stops_rechecks(
             )
             is None
         )
+
+
+@pytest.mark.parametrize(
+    "remaining,reason", [(275, "insufficient_budget"), (None, "quota_unavailable")]
+)
+def test_insufficient_or_unavailable_quota_preserves_due_watch(
+    repository, store, settings, discogs_release, monkeypatch, remaining, reason
+):
+    now = datetime.now(UTC) - timedelta(minutes=31)
+    store.add(SavedWatch(release_id=111), now=now)
+    before = store.claim(now=now)
+    store.finish(before, [], summary={"inventory": {"cursor": "unchanged"}}, now=now)
+    with repository.engine.connect() as conn:
+        prior = conn.execute(select(watches)).mappings().one()
+
+    class Provider:
+        def __init__(self, client):
+            pass
+
+        def get_release(self, release_id):
+            return normalize_release(discogs_release, now)
+
+        def search_alternatives(self, variant):
+            return AlternativeRetrieval([], True)
+
+    def handler(request):
+        if request.method == "POST":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        assert request.url.path.endswith("/rate_limit/"), "Browse was called despite quota"
+        if remaining is None:
+            return httpx.Response(200, json={"rateLimits": []})
+        return httpx.Response(
+            200,
+            json={
+                "rateLimits": [
+                    {
+                        "apiContext": "buy",
+                        "apiName": "browse",
+                        "resources": [
+                            {
+                                "name": "buy.browse",
+                                "rates": [
+                                    {"limit": 5000, "remaining": remaining, "timeWindow": 86400}
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(watch_worker, "DiscogsClient", lambda _: nullcontext(None))
+    monkeypatch.setattr(watch_worker, "DiscogsCatalogProvider", Provider)
+    monkeypatch.setattr(
+        watch_worker,
+        "EbayClient",
+        lambda config: EbayClient(config, transport=httpx.MockTransport(handler)),
+    )
+    report = watch_worker.run_due_watches(repository, settings, None)
+    assert report == {
+        "attempted": 1,
+        "completed": 0,
+        "failed": 0,
+        "quota_paused": 1,
+        "new_inbox_rows": 0,
+    }
+    with repository.engine.connect() as conn:
+        row = conn.execute(select(watches)).mappings().one()
+        assert row["status"] == "quota_paused"
+        assert row["next_scan_at"] == prior["next_scan_at"]
+        assert row["last_success_at"] == prior["last_success_at"]
+        assert row["last_started_at"] == prior["last_started_at"]
+        assert row["lease_token"] is None and row["lease_until"] is None
+        assert row["summary"]["inventory"] == {"cursor": "unchanged"}
+        assert row["summary"]["quota_pause"]["reason"] == reason
 
 
 def test_failed_scan_preserves_inventory_cursor_for_retry(

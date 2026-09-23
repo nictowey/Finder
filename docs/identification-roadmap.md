@@ -172,8 +172,8 @@ known DS2 lead remained outside the six-hour active inbox in this first pass. Th
 watches without failures. Its direct check refreshed that **already known** lead into the active
 inbox under policy v2; four of five sampled alternatives remained compatible, withholding its
 alert. Neither direct recheck nor the quota response measures discovery recall, exact identity,
-or scheduled scan timing. The quota probe reports only aggregate rates and does not enforce a
-global reservation across workflows.
+or scheduled scan timing. The original quota probe reported only aggregate rates and did not
+enforce a global reservation across workflows.
 
 The owner's 11 additional Discogs links provide a varied target queue; only the older
 non-rap release was activated as the third live watch. Its [first scan](https://github.com/nictowey/Finder/actions/runs/35887951829)
@@ -202,6 +202,15 @@ The first-scan dual-sort change checks one newest page of ten for the broad firs
 addition to its relevance pages, sharing item deduplication. It does not expand every recurring
 scan or establish coverage of listings never returned by the API. The nominal 4,464-call/day
 refresh ceiling remains unchanged; initial scans, retries, and probe usage add to it.
+
+The next reliability change checks the shared Browse quota before each due watch and leaves a
+100-call reserve beyond one full worst-case initial watch. A low or unavailable quota pauses
+the watch without advancing its cursor. It also adds an independent Neon scheduled dispatcher
+for the existing Python worker, conditioned on a fine-grained repository Actions-write token.
+Until that credential is installed and a live trigger is observed, the backup is **not active**
+and timely discovery has not been established. The worker enforces a 30-minute interval even
+when both schedulers fire. The trigger's actual delivery, quota usage, and watch latency need
+14 days of production observation before the reliability gate can pass.
 
 Stages 1–2 and synthetic tooling can proceed immediately. The existing
 [provider-use record](decisions/0001-provider-use.md) governs real evaluation retention,

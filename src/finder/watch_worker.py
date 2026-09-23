@@ -6,6 +6,7 @@ from finder.adapters.discogs.adapter import DiscogsCatalogProvider
 from finder.adapters.discogs.client import DiscogsClient
 from finder.adapters.ebay.adapter import EbayAdapter
 from finder.adapters.ebay.client import EbayClient
+from finder.adapters.ebay.quota import summarize_browse_quota, watch_scan_quota
 from finder.adapters.ebay.target_search import (
     REFRESH_PAGE_SIZE,
     InventoryCursor,
@@ -81,7 +82,13 @@ def assess_review(watch, listing, variant, *, now, alternatives=None, search_inc
 
 def run_due_watches(repository, settings, discogs_settings, *, limit=3):
     store = WatchStore(repository.engine)
-    report = {"attempted": 0, "completed": 0, "failed": 0, "new_inbox_rows": 0}
+    report = {
+        "attempted": 0,
+        "completed": 0,
+        "failed": 0,
+        "quota_paused": 0,
+        "new_inbox_rows": 0,
+    }
     for _ in range(limit):
         claim = store.claim()
         if claim is None:
@@ -111,6 +118,29 @@ def run_due_watches(repository, settings, discogs_settings, *, limit=3):
             candidate_recheck = "not_due"
             unavailable_item_ids = []
             with EbayClient(destination_settings) as client:
+                try:
+                    quota = watch_scan_quota(
+                        summarize_browse_quota(
+                            client.get(
+                                "/developer/analytics/v1_beta/rate_limit/",
+                                headers={},
+                                params={"api_context": "buy", "api_name": "browse"},
+                            )
+                        )
+                    )
+                except Exception:
+                    store.pause_for_quota(claim, reason="quota_unavailable")
+                    report["quota_paused"] += 1
+                    break
+                if not quota["allowed"]:
+                    store.pause_for_quota(
+                        claim,
+                        reason="insufficient_budget",
+                        remaining=quota["remaining"],
+                        required=quota["required"],
+                    )
+                    report["quota_paused"] += 1
+                    break
                 adapter = EbayAdapter(client)
                 scan = run_target_scan(
                     target,

@@ -186,6 +186,33 @@ class WatchStore:
             )
             return {**dict(row), "lease_token": token}
 
+    def pause_for_quota(self, claim, *, reason, remaining=None, required=None):
+        """Release the lease without advancing the scan or inventory cursor."""
+        with self.engine.begin() as conn:
+            prior = claim["summary"] if isinstance(claim["summary"], dict) else {}
+            conn.execute(
+                update(watches)
+                .where(
+                    watches.c.id == claim["id"],
+                    watches.c.revision == claim["revision"],
+                    watches.c.lease_token == claim["lease_token"],
+                )
+                .values(
+                    lease_token=None,
+                    lease_until=None,
+                    last_started_at=claim["last_started_at"],
+                    status="quota_paused",
+                    summary={
+                        **prior,
+                        "quota_pause": {
+                            "reason": reason,
+                            "remaining": remaining,
+                            "required": required,
+                        },
+                    },
+                )
+            )
+
     def recheck_candidate(self, claim, *, excluded: set[str]) -> str | None:
         """Choose the oldest possible lead not rediscovered by this scan."""
         with self.engine.connect() as conn:
@@ -335,8 +362,9 @@ class WatchStore:
             values = dict(
                 lease_token=None,
                 lease_until=None,
-                # Eligible before the next 30-minute cron tick, despite run-time jitter.
-                next_scan_at=(now + timedelta(minutes=15)).isoformat(),
+                # Bound daily calls even when GitHub and Neon both schedule workers.
+                # Ten-minute catch-up ticks keep a due watch's added wait below ten minutes.
+                next_scan_at=(now + timedelta(minutes=30)).isoformat(),
                 status="healthy" if success else "failed",
                 summary=summary or {},
             )

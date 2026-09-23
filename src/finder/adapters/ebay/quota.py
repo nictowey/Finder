@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import re
 
+# A whole watch can use four searches with ten details each on its first pass.
+# Allow every Browse request to retry three times and leave room for other jobs.
+WATCH_BROWSE_REQUEST_ALLOWANCE = 4 * (1 + 10) * 4
+OTHER_BROWSE_REQUEST_RESERVE = 100
+
 
 def summarize_browse_quota(payload: dict) -> dict:
     if not isinstance(payload, dict) or not isinstance(payload.get("rateLimits"), list):
@@ -52,3 +57,13 @@ def summarize_browse_quota(payload: dict) -> dict:
     if not resources:
         raise ValueError("No Browse quota returned")
     return {"status": "available", "api": "buy.browse", "resources": resources}
+
+
+def watch_scan_quota(quota: dict) -> dict:
+    """Fail closed unless the shared Browse pool covers one whole watch and a reserve."""
+    shared = [r for r in quota["resources"] if r["name"] == "buy.browse"]
+    if len(shared) != 1:
+        raise ValueError("Shared Browse quota missing")
+    remaining = min(rate["remaining"] for rate in shared[0]["rates"])
+    required = WATCH_BROWSE_REQUEST_ALLOWANCE + OTHER_BROWSE_REQUEST_RESERVE
+    return {"remaining": remaining, "required": required, "allowed": remaining >= required}

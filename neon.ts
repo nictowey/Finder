@@ -28,5 +28,17 @@ export default defineConfig({
         EBAY_PRODUCTION_CLIENT_SECRET: requiredEnv("EBAY_PRODUCTION_CLIENT_SECRET"),
       },
     },
+    ...(process.env.FINDER_GITHUB_DISPATCH_TOKEN ? {
+      scantrigger: {
+        name: "Finder scan catch-up",
+        source: "./functions/scan-trigger.ts",
+        env: { FINDER_GITHUB_DISPATCH_TOKEN: requiredEnv("FINDER_GITHUB_DISPATCH_TOKEN") },
+      },
+    } : {}),
   },
+  ...(process.env.FINDER_GITHUB_DISPATCH_TOKEN ? {
+    triggers: {
+      "scan-catchup": { type: "schedule", function: "scantrigger", cron: "5,15,25,35,45,55 * * * *" },
+    },
+  } : {}),
 });

@@ -38,7 +38,7 @@ def main():
         finally:
             repo.close()
         print(json.dumps(report))
-        return 1 if report["failed"] else 0
+        return 1 if report["failed"] or report["quota_paused"] else 0
     except Exception:
         print('{"status":"failed","reason":"worker_unavailable"}')
         return 1

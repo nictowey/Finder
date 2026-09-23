@@ -2,7 +2,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "tsx --test functions/*.test.ts",
+    "test": "node --import tsx --test functions/*.test.ts",
     "typecheck": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --types node functions/*.ts neon.ts"
   },
   "dependencies": {
