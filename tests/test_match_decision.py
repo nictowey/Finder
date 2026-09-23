@@ -4,7 +4,7 @@ from finder.adapters.discogs.normalize import normalize_release
 from finder.adapters.ebay.normalize import normalize_listing
 from finder.categories.vinyl import CollectibleAttribute, VinylFingerprint, from_listing
 from finder.domain import MatchDecision, Variant
-from finder.matching import MATCH_POLICY_VERSION, decide_match
+from finder.matching import MATCH_POLICY_VERSION, decide_match, score_variant
 
 
 def _numbered_case(search_payload, observed_at, *, features=None, title="Future DS2 purple vinyl"):
@@ -71,6 +71,34 @@ def test_numbered_claim_without_pressing_identifier_stays_family_only(search_pay
     decision = decide_match(listing, [numbered])
     assert decision.outcome == "family_only"
     assert "pressing_identifier" in decision.missing_evidence
+
+
+def test_long_seller_title_and_catalog_artist_suffix_allow_family_review_without_identifiers(
+    search_payload, observed_at
+):
+    listing, numbered, _ = _numbered_case(search_payload, observed_at, features="Numbered")
+    listing = listing.model_copy(
+        update={
+            "title": "Future DS2 original numbered purple double vinyl, sealed copy",
+            "item_specifics": {
+                key: values for key, values in listing.item_specifics.items() if key != "Barcode"
+            },
+        }
+    )
+    numbered = numbered.model_copy(update={"artists": ["Future (4)"]})
+    candidate = score_variant(listing, numbered)
+    assert {item.field for item in candidate.evidence if item.matched} >= {"artist", "title"}
+    decision = decide_match(listing, [numbered])
+    assert decision.outcome == "family_only"
+    assert decision.candidate_ids == [numbered.catalog_variant_id]
+    assert "pressing_identifier" in decision.missing_evidence
+    assert decision.outcome != "exact_variant"
+
+
+def test_other_album_with_same_artist_and_color_is_not_a_family_match(search_payload, observed_at):
+    listing, numbered, _ = _numbered_case(search_payload, observed_at)
+    listing = listing.model_copy(update={"title": "Future DS3 purple vinyl"})
+    assert decide_match(listing, [numbered]).outcome == "insufficient_data"
 
 
 def test_numbered_claim_with_shared_identifiers_stays_ambiguous(search_payload, observed_at):

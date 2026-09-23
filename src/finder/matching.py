@@ -15,7 +15,7 @@ from finder.domain import (
     Variant,
 )
 
-MATCH_POLICY_VERSION = "vinyl-decision-v2"
+MATCH_POLICY_VERSION = "vinyl-decision-v3"
 
 
 def _normalized(value: str) -> str:
@@ -25,6 +25,24 @@ def _normalized(value: str) -> str:
 
 def _compact(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", _normalized(value))
+
+
+def _album_title_in_listing(listing_title: str, catalog_title: str) -> bool:
+    """A whole catalog title may appear inside a seller's much longer title."""
+    album = _normalized(catalog_title)
+    return bool(album and f" {album} " in f" {_normalized(listing_title)} ")
+
+
+def _artist_evidence(listing_values: list[str], catalog_values: list[str]) -> MatchEvidence | None:
+    # Discogs' parenthesized numeric suffix disambiguates artists within its database;
+    # it is not part of the name sellers generally use.
+    cleaned = [re.sub(r"\s+\(\d+\)$", "", value) for value in catalog_values]
+    measured = _similarity_evidence("artist", listing_values, cleaned, 15, 0.88)
+    return (
+        measured.model_copy(update={"variant_values": catalog_values})
+        if measured is not None
+        else None
+    )
 
 
 def _non_vinyl_listing(listing: Listing) -> bool:
@@ -112,8 +130,10 @@ def score_variant(
         variant_vinyl.catalog_numbers,
         40,
     )
-    artist = _similarity_evidence("artist", listing_vinyl.artists, variant_vinyl.artists, 15, 0.88)
+    artist = _artist_evidence(listing_vinyl.artists, variant_vinyl.artists)
     title = _similarity_evidence("title", [listing.title], [variant.title], 20, 0.52)
+    if title is not None and _album_title_in_listing(listing.title, variant.title):
+        title = title.model_copy(update={"matched": True})
     year = _exact_evidence(
         "release_year",
         [str(value) for value in listing_vinyl.release_years],
@@ -189,10 +209,7 @@ def decide_match(
         variant = by_id[candidate.catalog_variant_id]
         fields = {item.field: item for item in candidate.evidence}
         # The scorer's broad title similarity alone is insufficient for a family decision.
-        title_in_listing = bool(
-            _normalized(variant.title)
-            and f" {_normalized(variant.title)} " in f" {_normalized(listing.title)} "
-        )
+        title_in_listing = _album_title_in_listing(listing.title, variant.title)
         if (
             fields.get("artist")
             and fields["artist"].matched
