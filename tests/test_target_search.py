@@ -102,6 +102,14 @@ def test_default_search_includes_seller_spelling_alias(discogs_release, observed
     )
     target = target_from_release(variant)
     assert target.queries == ["A$AP Rocky Don't Be Dumb", "ASAP Rocky Dont Be Dumb"]
+    paired = variant.model_copy(
+        update={"formats": [{"name": "Vinyl", "text": "Pink"}, {"name": "Vinyl", "text": "Green"}]}
+    )
+    assert target_from_release(paired).queries == [
+        "A$AP Rocky Don't Be Dumb",
+        "ASAP Rocky Dont Be Dumb",
+        "ASAP Rocky Dont Be Dumb pink green",
+    ]
 
 
 @pytest.mark.parametrize(
