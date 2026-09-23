@@ -9,8 +9,8 @@ leads remain unverified; there is no sold-comparables valuation or automatic exa
 
 **[Open the private Finder dashboard](https://br-soft-forest-b4fo15q2-watchlist.compute.c-6.us-east-2.aws.neon.tech/)**
 
-Access requires the configured owner email and its verification code. Owner setup is pending;
-the deployed app fails closed until the address is supplied. See
+Access requires the configured owner email and its verification code. Owner sign-in is active;
+the owner has saved the pink/green Don't Be Dumb and numbered DS2 pressing targets. See
 [private watchlist setup and limits](docs/private-watchlist.md). The pilot supports three watches
 and checks about every 30 minutes, subject to scheduler delay. Discogs marketplace listings,
 public signup, payments, and additional collectible categories remain future work.

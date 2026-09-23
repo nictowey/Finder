@@ -14,8 +14,8 @@ six hours. A dedicated production auth email sender is needed before an external
 
 ## Operator setup
 
-1. Keep the existing Production secrets. Add `FINDER_OWNER_EMAIL` as an encrypted GitHub
-   **production environment** secret. This address alone can access the dashboard after email
+1. Keep the existing Production secrets and `FINDER_OWNER_EMAIL` encrypted GitHub
+   **production environment** secret. Only that address can access the dashboard after email
    verification. It is never written into repository files or Actions output.
 2. Run **Deploy private watchlist** from `main`. It checks all offline tests, exercises an
    isolated PostgreSQL schema, applies additive migration 1, seeds the existing secret-backed
@@ -88,9 +88,18 @@ the pink/green release are discovery examples, not enough to estimate accuracy a
   work respected the due time and performed zero additional scans / inserts.
 - [Recurring worker smoke](https://github.com/nictowey/Finder/actions/runs/35820668287) passed.
   No device subscription exists yet, so no actual push was sent.
-- The hosted sign-in page was inspected in the browser. The data API remains locked because
-  the owner email is not yet supplied. Signed-in CRUD and real-device push delivery still need
-  user-assisted acceptance; do not describe those as end-to-end verified.
+- [Owner activation deployment](https://github.com/nictowey/Finder/actions/runs/35821058580)
+  passed, including the isolated PostgreSQL check, owner configuration, Function deployment,
+  anonymous-access denial, and CSRF checks. The owner signed in with an email code; the hosted
+  dashboard, saved-watch creation, inbox filters, and refresh were inspected while signed in.
+- The owner saved the pink/green Don't Be Dumb and numbered DS2 pressing targets. A
+  [two-watch worker run](https://github.com/nictowey/Finder/actions/runs/35821632354)
+  completed both scans and inserted 20 new inbox rows. The dashboard showed one provisional
+  possible-pressing lead for each, including the known DS2 example. All sampled search pages
+  hit their caps. This is a discovery check, not pressing proof, measured recall, or a deal claim.
+- No device subscription exists yet, and the notification dispatcher delivered zero pushes.
+  The owner must enable notifications in their own browser to verify device delivery. Saved
+  ceilings and destination remain unset; the inbox still shows leads at any price.
 - The original eBay deletion endpoint still rejects unsigned requests with HTTP 412.
 - A direct database connection is required for the isolated schema integration check; the
   ordinary application retains its existing pooled connection.

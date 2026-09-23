@@ -91,9 +91,11 @@ The open provider-use decision and bounded Production audit are documented in
 
 12. Private collector watchlist loop
    - Persistent targets, bounded 30-minute schedule, leases, review inbox and browser push outbox
-   - Owner-only verified-email login; access remains locked until owner setup
-   - Live migration/deletion checks and one seeded target scan passed; 22 review rows persisted
-   - End-user sign-in and real-device notification checks await owner setup
+   - Owner-only verified-email login is configured and signed-in dashboard access passed
+   - Live migration/deletion checks and two-watch scheduled scan passed; the inbox shows
+     provisional leads for both saved targets, including the known DS2 listing
+   - Watch creation and inbox filters passed in the hosted dashboard; push delivery on the
+     owner's own device is still unverified
 
 ### Verified baseline
 
