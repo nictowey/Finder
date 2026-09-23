@@ -449,7 +449,7 @@ When introduced:
 
 ## Phase 3 — User-defined vinyl monitors
 
-Status: **Private saved-watch pilot deployed; owner activation and real usage validation pending**
+Status: **Private saved-watch pilot active; pressing accuracy and device push remain unverified**
 
 Users should be able to monitor at three levels:
 
@@ -472,7 +472,12 @@ initial best-match and newest-first refresh samples dedupe overlapping items. Th
 retrieval prototype, not measured recall or automated matching to the selected release. On
 September 23, 2026, an initial Production scan found the known DS2 eBay example in its bounded
 results. The first query hit its ten-item cap, so this is one positive discovery check rather
-than a coverage estimate or confirmation of the numbered edition.
+than a coverage estimate or confirmation of the numbered edition. The owner has now saved this
+release and the pink/green Don't Be Dumb release in the hosted dashboard. A manual scheduled
+worker run scanned both, and the review inbox showed one possible pressing for each, including
+the known DS2 example. This validates discovery and private review for these two targets, but
+does not validate exact identity, a bargain, broad retrieval, or notification delivery to the
+owner's device.
 
 A monitor should eventually contain:
 
