@@ -96,3 +96,25 @@ their presence on the catalog page does not mean the seller supplied or photogra
 this individual copy. Missing seller identifiers lead to review, while explicit conflicting
 manufacturing evidence can exclude a variant. Compare individual-copy numbering or other clear
 seller evidence when available; do not infer it from the catalog entry.
+
+## Pink and green two-disc pressing check
+
+The manual `Production color-pair pressing probe` reads a release ID from a private Production
+secret, retrieves its Discogs catalog entry, and searches the official eBay Browse API with
+three bounded album/alias/color queries. It prints anonymous aggregate counts and evaluates
+one seller listing that claims both colors, with the selected release pinned for comparison.
+This is a **diagnostic sample**, not a labeled example or evidence of search recall. The
+workflow's public output omits listing and catalog identities, evidence values, and prices.
+
+| UTC date | Run | Discovery | Pressing decision |
+| --- | --- | --- | --- |
+| 2026-09-23 | [Color-pair probe #1](https://github.com/nictowey/Finder/actions/runs/35815976859) | Three queries fetched 30 results, representing 22 distinct observed listings; eight overlaps were skipped. Four titles and one structured color specific claimed the pair. All searches hit their ten-item cap. | The selected listing claimed both colors in title and structured specifics, but the target scored 35 with a false `color` text disagreement and an `edition` disagreement. Eight catalog releases were evaluated, seven in the same family. `family_only`. |
+| 2026-09-23 | [Color-pair probe #2](https://github.com/nictowey/Finder/actions/runs/35816313720) | The same bounded counts: 30 fetched, 22 distinct, eight cross-query duplicates, four title pair claims and one structured pair claim. No partial detail failures. | With version 6 palette comparison, the target scored 50 and matched artist, title, and the **complete pink/green pair**. A scored `edition` disagreement remains. The selected listing supplies no structured barcode, catalog number, or runout. Eight releases were evaluated, seven in the same family; the target was not returned by seller-text catalog search and the search was truncated. `family_only`. |
+
+The catalog release is vinyl with both colors and has barcode and catalog-number data but no
+runout data in the normalized entry. Its identifiers cannot substitute for seller evidence.
+Comparing the complete palette corrects the representation problem where Discogs lists disc
+colors separately and a seller puts them together; a partial or different color pair still
+conflicts. The remaining edition disagreement has not been adjudicated against this seller's
+copy. A color claim cannot confirm the physical discs or distinguish every neighboring
+pressing. Do not use the heuristic score as a probability or an undervaluation signal.
