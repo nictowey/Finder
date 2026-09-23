@@ -208,8 +208,8 @@ The next reliability change checks the shared Browse quota before each due watch
 the watch without advancing its cursor. It also adds an independent Neon scheduled dispatcher
 for the existing Python worker, conditioned on a fine-grained repository Actions-write token.
 The credential is installed, and a due-time dispatch was observed on September 23. Timely
-discovery has not been established over a representative observation period. The worker enforces a 30-minute interval even
-when both schedulers fire. The trigger's actual delivery, quota usage, and watch latency need
+discovery has not been established over a representative observation period. The worker enforces
+a 30-minute interval even when both schedulers fire. The trigger's actual delivery, quota usage, and watch latency need
 14 days of production observation before the reliability gate can pass.
 The [first Production run under this gate](https://github.com/nictowey/Finder/actions/runs/35905240731)
 completed three due watches without errors or quota pauses and inserted eight new inbox rows.
