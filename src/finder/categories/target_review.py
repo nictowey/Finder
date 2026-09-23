@@ -71,7 +71,7 @@ def review_target_listing(listing: Listing, variant: Variant) -> TargetReview:
             remainder = remainder.replace(artist, " ", 1)
     title_colors = _palette([remainder])
     # Structured color is more useful than title copy. When it is present, a
-    # partial pair or an explicit different color remains a conflict.
+    # partial pair remains uncertain; an explicit different color conflicts.
     color_claims = seller.colors or ([" ".join(sorted(title_colors))] if title_colors else [])
     color = _color_evidence(color_claims, catalog.colors)
     if color is not None and not color.matched:

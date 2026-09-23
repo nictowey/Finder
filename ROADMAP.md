@@ -1,5 +1,15 @@
 # Finder Product Roadmap
 
+## Current delivery: private watchlist loop
+
+The owner authorized completion of an internal usable product on September 23, 2026.
+The active milestone is saved pressing → bounded recurring discovery → evidence-aware review
+inbox → optional buyer-ceiling notification. This advances private scheduling and UI ahead
+of measured exact-identity precision, while displaying every possible pressing as unverified.
+See [the pilot implementation and operator guide](docs/private-watchlist.md). Public launch,
+market-value claims, and additional marketplace data remain separately gated.
+
+
 Last updated: 2026-09-23
 
 ## What Finder should do for a collector

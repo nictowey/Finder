@@ -17,8 +17,8 @@ behind adapters. Category-specific identity rules belong in category modules.
 - Marketplace: eBay Browse API only; never scrape eBay
 - Catalog identity source: Discogs CC0 catalog endpoints only
 - Persistence: SQLAlchemy with SQLite locally and portable repository boundaries
-- Interface: Python CLI, manual bounded cloud validation, and a narrowly scoped hosted eBay
-  deletion endpoint
+- Interface: Python CLI, private owner-only watchlist dashboard and scheduled review worker,
+  manual bounded cloud validation, and a hosted eBay deletion endpoint
 
 ## Current project state
 
@@ -256,8 +256,11 @@ A material change is complete only when:
    sellers that omit the artist, title alias, or edition, before suggesting coverage.
 
 The eBay deletion endpoint and manual bounded cloud scans support Production data validation.
-Do not build recurring scheduling, alerts, or a frontend until live ingestion and identity
-matching are demonstrably reliable.
+The owner authorized the private watchlist loop on September 23, 2026: recurring bounded
+scans, an authenticated review inbox, and notifications for unverified possible pressings.
+Implement that pilot without claiming exact identity, complete recall, or undervaluation.
+See `docs/private-watchlist.md` for scope, deployment and acceptance checks. The broader public
+launch and valuation gates remain unchanged.
 
 ## Maintaining this file
 
