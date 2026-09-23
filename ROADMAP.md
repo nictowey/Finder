@@ -405,7 +405,7 @@ When introduced:
 
 ## Phase 3 — User-defined vinyl monitors
 
-Status: **Planned after identity semantics stabilize**
+Status: **Internal rule prototype in progress; storage, discovery plans, and release gated**
 
 Users should be able to monitor at three levels:
 
@@ -415,6 +415,13 @@ Users should be able to monitor at three levels:
    claim
 
 ### Monitor definition
+
+`finder.watchlist` currently implements a versioned family/exact-release target and pure
+buyer-ceiling triage on supplied listing and match evidence. It abstains on an unverified
+destination quote, unknown subtotal, auction final price, stale listing, incomplete catalog
+retrieval, and probable identity for an exact-release target. This internal candidate is not a
+live availability or valuation claim. Condition IDs are an explicit allow-list; record/media
+grade translation, saved targets, search planning, and a public view remain future work.
 
 A monitor should eventually contain:
 
