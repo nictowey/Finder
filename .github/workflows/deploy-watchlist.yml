@@ -16,6 +16,7 @@ jobs:
     timeout-minutes: 20
     environment: production
     env:
+      FINDER_TRIGGER_SOURCE: deployment
       EBAY_ENVIRONMENT: production
       DISCOGS_USER_AGENT: Finder/0.3 +https://github.com/nictowey/Finder
       EBAY_PRODUCTION_CLIENT_ID: ${{ secrets.EBAY_PRODUCTION_CLIENT_ID }}

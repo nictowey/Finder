@@ -6,18 +6,22 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, delete, insert, select, text
 from sqlalchemy.engine import make_url
 
 from finder.adapters.ebay.normalize import normalize_listing
 from finder.persistence import SqlAlchemyRepository
 from finder.watch_store import (
+    NEW_TABLES,
     SavedWatch,
     WatchStore,
+    dispatch_attempts,
     inbox,
     migrate,
+    migrations,
     outbox,
     rollback_pilot_schema,
+    scan_attempts,
 )
 
 
@@ -58,6 +62,38 @@ def main():
             phase = "assert_dedup"
             assert len(conn.execute(select(inbox)).all()) == 1
             assert len(conn.execute(select(outbox)).all()) == 1
+            assert len(conn.execute(select(scan_attempts)).all()) == 2
+            backup = {
+                table.name: [dict(row) for row in conn.execute(select(table)).mappings()]
+                for table in NEW_TABLES
+            }
+        # Rehearse a logical pilot backup/restore with synthetic data in this disposable
+        # schema only. This is not a claim that a Production recovery has been performed.
+        phase = "restore_synthetic_backup"
+        rollback_pilot_schema(repo.engine)
+        migrate(repo.engine)
+        with repo.engine.begin() as conn:
+            for table in reversed(NEW_TABLES):
+                conn.execute(delete(table))
+            for table in NEW_TABLES:
+                if backup[table.name]:
+                    conn.execute(insert(table), backup[table.name])
+            for table in NEW_TABLES:
+                assert sorted(
+                    json.dumps(dict(row), sort_keys=True)
+                    for row in conn.execute(select(table)).mappings()
+                ) == sorted(json.dumps(row, sort_keys=True) for row in backup[table.name])
+        # Exercise upgrade of an existing v1 pilot, including live inbox/outbox rows.
+        phase = "upgrade_existing_pilot"
+        with repo.engine.begin() as conn:
+            scan_attempts.drop(conn)
+            dispatch_attempts.drop(conn)
+            conn.execute(delete(migrations).where(migrations.c.version == 2))
+        migrate(repo.engine)
+        with repo.engine.connect() as conn:
+            assert len(conn.execute(select(inbox)).all()) == 1
+            assert len(conn.execute(select(outbox)).all()) == 1
+            assert not conn.execute(select(scan_attempts)).all()
         repo.delete_ebay_seller(listing.seller_id)
         phase = "assert_deletion"
         with repo.engine.connect() as conn:
@@ -66,7 +102,9 @@ def main():
         rollback_pilot_schema(repo.engine)
         phase = "remigrate"
         migrate(repo.engine)
-        print('{"postgres_migration_lease_dedup_deletion":"passed"}')
+        print(
+            '{"postgres_migration_lease_dedup_deletion":"passed","synthetic_backup_restore_upgrade":"passed"}'
+        )
         return 0
     except Exception as exc:
         print(

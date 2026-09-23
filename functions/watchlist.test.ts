@@ -50,3 +50,27 @@ test("OTP cookie proxy keeps credentials out of response JSON",async()=>{
   assert.ok(!response.headers.get("set-cookie")?.includes("Domain="));
   assert.ok(response.headers.get("set-cookie")?.includes("SameSite=Strict"));
 });
+
+test('notification tests require owner authentication and same-origin requests',async()=>{
+ const {handler}=setup();
+ assert.equal((await handler(new Request(origin+'/api/push/test',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:'{}'}))).status,401);
+ const authorized=setup(true).handler;
+ assert.equal((await authorized(new Request(origin+'/api/push/test',{method:'POST',headers:{Origin:'https://other.test','Content-Type':'application/json'},body:'{}'}))).status,403);
+});
+test('notification test sends only to enrolled device and observes a cooldown',async()=>{
+ const subscription={endpoint:'https://web.push.apple.com/synthetic',keys:{p256dh:'a'.repeat(87),auth:'a'.repeat(22)}};
+ let reserved=true,sent=0;
+ const db={query:async(sql:string)=>({rows:sql.includes('owner_email')?[{data:{email:'owner@example.com'}}]:sql.includes('FROM finder_push_subscriptions WHERE')?[{data:subscription}]:sql.includes("key='vapid'")?[{data:{publicKey:'p',privateKey:'s'}}]:sql.includes('RETURNING key')&&reserved?[{key:'r'}]:[]})};
+ const handler=createHandler({db,origin,authURL:'https://auth.example/auth',fetch:async()=>new Response(JSON.stringify({user:{email:'owner@example.com',emailVerified:true},session:{expiresAt:new Date(Date.now()+60000).toISOString()}})),sendPush:async(sub,payload)=>{assert.deepEqual(sub,subscription);assert.equal(payload,'{"kind":"test"}');sent++;return {statusCode:201,body:'',headers:{}};}});
+ const req=()=>new Request(origin+'/api/push/test',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({endpoint:subscription.endpoint})});
+ const r=await handler(req());assert.equal(r.status,200);assert.equal((await r.json()).accepted,true);
+ reserved=false;assert.equal((await handler(req())).status,429);assert.equal(sent,1);
+});
+test('Home Screen manifest is public but dashboard data stays private',async()=>{
+ const {handler}=setup();const r=await handler(new Request(origin+'/manifest.webmanifest'));
+ assert.equal(r.status,200);const manifest=await r.json();assert.equal(manifest.display,'standalone');
+ assert.equal(manifest.start_url,'/');assert.ok(html.includes('rel="manifest"'));
+ assert.equal(validateWatch({release_id:123}).alert_mode,'review_leads');
+ assert.equal(validateWatch({release_id:123,alert_mode:'strict'}).alert_mode,'strict');
+ assert.throws(()=>validateWatch({release_id:123,alert_mode:'exact_guaranteed'}));
+});

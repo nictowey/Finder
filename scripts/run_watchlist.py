@@ -34,7 +34,16 @@ def main():
                 ):
                     if value.strip().isdigit():
                         store.add(SavedWatch(release_id=int(value)), watch_id=f"seed-{index + 1}")
-            report = run_due_watches(repo, settings, load_discogs_settings())
+            report = run_due_watches(
+                repo,
+                settings,
+                load_discogs_settings(),
+                context={
+                    "run_id": os.environ.get("GITHUB_RUN_ID"),
+                    "source": os.environ.get("FINDER_TRIGGER_SOURCE", "local"),
+                    "dispatch_id": os.environ.get("FINDER_DISPATCH_ID"),
+                },
+            )
         finally:
             repo.close()
         print(json.dumps(report))

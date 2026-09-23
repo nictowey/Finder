@@ -36,13 +36,17 @@ def assess_review(watch, listing, variant, *, now, alternatives=None, search_inc
         else:
             budget = "within_ceiling" if subtotal <= watch.maximum_subtotal else "over_ceiling"
     blocked = []
+    uncertainty = []
     if review.alternatives_checked is None:
         blocked.append("catalog_alternatives_not_checked")
     else:
         if search_incomplete:
-            blocked.append("catalog_alternative_search_incomplete")
+            uncertainty.append("catalog_alternative_search_incomplete")
         if review.alternatives_not_ruled_out:
-            blocked.append("other_pressings_not_ruled_out")
+            uncertainty.append("other_pressings_not_ruled_out")
+    if watch.alert_mode == "strict":
+        blocked.extend(uncertainty)
+    reasons.extend(uncertainty)
     if listing.price_kind != "fixed_price":
         blocked.append("auction_final_price_unknown")
     if watch.condition_ids and listing.condition_id not in watch.condition_ids:
@@ -76,11 +80,12 @@ def assess_review(watch, listing, variant, *, now, alternatives=None, search_inc
         "notify": review.status == "possible_pressing"
         and not blocked
         and budget in ("no_ceiling", "within_ceiling"),
-        "policy": "private-target-review-v3",
+        "policy": "private-target-review-v4",
+        "alert_mode": watch.alert_mode,
     }
 
 
-def run_due_watches(repository, settings, discogs_settings, *, limit=3):
+def run_due_watches(repository, settings, discogs_settings, *, limit=3, context=None):
     store = WatchStore(repository.engine)
     report = {
         "attempted": 0,
@@ -88,12 +93,16 @@ def run_due_watches(repository, settings, discogs_settings, *, limit=3):
         "failed": 0,
         "quota_paused": 0,
         "new_inbox_rows": 0,
+        "superseded": 0,
     }
     for _ in range(limit):
-        claim = store.claim()
+        claim = store.claim(context=context)
         if claim is None:
             break
         report["attempted"] += 1
+        phase = "catalog_unavailable"
+        ebay_client = None
+        quota = None
         try:
             watch = SavedWatch.model_validate(claim["config"])
             with DiscogsClient(discogs_settings) as client:
@@ -118,6 +127,8 @@ def run_due_watches(repository, settings, discogs_settings, *, limit=3):
             candidate_recheck = "not_due"
             unavailable_item_ids = []
             with EbayClient(destination_settings) as client:
+                ebay_client = client
+                phase = "discovery_failed"
                 try:
                     quota = watch_scan_quota(
                         summarize_browse_quota(
@@ -197,7 +208,7 @@ def run_due_watches(repository, settings, discogs_settings, *, limit=3):
                             ),
                         )
                     )
-            report["new_inbox_rows"] += store.finish(
+            added = store.finish(
                 claim,
                 reviews,
                 catalog=variant,
@@ -212,6 +223,8 @@ def run_due_watches(repository, settings, discogs_settings, *, limit=3):
                         "newest_page_size": REFRESH_PAGE_SIZE if mode == "refresh" else 10,
                         "browse_requests": browse_requests,
                         "browse_retries": browse_retries,
+                        "quota_remaining": quota["remaining"],
+                        "quota_required": quota["required"],
                         "newest": [
                             {
                                 "query_position": i + 1,
@@ -272,20 +285,28 @@ def run_due_watches(repository, settings, discogs_settings, *, limit=3):
                 unavailable_item_ids=unavailable_item_ids,
                 now=now,
             )
-            report["completed" if complete else "failed"] += 1
+            if added is None:
+                report["superseded"] += 1
+            else:
+                report["new_inbox_rows"] += added
+                report["completed" if complete else "failed"] += 1
         except Exception:
             # No exception bodies: provider, database and validation messages may contain
             # identities or connection information in this public workflow.
-            store.finish(
+            added = store.finish(
                 claim,
                 [],
                 success=False,
                 summary={
-                    "error": "scan_failed",
+                    "error": phase,
+                    "discovery": {
+                        "browse_requests": ebay_client.browse_requests if ebay_client else 0,
+                        "browse_retries": ebay_client.browse_retries if ebay_client else 0,
+                    },
                     "inventory": claim["summary"].get("inventory")
                     if isinstance(claim["summary"], dict)
                     else None,
                 },
             )
-            report["failed"] += 1
+            report["superseded" if added is None else "failed"] += 1
     return report

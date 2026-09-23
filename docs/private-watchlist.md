@@ -12,6 +12,39 @@ automatic exact matching, sold-price valuation, and Discogs marketplace access r
 this pilot. Discogs catalog attribution is retained; catalog and listing views expire after
 six hours. A dedicated production auth email sender is needed before an external-user launch.
 
+## Current operational revision
+
+Migration 2 adds scan and dispatch history without changing existing pilot columns. Each scan
+records its original due time, actual start, lease, outcome and bounded request counters. A
+killed worker remains an interrupted attempt; a stale or edited worker cannot report success.
+Dispatch reservations, GitHub acceptance/rejection, and unknown responses are distinct states.
+A generated correlation ID links a dispatch to actual scan attempts. It is operational
+provenance, not authentication of the publicly reachable trigger endpoint.
+
+The dashboard shows current gaps even when no failed attempt was recorded. History is retained
+for 30 days and viewed over 14; it includes no listing identities, seller content or catalog
+clues. Deleting a watch deletes its history. Requests interrupted before counters are persisted
+and other workflows are not fully accounted for by the scan-counter sum. Use shared quota
+readings as well. Elapsed days and successful scan counts do not pass the pilot gate.
+
+The owner chose `review_leads` alerts on September 23. Under policy v4, incomplete catalog search
+or a compatible alternative remains visible and may notify as an **unverified review lead**.
+`strict` mode holds those alerts. Failed comparison lookups, conflicts, stale evidence and
+failed buyer filters still hold both modes. Existing watches without an explicit mode adopt
+the owner's selected review mode; no pressing identity is upgraded by this choice.
+
+For iPhone, open the dashboard in Safari, choose Share → Add to Home Screen, launch the icon,
+sign in, and tap Enable notifications. Then tap Send test notification and confirm the visible
+notification on the phone. The test is restricted to that enrolled device and once per minute.
+A successful test API response means push-service acceptance, not visible display. The app
+manifest declares standalone display; see [WebKit's Home Screen push guidance](https://webkit.org/blog/13878/web-push-for-web-apps-on-ios-and-ipados/).
+
+`check_watch_postgres.py` now rehearses a logical backup/restore and a v1-to-v2 upgrade using
+synthetic rows in its isolated disposable schema. It does not copy production provider data or
+claim a production disaster-recovery drill. Keep the existing pilot tables when rolling back
+code; migration 2 is additive. `rollback_pilot_schema` remains destructive and is for isolated
+tests or an expressly authorized operator rollback only.
+
 ## Operator setup
 
 1. Keep the existing Production secrets and `FINDER_OWNER_EMAIL` encrypted GitHub
@@ -82,16 +115,17 @@ session, its expiry, verified email, and owner allow-list. No external auth SDK 
   scan. The selected release still costs its existing one request. A full three-watch scan
   therefore uses at most 21 catalog requests before retries; it does not enumerate a complete
   release family. Failed or explicitly incomplete alternative retrieval is shown and
-  withholds notifications, while the lead remains in the review inbox.
+  withholds notifications when the lookup fails. A capped result holds strict alerts; review mode may notify with uncertainty.
 - Shared or missing evidence may leave another retrieved pressing compatible. Those leads stay
-  visible in Possible pressings with a competing-fit count, but do not notify automatically.
+  visible in Possible pressings with a competing-fit count, and only notify in review mode.
   Zero competing fits within a bounded sample does not prove unique identity.
 - Leases expire after twelve minutes. Edits invalidate in-flight work through revision checks.
 - Inbox identity is watch + marketplace + listing. Dismissal survives rescans and edits.
 - One notification event per listing per watch. Raising a ceiling can notify a previously
   ineligible listing; an already alerted listing does not alert again after editing.
-- Possible pressing leads with a completed, non-truncated alternatives check and no
-  unresolved retrieved competitor can notify without a ceiling. Ceiling notifications additionally
+- Possible pressing leads may notify without a ceiling in review mode after an alternatives
+  lookup succeeds. Strict mode additionally requires a non-truncated check with no unresolved
+  retrieved competitor. Ceiling notifications additionally
   require known same-currency fixed price and shipping, matching requested destination context,
   and an accepted condition when specified. All delivery totals need checkout verification.
 - Unknown shipping, auction prices, failed detail enrichment, stale listings, explicit conflicts,

@@ -1,10 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Pool } from "pg";
+import { readOperations } from "./operations.js";
+import webpush from "web-push";
 import { html, javascript, serviceWorker, stylesheet } from "./watchlist-ui.js";
 
 type DB = { query: (sql: string, values?: unknown[]) => Promise<{ rows: any[] }> };
-type Deps = { db: DB; authURL: string; origin: string; fetch: typeof fetch };
+type Deps = { db: DB; authURL: string; origin: string; fetch: typeof fetch; sendPush?: typeof webpush.sendNotification };
 let pool: Pool | undefined;
+class InputError extends Error {}
 
 function reply(data: unknown, status = 200, type = "application/json"): Response {
   return new Response(type === "application/json" ? JSON.stringify(data) : String(data), {
@@ -16,36 +19,37 @@ function reply(data: unknown, status = 200, type = "application/json"): Response
 
 async function body(request: Request): Promise<any> {
   const reader = request.body?.getReader();
-  if (!reader) throw new Error("body");
+  if (!reader) throw new InputError("body");
   let size = 0;
   const chunks: Uint8Array[] = [];
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     size += value.length;
-    if (size > 16_384) { await reader.cancel(); throw new Error("size"); }
+    if (size > 16_384) { await reader.cancel(); throw new InputError("size"); }
     chunks.push(value);
   }
-  return JSON.parse(Buffer.concat(chunks).toString());
+  try { return JSON.parse(Buffer.concat(chunks).toString()); } catch { throw new InputError("json"); }
 }
 
 export function validateWatch(value: any) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("watch");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new InputError("watch");
   const release = String(value.release_id ?? "").trim();
   const match = release.match(/^(?:https:\/\/(?:www\.)?discogs\.com\/(?:[a-z]{2}\/)?release\/)?([1-9]\d*)(?:-[^?#]*)?(?:[?#].*)?$/);
-  if (!match || !Number.isSafeInteger(Number(match[1]))) throw new Error("release");
+  if (!match || !Number.isSafeInteger(Number(match[1]))) throw new InputError("release");
   const ceiling = value.maximum_subtotal === "" || value.maximum_subtotal == null ? null : String(value.maximum_subtotal);
-  if (ceiling !== null && (!/^\d{1,7}(?:\.\d{1,2})?$/.test(ceiling) || Number(ceiling) <= 0)) throw new Error("ceiling");
-  if (!/^[A-Z]{3}$/.test(value.currency ?? "USD")) throw new Error("currency");
+  if (ceiling !== null && (!/^\d{1,7}(?:\.\d{1,2})?$/.test(ceiling) || Number(ceiling) <= 0)) throw new InputError("ceiling");
+  if (!/^[A-Z]{3}$/.test(value.currency ?? "USD")) throw new InputError("currency");
   const country = value.country || null, postal = value.postal_code || null;
   if (Boolean(country) !== Boolean(postal) || (country && !/^[A-Z]{2}$/.test(country)) ||
-    (postal && !/^[A-Za-z0-9 -]{1,16}$/.test(postal))) throw new Error("destination");
+    (postal && !/^[A-Za-z0-9 -]{1,16}$/.test(postal))) throw new InputError("destination");
   const conditions = value.condition_ids ?? [];
-  if (!Array.isArray(conditions) || conditions.length > 20 || conditions.some((v: any) => typeof v !== "string" || !/^\d{1,8}$/.test(v))) throw new Error("conditions");
-  if (value.enabled !== undefined && typeof value.enabled !== "boolean") throw new Error("enabled");
-  if (typeof (value.label ?? "") !== "string" || (value.label ?? "").length > 120) throw new Error("label");
+  if (!Array.isArray(conditions) || conditions.length > 20 || conditions.some((v: any) => typeof v !== "string" || !/^\d{1,8}$/.test(v))) throw new InputError("conditions");
+  if (value.alert_mode !== undefined && !['review_leads','strict'].includes(value.alert_mode)) throw new InputError("alert mode");
+  if (value.enabled !== undefined && typeof value.enabled !== "boolean") throw new InputError("enabled");
+  if (typeof (value.label ?? "") !== "string" || (value.label ?? "").length > 120) throw new InputError("label");
   return { release_id: Number(match[1]), label: (value.label ?? "").trim(), maximum_subtotal: ceiling,
-    currency: value.currency ?? "USD", condition_ids: conditions, country, postal_code: postal, enabled: value.enabled ?? true };
+    currency: value.currency ?? "USD", condition_ids: conditions, country, postal_code: postal, enabled: value.enabled ?? true, alert_mode: value.alert_mode ?? "review_leads" };
 }
 
 export function validPush(value: any): boolean {
@@ -68,6 +72,8 @@ export function createHandler(deps: Deps) {
         if (path === "/app.js") return reply(javascript, 200, "text/javascript");
         if (path === "/app.css") return reply(stylesheet, 200, "text/css");
         if (path === "/sw.js") return reply(serviceWorker, 200, "text/javascript");
+        if (path === "/manifest.webmanifest") return reply({ name: "Finder", short_name: "Finder", id: "/", start_url: "/", scope: "/", display: "standalone", background_color: "#f6f5f0", theme_color: "#173f35", icons: [{ src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" }] }, 200);
+        if (path === "/icon.svg") return reply('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192"><rect width="192" height="192" rx="40" fill="#173f35"/><circle cx="96" cy="96" r="62" fill="#f6f5f0"/><circle cx="96" cy="96" r="45" fill="#173f35"/><circle cx="96" cy="96" r="15" fill="#d4b771"/></svg>',200,"image/svg+xml");
         if (path === "/health") return reply({ status: "ok" });
       }
       if (!["GET", "POST", "PUT", "DELETE"].includes(request.method)) return reply({ error: "Method not allowed" }, 405);
@@ -107,7 +113,7 @@ export function createHandler(deps: Deps) {
         return response;
       }
       if (path === "/api/dashboard" && request.method === "GET") {
-        const watches = (await deps.db.query("SELECT id,config,revision,status,last_started_at,last_success_at,next_scan_at,summary,catalog,catalog_observed_at FROM finder_watches ORDER BY id")).rows;
+        const watches = (await deps.db.query("SELECT id,config,revision,status,last_started_at,last_success_at,next_scan_at,lease_until,summary,catalog,catalog_observed_at FROM finder_watches ORDER BY id")).rows;
         const cutoff = Date.now() - 6 * 3600_000;
         for (const watch of watches) if (Date.parse(watch.catalog_observed_at ?? "") < cutoff || !watch.catalog_observed_at) watch.catalog = null;
         const leads = (await deps.db.query(`SELECT i.watch_id,i.marketplace,i.marketplace_item_id,i.data,i.first_seen_at,i.last_seen_at,i.dismissed,l.data AS listing
@@ -122,7 +128,8 @@ export function createHandler(deps: Deps) {
             price_kind: l.price_kind, listing_ends_at: l.listing_ends_at, item_specifics: l.item_specifics };
         }
         const push = (await deps.db.query("SELECT data FROM finder_private_settings WHERE key='vapid'")).rows[0]?.data;
-        return reply({ watches, leads, push_key: push?.publicKey ?? null, email: owner, now: new Date().toISOString() });
+        const operations = await readOperations(deps.db, watches);
+        return reply({ watches, leads, operations, push_key: push?.publicKey ?? null, email: owner, now: new Date().toISOString() });
       }
       if (path === "/api/watches" && request.method === "POST") {
         const watch = validateWatch(await body(request));
@@ -159,6 +166,27 @@ export function createHandler(deps: Deps) {
           [value.watch_id, value.marketplace, value.marketplace_item_id, value.dismissed]);
         return reply({ ok: true });
       }
+      if (path === "/api/push/test" && request.method === "POST") {
+        const value = await body(request);
+        if (typeof value.endpoint !== "string" || value.endpoint.length > 4096) return reply({ error: "Enable notifications on this device first." }, 400);
+        const id = createHash("sha256").update(value.endpoint).digest("hex");
+        const subscription = (await deps.db.query("SELECT data FROM finder_push_subscriptions WHERE id=$1", [id])).rows[0]?.data;
+        const key = (await deps.db.query("SELECT data FROM finder_private_settings WHERE key='vapid'")).rows[0]?.data;
+        if (!subscription || !key || !validPush(subscription)) return reply({ error: "Enable notifications on this device first." }, 409);
+        const reserved = await deps.db.query(`INSERT INTO finder_private_settings(key,data) VALUES($1,json_build_object('at',NOW()))
+          ON CONFLICT(key) DO UPDATE SET data=EXCLUDED.data
+          WHERE (finder_private_settings.data->>'at')::timestamptz < NOW()-INTERVAL '1 minute' RETURNING key`, ['push_test_' + id.slice(0,48)]);
+        if (!reserved.rows.length) return reply({ error: "Wait one minute before another test." }, 429);
+        try {
+          await (deps.sendPush ?? webpush.sendNotification.bind(webpush))(subscription, JSON.stringify({ kind: "test" }), {
+            TTL: 300, timeout: 10000, topic: "finder-test", vapidDetails: { subject: deps.origin, publicKey: key.publicKey, privateKey: key.privateKey },
+          });
+          return reply({ accepted: true, message: "The push service accepted the test. Check this device for the Finder test notification; acceptance alone does not confirm display." });
+        } catch (error: any) {
+          if ([404,410].includes(error.statusCode)) await deps.db.query("DELETE FROM finder_push_subscriptions WHERE id=$1", [id]);
+          return reply({ error: "Test delivery failed. Enable notifications again and retry." }, 503);
+        }
+      }
       if (path === "/api/push" && request.method === "POST") {
         const value = await body(request);
         if (!validPush(value)) return reply({ error: "Unsupported push subscription" }, 400);
@@ -167,7 +195,7 @@ export function createHandler(deps: Deps) {
         return reply({ ok: true });
       }
       return reply({ error: "Not found" }, 404);
-    } catch { return reply({ error: "Unable to complete the request. Check the fields and try again." }, 400); }
+    } catch (error) { return error instanceof InputError ? reply({ error: "Check the fields and try again." }, 400) : reply({ error: "Finder is temporarily unavailable. Please retry." }, 503); }
   };
 }
 

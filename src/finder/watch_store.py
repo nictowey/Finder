@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -11,6 +12,7 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     ForeignKeyConstraint,
+    Index,
     Integer,
     MetaData,
     String,
@@ -34,6 +36,7 @@ class SavedWatch(BaseModel):
     country: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
     postal_code: str | None = Field(default=None, pattern=r"^[A-Za-z0-9 -]{1,16}$")
     enabled: bool = True
+    alert_mode: Literal["review_leads", "strict"] = "review_leads"
 
     @model_validator(mode="after")
     def valid_destination(self):
@@ -112,15 +115,62 @@ subscriptions = Table(
     Column("id", String(64), primary_key=True),
     Column("data", JSON, nullable=False),
 )
-NEW_TABLES = [migrations, watches, inbox, outbox, settings, subscriptions]
+scan_attempts = Table(
+    "finder_scan_attempts",
+    schema,
+    Column("id", String(36), primary_key=True),
+    Column("watch_id", String(36), nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("due_at", String(40), nullable=False),
+    Column("started_at", String(40), nullable=False),
+    Column("lease_until", String(40), nullable=False),
+    Column("finished_at", String(40)),
+    Column("previous_success_at", String(40)),
+    Column("status", String(32), nullable=False),
+    Column("run_id", String(32)),
+    Column("source", String(32), nullable=False),
+    Column("dispatch_id", String(36)),
+    Column("metrics", JSON, nullable=False),
+    ForeignKeyConstraint(["watch_id"], ["finder_watches.id"], ondelete="CASCADE"),
+    Index("finder_scan_attempts_started", "started_at"),
+)
+dispatch_attempts = Table(
+    "finder_dispatch_attempts",
+    schema,
+    Column("id", String(36), primary_key=True),
+    Column("scheduled_at", String(40), nullable=False),
+    Column("started_at", String(40), nullable=False),
+    Column("finished_at", String(40)),
+    Column("status", String(32), nullable=False),
+    Column("http_status", Integer),
+    Index("finder_dispatch_attempts_started", "started_at"),
+)
+NEW_TABLES = [
+    migrations,
+    watches,
+    inbox,
+    outbox,
+    settings,
+    subscriptions,
+    scan_attempts,
+    dispatch_attempts,
+]
 
 
 def migrate(engine):
-    """Migration 1 adds only new tables; existing ingestion tables are untouched."""
+    """Additive migrations: pilot (1), operational history (2); no existing columns change."""
     with engine.begin() as conn:
         schema.create_all(conn, tables=NEW_TABLES)
         if not conn.execute(select(migrations).where(migrations.c.version == 1)).first():
             conn.execute(insert(migrations).values(version=1))
+        if not conn.execute(select(migrations).where(migrations.c.version == 2)).first():
+            conn.execute(insert(migrations).values(version=2))
+        if not conn.execute(select(settings).where(settings.c.key == "operations_since")).first():
+            conn.execute(
+                insert(settings).values(
+                    key="operations_since", data={"at": datetime.now(UTC).isoformat()}
+                )
+            )
 
 
 def rollback_pilot_schema(engine):
@@ -155,10 +205,19 @@ class WatchStore:
                 )
         return watch_id
 
-    def claim(self, *, now=None):
+    def claim(self, *, now=None, context=None):
         now = now or datetime.now(UTC)
         stamp = now.isoformat()
         with self.engine.begin() as conn:
+            # A process killed before finish must remain visible after its lease expires.
+            conn.execute(
+                update(scan_attempts)
+                .where(scan_attempts.c.status == "started", scan_attempts.c.lease_until <= stamp)
+                .values(status="abandoned")
+            )
+            cutoff = (now - timedelta(days=30)).isoformat()
+            conn.execute(delete(scan_attempts).where(scan_attempts.c.started_at < cutoff))
+            conn.execute(delete(dispatch_attempts).where(dispatch_attempts.c.started_at < cutoff))
             query = (
                 select(watches)
                 .where(
@@ -174,23 +233,56 @@ class WatchStore:
             if row is None:
                 return None
             token = str(uuid4())
+            lease_until = (now + timedelta(minutes=12)).isoformat()
             conn.execute(
                 update(watches)
                 .where(watches.c.id == row["id"])
                 .values(
                     lease_token=token,
-                    lease_until=(now + timedelta(minutes=12)).isoformat(),
+                    lease_until=lease_until,
                     last_started_at=stamp,
                     status="scanning",
                 )
             )
-            return {**dict(row), "lease_token": token}
+            context = context or {}
+            source = context.get("source", "local")
+            if source not in ("local", "manual", "github_schedule", "deployment", "neon_catchup"):
+                source = "manual"
+            dispatch_id = context.get("dispatch_id")
+            if source == "neon_catchup":
+                known = conn.execute(
+                    select(dispatch_attempts.c.id).where(
+                        dispatch_attempts.c.id == dispatch_id,
+                        dispatch_attempts.c.status.in_(("reserved", "accepted", "unknown")),
+                        dispatch_attempts.c.started_at >= (now - timedelta(hours=1)).isoformat(),
+                    )
+                ).first()
+                if not known:
+                    source, dispatch_id = "manual", None
+            run_id = str(context.get("run_id", ""))
+            conn.execute(
+                insert(scan_attempts).values(
+                    id=token,
+                    watch_id=row["id"],
+                    revision=row["revision"],
+                    due_at=row["next_scan_at"],
+                    started_at=stamp,
+                    lease_until=lease_until,
+                    previous_success_at=row["last_success_at"],
+                    status="started",
+                    source=source,
+                    dispatch_id=dispatch_id,
+                    run_id=run_id if run_id.isdigit() and len(run_id) <= 32 else None,
+                    metrics={},
+                )
+            )
+            return {**dict(row), "lease_token": token, "attempt_started_at": stamp}
 
-    def pause_for_quota(self, claim, *, reason, remaining=None, required=None):
+    def pause_for_quota(self, claim, *, reason, remaining=None, required=None, now=None):
         """Release the lease without advancing the scan or inventory cursor."""
         with self.engine.begin() as conn:
             prior = claim["summary"] if isinstance(claim["summary"], dict) else {}
-            conn.execute(
+            result = conn.execute(
                 update(watches)
                 .where(
                     watches.c.id == claim["id"],
@@ -209,6 +301,21 @@ class WatchStore:
                             "remaining": remaining,
                             "required": required,
                         },
+                    },
+                )
+            )
+            conn.execute(
+                update(scan_attempts)
+                .where(
+                    scan_attempts.c.id == claim["lease_token"], scan_attempts.c.status == "started"
+                )
+                .values(
+                    status="quota_paused" if result.rowcount else "superseded",
+                    finished_at=(now or datetime.now(UTC)).isoformat(),
+                    metrics={
+                        "quota_remaining": remaining,
+                        "quota_required": required,
+                        "reason": reason,
                     },
                 )
             )
@@ -254,6 +361,7 @@ class WatchStore:
                         watches.c.lease_token == claim["lease_token"],
                         watches.c.revision == claim["revision"],
                         watches.c.enabled.is_(True),
+                        watches.c.lease_until > stamp,
                     )
                     .with_for_update()
                 )
@@ -261,7 +369,15 @@ class WatchStore:
                 .first()
             )
             if not row:
-                return 0
+                conn.execute(
+                    update(scan_attempts)
+                    .where(
+                        scan_attempts.c.id == claim["lease_token"],
+                        scan_attempts.c.status == "started",
+                    )
+                    .values(status="superseded", finished_at=stamp)
+                )
+                return None
             added = 0
             for listing, data in reviews:
                 data = {**data, "watch_revision": claim["revision"]}
@@ -373,4 +489,17 @@ class WatchStore:
             if success:
                 values["last_success_at"] = stamp
             conn.execute(update(watches).where(watches.c.id == claim["id"]).values(**values))
+            from finder.operations import scan_metrics
+
+            conn.execute(
+                update(scan_attempts)
+                .where(
+                    scan_attempts.c.id == claim["lease_token"], scan_attempts.c.status == "started"
+                )
+                .values(
+                    status="completed" if success else "failed",
+                    finished_at=stamp,
+                    metrics=scan_metrics(summary or {}, added),
+                )
+            )
             return added

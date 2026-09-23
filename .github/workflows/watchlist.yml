@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '17,47 * * * *'
   workflow_dispatch:
+    inputs:
+      dispatch_id:
+        description: 'Optional catch-up correlation ID (normally empty for manual runs)'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -18,6 +23,8 @@ jobs:
     timeout-minutes: 12
     environment: production
     env:
+      FINDER_TRIGGER_SOURCE: ${{ github.event_name == 'schedule' && 'github_schedule' || (inputs.dispatch_id != '' && 'neon_catchup' || 'manual') }}
+      FINDER_DISPATCH_ID: ${{ inputs.dispatch_id }}
       EBAY_ENVIRONMENT: production
       DISCOGS_USER_AGENT: Finder/0.3 +https://github.com/nictowey/Finder
       EBAY_PRODUCTION_CLIENT_ID: ${{ secrets.EBAY_PRODUCTION_CLIENT_ID }}

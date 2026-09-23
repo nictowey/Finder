@@ -34,11 +34,13 @@ test("rejects direct or stale calls without reading watch state", async () => {
 test("a due watch dispatches only the fixed workflow and no watch identity", async () => {
   const { handler, request, queries, sent } = setup();
   assert.equal((await handler(request())).status, 200);
-  assert.match(queries[0], /ON CONFLICT \(key\) DO UPDATE/);
-  assert.match(queries[0], /lease_until/);
+  assert.match(queries[1], /ON CONFLICT \(key\) DO UPDATE/);
+  assert.match(queries[1], /lease_until/);
   assert.equal(sent.length, 1);
   assert.equal(sent[0].url, "https://api.github.com/repos/nictowey/Finder/actions/workflows/watchlist.yml/dispatches");
-  assert.equal(sent[0].options.body, '{"ref":"main"}');
+  const payload=JSON.parse(String(sent[0].options.body));
+  assert.equal(payload.ref,'main');assert.match(payload.inputs.dispatch_id,/^[a-f0-9-]{36}$/);
+  assert.ok(queries.some(q=>q.includes('http_status=$3')));
 });
 
 test("no due watch or missing credential cannot dispatch", async () => {
@@ -48,4 +50,12 @@ test("no due watch or missing credential cannot dispatch", async () => {
   const disabled = createHandler({ db: { query: async () => { throw new Error("should not query"); } },
     token: "", fetch: async () => { throw new Error("should not dispatch"); }, now: () => new Date("2026-09-23T15:35:10Z") });
   assert.equal((await disabled(request())).status, 503);
+});
+
+for(const mode of ['rejected','timeout']) test('dispatch '+mode+' cannot report acceptance',async()=>{
+ const values:unknown[][]=[];
+ const handler=createHandler({db:{query:async(sql,v=[])=>{values.push(v);return {rows:sql.includes('RETURNING id')?[{id:'reserved'}]:[]};}},token:'synthetic',now:()=>new Date('2026-09-23T15:35:10Z'),fetch:async()=>{if(mode==='timeout')throw new Error('private response');return new Response(null,{status:401});}});
+ const response=await handler(new Request('https://example.test/',{method:'POST',headers:{'x-neon-trigger-invocation-id':'test'},body:JSON.stringify(event)}));
+ assert.equal(response.status,503);assert.ok(!(await response.text()).includes('private'));
+ assert.ok(values.some(v=>mode==='rejected'?v[1]==='rejected'&&v[2]===401:v.length===2));
 });

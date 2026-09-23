@@ -5,7 +5,7 @@ import { deliver } from "../scripts/send_watch_notifications.mjs";
 test("no browser subscription leaves inbox usable without sending",async()=>{
   const db={query:async()=>({rows:[]})};
   const result=await deliver(db,async()=>{throw new Error("must not send");});
-  assert.equal(result.delivered,0);
+  assert.equal(result.accepted_events,0);
 });
 test("dispatcher invalidates old policy and watch revisions before claiming alerts",async()=>{
   let checked=false;
@@ -13,7 +13,7 @@ test("dispatcher invalidates old policy and watch revisions before claiming aler
     if(sql.includes("key='vapid'"))return {rows:[{data:{publicKey:'p',privateKey:'s'}}]};
     if(sql.includes('SELECT id,data'))return {rows:[{id:'device',data:{}}]};
     if(sql.includes("status='expired'")){
-      assert.equal(values[1],'private-target-review-v3');
+      assert.equal(values[1],'private-target-review-v4');
       assert.ok(sql.includes("(i.data->>'policy')=$2"));
       assert.ok(sql.includes("(i.data->>'watch_revision')=w.revision::text"));
       checked=true;
@@ -22,7 +22,7 @@ test("dispatcher invalidates old policy and watch revisions before claiming aler
     return {rows:[]};
   }};
   const result=await deliver(db,async()=>{throw new Error('Expired assessments must not send');});
-  assert.equal(result.delivered,0);
+  assert.equal(result.accepted_events,0);
   assert.ok(checked);
 });
 test("push payload is generic and retries keep the stable browser topic",async()=>{
@@ -39,7 +39,7 @@ test("push payload is generic and retries keep the stable browser topic",async()
     sent++;assert.deepEqual(JSON.parse(payload),{kind:'review-inbox'});
     assert.equal(options.topic,'finder-inbox');assert.equal(options.TTL,1800);
   });
-  assert.equal(sent,1);assert.equal(result.delivered,1);
+  assert.equal(sent,1);assert.equal(result.accepted_events,1);
   assert.ok(queries.some(q=>q.values[1]==='sent'));
 });
 test("transient delivery failure remains retryable, expired device is removed",async()=>{
@@ -55,4 +55,20 @@ test("transient delivery failure remains retryable, expired device is removed",a
   assert.equal(result.failed_devices,1);
   assert.ok(updates.some(q=>q.sql.includes('DELETE FROM finder_push_subscriptions')&&q.values[0]==='expired'));
   assert.ok(updates.some(q=>q.values[1]==='pending'));
+});
+
+test('an all-expired device batch is not falsely marked sent',async()=>{
+ const updates:{sql:string;values:any[]}[]=[];
+ const db={query:async(sql:string,values:any[]=[])=>{
+  updates.push({sql,values});
+  if(sql.includes("key='vapid'"))return {rows:[{data:{publicKey:'p',privateKey:'s'}}]};
+  if(sql.includes('SELECT id,data'))return {rows:[{id:'expired',data:{}}]};
+  if(sql.includes('RETURNING id'))return {rows:[{id:'event'}]};
+  return {rows:[]};
+ }};
+ const r=await deliver(db,async()=>{throw {statusCode:410};});
+ assert.equal(r.accepted_events,0);assert.equal(r.status,'delivery_failed');
+ assert.ok(updates.some(q=>q.values[1]==='pending'));
+ assert.ok(!updates.some(q=>q.values[1]==='sent'));
+ assert.ok(updates.some(q=>q.sql.includes("attempts>=3 AND status IN ('pending','sending')")));
 });
