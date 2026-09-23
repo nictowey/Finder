@@ -34,6 +34,11 @@ any authorized sold-comparables feed, fair-value estimates, and alerts. The twen
 matching cases test policy mechanics, not market accuracy. No listing should be advertised as a
 deal today.
 
+The private target review now surfaces seller-claimed artist, album, and complete color cues
+even without a barcode or runout. `possible_pressing` is a review lead, never an exact identity
+or verified deal. Discogs marketplace inventory could add a second source of release-specific
+offers, but its restricted API data requires a separate written use decision before integration.
+
 **Before a public Discogs-backed watchlist or a price-based deal product, resolve these rights questions in writing:**
 
 The proposed buyer flow and open provider questions are recorded in
@@ -47,6 +52,7 @@ measurement procedure and distinct-day log are in
 | Where do actual sold transactions come from? | Browse exposes active offers; eBay Marketplace Insights is restricted and closed to new users. Discogs classifies marketplace prices and sales history as restricted data. | Secure a source with written commercial, retention, derived-data, and display rights; test its pressing and condition coverage. |
 | May Finder retain and use real eBay listings for labeled evaluation and matcher development? | eBay's agreement limits intermediate copies and restricts use of eBay content to train algorithms. | Review the existing observation retention, sanitized fixtures, labeling, model/heuristic tuning, and deletion plan before building a permanent real-listing dataset. |
 | May Finder show Discogs API catalog evidence beside outbound eBay listing links, even in a free watchlist? May it charge for that app? | Discogs identifies CC0 catalog fields, but its API terms also identify use intended to drive traffic to non-Discogs services as a prohibited commercial use and require written permission to charge for API-integrated access offered free by Discogs. Attribution, linking, and freshness have separate requirements. | Ask Discogs to review the exact free outbound-link journey and any paid model in writing before public display; keep restricted marketplace data outside Finder. |
+| Can Finder watch listings for sale on Discogs itself? | Discogs classifies marketplace inventory and prices as Restricted Data, which its API terms prohibit using commercially. | Ask Discogs for a written decision covering private/free watchlists, display, notification, retention, and a future paid or price-comparison product before connecting marketplace endpoints. |
 
 Ready-to-send questions and the official contact routes are in
 [`docs/decisions/provider-outreach.md`](docs/decisions/provider-outreach.md). No provider approval

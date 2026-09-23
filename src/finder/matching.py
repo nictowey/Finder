@@ -15,7 +15,7 @@ from finder.domain import (
     Variant,
 )
 
-MATCH_POLICY_VERSION = "vinyl-decision-v6"
+MATCH_POLICY_VERSION = "vinyl-decision-v7"
 
 # Compare named colors across the whole record set. Discogs may describe the two
 # discs separately while a seller puts both colors in a single item specific.
@@ -27,6 +27,9 @@ _COLOR_ALIASES = {"grey": "gray", "transparent": "clear"}
 
 
 def _normalized(value: str) -> str:
+    # Sellers omit apostrophes and commonly spell A$AP as ASAP. Preserve word
+    # boundaries while normalizing these two frequent catalog/title differences.
+    value = value.replace("$", "s").replace("’", "'").replace("'", "")
     value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode().lower()
     return " ".join(re.findall(r"[a-z0-9]+", value))
 
@@ -121,20 +124,21 @@ def _similarity_evidence(
     )
 
 
+def _palette(values: list[str]) -> set[str]:
+    words = {word for value in values for word in _normalized(value).split()}
+    return {color for word in words if (color := _COLOR_ALIASES.get(word, word)) in _COLOR_WORDS}
+
+
 def _color_evidence(listing_values: list[str], variant_values: list[str]) -> MatchEvidence | None:
     if not listing_values or not variant_values:
         return None
 
-    def palette(values: list[str]) -> set[str]:
-        words = {word for value in values for word in _normalized(value).split()}
-        return {
-            color for word in words if (color := _COLOR_ALIASES.get(word, word)) in _COLOR_WORDS
-        }
-
-    left, right = palette(listing_values), palette(variant_values)
+    left, right = _palette(listing_values), _palette(variant_values)
     if left and right and (len(left) > 1 or len(right) > 1):
-        # A partial pair is a disagreement, even when a fuzzy string comparison
-        # would accept one of its discs as the whole pressing's color.
+        # A seller may describe just one disc of a pair. Its partial claim is
+        # missing evidence, whereas an additional different color is a conflict.
+        if left < right:
+            return None
         return MatchEvidence(
             field="color",
             listing_values=listing_values,

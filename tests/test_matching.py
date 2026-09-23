@@ -60,7 +60,7 @@ def test_title_only_never_claims_strong_match(search_payload, discogs_release, o
     [
         ("Pink & Green", ["Pink", "Green"], True),
         ("Green / Pink", ["Pink / Green"], True),
-        ("Pink", ["Pink", "Green"], False),
+        ("Pink", ["Pink", "Green"], None),
         ("Pink & Blue", ["Pink", "Green"], False),
         ("Pink & Green", ["Pink"], False),
     ],
@@ -86,8 +86,8 @@ def test_pair_color_compares_whole_palette_without_claiming_exact_pressing(
         observed_at,
     )
     candidate = score_variant(listing, variant, observed_at)
-    color = next(item for item in candidate.evidence if item.field == "color")
-    assert color.matched is matched
+    color = next((item for item in candidate.evidence if item.field == "color"), None)
+    assert (color.matched if color else None) is matched
     decision = decide_match(listing, [variant])
     assert decision.outcome == "family_only"
-    assert ("color" in decision.conflicts) is not matched
+    assert ("color" in decision.conflicts) is (matched is False)

@@ -76,6 +76,7 @@ finder match --marketplace ebay --item-id 'v1|123456789012|0' --target-release-i
 finder target-plan --target future-ds2-7609839 --mode initial --json
 finder scan-target --target future-ds2-7609839 --mode initial --json
 finder scan-target --target future-ds2-7609839 --mode refresh --json
+finder scan-target --release 36299875 --mode initial --review --json
 finder scan-target --target future-ds2-7609839 --mode initial --probe-legacy-id 123456789012 --json
 ```
 
@@ -88,6 +89,7 @@ placeholder; replace it with your own release and keep listing-level output priv
 ```bash
 finder target-plan --release 'https://www.discogs.com/release/1234-Example-Record' --mode initial
 finder scan-target --release 1234 --mode initial --show-listings --json
+finder scan-target --release 1234 --mode initial --review --json
 finder match --item-id 'v1|123456789012|0' --target-release-id 1234 --json
 finder scan-target --release 1234 --mode refresh --show-listings --json
 ```
@@ -95,7 +97,8 @@ finder scan-target --release 1234 --mode refresh --show-listings --json
 `target-plan` fetches the selected release from Discogs and requires `DISCOGS_TOKEN`.
 It accepts releases cataloged as Vinyl regardless of genre, removes Discogs artist-name
 disambiguation suffixes, and normally searches eBay for artist plus album title in the vinyl
-category. Compilation releases credited to Various search by title alone. For alternative names
+category. It adds a second broad spelling when dollar signs or apostrophes differ, such as
+`A$AP` and `ASAP`. Compilation releases credited to Various search by title alone. For alternative names
 or unusually long titles, replace the generated query with
 one to three bounded searches using repeated `--query` flags on both plan and scan; inspect the
 plan before scanning. `initial` samples eBay best match; `refresh` samples newest listings.
@@ -121,6 +124,16 @@ verify that the marketplace item is that pressing. A numbered-edition listing wi
 and numbered claims but no pressing identifier remains a review candidate, not an exact match.
 Run this command privately: listing-level output and candidate evidence should not go into
 public CI logs or real-data fixtures until the provider-use decision is resolved.
+
+`--review` creates a private, ordered review list from the listings in that scan. It compares
+the selected release's artist, album, and color claims (including colors in the seller title)
+without requiring a barcode or runout. A complete color claim can yield `possible_pressing`;
+missing or partial color yields `family_review`, and an explicitly different color or
+identifier is `conflicting`. It also counts unrelated results. These labels are **leads**, not
+exact matches: the review checks only the selected release, does not establish that alternative
+pressings were ruled out, and does not calculate market value. Review the item's images,
+description, condition, shipping, and competing releases before purchasing. This output
+contains real listing details; run it privately, never in public Actions logs.
 
 `config/watch_targets.toml` holds a versioned, internal eBay search plan for the numbered
 Future DS2 release (Discogs release 7609839). It searches `Future DS2` and `Future Dirty Sprite 2`

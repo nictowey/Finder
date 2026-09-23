@@ -17,6 +17,7 @@ from finder.adapters.discogs.client import DiscogsClient
 from finder.adapters.ebay.adapter import EbayAdapter
 from finder.adapters.ebay.client import EbayClient
 from finder.adapters.ebay.target_search import plan_target_search, run_target_scan
+from finder.categories.target_review import review_target_listing
 from finder.categories.vinyl import from_listing, from_variant
 from finder.categories.vinyl_review import compare_pressings
 from finder.categories.vinyl_target import parse_discogs_release_id, target_from_release
@@ -59,6 +60,12 @@ def summarize_discovery(listings: list[Listing]) -> dict:
     for listing in listings:
         counts.update(name for name, present in _claims(listing).items() if present)
     return {"stored_from_this_run": len(listings), **dict(sorted(counts.items()))}
+
+
+def summarize_target_review(listings: list[Listing], variant: Variant) -> dict[str, int]:
+    """Only aggregate controlled status codes; never include listing evidence."""
+    counts = Counter(review_target_listing(listing, variant).status for listing in listings)
+    return dict(sorted(counts.items()))
 
 
 def choose_review_listing(listings: list[Listing]) -> tuple[Listing, str] | None:
@@ -165,6 +172,7 @@ def main() -> int:
                 if (item := repository.get("ebay", item_id)) is not None
             ]
             report["seller_claims"] = summarize_discovery(listings)
+            report["target_review_counts"] = summarize_target_review(listings, variant)
             selection = choose_review_listing(listings)
             if selection:
                 listing, reason = selection
