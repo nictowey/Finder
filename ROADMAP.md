@@ -342,6 +342,9 @@ three bounded Discogs release searches (one valid seller barcode, one catalog nu
 listing title), deduplicates candidates, and marks truncated or omitted search coverage. A sole
 candidate does not establish unique pressing identity; incomplete retrieval cannot produce even
 a provisional probable-variant decision.
+The September 23 authenticated smoke check returned ten releases for a synthetic listing and
+four strong candidates. This validates the new request path, while real eBay precision and true
+release recall remain unmeasured.
 
 ### 2.1 Target ontology
 

@@ -63,6 +63,12 @@ The open provider-use decision and bounded Production audit are documented in
    - VinylFingerprint and copy-level CollectibleAttribute models
    - Versioned MatchDecision with source EvidenceRecords, conflicts, and missing evidence
    - Separate family and probable-variant decisions in the match CLI; exact outcome withheld
+7. Bounded multi-query Discogs candidate retrieval
+   - Up to one valid seller barcode, one catalog number, and one title search; at most 25
+     release detail lookups (default ten), with duplicate releases removed
+   - Incomplete search coverage prevents a provisional probable-variant decision
+   - Authenticated synthetic-listing validation passed on September 23, 2026; ten releases
+     included four strong candidates, so live catalog ambiguity is real
 
 ### Verified baseline
 
@@ -70,6 +76,8 @@ The open provider-use decision and bounded Production audit are documented in
 - Offline suite: Python and Node tests passing; rerun required checks before commit
 - Ruff lint and formatting checks passing
 - Live Discogs validation passing through GitHub Actions
+- Multi-query Discogs smoke passed on the `discogs-candidate-retrieval-2026` branch; this uses
+  a synthetic seller listing derived from a real catalog release, not a labeled eBay listing
 - Live validation: five releases persisted, one unambiguous strong candidate scored 100,
   and a conflicting barcode was rejected
 - Live eBay Sandbox validation passed through GitHub Actions: application OAuth token issued,

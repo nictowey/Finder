@@ -200,6 +200,9 @@ flags a full first page, additional pagination, omitted seller identifiers, or c
 exhaustion. When retrieval is incomplete, Finder withholds `probable_variant` and reports only
 family-level identity where supported. This still cannot prove catalog recall or an exact
 pressing without permitted real labels; the code does not access Discogs marketplace data.
+The September 23 authenticated smoke check found ten releases from three queries for one
+synthetic Kendrick Lamar listing; four were strong candidates. That demonstrates retrieval
+and ambiguous catalog evidence, not live eBay match precision.
 
 Vinyl-specific extraction is isolated in `categories/vinyl.py`. It maps listing specifics and
 Discogs release fields into artist, year, label, catalog number, barcode, color, edition, country,
