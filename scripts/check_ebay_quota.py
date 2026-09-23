@@ -22,9 +22,22 @@ def main() -> int:
             )
         print(json.dumps(summarize_browse_quota(response), sort_keys=True))
         return 0
-    except Exception:
+    except Exception as exc:
         # Public Actions logs must not contain provider payloads, keys or account identifiers.
-        print('{"status":"unavailable"}')
+        category = type(exc).__name__
+        # Only our own fixed validation messages may be included, never upstream exception text.
+        if isinstance(exc, ValueError) and str(exc) in (
+            "Missing application rate limits",
+            "Missing Browse resources",
+            "Malformed Browse resource",
+            "Malformed Browse resource name",
+            "Malformed Browse rate",
+            "Invalid Browse rate numbers",
+            "Missing Browse rate windows",
+            "No Browse quota returned",
+        ):
+            category = str(exc).lower().replace(" ", "_")
+        print(json.dumps({"status": "unavailable", "reason": category}))
         return 1
 
 
