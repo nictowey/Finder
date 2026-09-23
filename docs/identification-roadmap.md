@@ -211,6 +211,10 @@ Until that credential is installed and a live trigger is observed, the backup is
 and timely discovery has not been established. The worker enforces a 30-minute interval even
 when both schedulers fire. The trigger's actual delivery, quota usage, and watch latency need
 14 days of production observation before the reliability gate can pass.
+The [first Production run under this gate](https://github.com/nictowey/Finder/actions/runs/35905240731)
+completed three due watches without errors or quota pauses and inserted eight new inbox rows.
+It passed 285 Python and 19 Node tests. The live catch-up trigger and 14-day cadence remain
+unverified because the scoped dispatch credential has not been installed.
 
 Stages 1–2 and synthetic tooling can proceed immediately. The existing
 [provider-use record](decisions/0001-provider-use.md) governs real evaluation retention,
