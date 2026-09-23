@@ -2,7 +2,7 @@
 
 Finder is the foundation for a marketplace-monitoring and mispricing-detection platform. The eventual workflow is: define a monitor → discover listings → identify the exact product and variant → compare against real comparable transactions → evaluate opportunities → alert the user.
 
-The current foundation has two connected parts: a local Python CLI ingests active eBay listings through the official Browse API, and a Discogs catalog provider stores canonical release metadata and evaluates deterministic match candidates. A small Neon Function handles eBay's required Production account-deletion notices. Its first monitor targets hip-hop/rap vinyl, with an intended focus on 2010–2026 releases. There is no scraping, frontend, account system, payment flow, general notification delivery, LLM matching, or valuation.
+The current foundation has two connected parts: a local Python CLI ingests active eBay listings through the official Browse API, and a Discogs catalog provider stores canonical release metadata and evaluates deterministic match candidates. A small Neon Function handles eBay's required Production account-deletion notices. The legacy broad monitor targets hip-hop/rap vinyl; release-specific discovery and catalog matching now accept any genre of vinyl. There is no scraping, frontend, account system, payment flow, general notification delivery, LLM matching, or valuation.
 
 See [ROADMAP.md](ROADMAP.md) for the accuracy-gated development plan, pressing-versus-copy
 identity model, provider constraints, and criteria that must be met before valuation, alerts,
@@ -76,6 +76,38 @@ finder scan-target --target future-ds2-7609839 --mode initial --json
 finder scan-target --target future-ds2-7609839 --mode refresh --json
 finder scan-target --target future-ds2-7609839 --mode initial --probe-legacy-id 123456789012 --json
 ```
+
+### Review any vinyl release privately
+
+Choose a **Discogs release**, rather than a master page, for the pressing you want to inspect.
+The release number or its HTTPS URL works. These commands use that example number as a
+placeholder; replace it with your own release and keep listing-level output private:
+
+```bash
+finder target-plan --release 'https://www.discogs.com/release/1234-Example-Record' --mode initial
+finder scan-target --release 1234 --mode initial --show-listings --json
+finder match --item-id 'v1|123456789012|0' --target-release-id 1234 --json
+finder scan-target --release 1234 --mode refresh --show-listings --json
+```
+
+`target-plan` fetches the selected release from Discogs and requires `DISCOGS_TOKEN`.
+It accepts releases cataloged as Vinyl regardless of genre, removes Discogs artist-name
+disambiguation suffixes, and normally searches eBay for artist plus album title in the vinyl
+category. Compilation releases credited to Various search by title alone. For alternative names
+or unusually long titles, replace the generated query with
+one to three bounded searches using repeated `--query` flags on both plan and scan; inspect the
+plan before scanning. `initial` samples eBay best match; `refresh` samples newest listings.
+Each query sees at most ten results and may miss relevant active inventory. Search terms do not
+include a pressing attribute by default, because sellers often omit it.
+
+`--show-listings` adds the item IDs found in **this run** and their current stored titles,
+quoted delivered subtotals when available, and quality flags. The scan itself does not verify
+their release identity. Copy an item ID from this private output into `finder match` with the
+selected release ID. Matching fetches competing Discogs candidates and shows evidence,
+conflicts, and uncertainty. Even a probable variant is not a verified pressing. The listing
+may have ended since scanning; check its current state and evidence before buying. Production
+scans require the shared deletion-aware PostgreSQL database; store credentials in `.env` or
+environment variables. Do not use `--show-listings` in public CI jobs.
 
 JSON logs go to stderr; the human or JSON summary goes to stdout. `.env` loading never overrides existing environment variables. Local database paths and the default configuration path resolve from the current working directory.
 

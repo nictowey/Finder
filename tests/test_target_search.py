@@ -1,13 +1,17 @@
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
 import pytest
 
 from finder import cli
+from finder.adapters.discogs.client import DiscogsClient
+from finder.adapters.discogs.normalize import normalize_release
 from finder.adapters.ebay.adapter import EbayAdapter
 from finder.adapters.ebay.client import EbayClient
 from finder.adapters.ebay.target_search import EbaySearchTarget, plan_target_search, run_target_scan
+from finder.categories.vinyl_target import parse_discogs_release_id, target_from_release
 from finder.config import load_search_target
 from finder.errors import ConfigurationError
 
@@ -26,6 +30,65 @@ def test_ds2_target_search_is_broad_and_bounded():
         and monitor.source_options["category_ids"] == ["176985"]
         for monitor in refresh
     )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1234", 1234),
+        ("https://www.discogs.com/release/1234-Synthetic-Record", 1234),
+        ("https://discogs.com/release/1234/", 1234),
+    ],
+)
+def test_parse_discogs_release(value, expected):
+    assert parse_discogs_release_id(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "0",
+        "1" * 21,
+        "-1",
+        "https://www.discogs.com/master/1234",
+        "http://discogs.com/release/1234",
+        "https://discogs.com.evil.test/release/1234",
+        "https://discogs.com/release/1234?x=1",
+        "https://discogs.com:bad/release/1234",
+    ],
+)
+def test_rejects_other_discogs_identifiers(value):
+    with pytest.raises(ConfigurationError):
+        parse_discogs_release_id(value)
+
+
+def test_vinyl_target_accepts_any_genre_and_rejects_cd(discogs_release):
+    release = {
+        **discogs_release,
+        "id": 1234,
+        "title": "Invented Orchestral Album",
+        "artists": [{"name": "Sample Quartet (2)"}],
+        "genres": ["Classical"],
+    }
+    variant = normalize_release(release, datetime(2026, 9, 23, tzinfo=UTC))
+    target = target_from_release(variant)
+    assert target.queries == ["Sample Quartet Invented Orchestral Album"]
+    assert target.catalog_variant_id == 1234
+    assert len(plan_target_search(target, mode="refresh")) == 1
+    override = target_from_release(variant, queries=["Sample Quartet Invented Album", "Album LP"])
+    assert len(plan_target_search(override, mode="initial")) == 2
+    with pytest.raises(ConfigurationError, match="not cataloged as vinyl"):
+        target_from_release(
+            normalize_release(
+                {**release, "formats": [{"name": "CD"}]}, datetime(2026, 9, 23, tzinfo=UTC)
+            )
+        )
+    with pytest.raises(ConfigurationError, match="distinct"):
+        target_from_release(variant, queries=["album", "ALBUM"])
+    compilation = normalize_release(
+        {**release, "artists": [{"name": "Various"}]}, datetime(2026, 9, 23, tzinfo=UTC)
+    )
+    assert target_from_release(compilation).queries == ["Invented Orchestral Album"]
 
 
 @pytest.mark.parametrize(
@@ -108,6 +171,118 @@ def test_target_plan_cli_needs_no_credentials(monkeypatch, capsys):
     assert plan["maximum_search_requests"] == 2
     assert plan["maximum_detail_requests"] == 20
     assert plan["searches"][0]["query"] == "Future DS2"
+
+
+def test_arbitrary_vinyl_release_plan_scan_and_private_listing_review(
+    tmp_path, monkeypatch, capsys, discogs_release, search_payload, detail_payload
+):
+    release = {
+        **discogs_release,
+        "id": 1234,
+        "title": "Invented String Record",
+        "artists": [{"name": "Sample Quartet"}],
+        "genres": ["Classical"],
+        "uri": "/release/1234-Sample-Quartet-Invented-String-Record",
+    }
+    monkeypatch.setenv("DISCOGS_TOKEN", "fake-token")
+    monkeypatch.setenv("EBAY_ENVIRONMENT", "sandbox")
+    monkeypatch.setenv("EBAY_SANDBOX_CLIENT_ID", "fake-client")
+    monkeypatch.setenv("EBAY_SANDBOX_CLIENT_SECRET", "fake-secret")
+    monkeypatch.setenv("FINDER_DATABASE_URL", f"sqlite:///{tmp_path / 'any-vinyl.db'}")
+    discogs_paths = []
+
+    def discogs_handler(request):
+        discogs_paths.append(request.url.path)
+        if request.url.path == "/database/search":
+            assert request.url.params["format"] == "Vinyl"
+            assert "genre" not in request.url.params
+            return httpx.Response(200, json={"results": [{"id": 1234}]})
+        return httpx.Response(200, json=release)
+
+    monkeypatch.setattr(
+        cli,
+        "DiscogsClient",
+        lambda settings: DiscogsClient(settings, transport=httpx.MockTransport(discogs_handler)),
+    )
+    release_url = "https://www.discogs.com/release/1234-Sample-Quartet-Invented-String-Record"
+    assert cli.main(["target-plan", "--release", release_url, "--json"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["searches"][0]["query"] == "Sample Quartet Invented String Record"
+    assert plan["maximum_detail_requests"] == 10
+    assert plan["attribution"] == "Data provided by Discogs"
+
+    item = search_payload["itemSummaries"][0]
+    ebay_searches = []
+
+    def ebay_handler(request):
+        if request.method == "POST":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        if request.url.path.endswith("/search"):
+            ebay_searches.append(request.url.params["q"])
+            return httpx.Response(200, json={"total": 1, "itemSummaries": [item]})
+        return httpx.Response(
+            200,
+            json={
+                **detail_payload,
+                "title": "Sample Quartet Invented String Record vinyl LP",
+                "localizedAspects": [
+                    {"name": "Artist", "value": "Sample Quartet"},
+                    {"name": "UPC", "value": "0123456789012"},
+                ],
+            },
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "EbayClient",
+        lambda settings: EbayClient(settings, transport=httpx.MockTransport(ebay_handler)),
+    )
+    assert (
+        cli.main(
+            ["scan-target", "--release", "1234", "--mode", "initial", "--show-listings", "--json"]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["complete"] is True
+    assert len(result["discovered_listings"]) == 1
+    assert result["discovered_listings"][0]["item_id"] == item["itemId"]
+    assert ebay_searches == ["Sample Quartet Invented String Record"]
+    assert (
+        cli.main(["match", "--item-id", item["itemId"], "--target-release-id", "1234", "--json"])
+        == 0
+    )
+    match_result = json.loads(capsys.readouterr().out)
+    assert match_result["retrieval"]["target_release_id"] == 1234
+    assert match_result["candidates"][0]["catalog_variant_id"] == "1234"
+    assert match_result["decision"]["outcome"] in ("probable_variant", "family_only")
+    assert discogs_paths == [
+        "/releases/1234",
+        "/releases/1234",
+        "/releases/1234",
+        "/database/search",
+        "/database/search",
+        "/database/search",
+    ]
+
+
+def test_release_target_rejects_non_vinyl_and_saved_query_override(
+    monkeypatch, capsys, discogs_release
+):
+    monkeypatch.setenv("DISCOGS_TOKEN", "fake-token")
+    release = {**discogs_release, "formats": [{"name": "CD"}]}
+    monkeypatch.setattr(
+        cli,
+        "DiscogsClient",
+        lambda settings: DiscogsClient(
+            settings,
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json=release)),
+        ),
+    )
+    assert cli.main(["target-plan", "--release", "111"]) == 2
+    assert "not cataloged as vinyl" in capsys.readouterr().err
+    assert cli.main(["target-plan", "--target", "future-ds2-7609839", "--query", "Override"]) == 2
+    assert "requires --release" in capsys.readouterr().err
 
 
 def test_scan_target_cli_reports_bounded_coverage(tmp_path, monkeypatch, capsys, search_payload):
