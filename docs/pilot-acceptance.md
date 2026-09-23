@@ -18,8 +18,8 @@ also depends on the unresolved provider-use decisions in `decisions/0001-provide
 | Area | Current evidence | Required evidence / next action |
 | --- | --- | --- |
 | Scheduling | Pre-instrumentation dispatches at 20:05 and 20:45 UTC both completed 3/3 watches. This is one observed 40-minute interval. | Collect 14 consecutive days of due/start/finish history. Investigate every >60-minute freshness gap, failed/interrupted scan and quota pause. Include missing runs, not only attempted scans. Do not reset the window to hide failures. |
-| Dispatch provenance | New dispatcher records reserved/accepted/rejected/unknown outcomes and sends a correlation ID. | Observe an unattended correlated dispatch reaching the worker after deployment. Acceptance without work is not success. |
-| Recovery | Offline lease-expiry, stale-worker, edit-race, quota-pause and failed-dispatch tests. | Pass isolated PostgreSQL upgrade and synthetic backup/restore; observe production after deploy. A real production recovery drill remains separate. |
+| Dispatch provenance | New dispatcher records reserved/accepted/rejected/unknown outcomes and sends a correlation ID. | Deployment #13 passed; no watches were due. Observe the first unattended correlated dispatch reaching the worker. Acceptance without work is not success. |
+| Recovery | Offline lease-expiry, stale-worker, edit-race, quota-pause and failed-dispatch tests. | Deployment #13 passed isolated PostgreSQL upgrade, synthetic backup/restore, migration/deletion and private-access checks; the authenticated health panel renders. A real production recovery drill remains separate. |
 | Capacity | Three-watch cap; per-watch shared quota preflight; scan attempt/retry counters. | Review real daily request totals and shared quota readings across a full day. Interrupted requests/other workflows may be absent from local counters. No expansion based only on a nominal limit. |
 | Delivery | Generic review payload, bounded retries, expired-device removal, explicit test flow. | Nic enrolls his actual phone, sees a test while the app is in the background, then sees one eligible real review alert. Push-service acceptance alone is insufficient. Inspect duplicate/retry behavior. |
 | Discovery | Bounded newest and rotating older pages; caps exposed. | Under permitted use, compare a separately assembled active-listing sample. Record found and missed eligible items, including known misses submitted manually. Aim for 95/100 eligible offers; a smaller sample is incomplete, not a pass. |
@@ -66,3 +66,15 @@ represented as continuously supervised by an assistant after a conversation ends
   supported scope; do not solve alert volume by claiming certainty.
 - If provider permission blocks a public product, keep the permitted private scope and assess
   a different authorized data route before monetization work.
+
+## September 23 deployment verification
+
+[Deployment #13](https://github.com/nictowey/Finder/actions/runs/35920314329) deployed
+PR #59 at `16c82ba8d0da2e7bcc2ec10bea2e43b0bb71b370`. All 292 Python and 29 Node tests,
+Ruff and TypeScript passed in the deployment. The isolated PostgreSQL rehearsal returned
+both passing results. Production migration completed and access checks passed.
+History began at 21:07:25 UTC; no watches were due at deployment, so its worker attempted
+zero scans. Existing three watches and inbox entries remained visible after deployment.
+The authenticated dashboard displays the new health and notification setup controls.
+At inspection there were zero registered devices and no recorded trigger heartbeat yet.
+The first automatic correlated dispatch and actual phone display remain unverified.
