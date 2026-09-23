@@ -24,6 +24,13 @@ six hours. A dedicated production auth email sender is needed before an external
    notifications on the desired device. Notification permission requires a user gesture.
 4. **Private watchlist scans** runs at minutes 17 and 47. GitHub scheduling may delay or skip
    runs; the UI shows the last successful scan and flags freshness after an hour.
+5. To enable the independent catch-up trigger, create a fine-grained GitHub token limited to
+   `nictowey/Finder`, with repository **Actions: write** and a short expiration. Store it as
+   `FINDER_GITHUB_DISPATCH_TOKEN` in GitHub's **production environment** and rerun **Deploy
+   private watchlist**. Deployment injects the credential into a private Neon Function, never
+   the browser. The Neon schedule checks for due watches every ten minutes and dispatches the
+   existing worker only when a watch is due and no worker lease is active. The credential is
+   currently absent as of September 23, so this backup is not yet active. Rotate it before expiration.
 
 An unset owner email fails closed. Sign-in uses the managed provider's rate-limited email OTP;
 the Function proxies only the two needed login endpoints and never returns credentials in JSON.
@@ -46,11 +53,18 @@ session, its expiry, verified email, and owner allow-list. No external auth SDK 
   on September 23. The nominal margin is only 536 calls for initial scans, retries and other
   workflows, without a shared reservation. Never raise watch capacity or search depth on the
   strength of the nominal calculation alone.
-- The manual **Production eBay Browse quota** workflow reads the official Developer Analytics
-  endpoint with the existing Production application token. It reports only resource names,
-  limits, remaining calls and time windows in public Actions logs. If the response is missing
-  or malformed, it fails without changing watch state or blocking the scheduled scan. Compare
-  all relevant windows, other jobs and retries before increasing capacity.
+- Before each watch, the worker reads the shared `buy.browse` remaining allowance from official
+  Developer Analytics. It requires 276 calls (176 for one entire initial scan including three
+  retries per request, plus 100 reserved for other activity). When remaining is lower or quota
+  data cannot be verified, the worker pauses without advancing the due time or inventory
+  cursor; the dashboard shows the paused status and the workflow fails visibly. This is a
+  conservative per-watch preflight, not an atomic reservation across independent API clients.
+  The manual **Production eBay Browse quota** workflow still reports aggregate rate windows.
+- Successes and failed scans next become due 30 minutes after their previous completion.
+  The independent schedule, once enabled, checks every ten minutes, so ordinary trigger wait
+  after eligibility is at most ten minutes; real end-to-end timing still needs observation.
+  Both schedulers share the worker's per-watch lease and due time. Dispatch attempts have an
+  eight-minute database cooldown to bound repeated invocations.
 - Each scan records query counts, returned items, provider total, page caps, partial details,
   request attempts and retries in the private watch summary. The inventory cursor includes a
   plan signature and watch revision; after a failed scan it retries the same page. A page offset

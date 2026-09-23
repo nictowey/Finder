@@ -1,6 +1,6 @@
 import pytest
 
-from finder.adapters.ebay.quota import summarize_browse_quota
+from finder.adapters.ebay.quota import summarize_browse_quota, watch_scan_quota
 
 
 def test_browse_quota_only_includes_aggregate_filtered_resources():
@@ -37,6 +37,21 @@ def test_browse_quota_only_includes_aggregate_filtered_resources():
             }
         ],
     }
+
+
+def test_watch_budget_uses_shared_pool_and_safely_stops_at_reserve():
+    quota = {
+        "resources": [
+            {"name": "buy.browse", "rates": [{"remaining": 276}, {"remaining": 300}]},
+            {"name": "buy.browse.item.bulk", "rates": [{"remaining": 5000}]},
+        ]
+    }
+    assert watch_scan_quota(quota) == {"remaining": 276, "required": 276, "allowed": True}
+    quota["resources"][0]["rates"][0]["remaining"] = 275
+    assert watch_scan_quota(quota)["allowed"] is False
+    quota["resources"].pop(0)
+    with pytest.raises(ValueError, match="Shared Browse quota missing"):
+        watch_scan_quota(quota)
 
 
 def test_resource_path_is_accepted_but_unexpected_text_is_not_logged():
