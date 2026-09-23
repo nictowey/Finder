@@ -19,7 +19,7 @@ performance on any vinyl. Other marketplaces and market-value estimates are sepa
 | Question | Verified baseline | Gap to close |
 | --- | --- | --- |
 | Can a pressing be saved and scanned? | Owner login, two watches, scheduled worker and private inbox work. | Observe scheduled operation over time and verify push on the owner's device. |
-| Does search find what is listed? | A bounded scan found the owner-supplied DS2 example. | Ten results per query; page caps were hit. No independent coverage denominator. |
+| Does search find what is listed? | A bounded scan found the owner-supplied DS2 example. The recurring worker now samples older inventory and directly rechecks one known lead on alternating refreshes. | Eight newest results per query and at most 36 sampled older results per query; offsets shift. No independent coverage denominator. |
 | Does the watch distinguish neighboring pressings? | Sparse color/numbering/identifier claims can surface a lead. | The initial scheduled policy compared only the target; the richer CLI comparison was separate. |
 | Do identification rules work on real listings? | Synthetic rule tests pass. | No approved real-listing holdout, measured wrong-pressing rate, or missed-listing audit. |
 | Does a low price mean a deal? | Optional buyer ceiling and shipping checks exist. | No qualified sold-transaction source or measured valuation model. |
@@ -152,6 +152,17 @@ not rediscover it. This is direct evidence of the stage 2 inventory/reassessment
 evidence that the listing ended or that either pressing is verified. Notification delivery
 requires the current policy and saved-watch revision; older assessments must be refreshed.
 
+The first stage 2 delivery records per-query page and result counts, caps, request attempts
+and retries. An eight-item newest page per query is supplemented by a six-item best-match
+inventory sample every other scan, rotating through the saved queries and offsets 0–30. The
+other refresh directly checks one existing possible pressing omitted by that scan, so its
+review can be updated without depending on search rank. The cursor persists on interruption
+and resets on watch edits. An unavailable/ended item is separated from active leads without
+calling it sold. The nominal three-watch refresh ceiling is 4,464 Browse requests/day, before
+initial sweeps, retries or other jobs. The actual app quota and independent missed-listing
+sample remain outstanding. This limited sample cannot establish 95% recall or guarantee that
+new offers appear within one hour. See [watchlist limits](private-watchlist.md).
+
 Stages 1–2 and synthetic tooling can proceed immediately. The existing
 [provider-use record](decisions/0001-provider-use.md) governs real evaluation retention,
 public release, images and valuation. Its unresolved questions must be settled before the
@@ -160,5 +171,5 @@ Provider outreach drafts already exist. Sending them externally still requires a
 to send the specific message, not another general approval to develop Finder.
 
 After each delivery: record what changed, the relevant tests, any live observation, and what
-remains unmeasured. Merge tested changes to main. Next delivery after stage 1 is stage 2's
-coverage accounting and resumable inventory work, followed by the manual review workflow.
+remains unmeasured. Merge tested changes to main. Finish stage 2 with a permitted independent
+missed-listing audit and actual quota accounting; then implement the manual review workflow.

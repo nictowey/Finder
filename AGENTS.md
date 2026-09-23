@@ -102,11 +102,16 @@ The open provider-use decision and bounded Production audit are documented in
    - Scheduled policy v2 retrieves up to five alternatives once per watch; unresolved
      competing pressings remain visible and suppress notifications. Lookup failures also
      withhold notifications without dropping discovery. Catalog coverage is still bounded.
+13. Bounded inventory reconciliation and known-lead refresh
+   - Per-query caps, request counts and cursor progress persist in the private watch summary
+   - Eight newest items per query; alternating six-item older samples and one direct known-lead
+     recheck; stale results still need independent coverage and availability measurement
+   - A disappeared/ended direct recheck is marked unavailable, never inferred sold
 
 ### Verified baseline
 
 - Latest verified implementation baseline: current `main` after required checks
-- Offline suite: 250 Python and 16 Node tests passing; rerun required checks before commit
+- Offline suite: 256 Python and 16 Node tests passing; rerun required checks before commit
 - Ruff lint and formatting checks passing
 - Live Discogs validation passing through GitHub Actions
 - Multi-query Discogs smoke passed on the `discogs-candidate-retrieval-2026` branch; this uses
@@ -257,7 +262,8 @@ A material change is complete only when:
 ## Near-term priorities
 
 Follow the ordered deliverables in `docs/identification-roadmap.md`. Bounded alternative
-comparison is implemented; next close the capped-search and inventory-reconciliation gaps.
+comparison and a first inventory-reconciliation pass are implemented; next independently
+audit capped-search misses and actual application quota, then add permitted manual review.
 The dependencies below still govern the corresponding real-data and release decisions.
 
 1. Resolve and record eBay's intended-use, retention, and evaluation rights and qualify a

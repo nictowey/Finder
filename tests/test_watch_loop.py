@@ -10,7 +10,10 @@ from finder.adapters.discogs.adapter import AlternativeRetrieval
 from finder.adapters.discogs.normalize import normalize_release
 from finder.adapters.ebay.client import EbayClient
 from finder.adapters.ebay.normalize import normalize_listing
+from finder.adapters.ebay.target_search import InventoryCursor
+from finder.categories.vinyl_target import target_from_release
 from finder.errors import CatalogRequestError
+from finder.service import ScanSummary
 from finder.watch_store import (
     SavedWatch,
     WatchStore,
@@ -232,3 +235,171 @@ def test_worker_reuses_alternatives_and_keeps_review_when_catalog_fails(
         summary = conn.execute(select(watches.c.summary)).scalar_one()
         assert summary["catalog_check_failed"] == catalog_failed
         assert summary["ambiguous_leads"] == (0 if catalog_failed else 2)
+
+
+def test_first_refresh_recovers_prior_lead_outside_newest_page(
+    repository, store, settings, discogs_release, search_payload, monkeypatch
+):
+    started = datetime.now(UTC) - timedelta(minutes=31)
+    target = normalize_release(discogs_release, started)
+    item = {
+        **search_payload["itemSummaries"][0],
+        "itemId": "synthetic-older-listing",
+        "title": "Example Artist Example Album LP",
+        "localizedAspects": [{"name": "Barcode", "value": "0123456789012"}],
+    }
+    old_listing = normalize_listing(item, started, details_loaded=True).model_copy(
+        update={"seller_id": "synthetic-seller"}
+    )
+    repository.upsert(old_listing)
+    store.add(SavedWatch(release_id=111), now=started)
+    store.finish(
+        store.claim(now=started),
+        [(old_listing, {"status": "possible_pressing", "notify": False, "policy": "old"})],
+        now=started,
+    )
+
+    class Provider:
+        def __init__(self, client):
+            pass
+
+        def get_release(self, release_id):
+            return target
+
+        def search_alternatives(self, variant):
+            return AlternativeRetrieval([], True)
+
+    searches = []
+
+    def handler(request):
+        if request.method == "POST":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        if request.url.path.endswith("/search"):
+            searches.append((request.url.params.get("sort"), request.url.params["offset"]))
+            return httpx.Response(
+                200,
+                json={"total": 0, "itemSummaries": []}
+                if request.url.params.get("sort") == "newlyListed"
+                else {"total": 20, "itemSummaries": [item]},
+            )
+        return httpx.Response(200, json=item)
+
+    monkeypatch.setattr(watch_worker, "DiscogsClient", lambda _: nullcontext(None))
+    monkeypatch.setattr(watch_worker, "DiscogsCatalogProvider", Provider)
+    monkeypatch.setattr(
+        watch_worker,
+        "EbayClient",
+        lambda config: EbayClient(config, transport=httpx.MockTransport(handler)),
+    )
+    report = watch_worker.run_due_watches(repository, settings, None)
+    assert report == {"attempted": 1, "completed": 1, "failed": 0, "new_inbox_rows": 0}
+    assert searches == [("newlyListed", "0"), (None, "0")]
+    with repository.engine.connect() as conn:
+        record = conn.execute(select(inbox.c.data, inbox.c.last_seen_at)).one()
+        assert record.data["policy"] == "private-target-review-v2"
+        assert record.data["alternatives_checked"] == 0
+        assert datetime.fromisoformat(record.last_seen_at) > started
+        summary = conn.execute(select(watches.c.summary)).scalar_one()
+        assert summary["discovery"]["inventory_sample"]["query_position"] == 1
+        assert summary["discovery"]["newest"][0]["returned"] == 0
+        assert summary["discovery"]["marketplace_recall_measured"] is False
+        assert summary["inventory"]["offsets"] == [6]
+    with repository.engine.begin() as conn:
+        conn.execute(update(watches).values(next_scan_at=started.isoformat()))
+    report = watch_worker.run_due_watches(repository, settings, None)
+    assert report == {"attempted": 1, "completed": 1, "failed": 0, "new_inbox_rows": 0}
+    assert searches == [("newlyListed", "0"), (None, "0"), ("newlyListed", "0")]
+    with repository.engine.connect() as conn:
+        summary = conn.execute(select(watches.c.summary)).scalar_one()
+        assert summary["discovery"]["candidate_recheck"] == "updated"
+        assert summary["discovery"]["browse_requests"] == 2
+        assert summary["inventory"]["offsets"] == [6]
+        assert summary["inventory"]["due"] is True
+
+
+def test_known_lead_404_withholds_pending_alert_and_stops_rechecks(
+    repository, store, settings, discogs_release, search_payload, monkeypatch
+):
+    started = datetime.now(UTC) - timedelta(minutes=31)
+    target = normalize_release(discogs_release, started)
+    item = search_payload["itemSummaries"][0]
+    row = normalize_listing(item, started, details_loaded=True)
+    repository.upsert(row)
+    plan = target_from_release(target)
+    cursor = InventoryCursor.load(plan, 1, None).after_success(
+        ScanSummary(monitor="inventory", limit_reached=True)
+    )
+    store.add(SavedWatch(release_id=111), now=started)
+    store.finish(
+        store.claim(now=started),
+        [(row, {"status": "possible_pressing", "notify": True})],
+        summary={"inventory": cursor.as_summary()},
+        now=started,
+    )
+    with repository.engine.begin() as conn:
+        conn.execute(update(outbox).values(status="pending"))
+
+    class Provider:
+        def __init__(self, client):
+            pass
+
+        def get_release(self, release_id):
+            return target
+
+        def search_alternatives(self, variant):
+            return AlternativeRetrieval([], True)
+
+    def handler(request):
+        if request.method == "POST":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        if request.url.path.endswith("/search"):
+            return httpx.Response(200, json={"total": 0, "itemSummaries": []})
+        return httpx.Response(404)
+
+    monkeypatch.setattr(watch_worker, "DiscogsClient", lambda _: nullcontext(None))
+    monkeypatch.setattr(watch_worker, "DiscogsCatalogProvider", Provider)
+    monkeypatch.setattr(
+        watch_worker,
+        "EbayClient",
+        lambda config: EbayClient(config, transport=httpx.MockTransport(handler)),
+    )
+    assert watch_worker.run_due_watches(repository, settings, None)["completed"] == 1
+    with repository.engine.connect() as conn:
+        lead = conn.execute(select(inbox.c.data)).scalar_one()
+        assert lead["availability"] == "unavailable_on_recheck"
+        assert lead["notify"] is False
+        assert not conn.execute(select(outbox)).all()
+        summary = conn.execute(select(watches.c.summary)).scalar_one()
+        assert summary["discovery"]["candidate_recheck"] == "unavailable"
+        assert (
+            store.recheck_candidate(
+                {"id": conn.execute(select(watches.c.id)).scalar_one()}, excluded=set()
+            )
+            is None
+        )
+
+
+def test_failed_scan_preserves_inventory_cursor_for_retry(
+    repository, store, discogs_release, observed_at
+):
+    target = normalize_release(discogs_release, observed_at)
+    plan = target_from_release(target)
+    saved = (
+        InventoryCursor.load(plan, 1, None)
+        .after_success(ScanSummary(monitor="inventory", limit_reached=True))
+        .as_summary()
+    )
+    store.add(SavedWatch(release_id=111), now=observed_at)
+    store.finish(store.claim(now=observed_at), [], summary={"inventory": saved}, now=observed_at)
+    later = observed_at + timedelta(minutes=31)
+    store.finish(
+        store.claim(now=later),
+        [],
+        summary={"error": "scan_failed"},
+        success=False,
+        now=later,
+    )
+    with repository.engine.connect() as conn:
+        summary = conn.execute(select(watches.c.summary)).scalar_one()
+    assert summary["inventory"] == saved
+    assert InventoryCursor.load(plan, 1, summary).offsets == (6,)

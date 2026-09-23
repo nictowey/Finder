@@ -6,7 +6,11 @@ from finder.adapters.discogs.adapter import DiscogsCatalogProvider
 from finder.adapters.discogs.client import DiscogsClient
 from finder.adapters.ebay.adapter import EbayAdapter
 from finder.adapters.ebay.client import EbayClient
-from finder.adapters.ebay.target_search import run_target_scan
+from finder.adapters.ebay.target_search import (
+    REFRESH_PAGE_SIZE,
+    InventoryCursor,
+    run_target_scan,
+)
 from finder.categories.target_review import review_target_with_alternatives
 from finder.categories.vinyl_target import target_from_release
 from finder.errors import CatalogError
@@ -92,22 +96,54 @@ def run_due_watches(repository, settings, discogs_settings, *, limit=3):
                     # missing comparison. Do not expose provider payloads in public logs.
                     catalog_check = None
             target = target_from_release(variant).model_copy(update={"id": "private-watch"})
+            cursor = InventoryCursor.load(target, claim["revision"], claim["summary"])
+            mode = "refresh" if claim["last_success_at"] else "initial"
+            inventory = cursor.pass_for_refresh() if mode == "refresh" else None
             destination_settings = settings.model_copy(
                 update={
                     "delivery_country": watch.country,
                     "delivery_postal_code": watch.postal_code,
                 }
             )
+            candidate_recheck = "not_due"
+            unavailable_item_ids = []
             with EbayClient(destination_settings) as client:
+                adapter = EbayAdapter(client)
                 scan = run_target_scan(
                     target,
-                    EbayAdapter(client),
+                    adapter,
                     repository,
-                    mode="refresh" if claim["last_success_at"] else "initial",
+                    mode=mode,
+                    refresh_page_size=REFRESH_PAGE_SIZE,
+                    inventory=inventory,
                 )
-            complete = len(scan.summaries) == len(target.queries) and all(
-                row.status == "completed" for row in scan.summaries
-            )
+                complete = len(scan.summaries) == scan.expected_queries and all(
+                    row.status == "completed" for row in scan.summaries
+                )
+                if complete and mode == "refresh" and inventory is None:
+                    item_id = store.recheck_candidate(claim, excluded=scan.discovered_item_ids)
+                    candidate_recheck = "none_eligible"
+                    if item_id is not None:
+                        previous = repository.get("ebay", item_id)
+                        if previous is None:
+                            candidate_recheck = "snapshot_missing"
+                        else:
+                            observation = adapter.refresh_known(
+                                item_id, source_metadata=previous.source_metadata
+                            )
+                            if observation.listing:
+                                result = repository.upsert(observation.listing)
+                                candidate_recheck = result
+                                if result != "suppressed":
+                                    scan.discovered_item_ids.add(item_id)
+                            elif observation.skip_reason in ("item_unavailable", "listing_ended"):
+                                unavailable_item_ids.append(item_id)
+                                candidate_recheck = "unavailable"
+                            else:
+                                candidate_recheck = observation.skip_reason or "invalid"
+                browse_requests = client.browse_requests
+                browse_retries = client.browse_retries
+            next_cursor = cursor.after_success(scan.inventory_summary) if complete else cursor
             now = datetime.now(UTC)
             reviews = []
             for item_id in scan.discovered_item_ids:
@@ -136,6 +172,41 @@ def run_due_watches(repository, settings, discogs_settings, *, limit=3):
                     "observed": len(reviews),
                     "page_cap_reached": any(row.limit_reached for row in scan.summaries),
                     "complete": complete,
+                    "inventory": next_cursor.as_summary(),
+                    "discovery": {
+                        "mode": mode,
+                        "plan_version": target.plan_version,
+                        "newest_page_size": REFRESH_PAGE_SIZE if mode == "refresh" else 10,
+                        "browse_requests": browse_requests,
+                        "browse_retries": browse_retries,
+                        "newest": [
+                            {
+                                "query_position": i + 1,
+                                "pages": item.pages_fetched,
+                                "returned": item.fetched,
+                                "reported_total": item.reported_total,
+                                "cap_reached": item.limit_reached,
+                                "partial_details": item.partial_details,
+                                "status": item.status,
+                            }
+                            for i, item in enumerate(scan.summaries[: len(target.queries)])
+                        ],
+                        "inventory_sample": {
+                            "query_position": inventory.query_index + 1,
+                            "offset": inventory.offset,
+                            "returned": scan.inventory_summary.fetched,
+                            "reported_total": scan.inventory_summary.reported_total,
+                            "cap_reached": scan.inventory_summary.limit_reached,
+                            "depth_capped": scan.inventory_summary.limit_reached
+                            and inventory.offset == 30,
+                            "status": scan.inventory_summary.status,
+                        }
+                        if inventory is not None and scan.inventory_summary is not None
+                        else None,
+                        "inventory_due_next_scan": next_cursor.due,
+                        "candidate_recheck": candidate_recheck,
+                        "marketplace_recall_measured": False,
+                    },
                     "catalog_alternatives_checked": len(catalog_check.variants)
                     if catalog_check
                     else None,
@@ -150,12 +221,23 @@ def run_due_watches(repository, settings, discogs_settings, *, limit=3):
                     ),
                 },
                 success=complete,
+                unavailable_item_ids=unavailable_item_ids,
                 now=now,
             )
             report["completed" if complete else "failed"] += 1
         except Exception:
             # No exception bodies: provider, database and validation messages may contain
             # identities or connection information in this public workflow.
-            store.finish(claim, [], success=False, summary={"error": "scan_failed"})
+            store.finish(
+                claim,
+                [],
+                success=False,
+                summary={
+                    "error": "scan_failed",
+                    "inventory": claim["summary"].get("inventory")
+                    if isinstance(claim["summary"], dict)
+                    else None,
+                },
+            )
             report["failed"] += 1
     return report

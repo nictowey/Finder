@@ -10,10 +10,16 @@ from finder.adapters.discogs.client import DiscogsClient
 from finder.adapters.discogs.normalize import normalize_release
 from finder.adapters.ebay.adapter import EbayAdapter
 from finder.adapters.ebay.client import EbayClient
-from finder.adapters.ebay.target_search import EbaySearchTarget, plan_target_search, run_target_scan
+from finder.adapters.ebay.target_search import (
+    EbaySearchTarget,
+    InventoryCursor,
+    plan_target_search,
+    run_target_scan,
+)
 from finder.categories.vinyl_target import parse_discogs_release_id, target_from_release
 from finder.config import load_search_target
 from finder.errors import ConfigurationError
+from finder.service import ScanSummary
 
 
 def test_ds2_target_search_is_broad_and_bounded():
@@ -30,6 +36,124 @@ def test_ds2_target_search_is_broad_and_bounded():
         and monitor.source_options["category_ids"] == ["176985"]
         for monitor in refresh
     )
+
+
+def test_inventory_cursor_resumes_rotates_and_resets_for_edits():
+    target = EbaySearchTarget(
+        id="synthetic", catalog_variant_id=1, queries=["Artist Album", "Album alias"]
+    )
+    cursor = InventoryCursor.load(target, 1, None)
+    assert cursor.pass_for_refresh().query_index == 0
+    for index in range(12):
+        sample = ScanSummary(monitor="synthetic-inventory", limit_reached=True)
+        cursor = cursor.after_success(sample)
+        assert cursor.pass_for_refresh() is None
+        cursor = cursor.after_success(None)
+        assert cursor.pass_for_refresh().query_index == (index + 1) % 2
+    assert cursor.offsets == (0, 0)  # Depth cap restarts each query.
+    saved = {"inventory": cursor.as_summary()}
+    assert InventoryCursor.load(target, 1, saved) == cursor
+    assert InventoryCursor.load(target, 2, saved).offsets == (0, 0)
+    changed = target.model_copy(update={"queries": ["new artist", "Album alias"]})
+    assert InventoryCursor.load(changed, 1, saved).signature != cursor.signature
+    invalid = {"inventory": {**cursor.as_summary(), "offsets": [True, -6]}}
+    assert InventoryCursor.load(target, 1, invalid).offsets == (0, 0)
+
+
+def test_refresh_inventory_recovers_older_listing_and_deduplicates_overlapping_pages(
+    settings, repository, search_payload, observed_at
+):
+    target = EbaySearchTarget(id="synthetic", catalog_variant_id=1, queries=["Example Album"])
+    template = search_payload["itemSummaries"][0]
+    new = [{**template, "itemId": f"synthetic-new-{n}"} for n in range(9)]
+    old = [{**template, "itemId": f"synthetic-old-{n}"} for n in range(6)]
+    recorded = []
+
+    def handler(request):
+        if request.method == "POST":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        if request.url.path.endswith("/search"):
+            params = request.url.params
+            recorded.append((params.get("sort"), params["offset"], params["limit"]))
+            if params.get("sort") == "newlyListed":
+                items = new
+            elif params["offset"] == "0":
+                items = [new[0], *old[:5]]
+            else:
+                # A newly inserted item shifted one previously seen result to page two.
+                items = [old[4], old[5]]
+            return httpx.Response(200, json={"total": 40, "itemSummaries": items})
+        item_id = request.url.path.rsplit("/", 1)[-1]
+        return httpx.Response(
+            200, json=next(row for row in [*new, *old] if row["itemId"] == item_id)
+        )
+
+    cursor = InventoryCursor.load(target, 1, None)
+    with EbayClient(settings, transport=httpx.MockTransport(handler)) as client:
+        adapter = EbayAdapter(client, now=lambda: observed_at)
+        first = run_target_scan(
+            target,
+            adapter,
+            repository,
+            mode="refresh",
+            refresh_page_size=9,
+            inventory=cursor.pass_for_refresh(),
+        )
+        assert first.expected_queries == 2
+        assert first.found_legacy_item("synthetic-old-0")
+        assert first.inventory_summary.limit_reached
+        assert first.inventory_summary.reported_total == 40
+        assert client.browse_requests == 16  # Two pages + nine new and five unique old details.
+        cursor = cursor.after_success(first.inventory_summary)
+        assert cursor.offsets == (6,)
+        assert cursor.pass_for_refresh() is None
+        second = run_target_scan(target, adapter, repository, mode="refresh", refresh_page_size=9)
+        assert second.expected_queries == 1
+        cursor = cursor.after_success(None)
+        third = run_target_scan(
+            target,
+            adapter,
+            repository,
+            mode="refresh",
+            refresh_page_size=9,
+            inventory=cursor.pass_for_refresh(),
+        )
+        assert third.found_legacy_item("synthetic-old-5")
+        assert third.inventory_summary.updated == 1
+        assert third.inventory_summary.new == 1
+        assert repository.count() == 15
+    assert recorded == [
+        ("newlyListed", "0", "9"),
+        (None, "0", "6"),
+        ("newlyListed", "0", "9"),
+        ("newlyListed", "0", "9"),
+        (None, "6", "6"),
+    ]
+
+
+def test_failed_inventory_page_is_not_counted_as_progress(settings, repository):
+    target = EbaySearchTarget(id="synthetic", catalog_variant_id=1, queries=["Example Album"])
+    cursor = InventoryCursor.load(target, 1, None)
+
+    def handler(request):
+        if request.method == "POST":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        if request.url.params.get("sort") == "newlyListed":
+            return httpx.Response(200, json={"total": 0, "itemSummaries": []})
+        return httpx.Response(429)
+
+    with EbayClient(settings, transport=httpx.MockTransport(handler), max_retries=0) as client:
+        run = run_target_scan(
+            target,
+            EbayAdapter(client),
+            repository,
+            mode="refresh",
+            refresh_page_size=8,
+            inventory=cursor.pass_for_refresh(),
+        )
+    assert [row.status for row in run.summaries] == ["completed", "failed"]
+    assert run.inventory_summary.pages_fetched == 0
+    assert cursor.pass_for_refresh().offset == 0  # Failed pass must be retried.
 
 
 @pytest.mark.parametrize(
