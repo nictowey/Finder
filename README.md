@@ -18,6 +18,8 @@ Refreshes search eight newest items per query, alternate a small older-inventory
 direct check of one known possible pressing, and show when search pages are capped. The inbox
 separates unavailable rechecks from active leads. Search coverage and pressing accuracy remain
 unmeasured; see the [scan and request limits](docs/private-watchlist.md).
+The manual **Production eBay Browse quota** workflow checks actual remaining API calls through
+eBay's official analytics endpoint and outputs only aggregate limits and usage.
 
 See [ROADMAP.md](ROADMAP.md) for the accuracy-gated development plan, pressing-versus-copy
 identity model, provider constraints, and criteria that must be met before valuation, alerts,

@@ -107,11 +107,13 @@ The open provider-use decision and bounded Production audit are documented in
    - Eight newest items per query; alternating six-item older samples and one direct known-lead
      recheck; stale results still need independent coverage and availability measurement
    - A disappeared/ended direct recheck is marked unavailable, never inferred sold
+   - A separate read-only Developer Analytics probe reports Production Browse quota aggregates;
+     it does not enforce a cross-workflow request budget or guarantee future capacity
 
 ### Verified baseline
 
 - Latest verified implementation baseline: current `main` after required checks
-- Offline suite: 256 Python and 16 Node tests passing; rerun required checks before commit
+- Offline suite: 261 Python and 16 Node tests passing; rerun required checks before commit
 - Ruff lint and formatting checks passing
 - Live Discogs validation passing through GitHub Actions
 - Multi-query Discogs smoke passed on the `discogs-candidate-retrieval-2026` branch; this uses

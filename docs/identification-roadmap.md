@@ -166,6 +166,10 @@ The [first Production deployment](https://github.com/nictowey/Finder/actions/run
 passed with two completed watches and an older sample on each. It added one inbox row; the
 known DS2 lead remained outside the six-hour active inbox in this first pass. Its direct
 alternate recheck, independent recall, and scan timing remain to be verified.
+An isolated read-only quota workflow can now report actual Production Browse resource limits
+and remaining calls without printing credentials or listing identities. Its first live response
+must be checked before increasing search volume. It does not enforce a global reservation across
+workflows.
 
 Stages 1–2 and synthetic tooling can proceed immediately. The existing
 [provider-use record](decisions/0001-provider-use.md) governs real evaluation retention,
