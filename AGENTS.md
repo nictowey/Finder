@@ -7,7 +7,7 @@ incremental windows, periodic reconciliation, a deletion-aware evaluation queue,
 request debits and a paginated inbox. See [the discovery contract](docs/resumable-discovery.md) for scope,
 completion states, failure behavior, estimates and rollout/rollback controls. Earlier sampled
 scan descriptions below are historical and remain applicable only while rollout is disabled.
-Local validation: 316 Python and 32 Node tests, Ruff and TypeScript. Controlled deployment #16
+Local validation: 317 Python and 32 Node tests, Ruff and TypeScript. Controlled deployment #16
 retrieved 276 references with 16 evaluated and 260 pending using 24 Browse requests; search
 coverage remained partial. See the discovery contract for the recorded quota-parser correction.
 Unattended cadence and full rollout evidence remain separate. Existing operational history

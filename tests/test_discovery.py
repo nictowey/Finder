@@ -158,6 +158,11 @@ def test_repeated_page_is_interrupted_and_provider_cap_splits_inclusively():
     assert split["frontier"][0]["lower"] == split["frontier"][1]["upper"]
     tied = advance_pass(new_pass(HIGH, HIGH), page([raw(1)], 10001, True), NOW)
     assert tied["status"] == "partial_provider_limit"
+    assert tied["reason"] == "time_partition_cannot_reduce_result_ceiling"
+    recovered = advance_pass(
+        {**new_pass(LOW, HIGH), "reason": "old_failure"}, page([], 0, False), NOW
+    )
+    assert "reason" not in recovered
 
 
 def test_incremental_watermark_outage_equal_timestamps_and_fair_lanes(setup):
@@ -445,6 +450,17 @@ def test_worker_end_to_end_pages_resume_and_no_duplicate_hydration(
     assert summary["coverage"]["pending"] == 0
     assert len(detail_ids) == len(set(detail_ids)) == 81
     assert total_added == 81
+    # Once the initial queue is drained, a large due-refresh backlog must still
+    # fill the chunk and resume promptly rather than waiting another 30 minutes.
+    with repo.engine.begin() as conn:
+        conn.execute(update(work).values(next_check_at=clock[0].isoformat()))
+        conn.execute(update(watches).values(next_scan_at=clock[0].isoformat()))
+    claim = store.claim(now=clock[0])
+    result = run_chunk(repo, settings, discogs_settings, claim, now_fn=lambda: clock[0])
+    assert result["pending"] == 0 and len(detail_ids) == 97
+    with repo.engine.connect() as conn:
+        due_at = conn.execute(select(watches.c.next_scan_at)).scalar()
+    assert datetime.fromisoformat(due_at) == clock[0] + timedelta(minutes=1)
 
 
 def test_three_watches_progress_fairly_and_telemetry_failure_preserves_cursor(
@@ -545,3 +561,25 @@ def test_confirmed_out_of_stock_differs_from_transport_error(settings, search_pa
         EbayAdapter(client, now=lambda: NOW).refresh_known(data["itemId"]).skip_reason
         == "item_unavailable"
     )
+
+
+def test_due_refreshes_use_spare_pending_capacity_without_starving_either_lane():
+    from finder.discovery_worker import detail_batch
+
+    class Queue:
+        def __init__(self, pending_count):
+            self.pending_count = pending_count
+
+        def due(self, claim, now, *, limit, pending):
+            return [
+                ("new" if pending else "old", i)
+                for i in range(min(limit, self.pending_count if pending else 30))
+            ]
+
+    full = detail_batch(Queue(30), {}, NOW)
+    assert full[:4] == [("old", i) for i in range(4)]
+    assert len([x for x in full if x[0] == "new"]) == 12
+    quiet = detail_batch(Queue(2), {}, NOW)
+    assert len(quiet) == len(set(quiet)) == 16
+    assert len([x for x in quiet if x[0] == "old"]) == 14
+    assert len(detail_batch(Queue(0), {}, NOW)) == 16

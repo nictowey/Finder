@@ -136,6 +136,7 @@ def advance_pass(current, page, now):
     result["returned"] += len(page.items)
     result["last_total"] = page.total
     result["status"] = "in_progress"
+    result.pop("reason", None)
     if page.total >= RESULT_CEILING:
         low = datetime.fromisoformat(part["lower"].replace("Z", "+00:00"))
         high = datetime.fromisoformat(part["upper"].replace("Z", "+00:00"))
@@ -143,6 +144,7 @@ def advance_pass(current, page, now):
         boundary = iso(mid)
         if boundary in (part["lower"], part["upper"]) or len(result["frontier"]) >= 128:
             result["status"] = "partial_provider_limit"
+            result["reason"] = "time_partition_cannot_reduce_result_ceiling"
             return result
         # Boundaries deliberately overlap; stable item identities deduplicate.
         result["frontier"][:1] = [
@@ -158,6 +160,7 @@ def advance_pass(current, page, now):
     if page.more:
         if part["offset"] + PAGE_SIZE >= RESULT_CEILING:
             result["status"] = "partial_provider_limit"
+            result["reason"] = "provider_offset_ceiling"
         else:
             part["offset"] += PAGE_SIZE
     elif part["replay"] == 0:

@@ -88,6 +88,14 @@ def next_task(state):
     return None
 
 
+def detail_batch(queue, claim, now):
+    """Guarantee old work a share, and use spare pending capacity for due refreshes."""
+    old = queue.due(claim, now, limit=DETAIL_CALLS, pending=False)
+    reserved = old[:4]
+    pending = queue.due(claim, now, limit=DETAIL_CALLS - len(reserved), pending=True)
+    return reserved + pending + old[4 : 4 + DETAIL_CALLS - len(reserved) - len(pending)]
+
+
 def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: datetime.now(UTC)):
     from finder.watch_worker import assess_review
 
@@ -235,10 +243,9 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                         )
                 # Reserve a quarter of detail slots for oldest existing leads. Pending
                 # failures are delayed, so one bad item cannot monopolize the queue.
-                old = queue.due(claim, now_fn(), limit=4, pending=False)
-                pending = queue.due(claim, now_fn(), limit=DETAIL_CALLS - len(old), pending=True)
+                batch = detail_batch(queue, claim, now_fn())
                 adapter = EbayAdapter(client, now=now_fn)
-                for item in old + pending:
+                for item in batch:
                     if time.monotonic() >= deadline:
                         partial = "execution_budget"
                         break
@@ -355,7 +362,9 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
             30
             if failure or partial == "quota_or_attempt_budget"
             else 1
-            if next_task(state) or coverage["pending"]
+            if next_task(state)
+            or coverage["pending"]
+            or queue.due(claim, now_fn(), limit=1, pending=False)
             else 30
         )
         result = store.finish(
