@@ -54,3 +54,6 @@ items normalized during **this scan**, not items already stored by an earlier br
 An absent result identifies a miss within this bounded sample, not a permanent search miss.
 Record counts of found/missed and reasons privately, subject to the provider-use review; do
 not copy real item identities or labeled examples into the repository or public workflow logs.
+The manual workflow also accepts an optional `TARGET_PROBE_LEGACY_ID` **Production environment
+secret** for a private yes/no check. The workflow never puts the ID in a dispatch input, command
+literal, or report. Remove or replace that secret when the one-off check is finished.

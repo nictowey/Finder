@@ -53,6 +53,7 @@ jobs:
           EBAY_PRODUCTION_CLIENT_SECRET: ${{ secrets.EBAY_PRODUCTION_CLIENT_SECRET }}
           FINDER_DATABASE_URL: ${{ secrets.FINDER_DATABASE_URL }}
           TARGET_SCAN_MODE: ${{ inputs.mode }}
+          TARGET_PROBE_LEGACY_ID: ${{ secrets.TARGET_PROBE_LEGACY_ID }}
         run: |
           set -euo pipefail
           for name in EBAY_PRODUCTION_CLIENT_ID EBAY_PRODUCTION_CLIENT_SECRET FINDER_DATABASE_URL; do
@@ -61,4 +62,8 @@ jobs:
               exit 1
             fi
           done
-          python -m finder scan-target --target future-ds2-7609839 --mode "$TARGET_SCAN_MODE" --json
+          arguments=(--target future-ds2-7609839 --mode "$TARGET_SCAN_MODE" --json)
+          if [[ -n "$TARGET_PROBE_LEGACY_ID" ]]; then
+            arguments+=(--probe-legacy-id "$TARGET_PROBE_LEGACY_ID")
+          fi
+          python -m finder scan-target "${arguments[@]}"
