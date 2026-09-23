@@ -1,0 +1,79 @@
+"""A private panel must bound calls and keep raw catalog/seller identities out of reports."""
+
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from finder.adapters.base import ListingObservation
+from finder.adapters.discogs.adapter import AlternativeRetrieval
+from finder.adapters.discogs.normalize import normalize_release
+from finder.adapters.ebay.normalize import normalize_listing
+from finder.errors import ConfigurationError
+from scripts.measure_private_target_panel import parse_private_ids, probe_batch
+
+
+def test_private_target_list_rejects_duplicates_and_oversized_input():
+    with pytest.raises(ConfigurationError):
+        parse_private_ids("42,42")
+    with pytest.raises(ConfigurationError):
+        parse_private_ids(",".join(map(str, range(1, 14))))
+    with pytest.raises(ConfigurationError):
+        parse_private_ids("42,not-an-id")
+    assert parse_private_ids("https://www.discogs.com/release/42-Album,43") == [42, 43]
+
+
+def test_panel_aggregates_one_batch_without_serializing_identity(
+    discogs_release, search_payload, observed_at
+):
+    variant = normalize_release(
+        {
+            **discogs_release,
+            "id": 55555,
+            "title": "Example Album",
+            "artists": [{"name": "Example Artist"}],
+            "formats": [{"name": "Vinyl", "descriptions": ["LP"]}],
+        },
+        observed_at,
+    )
+    listing = normalize_listing(
+        {
+            **search_payload["itemSummaries"][0],
+            "itemId": "v1|987654321|0",
+            "title": "Example Artist Example Album vinyl",
+        },
+        observed_at,
+    )
+
+    class Catalog:
+        def get_release(self, release_id):
+            assert release_id == 55555
+            return variant
+
+        def search_alternatives(self, release):
+            assert release is variant
+            return AlternativeRetrieval([], True)
+
+    class Adapter:
+        def __init__(self):
+            self.stats = SimpleNamespace(limit_reached=False)
+            self.queries = 0
+
+        def search(self, monitor, *, seen_item_ids):
+            self.queries += 1
+            self.stats.limit_reached = True
+            if listing.marketplace_item_id not in seen_item_ids:
+                seen_item_ids.add(listing.marketplace_item_id)
+                yield ListingObservation(listing=listing)
+
+    adapter = Adapter()
+    # Batch selection exposes the private target's ordinal, never its ID or title.
+    result = probe_batch([1, 2, 3, 4, 55555], batch=1, catalog=Catalog(), adapter=adapter)
+    serialized = json.dumps(result)
+    assert result["status"] == "complete"
+    assert result["results"][0]["distinct_listings"] == 1
+    assert result["results"][0]["ordinal"] == 5
+    assert result["results"][0]["queries_capped"] == adapter.queries
+    assert "55555" not in serialized
+    assert "987654321" not in serialized
+    assert "Example Album" not in serialized
