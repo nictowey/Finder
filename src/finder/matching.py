@@ -15,7 +15,15 @@ from finder.domain import (
     Variant,
 )
 
-MATCH_POLICY_VERSION = "vinyl-decision-v5"
+MATCH_POLICY_VERSION = "vinyl-decision-v6"
+
+# Compare named colors across the whole record set. Discogs may describe the two
+# discs separately while a seller puts both colors in a single item specific.
+_COLOR_WORDS = frozenset(
+    "black blue brown clear cream gold gray green maroon mint orange pink purple "
+    "red silver teal white yellow".split()
+)
+_COLOR_ALIASES = {"grey": "gray", "transparent": "clear"}
 
 
 def _normalized(value: str) -> str:
@@ -113,6 +121,30 @@ def _similarity_evidence(
     )
 
 
+def _color_evidence(listing_values: list[str], variant_values: list[str]) -> MatchEvidence | None:
+    if not listing_values or not variant_values:
+        return None
+
+    def palette(values: list[str]) -> set[str]:
+        words = {word for value in values for word in _normalized(value).split()}
+        return {
+            color for word in words if (color := _COLOR_ALIASES.get(word, word)) in _COLOR_WORDS
+        }
+
+    left, right = palette(listing_values), palette(variant_values)
+    if left and right and (len(left) > 1 or len(right) > 1):
+        # A partial pair is a disagreement, even when a fuzzy string comparison
+        # would accept one of its discs as the whole pressing's color.
+        return MatchEvidence(
+            field="color",
+            listing_values=listing_values,
+            variant_values=variant_values,
+            matched=left == right,
+            weight=15,
+        )
+    return _similarity_evidence("color", listing_values, variant_values, 15, 0.72)
+
+
 def score_variant(
     listing: Listing, variant: Variant, observed_at: datetime | None = None
 ) -> ListingVariantCandidate:
@@ -143,7 +175,7 @@ def score_variant(
         5,
         0.75,
     )
-    color = _similarity_evidence("color", listing_vinyl.colors, variant_vinyl.colors, 15, 0.72)
+    color = _color_evidence(listing_vinyl.colors, variant_vinyl.colors)
     edition = _similarity_evidence(
         "edition", listing_vinyl.editions, variant_vinyl.editions, 10, 0.72
     )
