@@ -129,3 +129,11 @@ the pink/green release are discovery examples, not enough to estimate accuracy a
 - The original eBay deletion endpoint still rejects unsigned requests with HTTP 412.
 - A direct database connection is required for the isolated schema integration check; the
   ordinary application retains its existing pooled connection.
+- [Inventory reconciliation deployment](https://github.com/nictowey/Finder/actions/runs/35855743741)
+  passed 256 Python and 16 Node tests, isolated PostgreSQL checks, and private access checks.
+  Its two due watches both completed with zero failures and one new inbox row. The signed-in
+  dashboard showed an older sample for each watch, and the DS2 newest query hit its cap. The
+  prior known DS2 lead was not visible in this first sample's fresh six-hour inbox window; the
+  alternate direct known-lead recheck has not yet been observed live. Coverage and identity
+  remain unmeasured. The previous successful scheduled scan was around 10:00 UTC and this
+  deployment scan around 11:39 UTC, so a 30-minute freshness promise is not yet supported.
