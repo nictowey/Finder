@@ -1,0 +1,40 @@
+name: Production target match check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  match:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install and test Finder offline
+        run: |
+          python -m pip install -e '.[dev]'
+          python -m pytest -q
+          ruff check src tests scripts
+          ruff format --check src tests scripts
+
+      - name: Evaluate stored target without exposing item details
+        env:
+          DISCOGS_TOKEN: ${{ secrets.DISCOGS_TOKEN }}
+          FINDER_DATABASE_URL: ${{ secrets.FINDER_DATABASE_URL }}
+          TARGET_PROBE_LEGACY_ID: ${{ secrets.TARGET_PROBE_LEGACY_ID }}
+        run: python scripts/validate_target_match.py
