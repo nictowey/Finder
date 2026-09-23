@@ -7,7 +7,10 @@ const branch = 'https://console.neon.tech/api/v2/projects/billowing-queen-563014
 async function neon(path, method='GET', data) {
   const response = await fetch(branch+path, {method, headers:{Authorization:'Bearer '+process.env.NEON_API_KEY,'Content-Type':'application/json'}, body:data?JSON.stringify(data):undefined,signal:AbortSignal.timeout(20000)});
   if (response.status === 404) return null;
-  if (!response.ok) throw new Error('Auth configuration request failed: '+response.status);
+  if (!response.ok) {
+    console.log(JSON.stringify({configuration_path:path,status:response.status}));
+    throw new Error('Auth configuration request failed');
+  }
   return response.status===204?{}:response.json();
 }
 const db=new Pool({connectionString:process.env.FINDER_DATABASE_URL,max:1});

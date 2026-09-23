@@ -269,7 +269,8 @@ class WatchStore:
             values = dict(
                 lease_token=None,
                 lease_until=None,
-                next_scan_at=(now + timedelta(minutes=30)).isoformat(),
+                # Eligible before the next 30-minute cron tick, despite run-time jitter.
+                next_scan_at=(now + timedelta(minutes=15)).isoformat(),
                 status="healthy" if success else "failed",
                 summary=summary or {},
             )
