@@ -121,6 +121,9 @@ The open provider-use decision and bounded Production audit are documented in
 - Live eBay Sandbox validation passed through GitHub Actions: application OAuth token issued,
   `vinyl` search returned 10 items, 9 normalized and round-tripped through persistence
   (1 skipped as ended). Sandbox inventory is test data, not vinyl market data.
+- Live inventory deployment #6 passed; two saved watches completed, one inbox row was added,
+  and the dashboard showed six sampled older results per target. The alternate known-lead
+  direct recheck and actual target recall are not yet observed or measured.
 
 ### Production status
 

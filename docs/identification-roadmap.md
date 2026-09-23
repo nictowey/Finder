@@ -162,6 +162,10 @@ calling it sold. The nominal three-watch refresh ceiling is 4,464 Browse request
 initial sweeps, retries or other jobs. The actual app quota and independent missed-listing
 sample remain outstanding. This limited sample cannot establish 95% recall or guarantee that
 new offers appear within one hour. See [watchlist limits](private-watchlist.md).
+The [first Production deployment](https://github.com/nictowey/Finder/actions/runs/35855743741)
+passed with two completed watches and an older sample on each. It added one inbox row; the
+known DS2 lead remained outside the six-hour active inbox in this first pass. Its direct
+alternate recheck, independent recall, and scan timing remain to be verified.
 
 Stages 1–2 and synthetic tooling can proceed immediately. The existing
 [provider-use record](decisions/0001-provider-use.md) governs real evaluation retention,
