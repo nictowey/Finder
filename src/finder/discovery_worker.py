@@ -198,6 +198,11 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                         next_state["queries"][i][lane] = advanced
                         if lane == "incremental" and advanced["status"] == "search_exhausted":
                             next_state["queries"][i]["watermark"] = current["started_at"]
+                        reconciliations = [q.get("reconciliation") for q in next_state["queries"]]
+                        if all(p and p["status"] == "search_exhausted" for p in reconciliations):
+                            next_state["last_reconciliation_at"] = max(
+                                p["finished_at"] for p in reconciliations
+                            )
                         next_state["round_robin"] = rotation
                         next_state["last_activity_at"] = iso(now_fn())
                         queue.checkpoint(
@@ -308,7 +313,11 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                         )
                 if next_task(state):
                     partial = partial or "chunk_budget"
-            except (RateLimitError, ValueError):
+            except (RateLimitError, ValueError) as exc:
+                from finder.adapters.ebay.budget import BudgetTelemetryError
+
+                if isinstance(exc, BudgetTelemetryError):
+                    requests["budget_failure"] = exc.reason
                 partial = "quota_or_attempt_budget"
             except StorageBudget:
                 partial = "storage_budget"

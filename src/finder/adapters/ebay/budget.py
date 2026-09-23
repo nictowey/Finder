@@ -18,6 +18,14 @@ budget = Table(
 RESERVE = 200
 
 
+class BudgetTelemetryError(RateLimitError):
+    """Only fixed diagnostic codes, never provider content."""
+
+    def __init__(self, reason):
+        self.reason = reason
+        super().__init__("Shared Browse telemetry unavailable")
+
+
 class BrowseBudget:
     def __init__(self, url, telemetry):
         parsed = make_url(url)
@@ -71,12 +79,13 @@ def reconcile(saved, telemetry, now):
         pools = [
             resource
             for api in payload["rateLimits"]
-            if api.get("apiContext") == "buy" and api.get("apiName") == "browse"
+            if (str(api.get("apiContext", "")).lower(), str(api.get("apiName", "")).lower())
+            == ("buy", "browse")
             for resource in api["resources"]
             if resource.get("name") == "buy.browse"
         ]
         if len(pools) != 1 or not pools[0]["rates"]:
-            raise ValueError()
+            raise BudgetTelemetryError("shared_pool_missing")
         rates = []
         for raw in pools[0]["rates"]:
             remaining, limit, window = raw["remaining"], raw["limit"], raw["timeWindow"]
@@ -84,9 +93,11 @@ def reconcile(saved, telemetry, now):
             if (
                 any(type(x) is not int for x in (remaining, limit, window))
                 or not 0 <= remaining <= limit
-                or reset <= now
+                or window <= 0
             ):
-                raise ValueError()
+                raise BudgetTelemetryError("invalid_rate_numbers")
+            if reset.tzinfo is None or reset <= now:
+                raise BudgetTelemetryError("reset_missing_or_expired")
             old = next((r for r in saved.get("rates", []) if r["window"] == window), None)
             if old and datetime.fromisoformat(old["reset"]) > now:
                 remaining = min(remaining, old["remaining"])
@@ -99,5 +110,7 @@ def reconcile(saved, telemetry, now):
                 }
             )
         return {"observed_at": now.isoformat(), "rates": rates, "debited": saved.get("debited", 0)}
+    except BudgetTelemetryError:
+        raise
     except Exception:
-        raise RateLimitError("Shared Browse telemetry unavailable") from None
+        raise BudgetTelemetryError("telemetry_shape_or_request_failed") from None

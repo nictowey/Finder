@@ -328,6 +328,21 @@ def test_budget_telemetry_conservatively_debits_and_reset_requires_provider():
         reconcile({}, lambda: {}, NOW)
 
 
+@pytest.mark.parametrize("api_context,api_name", [("buy", "Browse"), ("BUY", "BROWSE")])
+def test_shared_budget_accepts_case_insensitive_api_metadata(api_context, api_name):
+    payload = quota()
+    payload["rateLimits"][0].update(apiContext=api_context, apiName=api_name)
+    assert reconcile({}, lambda: payload, NOW)["rates"][0]["remaining"] == 5000
+
+
+def test_shared_budget_expired_reset_fails_with_safe_diagnostic():
+    from finder.adapters.ebay.budget import BudgetTelemetryError
+
+    with pytest.raises(BudgetTelemetryError) as exc:
+        reconcile({}, lambda: quota(reset=NOW.isoformat()), NOW)
+    assert exc.value.reason == "reset_missing_or_expired"
+
+
 def test_retry_attempt_cap_and_external_hosts(settings):
     calls = []
 
