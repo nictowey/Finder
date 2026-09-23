@@ -74,3 +74,39 @@ test('Home Screen manifest is public but dashboard data stays private',async()=>
  assert.equal(validateWatch({release_id:123,alert_mode:'strict'}).alert_mode,'strict');
  assert.throws(()=>validateWatch({release_id:123,alert_mode:'exact_guaranteed'}));
 });
+
+test('new discovery controls preserve owner authentication and mutation origin gates',async()=>{
+ for(const endpoint of ['/api/refresh-lead','/api/discovery-rollout']){
+  const anonymous=setup().handler;
+  assert.equal((await anonymous(new Request(origin+endpoint,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:'{}'}))).status,401);
+  const owner=setup(true).handler;
+  assert.equal((await owner(new Request(origin+endpoint,{method:'POST',headers:{Origin:'https://evil.test','Content-Type':'application/json'},body:'{}'}))).status,403);
+ }
+});
+
+test('inbox pagination keeps older references without exposing stale provider content',async()=>{
+ let values:unknown[]=[],sql='';
+ const rows=Array.from({length:51},(_,i)=>({watch_id:'watch',marketplace:'ebay',marketplace_item_id:String(i),first_seen_at:'2026-01-01T00:00:00Z',last_seen_at:'2026-01-01T00:00:00Z',revision:1,dismissed:false,
+ data:{status:'possible_pressing',watch_revision:1,subtotal:'123.45',clues:['private clue'],verify:[]},listing:{title:'private old title',item_specifics:{old:['content']},listing_url:'https://www.ebay.com/itm/123',details_observed_at:'2026-01-01T00:00:00Z'}}));
+ const db={query:async(q:string,v:unknown[]=[])=>{
+  if(q.includes('owner_email'))return {rows:[{data:{email:'owner@example.com'}}]};
+  if(q.includes('FROM finder_inbox i JOIN listings')){sql=q;values=v;return {rows:structuredClone(rows)};}
+  return {rows:[]};
+ }};
+ const handler=createHandler({db,origin,authURL:'https://auth.example',fetch:async()=>new Response(JSON.stringify({user:{email:'owner@example.com',emailVerified:true},session:{expiresAt:new Date(Date.now()+60000).toISOString()}}))});
+ const response=await handler(new Request(origin+'/api/dashboard?filter=possible_pressing'));
+ assert.equal(response.status,200);
+ const data=await response.json();assert.equal(data.leads.length,50);assert.ok(data.next_cursor);
+ assert.equal(data.leads[0].evidence_stale,true);
+ assert.ok(!JSON.stringify(data).includes('private old title'));assert.ok(!JSON.stringify(data).includes('123.45'));
+ assert.ok(sql.includes('LIMIT 51'));assert.ok(!sql.includes('i.last_seen_at >= $1'));
+ await handler(new Request(origin+'/api/dashboard?filter=possible_pressing&cursor='+encodeURIComponent(data.next_cursor)));
+ assert.deepEqual(values.slice(1),JSON.parse(data.next_cursor));
+});
+
+test('coverage wording separates worker success, page exhaustion, and pending evaluation',()=>{
+ assert.ok(javascript.includes('awaiting details/evaluation'));
+ assert.ok(javascript.includes('Search exhaustion is for this pass'));
+ assert.ok(html.includes('Next page'));
+ assert.ok(javascript.includes('details_observed_at'));
+});

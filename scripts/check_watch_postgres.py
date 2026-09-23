@@ -94,16 +94,91 @@ def main():
             assert len(conn.execute(select(inbox)).all()) == 1
             assert len(conn.execute(select(outbox)).all()) == 1
             assert not conn.execute(select(scan_attempts)).all()
+        phase = "discovery_checkpoints_and_shared_budget"
+        from concurrent.futures import ThreadPoolExecutor
+
+        from finder.adapters.ebay.budget import BrowseBudget, budget
+        from finder.adapters.ebay.target_search import EbaySearchTarget
+        from finder.discovery_store import DiscoveryStore, progress, work
+
+        discovery_time = later + timedelta(minutes=31)
+        discovery_claim = store.claim(now=discovery_time)
+        queue = DiscoveryStore(repo.engine)
+        state = queue.load(
+            discovery_claim,
+            EbaySearchTarget(id="synthetic", catalog_variant_id=123, queries=["Example Album"]),
+            discovery_time,
+        )
+        queue.checkpoint(
+            discovery_claim,
+            state,
+            discovery_time,
+            items=[
+                {
+                    "itemId": listing.marketplace_item_id,
+                    "title": "Synthetic reference",
+                    "itemOriginDate": now.isoformat(),
+                }
+            ],
+        )
+        item = queue.due(discovery_claim, discovery_time, limit=1, pending=True)[0]
+        queue.disposition(
+            discovery_claim,
+            item,
+            discovery_time,
+            status="evaluated",
+            listing=listing,
+            repository=repo,
+            review={"notify": True},
+            state=state,
+        )
+        # Real row-level serialization: three contenders cannot spend the two calls
+        # above the reserve. No network or actual quota is involved in this rehearsal.
+        budget.create(repo.engine, checkfirst=True)
+        future_reset = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+        with repo.engine.begin() as conn:
+            conn.execute(
+                insert(budget).values(
+                    key="browse",
+                    data={
+                        "observed_at": datetime.now(UTC).isoformat(),
+                        "rates": [
+                            {
+                                "remaining": 202,
+                                "limit": 5000,
+                                "window": 86400,
+                                "reset": future_reset,
+                            }
+                        ],
+                    },
+                )
+            )
+
+        def debit():
+            guard = BrowseBudget.__new__(BrowseBudget)
+            guard.engine, guard.telemetry, guard.last = repo.engine, lambda: {}, {}
+            try:
+                guard.debit()
+                return True
+            except Exception:
+                return False
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            assert sum(executor.map(lambda _: debit(), range(3))) == 2
+        with repo.engine.connect() as conn:
+            assert conn.execute(select(budget.c.data)).scalar()["rates"][0]["remaining"] == 200
         repo.delete_ebay_seller(listing.seller_id)
         phase = "assert_deletion"
         with repo.engine.connect() as conn:
             assert not conn.execute(select(inbox)).all()
             assert not conn.execute(select(outbox)).all()
+            assert not conn.execute(select(work)).all()
+            assert conn.execute(select(progress)).first()
         rollback_pilot_schema(repo.engine)
         phase = "remigrate"
         migrate(repo.engine)
         print(
-            '{"postgres_migration_lease_dedup_deletion":"passed","synthetic_backup_restore_upgrade":"passed"}'
+            '{"postgres_migration_lease_dedup_deletion":"passed","synthetic_backup_restore_upgrade":"passed","discovery_shared_budget":"passed"}'
         )
         return 0
     except Exception as exc:

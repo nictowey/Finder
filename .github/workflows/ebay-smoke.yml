@@ -27,7 +27,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ebay-smoke-${{ github.ref }}-${{ inputs.environment || 'sandbox' }}
+  group: finder-production-scan
   cancel-in-progress: true
 
 jobs:

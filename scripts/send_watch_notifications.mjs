@@ -12,10 +12,13 @@ export async function deliver(db, send=webpush.sendNotification.bind(webpush)) {
   // Expiration and final-attempt crash recovery also run when no device is enrolled.
   await db.query(`UPDATE finder_outbox o SET status='expired' WHERE status IN ('pending','sending') AND NOT EXISTS (
     SELECT 1 FROM finder_inbox i JOIN finder_watches w ON w.id=i.watch_id
+    JOIN listings l ON l.marketplace=i.marketplace AND l.marketplace_item_id=i.marketplace_item_id
     WHERE i.watch_id=o.watch_id AND i.marketplace=o.marketplace AND i.marketplace_item_id=o.marketplace_item_id
+    AND l.data->>'details_observed_at' >= $1
+    AND (l.data->>'listing_ends_at' IS NULL OR l.data->>'listing_ends_at' > $3)
     AND w.enabled AND NOT i.dismissed AND i.last_seen_at >= $1 AND (i.data->>'notify')='true'
     AND (i.data->>'policy')=$2
-    AND (i.data->>'watch_revision')=w.revision::text)`,[new Date(Date.now()-3600000).toISOString(),'private-target-review-v4']);
+    AND (i.data->>'watch_revision')=w.revision::text)`,[new Date(Date.now()-3600000).toISOString(),'private-target-review-v4',new Date().toISOString()]);
   await db.query("UPDATE finder_outbox SET status='failed' WHERE attempts>=3 AND status IN ('pending','sending')");
   if(!key || !subscriptions.length) return report({status:!key?'not_configured':'no_devices',accepted_events:0,devices:subscriptions.length});
   const pending=(await db.query("UPDATE finder_outbox SET status='sending',attempts=attempts+1 WHERE status IN ('pending','sending') AND attempts<3 RETURNING id")).rows;

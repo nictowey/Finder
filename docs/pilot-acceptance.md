@@ -1,5 +1,17 @@
 # Finder private pilot: useful, operable, measured
 
+## Resumable discovery revision — September 23, 2026
+
+The new implementation replaces scheduled samples with durable full search passes, overlapping
+incremental windows, periodic reconciliation, a deletion-aware evaluation queue, shared
+request debits and a paginated inbox. See [the discovery contract](resumable-discovery.md) for scope,
+completion states, failure behavior, estimates and rollout/rollback controls. Earlier sampled
+scan descriptions below are historical and remain applicable only while rollout is disabled.
+Local validation: 313 Python and 32 Node tests, Ruff and TypeScript; live deployment and cadence
+validation are still pending and must be recorded separately. Existing operational history
+is retained. No marketplace recall or pressing-accuracy claim follows from this change.
+
+
 Owner decisions, September 23, 2026: exact-target pressing review comes first; free hosting
 only; review alerts may include explicitly uncertain editions. Three watches remain the
 supported capacity. No automated purchase, exact-identity claim, or valuation.
@@ -78,3 +90,11 @@ zero scans. Existing three watches and inbox entries remained visible after depl
 The authenticated dashboard displays the new health and notification setup controls.
 At inspection there were zero registered devices and no recorded trigger heartbeat yet.
 The first automatic correlated dispatch and actual phone display remain unverified.
+
+## Owner-reported delivery update
+
+On September 23 the owner confirmed a test notification visibly arrived on the installed
+iPhone Home Screen app. This is owner-confirmed test delivery. The eligible real-listing
+unattended scan-to-phone path remains unverified. A watch replacement was observed through
+the authenticated dashboard; the current private configuration is authoritative. No watches
+are recreated or reliability observation dates reset by the discovery migration.

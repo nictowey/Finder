@@ -35,6 +35,8 @@ class DiscogsClient:
         self.settings = settings
         self.sleep = sleep
         self.max_retries = max_retries
+        self.requests = 0
+        self.retries = 0
         self.http = httpx.Client(
             base_url="https://api.discogs.com",
             timeout=httpx.Timeout(30, connect=10),
@@ -83,6 +85,8 @@ class DiscogsClient:
         if path != "/database/search" and not re.fullmatch(r"/releases/[1-9][0-9]*", path):
             raise CatalogRequestError("Discogs client only permits CC0 catalog endpoints.")
         for attempt in range(self.max_retries + 1):
+            self.requests += 1
+            self.retries += attempt > 0
             try:
                 response = self.http.get(path, params=params)
             except httpx.RequestError:

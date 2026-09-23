@@ -1,5 +1,17 @@
 # Finder Agent Guide
 
+## Resumable discovery revision — September 23, 2026
+
+The new implementation replaces scheduled samples with durable full search passes, overlapping
+incremental windows, periodic reconciliation, a deletion-aware evaluation queue, shared
+request debits and a paginated inbox. See [the discovery contract](docs/resumable-discovery.md) for scope,
+completion states, failure behavior, estimates and rollout/rollback controls. Earlier sampled
+scan descriptions below are historical and remain applicable only while rollout is disabled.
+Local validation: 313 Python and 32 Node tests, Ruff and TypeScript; live deployment and cadence
+validation are still pending and must be recorded separately. Existing operational history
+is retained. No marketplace recall or pressing-accuracy claim follows from this change.
+
+
 ## Purpose
 
 Finder is a marketplace-monitoring and mispricing-detection platform. A user defines what

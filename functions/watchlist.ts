@@ -116,20 +116,53 @@ export function createHandler(deps: Deps) {
         const watches = (await deps.db.query("SELECT id,config,revision,status,last_started_at,last_success_at,next_scan_at,lease_until,summary,catalog,catalog_observed_at FROM finder_watches ORDER BY id")).rows;
         const cutoff = Date.now() - 6 * 3600_000;
         for (const watch of watches) if (Date.parse(watch.catalog_observed_at ?? "") < cutoff || !watch.catalog_observed_at) watch.catalog = null;
-        const leads = (await deps.db.query(`SELECT i.watch_id,i.marketplace,i.marketplace_item_id,i.data,i.first_seen_at,i.last_seen_at,i.dismissed,l.data AS listing
+        const filter = url.searchParams.get("filter") || "possible_pressing";
+        if (!["possible_pressing","family_review","conflicting","unrelated","unavailable","dismissed"].includes(filter)) return reply({error:"Invalid inbox filter"},400);
+        let cursor: string[] | null = null;
+        if (url.searchParams.has("cursor")) {
+          try { cursor = JSON.parse(url.searchParams.get("cursor")!); } catch { return reply({error:"Invalid cursor"},400); }
+          if (!Array.isArray(cursor) || cursor.length !== 3 || cursor.some(v=>typeof v!=="string" || v.length>255)) return reply({error:"Invalid cursor"},400);
+        }
+        const leads = (await deps.db.query(`SELECT i.watch_id,i.marketplace,i.marketplace_item_id,i.data,i.first_seen_at,i.last_seen_at,i.dismissed,l.data AS listing,w.revision
           FROM finder_inbox i JOIN listings l USING(marketplace,marketplace_item_id)
           JOIN finder_watches w ON w.id=i.watch_id
-          WHERE i.last_seen_at >= $1 AND (i.data->>'watch_revision')::integer=w.revision ORDER BY i.last_seen_at DESC LIMIT 300`, [new Date(cutoff).toISOString()])).rows;
-        // Only expose the fields the UI uses; no seller IDs, buyer postal data, opaque source payloads or auth information.
+          WHERE ($1='dismissed' AND i.dismissed OR $1='unavailable' AND NOT i.dismissed AND i.data->>'availability'='unavailable_on_recheck'
+            OR $1 NOT IN ('dismissed','unavailable') AND NOT i.dismissed AND i.data->>'availability' IS DISTINCT FROM 'unavailable_on_recheck' AND i.data->>'status'=$1)
+          AND ($2::text IS NULL OR (i.first_seen_at,i.watch_id,i.marketplace_item_id)<($2,$3,$4))
+          ORDER BY i.first_seen_at DESC,i.watch_id DESC,i.marketplace_item_id DESC LIMIT 51`, [filter,...(cursor || [null,null,null])])).rows;
+        const more = leads.length > 50;
+        if (more) leads.pop();
+        const tail = leads.at(-1);
+        const nextCursor = more && tail ? JSON.stringify([tail.first_seen_at,tail.watch_id,tail.marketplace_item_id]) : null;
+        // Keep old references discoverable; never extend the six-hour provider content
+        // display window or imply that a fresh summary freshened detail evidence.
         for (const row of leads) {
           const l = row.listing;
-          row.listing = { title: l.title, listing_url: l.listing_url, condition: l.condition, condition_id: l.condition_id,
-            current_price: l.current_price, shipping_cost: l.shipping_cost, currency: l.currency,
-            price_kind: l.price_kind, listing_ends_at: l.listing_ends_at, item_specifics: l.item_specifics };
+          row.evidence_stale = !l.details_observed_at || Date.parse(l.details_observed_at)<cutoff || row.data.watch_revision!==row.revision;
+          row.listing = row.evidence_stale ? {title:"Previously discovered listing · awaiting fresh details",listing_url:l.listing_url,item_specifics:{}} :
+            { title:l.title,listing_url:l.listing_url,condition:l.condition,condition_id:l.condition_id,
+              current_price:l.current_price,shipping_cost:l.shipping_cost,currency:l.currency,
+              price_kind:l.price_kind,listing_ends_at:l.listing_ends_at,item_specifics:l.item_specifics,
+              details_observed_at:l.details_observed_at,last_observed_at:l.last_observed_at };
+          if(row.evidence_stale) row.data={status:row.data.status,availability:row.data.availability,clues:[],verify:["reference_only_current_availability_unverified"],budget:"needs_refresh",notify:false};
+          delete row.revision;
         }
         const push = (await deps.db.query("SELECT data FROM finder_private_settings WHERE key='vapid'")).rows[0]?.data;
         const operations = await readOperations(deps.db, watches);
-        return reply({ watches, leads, operations, push_key: push?.publicKey ?? null, email: owner, now: new Date().toISOString() });
+        return reply({ watches, leads, next_cursor: nextCursor, operations, push_key: push?.publicKey ?? null, email: owner, now: new Date().toISOString() });
+      }
+      if (path === "/api/discovery-rollout" && request.method === "POST") {
+        const value=await body(request);
+        if(!Array.isArray(value.slots) || value.slots.some((n:any)=>![1,2,3].includes(n))) return reply({error:"Invalid rollout"},400);
+        await deps.db.query("INSERT INTO finder_private_settings(key,data) VALUES('discovery_rollout',$1) ON CONFLICT(key) DO UPDATE SET data=EXCLUDED.data",[{slots:[...new Set(value.slots)]}]);
+        return reply({ok:true});
+      }
+      if (path === "/api/refresh-lead" && request.method === "POST") {
+        const value=await body(request);
+        if(typeof value.watch_id!=="string" || typeof value.item_id!=="string" || value.item_id.length>255) return reply({error:"Invalid reference"},400);
+        await deps.db.query("UPDATE finder_discovery_work SET status='pending',next_check_at=$3 WHERE watch_id=$1 AND item_id=$2",[value.watch_id,value.item_id,new Date().toISOString()]);
+        await deps.db.query("UPDATE finder_watches SET next_scan_at=$2 WHERE id=$1 AND lease_token IS NULL",[value.watch_id,new Date().toISOString()]);
+        return reply({ok:true});
       }
       if (path === "/api/watches" && request.method === "POST") {
         const watch = validateWatch(await body(request));

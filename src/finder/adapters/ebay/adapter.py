@@ -52,6 +52,16 @@ class EbayAdapter:
             return ListingObservation(skip_reason="item_unavailable")
         if raw.get("itemId") != item_id:
             raise ResponseError("eBay detail response has mismatched or missing ID.")
+        availability = raw.get("estimatedAvailabilities", [])
+        if isinstance(availability, list) and any(
+            isinstance(entry, dict)
+            and (
+                entry.get("estimatedAvailabilityStatus") == "OUT_OF_STOCK"
+                or entry.get("estimatedAvailableQuantity") == 0
+            )
+            for entry in availability
+        ):
+            return ListingObservation(skip_reason="item_unavailable")
         try:
             listing = normalize_listing(
                 raw,
