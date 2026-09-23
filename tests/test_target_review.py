@@ -90,6 +90,86 @@ def test_identifier_can_surface_uncolored_vinyl_for_review(
     assert "catalog_alternatives_not_checked" in row.verify
 
 
+def test_inverted_structured_artist_keeps_target_review_and_scoring(
+    search_payload, discogs_release, observed_at
+):
+    from finder.matching import score_variant
+
+    variant = normalize_release(
+        {
+            **discogs_release,
+            "title": "Black Metal",
+            "artists": [{"name": "Dean Blunt"}],
+        },
+        observed_at,
+    )
+    listing = _listing(
+        search_payload,
+        observed_at,
+        "Dean Blunt Black Metal 2xLP",
+        (("Artist", "Blunt, Dean"), ("Barcode", "0123456789012")),
+    )
+    review = review_target_listing(listing, variant)
+    assert review.status == "possible_pressing"
+    artist = next(
+        item for item in score_variant(listing, variant).evidence if item.field == "artist"
+    )
+    assert artist.matched
+    assert artist.listing_values == ["Blunt, Dean"]
+
+
+@pytest.mark.parametrize("artist", ["Blunt, Diana", "Blunt, Dean, Other", "Other, Dean"])
+def test_inverted_artist_alias_must_agree_exactly(
+    search_payload, discogs_release, observed_at, artist
+):
+    variant = normalize_release(
+        {**discogs_release, "title": "Black Metal", "artists": [{"name": "Dean Blunt"}]},
+        observed_at,
+    )
+    listing = _listing(
+        search_payload, observed_at, "Dean Blunt Black Metal LP", (("Artist", artist),)
+    )
+    review = review_target_listing(listing, variant)
+    assert review.status == "conflicting"
+    assert "artist_conflict" in review.verify
+
+
+@pytest.mark.parametrize(
+    ("title", "specifics", "expected"),
+    [
+        ("Dean Blunt Black Metal 2 sealed LP", (), "conflicting"),
+        (
+            "Dean Blunt Black Metal album vinyl",
+            (("Release Title", "Black Metal 2"),),
+            "conflicting",
+        ),
+        ("Dean Blunt Black Metal 2xLP", (), "family_review"),
+        ("Dean Blunt Black Metal not Black Metal 2", (), "family_review"),
+        ("Dean Blunt Black Metal and Black Metal 2 lot", (), "family_review"),
+    ],
+)
+def test_more_specific_competing_album_title(
+    search_payload, discogs_release, observed_at, title, specifics, expected
+):
+    target = normalize_release(
+        {**discogs_release, "title": "Black Metal", "artists": [{"name": "Dean Blunt"}]},
+        observed_at,
+    )
+    sequel = target.model_copy(update={"catalog_variant_id": "222", "title": "Black Metal 2"})
+    listing = _listing(
+        search_payload,
+        observed_at,
+        title,
+        (("Artist", "Blunt, Dean"), *specifics),
+    )
+    row = review_target_with_alternatives(listing, target, [sequel])
+    assert row.status == expected
+    if expected == "conflicting":
+        assert "competing_album_title_claim" in row.verify
+    else:
+        assert "competing_album_title_claim" not in row.verify
+
+
 def test_shared_color_stays_visible_with_ambiguous_alternative(
     search_payload, observed_at, release
 ):

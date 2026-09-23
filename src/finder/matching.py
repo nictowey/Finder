@@ -44,11 +44,32 @@ def _album_title_in_listing(listing_title: str, catalog_title: str) -> bool:
     return bool(album and f" {album} " in f" {_normalized(listing_title)} ")
 
 
+def _artist_matches_catalog(listing_artist: str, catalog_artists: list[str]) -> bool:
+    """Accept an exact catalog name or an explicit 'last, first' seller inversion.
+
+    Do not reorder unpunctuated names or treat an approximate spelling as proof
+    that a structured seller artist agrees with the selected catalog artist.
+    """
+    names = {_normalized(re.sub(r"\s+\(\d+\)$", "", name)) for name in catalog_artists}
+    if _normalized(listing_artist) in names:
+        return True
+    parts = listing_artist.split(",")
+    return (
+        len(parts) == 2
+        and bool(parts[0].strip() and parts[1].strip())
+        and _normalized(f"{parts[1]} {parts[0]}") in names
+    )
+
+
 def _artist_evidence(listing_values: list[str], catalog_values: list[str]) -> MatchEvidence | None:
     # Discogs' parenthesized numeric suffix disambiguates artists within its database;
     # it is not part of the name sellers generally use.
     cleaned = [re.sub(r"\s+\(\d+\)$", "", value) for value in catalog_values]
     measured = _similarity_evidence("artist", listing_values, cleaned, 15, 0.88)
+    if measured is not None and any(
+        _artist_matches_catalog(value, catalog_values) for value in listing_values
+    ):
+        measured = measured.model_copy(update={"matched": True})
     return (
         measured.model_copy(update={"variant_values": catalog_values})
         if measured is not None

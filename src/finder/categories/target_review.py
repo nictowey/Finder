@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict
 from finder.categories.vinyl import from_listing, from_variant, has_numbered_claim
 from finder.domain import Listing, Variant
 from finder.matching import (
+    _artist_matches_catalog,
     _color_evidence,
     _non_vinyl_listing,
     _normalized,
@@ -29,6 +30,34 @@ class TargetReview(BaseModel):
     alternatives_not_ruled_out: int | None = None
 
 
+def _more_specific_album_claim(listing: Listing, target: Variant, other: Variant) -> bool:
+    """A longer, competing catalog title can disambiguate a seller's album claim.
+
+    A plain substring match would mistake a sequel or deluxe album for the shorter
+    target title. Require a same-artist catalog competitor, not a guessed suffix.
+    """
+    target_title, other_title = _normalized(target.title), _normalized(other.title)
+    if not target_title or not other_title.startswith(f"{target_title} "):
+        return False
+    if not any(_artist_matches_catalog(artist, target.artists) for artist in other.artists):
+        return False
+    structured = (
+        value
+        for key, values in listing.item_specifics.items()
+        if _normalized(key) in {"release title", "album title"}
+        for value in values
+    )
+    if any(_normalized(value) == other_title for value in structured):
+        return True
+    title = f" {_normalized(listing.title)} "
+    claim = f" {other_title} "
+    return (
+        claim in title
+        and f" not {other_title} " not in title
+        and f" {target_title} " not in title.replace(claim, " ")
+    )
+
+
 def review_target_listing(listing: Listing, variant: Variant) -> TargetReview:
     """Surface incomplete seller claims without converting them to a match assertion."""
     seller = from_listing(listing)
@@ -40,7 +69,9 @@ def review_target_listing(listing: Listing, variant: Variant) -> TargetReview:
         artist not in ("various", "various artists") and f" {artist} " in f" {title} "
         for artist in artist_names
     )
-    artist_in_specifics = any(_normalized(value) in artist_names for value in seller.artists)
+    artist_in_specifics = any(
+        _artist_matches_catalog(value, variant.artists) for value in seller.artists
+    )
     artist_conflict = bool(seller.artists and not artist_in_specifics)
     family = bool(
         album
@@ -67,10 +98,10 @@ def review_target_listing(listing: Listing, variant: Variant) -> TargetReview:
     clues = ["artist_and_album"]
     verify = ["catalog_alternatives_not_checked"]
     # Remove the album and artist before interpreting color words in a title.
-    remainder = title.replace(album, " ", 1)
+    remainder = title.replace(album, " ")
     for artist in artist_names:
         if artist and artist not in ("various", "various artists"):
-            remainder = remainder.replace(artist, " ", 1)
+            remainder = remainder.replace(artist, " ")
     title_colors = _palette([remainder])
     # Structured color is more useful than title copy. When it is present, a
     # partial pair remains uncertain; an explicit different color conflicts.
@@ -135,6 +166,12 @@ def review_target_with_alternatives(
         and row.catalog_variant_id != target.catalog_variant_id
         and any(str(fmt.get("name", "")).casefold() == "vinyl" for fmt in row.formats)
     }
+    if review.status in ("possible_pressing", "family_review") and any(
+        _more_specific_album_claim(listing, target, row) for row in unique.values()
+    ):
+        review = TargetReview(
+            status="conflicting", clues=["artist_and_album"], verify=["competing_album_title_claim"]
+        )
     # The sparse family check handles normalized artist/title spelling and also keeps
     # plausible candidates whose master grouping is absent or differs in the catalog.
     considered = [review_target_listing(listing, row) for row in unique.values()]
