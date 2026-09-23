@@ -377,8 +377,28 @@ class DiscoveryStore:
                         outbox.c.status.in_(("pending", "sending")),
                     )
                 )
-            conn.execute(update(work).where(key).values(**values))
-        if updated_state is not None:
+            if status == "suppressed":
+                # A tombstone rejection must also erase the newly rediscovered identity.
+                # Retain only an anonymous event count, never an item/seller association.
+                conn.execute(delete(work).where(key))
+                updated_state = (
+                    deepcopy(state)
+                    if state is not None
+                    else dict(
+                        conn.execute(
+                            select(progress.c.data).where(progress.c.watch_id == claim["id"])
+                        ).scalar_one()
+                    )
+                )
+                updated_state["suppression_events"] = updated_state.get("suppression_events", 0) + 1
+                conn.execute(
+                    update(progress)
+                    .where(progress.c.watch_id == claim["id"])
+                    .values(data=updated_state)
+                )
+            else:
+                conn.execute(update(work).where(key).values(**values))
+        if updated_state is not None and state is not None:
             state.update(updated_state)
         return status, added
 
@@ -421,7 +441,9 @@ class DiscoveryStore:
                         "status": p["status"] if p else "not_started",
                         "pages": p["pages"] if p else 0,
                         "reported_total": p["last_total"] if p else None,
-                        "reason": p.get("reason") if p else None,
+                        "reason": p.get("reason")
+                        if p and p["status"] != "search_exhausted"
+                        else None,
                         "next_offset": p["frontier"][0]["offset"] if p and p["frontier"] else None,
                     }
                     for i, p in enumerate(passes)
@@ -442,6 +464,7 @@ class DiscoveryStore:
             "unique_retrieved": sum(counts.values()),
             "pending": pending,
             "outcomes": counts,
+            "suppression_events": state.get("suppression_events", 0),
             "watermarks": [q["watermark"] for q in state["queries"]],
             "last_activity_at": state["last_activity_at"],
             "last_reconciliation_at": state.get("last_reconciliation_at"),

@@ -81,7 +81,8 @@ Push-service acceptance is distinct from owner-observed display.
 The existing provider-use decision remains open and unchanged. This implementation adds no
 real fixtures, public item evaluations or longer display permission. Pending records contain
 item identity, dates, hashes and disposition, not raw seller content. Hydrated work has listing
-foreign keys and seller-deletion cascades; rehydration still checks stable seller tombstones.
+foreign keys and seller-deletion cascades; rehydration still checks stable seller tombstones. A rejected reimport erases its new queue
+identity and keeps only an anonymous suppression-event counter (not a unique-item count).
 The scanner updates current snapshots without adding full observation snapshots on every
 refresh. A 30,000-reference per-watch ceiling bounds new ledger growth and pauses before
 committing an over-capacity page; it is an explicit storage constraint, not claimed coverage.
@@ -186,3 +187,11 @@ new items, changed page counts, and unrelated consumers. Rejected candidates ins
 at 24 hours, reducing that estimate. The 24-hour reconciliation proposal is retained: its
 observed search cost is 16 calls/pass including replay, approximately 0.3% of the observed
 5,000-call daily pool. This is not a measured full-day burn rate or a freshness guarantee.
+
+
+Quota-only run #5 read the application's official daily pool at 22:11:50 UTC: 5,000 limit,
+4,140 remaining, 86,400-second window. Its separate bulk pool is not treated as usable shared
+capacity. Deployment #18 subsequently advanced evaluation without repeating exhausted search
+pages: zero searches, 29 detail calls and 37 additional evaluations (fresh cache reuse accounts
+for the difference). One watch completed evaluation of all 21 retained references; 333 remained
+pending across the other two. These are deployment invocations, not scheduled-run evidence.
