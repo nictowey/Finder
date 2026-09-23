@@ -186,7 +186,36 @@ class WatchStore:
             )
             return {**dict(row), "lease_token": token}
 
-    def finish(self, claim, reviews, *, catalog=None, summary=None, success=True, now=None):
+    def recheck_candidate(self, claim, *, excluded: set[str]) -> str | None:
+        """Choose the oldest possible lead not rediscovered by this scan."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(inbox.c.marketplace_item_id)
+                .where(
+                    inbox.c.watch_id == claim["id"],
+                    inbox.c.marketplace == "ebay",
+                    inbox.c.dismissed.is_(False),
+                    inbox.c.data["status"].as_string() == "possible_pressing",
+                    inbox.c.data["availability"]
+                    .as_string()
+                    .is_distinct_from("unavailable_on_recheck"),
+                )
+                .order_by(inbox.c.last_seen_at, inbox.c.marketplace_item_id)
+                .limit(100)
+            ).scalars()
+            return next((item_id for item_id in rows if item_id not in excluded), None)
+
+    def finish(
+        self,
+        claim,
+        reviews,
+        *,
+        catalog=None,
+        summary=None,
+        success=True,
+        unavailable_item_ids=(),
+        now=None,
+    ):
         now = now or datetime.now(UTC)
         stamp = now.isoformat()
         with self.engine.begin() as conn:
@@ -266,6 +295,43 @@ class WatchStore:
                             outbox.c.status == "pending",
                         )
                     )
+            if success:
+                for item_id in unavailable_item_ids:
+                    key = (
+                        (inbox.c.watch_id == claim["id"])
+                        & (inbox.c.marketplace == "ebay")
+                        & (inbox.c.marketplace_item_id == item_id)
+                    )
+                    previous = conn.execute(select(inbox.c.data).where(key)).scalar()
+                    if previous is None:
+                        continue
+                    conn.execute(
+                        update(inbox)
+                        .where(key)
+                        .values(
+                            data={
+                                **previous,
+                                "availability": "unavailable_on_recheck",
+                                "notify": False,
+                            },
+                            last_seen_at=stamp,
+                        )
+                    )
+                    conn.execute(
+                        delete(outbox).where(
+                            outbox.c.watch_id == claim["id"],
+                            outbox.c.marketplace == "ebay",
+                            outbox.c.marketplace_item_id == item_id,
+                            outbox.c.status == "pending",
+                        )
+                    )
+            if (
+                not success
+                and isinstance(row["summary"], dict)
+                and row["summary"].get("inventory") is not None
+                and not (summary or {}).get("inventory")
+            ):
+                summary = {**(summary or {}), "inventory": row["summary"]["inventory"]}
             values = dict(
                 lease_token=None,
                 lease_until=None,

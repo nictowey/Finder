@@ -13,12 +13,13 @@ class EbayOptions(BaseModel):
     sort: Literal["newlyListed", "endingSoonest", "price", "-price", "bestMatch"] = "newlyListed"
     page_size: int = Field(default=50, ge=1, le=200)
     max_pages: int = Field(default=2, ge=1, le=10000)
+    offset: int = Field(default=0, ge=0, le=9999)
     fetch_details: bool = True
     aspect_filter: str | None = None
 
     @model_validator(mode="after")
     def check_bounds(self) -> "EbayOptions":
-        if self.page_size * self.max_pages > 10000:
+        if self.offset + self.page_size * self.max_pages > 10000:
             raise ValueError("eBay search exposes at most 10,000 results per query")
         if any(not category.isdigit() for category in self.category_ids):
             raise ValueError("Category IDs must be numeric strings")

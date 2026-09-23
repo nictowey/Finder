@@ -33,10 +33,27 @@ session, its expiry, verified email, and owner allow-list. No external auth SDK 
 
 ## Scan and notification semantics
 
-- At most three watches, three searches per watch, and ten items per search. Details dedupe
-  across queries. At full use this is at most 4,752 Browse requests per day, excluding other
-  operator workflows and retries. Actual quotas must be checked before increasing capacity.
-- Initial discovery uses relevance; subsequent scans use newest first. Page caps are visible.
+- At most three watches, three searches per watch, and ten items per search on the first
+  relevance scan. Refreshes fetch eight newest items per query. Every other refresh also samples
+  six older best-match results for one rotating query, through offset 30, then restarts. On the
+  alternate refresh, one previously surfaced possible pressing that was not rediscovered gets
+  a direct item-detail check. Results and details deduplicate across searches.
+- At three watches and 48 refreshes/day, the nominal worst case is 4,464 Browse requests/day:
+  `3 * 48 * (3 * (1 + 8) + ((1 + 6) + 1) / 2)`. The initial scans, retries and manual
+  workflows add calls. [eBay publishes a default 5,000 calls/day](https://developer.ebay.com/develop/get-started/api-call-limits)
+  for Browse methods other than `getItems`; the application-specific remaining quota has not
+  been checked. Never raise watch
+  capacity or search depth on the strength of the nominal calculation alone.
+- Each scan records query counts, returned items, provider total, page caps, partial details,
+  request attempts and retries in the private watch summary. The inventory cursor includes a
+  plan signature and watch revision; after a failed scan it retries the same page. A page offset
+  is not a stable snapshot: new or removed offers can shift positions, and the 36-result sample
+  per query is far from a complete search. Caps and overall unmeasured coverage are shown in
+  the UI.
+- A known lead can be refreshed directly even after it drops out of the newest results and the
+  older sample. An item that returns 404 or has ended is moved to “Unavailable on recheck” and
+  pending alerts are removed. This does not establish a sale. Other old inbox rows still age out
+  of the six-hour dashboard window if they cannot be revisited within the request budget.
 - Policy `private-target-review-v2` retrieves up to five catalog alternatives per watch using
   one search and at most five additional release requests, reused across every listing in that
   scan. The selected release still costs its existing one request. A full three-watch scan

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
@@ -14,6 +15,13 @@ from finder.service import ScanSummary, run_scan
 
 if TYPE_CHECKING:
     from finder.adapters.ebay.adapter import EbayAdapter
+
+
+# Inventory pages and one known-lead recheck alternate. At three watches and 48 scans/day,
+# the non-retry Browse ceiling is 3 * 48 * (3 * (1 + 8) + ((1 + 6) + 1) / 2) = 4,464.
+REFRESH_PAGE_SIZE = 8
+INVENTORY_PAGE_SIZE = 6
+INVENTORY_MAX_OFFSET = 30  # Six pages per query; never interpret this as complete inventory.
 
 
 class EbaySearchTarget(BaseModel):
@@ -36,9 +44,11 @@ class EbaySearchTarget(BaseModel):
 
 
 def plan_target_search(
-    target: EbaySearchTarget, *, mode: Literal["initial", "refresh"]
+    target: EbaySearchTarget, *, mode: Literal["initial", "refresh"], page_size: int = 10
 ) -> list[Monitor]:
-    """At most three searches and ten detailed items per search."""
+    """At most three newest/relevance searches with a bounded result page."""
+    if not 1 <= page_size <= 10:
+        raise ValueError("Target search page size must be between 1 and 10")
     return [
         Monitor(
             id=f"{target.id}-v{target.plan_version}-{index}",
@@ -51,13 +61,98 @@ def plan_target_search(
                 "category_ids": [target.category_id],
                 "buying_options": ["FIXED_PRICE", "AUCTION"],
                 "sort": "bestMatch" if mode == "initial" else "newlyListed",
-                "page_size": 10,
+                "page_size": page_size,
                 "max_pages": 1,
                 "fetch_details": True,
             },
         )
         for index, query in enumerate(target.queries, 1)
     ]
+
+
+@dataclass(frozen=True)
+class InventoryPass:
+    query_index: int
+    offset: int
+
+
+@dataclass(frozen=True)
+class InventoryCursor:
+    """A private, resumable offset sample. Offset pages are not a stable API snapshot."""
+
+    signature: str
+    revision: int
+    next_index: int
+    offsets: tuple[int, ...]
+    due: bool = True
+
+    @staticmethod
+    def load(target: EbaySearchTarget, revision: int, summary: dict | None) -> InventoryCursor:
+        signature = hashlib.sha256(
+            repr((target.plan_version, target.catalog_variant_id, target.queries)).encode()
+        ).hexdigest()[:16]
+        default = InventoryCursor(signature, revision, 0, (0,) * len(target.queries))
+        saved = summary.get("inventory") if isinstance(summary, dict) else None
+        if (
+            not isinstance(saved, dict)
+            or saved.get("version") != 1
+            or saved.get("signature") != signature
+        ):
+            return default
+        offsets, index, due = (
+            saved.get("offsets"),
+            saved.get("next_index"),
+            saved.get("due"),
+        )
+        if (
+            type(saved.get("revision")) is not int
+            or saved["revision"] != revision
+            or type(index) is not int
+            or not 0 <= index < len(target.queries)
+            or type(due) is not bool
+            or not isinstance(offsets, list)
+            or len(offsets) != len(target.queries)
+            or any(
+                type(offset) is not int
+                or offset < 0
+                or offset > INVENTORY_MAX_OFFSET
+                or offset % INVENTORY_PAGE_SIZE
+                for offset in offsets
+            )
+        ):
+            return default
+        return InventoryCursor(signature, revision, index, tuple(offsets), due)
+
+    def pass_for_refresh(self) -> InventoryPass | None:
+        return InventoryPass(self.next_index, self.offsets[self.next_index]) if self.due else None
+
+    def after_success(self, inventory: ScanSummary | None) -> InventoryCursor:
+        if inventory is None:
+            return InventoryCursor(self.signature, self.revision, self.next_index, self.offsets)
+        offsets = list(self.offsets)
+        current = offsets[self.next_index]
+        offsets[self.next_index] = (
+            current + INVENTORY_PAGE_SIZE
+            if inventory.limit_reached and current < INVENTORY_MAX_OFFSET
+            else 0
+        )
+        return InventoryCursor(
+            self.signature,
+            self.revision,
+            (self.next_index + 1) % len(offsets),
+            tuple(offsets),
+            False,
+        )
+
+    def as_summary(self) -> dict:
+        return {
+            "version": 1,
+            "signature": self.signature,
+            "revision": self.revision,
+            "next_index": self.next_index,
+            "offsets": list(self.offsets),
+            "due": self.due,
+        }
 
 
 class _SharedSearch:
@@ -80,6 +175,8 @@ class _SharedSearch:
 @dataclass
 class TargetScanRun:
     summaries: list[ScanSummary] = field(default_factory=list)
+    expected_queries: int = 0
+    inventory_summary: ScanSummary | None = None
     # Ephemeral only: never serialize item identities to public workflow output.
     discovered_item_ids: set[str] = field(default_factory=set)
 
@@ -98,13 +195,43 @@ def run_target_scan(
     repository: ListingRepository,
     *,
     mode: Literal["initial", "refresh"],
+    refresh_page_size: int = 10,
+    inventory: InventoryPass | None = None,
 ) -> TargetScanRun:
-    """Stop after a failed query; dedupe identity and detail requests across queries."""
+    """Stop on failure; share identity/detail deduplication across newest and inventory."""
+    if inventory is not None and (
+        mode != "refresh"
+        or not 0 <= inventory.query_index < len(target.queries)
+        or inventory.offset % INVENTORY_PAGE_SIZE
+        or not 0 <= inventory.offset <= INVENTORY_MAX_OFFSET
+    ):
+        raise ValueError("Invalid inventory page for this target")
+    monitors = plan_target_search(
+        target, mode=mode, page_size=refresh_page_size if mode == "refresh" else 10
+    )
+    if inventory is not None:
+        template = monitors[inventory.query_index]
+        monitors.append(
+            template.model_copy(
+                update={
+                    "id": f"{template.id}-inventory-{inventory.offset}",
+                    "description": "Bounded, offset-based inventory reconciliation",
+                    "source_options": {
+                        **template.source_options,
+                        "sort": "bestMatch",
+                        "page_size": INVENTORY_PAGE_SIZE,
+                        "offset": inventory.offset,
+                    },
+                }
+            )
+        )
     shared = _SharedSearch(adapter)
-    results = TargetScanRun(discovered_item_ids=shared.observed)
-    for monitor in plan_target_search(target, mode=mode):
+    results = TargetScanRun(discovered_item_ids=shared.observed, expected_queries=len(monitors))
+    for index, monitor in enumerate(monitors):
         result = run_scan(monitor, shared, repository)
         results.summaries.append(result)
+        if inventory is not None and index == len(monitors) - 1:
+            results.inventory_summary = result
         if result.status != "completed":
             break
     return results

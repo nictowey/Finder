@@ -5,8 +5,10 @@
 The owner's September 23 direction is to prioritize correct pressing identification, search
 coverage and trustworthy live results. Follow [the execution and acceptance plan](docs/identification-roadmap.md)
 for delivery order, explicit sample denominators, manual review inputs and release checks.
-The first implementation adds bounded alternative-pressing comparison to the scheduled watch;
-next are coverage accounting, resumable inventory discovery and a private adjudication workflow.
+The scheduled watch compares bounded alternative pressings and now records query coverage while
+rotating a small older-inventory sample and refreshing known leads. These are recovery mechanics,
+not measured search recall. Next are a permitted independent missed-listing audit, actual quota
+accounting and a private adjudication workflow.
 The roadmap below retains the architecture and provider decisions; where sequencing differs,
 the active execution plan takes precedence. UI completion is not an accuracy milestone.
 
@@ -46,7 +48,8 @@ record will have enough comparable sales. A user should be able to answer four q
 
 **Working:** eBay Production OAuth/Browse ingestion, bounded scans, normalized listing snapshots
 and observation history in the shared Neon database, deletion-notification handling, Discogs
-catalog search, and an evidence-bearing provisional match decision. The first ten-item Production
+catalog search, an evidence-bearing provisional match decision, and a bounded rotating inventory
+check for the private watchlist. The first ten-item Production
 scan and a repeat passed. `finder listings` and `finder match` support manual inspection.
 
 **Unproven:** coverage of relevant new listings over time, real-world pressing-match precision,

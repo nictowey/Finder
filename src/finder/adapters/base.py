@@ -9,6 +9,8 @@ from finder.domain import Listing, Monitor
 class AdapterStats:
     fetched: int = 0
     limit_reached: bool = False
+    pages_fetched: int = 0
+    reported_total: int | None = None
 
 
 @dataclass(frozen=True)

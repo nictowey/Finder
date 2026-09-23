@@ -14,6 +14,10 @@ the owner has saved the pink/green Don't Be Dumb and numbered DS2 pressing targe
 [private watchlist setup and limits](docs/private-watchlist.md). The pilot supports three watches
 and checks about every 30 minutes, subject to scheduler delay. Discogs marketplace listings,
 public signup, payments, and additional collectible categories remain future work.
+Refreshes search eight newest items per query, alternate a small older-inventory sample with a
+direct check of one known possible pressing, and show when search pages are capped. The inbox
+separates unavailable rechecks from active leads. Search coverage and pressing accuracy remain
+unmeasured; see the [scan and request limits](docs/private-watchlist.md).
 
 See [ROADMAP.md](ROADMAP.md) for the accuracy-gated development plan, pressing-versus-copy
 identity model, provider constraints, and criteria that must be met before valuation, alerts,

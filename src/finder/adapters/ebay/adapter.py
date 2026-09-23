@@ -29,6 +29,53 @@ class EbayAdapter:
         self.now = now
         self.stats = AdapterStats()
 
+    def refresh_known(
+        self, item_id: str, *, source_metadata: dict | None = None
+    ) -> ListingObservation:
+        """Recheck one discovered item without depending on its current search rank."""
+        settings = self.client.settings
+        headers = {"X-EBAY-C-MARKETPLACE-ID": "EBAY_US"}
+        if settings.delivery_country and settings.delivery_postal_code:
+            location = quote(
+                f"country={settings.delivery_country},zip={settings.delivery_postal_code}", safe=""
+            )
+            headers["X-EBAY-C-ENDUSERCTX"] = f"contextualLocation={location}"
+        try:
+            raw = self.client.get(
+                f"/buy/browse/v1/item/{quote(item_id, safe='')}",
+                headers=headers,
+                params={"fieldgroups": "ADDITIONAL_SELLER_DETAILS"}
+                if settings.ebay_environment == "production"
+                else None,
+            )
+        except ItemUnavailableError:
+            return ListingObservation(skip_reason="item_unavailable")
+        if raw.get("itemId") != item_id:
+            raise ResponseError("eBay detail response has mismatched or missing ID.")
+        try:
+            listing = normalize_listing(
+                raw,
+                self.now(),
+                details_loaded=True,
+                source_metadata={
+                    **{
+                        key: value
+                        for key, value in (source_metadata or {}).items()
+                        if key in ("monitor_id", "query", "search_marketplace_id")
+                    },
+                    "environment": settings.ebay_environment,
+                    "delivery_country": settings.delivery_country,
+                    "delivery_postal_code": settings.delivery_postal_code,
+                },
+            )
+        except InvalidListingError:
+            return ListingObservation(skip_reason="invalid_listing")
+        if listing.listing_ends_at and listing.listing_ends_at <= self.now():
+            return ListingObservation(skip_reason="listing_ended")
+        if settings.ebay_environment == "production" and not listing.seller_id:
+            return ListingObservation(skip_reason="missing_seller_id")
+        return ListingObservation(listing=listing)
+
     def search(
         self, monitor: Monitor, *, seen_item_ids: set[str] | None = None
     ) -> Iterator[ListingObservation]:
@@ -59,7 +106,7 @@ class EbayAdapter:
             params["aspect_filter"] = options.aspect_filter
         seen = seen_item_ids if seen_item_ids is not None else set()
         for page in range(options.max_pages):
-            offset = page * options.page_size
+            offset = options.offset + page * options.page_size
             payload = self.client.get(
                 "/buy/browse/v1/item_summary/search",
                 headers=headers,
@@ -74,6 +121,8 @@ class EbayAdapter:
             if not items and total > offset:
                 raise ResponseError("eBay returned an empty page before the reported end.")
             self.stats.fetched += len(items)
+            self.stats.pages_fetched += 1
+            self.stats.reported_total = total
             log.info("ebay_page_fetched", extra={"fields": {"page": page + 1, "items": len(items)}})
             for raw in items:
                 if not isinstance(raw, dict) or not isinstance(raw.get("itemId"), str):

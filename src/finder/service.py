@@ -21,6 +21,8 @@ class ScanSummary:
     total_stored: int | None = None
     partial_details: int = 0
     limit_reached: bool = False
+    pages_fetched: int = 0
+    reported_total: int | None = None
     unprocessed: int = 0
     status: str = "completed"
     skip_reasons: dict[str, int] = field(default_factory=dict)
@@ -71,6 +73,8 @@ def run_scan(
         log.error("scan_failed", extra={"fields": {"error_type": type(exc).__name__}})
     summary.fetched = adapter.stats.fetched
     summary.limit_reached = adapter.stats.limit_reached
+    summary.pages_fetched = adapter.stats.pages_fetched
+    summary.reported_total = adapter.stats.reported_total
     summary.unprocessed = (
         summary.fetched
         - summary.new
