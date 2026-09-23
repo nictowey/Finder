@@ -24,6 +24,14 @@ BATCH_SIZE = 4
 PAGE_SIZE = 5
 MAX_TARGETS = 12
 STATUSES = ("possible_pressing", "family_review", "conflicting", "unrelated")
+CONFLICT_REASONS = (
+    "artist_conflict",
+    "barcode",
+    "catalog_number",
+    "color_conflict",
+    "competing_album_title_claim",
+    "non_vinyl_claim",
+)
 
 
 def parse_private_ids(raw: str) -> list[int]:
@@ -57,6 +65,8 @@ def probe_batch(
             monitors = plan_target_search(target, mode="initial", page_size=PAGE_SIZE)
             seen: set[str] = set()
             counts: Counter[str] = Counter()
+            conflicts: Counter[str] = Counter()
+            possible_with_catalog_uncertainty = 0
             capped = 0
             for monitor in monitors:
                 for observation in adapter.search(monitor, seen_item_ids=seen):
@@ -69,6 +79,14 @@ def probe_batch(
                         search_incomplete=alternatives.search_incomplete,
                     )
                     counts[review.status] += 1
+                    if review.status == "conflicting":
+                        conflicts.update(
+                            reason for reason in review.verify if reason in CONFLICT_REASONS
+                        )
+                    if review.status == "possible_pressing" and (
+                        alternatives.search_incomplete or review.alternatives_not_ruled_out
+                    ):
+                        possible_with_catalog_uncertainty += 1
                 capped += adapter.stats.limit_reached
             row.update(
                 {
@@ -76,6 +94,12 @@ def probe_batch(
                     "queries_capped": capped,
                     "distinct_listings": sum(counts.values()),
                     "review_counts": {status: counts[status] for status in STATUSES},
+                    "conflict_reasons": {
+                        reason: conflicts[reason]
+                        for reason in CONFLICT_REASONS
+                        if conflicts[reason]
+                    },
+                    "possible_with_catalog_uncertainty": possible_with_catalog_uncertainty,
                     "catalog_alternatives_checked": len(alternatives.variants),
                     "catalog_alternative_search_incomplete": alternatives.search_incomplete,
                 }

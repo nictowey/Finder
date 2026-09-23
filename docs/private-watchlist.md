@@ -61,11 +61,12 @@ session, its expiry, verified email, and owner allow-list. No external auth SDK 
   older sample. An item that returns 404 or has ended is moved to “Unavailable on recheck” and
   pending alerts are removed. This does not establish a sale. Other old inbox rows still age out
   of the six-hour dashboard window if they cannot be revisited within the request budget.
-- Policy `private-target-review-v2` retrieves up to five catalog alternatives per watch using
+- Policy `private-target-review-v3` retrieves up to five catalog alternatives per watch using
   one search and at most five additional release requests, reused across every listing in that
   scan. The selected release still costs its existing one request. A full three-watch scan
   therefore uses at most 21 catalog requests before retries; it does not enumerate a complete
-  release family. Failed alternative retrieval is shown and withholds notifications.
+  release family. Failed or explicitly incomplete alternative retrieval is shown and
+  withholds notifications, while the lead remains in the review inbox.
 - Shared or missing evidence may leave another retrieved pressing compatible. Those leads stay
   visible in Possible pressings with a competing-fit count, but do not notify automatically.
   Zero competing fits within a bounded sample does not prove unique identity.
@@ -73,8 +74,8 @@ session, its expiry, verified email, and owner allow-list. No external auth SDK 
 - Inbox identity is watch + marketplace + listing. Dismissal survives rescans and edits.
 - One notification event per listing per watch. Raising a ceiling can notify a previously
   ineligible listing; an already alerted listing does not alert again after editing.
-- Possible pressing leads with a completed alternatives check and no unresolved retrieved
-  competitor can notify without a ceiling. Ceiling notifications additionally
+- Possible pressing leads with a completed, non-truncated alternatives check and no
+  unresolved retrieved competitor can notify without a ceiling. Ceiling notifications additionally
   require known same-currency fixed price and shipping, matching requested destination context,
   and an accepted condition when specified. All delivery totals need checkout verification.
 - Unknown shipping, auction prices, failed detail enrichment, stale listings, explicit conflicts,

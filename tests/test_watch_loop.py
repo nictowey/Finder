@@ -130,18 +130,35 @@ def test_sparse_lead_can_notify_but_unknown_shipping_and_condition_cannot(
         }
     )
     watch = SavedWatch(release_id=123)
-    result = assess_review(watch, row, variant, now=observed_at, alternatives=[])
+    result = assess_review(
+        watch, row, variant, now=observed_at, alternatives=[], search_incomplete=False
+    )
     assert result["notify"]
     assert result["status"] == "possible_pressing"
+    incomplete = assess_review(
+        watch, row, variant, now=observed_at, alternatives=[], search_incomplete=True
+    )
+    assert incomplete["status"] == "possible_pressing"
+    assert "catalog_alternative_search_incomplete" in incomplete["verify"]
+    assert not incomplete["notify"]
     budget = watch.model_copy(
         update={"maximum_subtotal": 100, "country": "US", "postal_code": "12345"}
     )
     row = row.model_copy(update={"shipping_cost": None})
-    assert not assess_review(budget, row, variant, now=observed_at, alternatives=[])["notify"]
-    condition = watch.model_copy(update={"condition_ids": ["99999"]})
-    assert not assess_review(condition, row, variant, now=observed_at, alternatives=[])["notify"]
     assert not assess_review(
-        watch, row, variant, now=observed_at + timedelta(hours=2), alternatives=[]
+        budget, row, variant, now=observed_at, alternatives=[], search_incomplete=False
+    )["notify"]
+    condition = watch.model_copy(update={"condition_ids": ["99999"]})
+    assert not assess_review(
+        condition, row, variant, now=observed_at, alternatives=[], search_incomplete=False
+    )["notify"]
+    assert not assess_review(
+        watch,
+        row,
+        variant,
+        now=observed_at + timedelta(hours=2),
+        alternatives=[],
+        search_incomplete=False,
     )["notify"]
 
 
@@ -166,7 +183,7 @@ def test_ambiguous_and_unchecked_leads_stay_visible_without_alerts(
     assert ambiguous["status"] == "possible_pressing" and not ambiguous["notify"]
     assert "other_pressings_not_ruled_out" in ambiguous["verify"]
     assert ambiguous["alternatives_not_ruled_out"] == 1
-    assert ambiguous["policy"] == "private-target-review-v2"
+    assert ambiguous["policy"] == "private-target-review-v3"
 
 
 def test_pilot_capacity(store):
@@ -296,7 +313,7 @@ def test_first_refresh_recovers_prior_lead_outside_newest_page(
     assert searches == [("newlyListed", "0"), (None, "0")]
     with repository.engine.connect() as conn:
         record = conn.execute(select(inbox.c.data, inbox.c.last_seen_at)).one()
-        assert record.data["policy"] == "private-target-review-v2"
+        assert record.data["policy"] == "private-target-review-v3"
         assert record.data["alternatives_checked"] == 0
         assert datetime.fromisoformat(record.last_seen_at) > started
         summary = conn.execute(select(watches.c.summary)).scalar_one()
