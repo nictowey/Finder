@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -47,6 +48,10 @@ def _parser() -> argparse.ArgumentParser:
         target_command.add_argument("--json", action="store_true")
         if command == "scan-target":
             target_command.add_argument("--env-file", type=Path, default=Path(".env"))
+            target_command.add_argument(
+                "--probe-legacy-id",
+                help="Privately report whether this legacy eBay item appeared in this run",
+            )
 
     catalog = commands.add_parser(
         "catalog-search", help="Search Discogs catalog releases and store normalized variants"
@@ -144,6 +149,9 @@ def _target(args: argparse.Namespace) -> int:
             print(json.dumps(payload, indent=2))
         return 0
 
+    if args.probe_legacy_id is not None and not re.fullmatch(r"[0-9]{9,20}", args.probe_legacy_id):
+        raise ConfigurationError("The probe legacy item ID must contain 9–20 digits.")
+
     settings = load_settings(args.env_file)
     configure_logging(settings.log_level)
     database_url = settings.database_url.get_secret_value()
@@ -159,14 +167,16 @@ def _target(args: argparse.Namespace) -> int:
     repository = SqlAlchemyRepository.from_url(database_url)
     try:
         with EbayClient(settings) as client:
-            summaries = run_target_scan(target, EbayAdapter(client), repository, mode=args.mode)
+            run = run_target_scan(target, EbayAdapter(client), repository, mode=args.mode)
     finally:
         repository.close()
-    payload["results"] = [asdict(summary) for summary in summaries]
-    payload["complete"] = len(summaries) == len(monitors) and all(
-        summary.status == "completed" for summary in summaries
+    payload["results"] = [asdict(summary) for summary in run.summaries]
+    payload["complete"] = len(run.summaries) == len(monitors) and all(
+        summary.status == "completed" for summary in run.summaries
     )
-    payload["coverage_truncated"] = any(summary.limit_reached for summary in summaries)
+    payload["coverage_truncated"] = any(summary.limit_reached for summary in run.summaries)
+    if args.probe_legacy_id is not None:
+        payload["probe_found_in_this_run"] = run.found_legacy_item(args.probe_legacy_id)
     if args.json:
         print(json.dumps(payload))
     else:

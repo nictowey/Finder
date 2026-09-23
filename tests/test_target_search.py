@@ -75,13 +75,15 @@ def test_two_queries_dedupe_detail_and_persist_distinct_items(
         id="ds2", catalog_variant_id=7609839, queries=["Future DS2", "Future Dirty Sprite 2"]
     )
     with EbayClient(settings, transport=httpx.MockTransport(handler)) as client:
-        results = run_target_scan(
+        run = run_target_scan(
             target, EbayAdapter(client, now=lambda: observed_at), repository, mode="initial"
         )
     assert searches == target.queries
     assert detail_calls == [item_a["itemId"], item_b["itemId"]]
-    assert [(result.new, result.skipped_invalid) for result in results] == [(1, 0), (1, 1)]
-    assert results[1].skip_reasons == {"duplicate_in_scan": 1}
+    assert [(result.new, result.skipped_invalid) for result in run.summaries] == [(1, 0), (1, 1)]
+    assert run.summaries[1].skip_reasons == {"duplicate_in_scan": 1}
+    assert run.found_legacy_item(item_a["itemId"].split("|")[1])
+    assert not run.found_legacy_item("406542550752")
     assert repository.count() == 2
 
 
@@ -93,9 +95,10 @@ def test_target_scan_stops_after_failed_query(settings, repository):
 
     target = EbaySearchTarget(id="ds2", catalog_variant_id=7609839, queries=["one", "two"])
     with EbayClient(settings, transport=httpx.MockTransport(handler)) as client:
-        results = run_target_scan(target, EbayAdapter(client), repository, mode="refresh")
-    assert len(results) == 1
-    assert results[0].status == "failed"
+        run = run_target_scan(target, EbayAdapter(client), repository, mode="refresh")
+    assert len(run.summaries) == 1
+    assert run.summaries[0].status == "failed"
+    assert not run.found_legacy_item("406542550752")
 
 
 def test_target_plan_cli_needs_no_credentials(monkeypatch, capsys):
@@ -126,13 +129,70 @@ def test_scan_target_cli_reports_bounded_coverage(tmp_path, monkeypatch, capsys,
         "EbayClient",
         lambda settings: EbayClient(settings, transport=httpx.MockTransport(handler)),
     )
-    assert cli.main(["scan-target", "--target", "future-ds2-7609839", "--json"]) == 0
+    legacy_id = item["itemId"].split("|")[1]
+    assert (
+        cli.main(
+            [
+                "scan-target",
+                "--target",
+                "future-ds2-7609839",
+                "--probe-legacy-id",
+                legacy_id,
+                "--json",
+            ]
+        )
+        == 0
+    )
     result = json.loads(capsys.readouterr().out)
     assert result["complete"] is True
     assert result["coverage_truncated"] is True
     assert result["results"][0]["new"] == 1
     assert result["results"][1]["skip_reasons"] == {"duplicate_in_scan": 1}
     assert result["results"][1]["total_stored"] == 1
+    assert result["probe_found_in_this_run"] is True
+    assert legacy_id not in json.dumps(result)
+
+
+def test_probe_reports_current_run_not_an_earlier_stored_listing(
+    tmp_path, monkeypatch, capsys, search_payload
+):
+    monkeypatch.setenv("EBAY_ENVIRONMENT", "sandbox")
+    monkeypatch.setenv("EBAY_SANDBOX_CLIENT_ID", "fake-client")
+    monkeypatch.setenv("EBAY_SANDBOX_CLIENT_SECRET", "fake-secret")
+    monkeypatch.setenv("FINDER_DATABASE_URL", f"sqlite:///{tmp_path / 'probe.db'}")
+    item = search_payload["itemSummaries"][0]
+    legacy_id = item["itemId"].split("|")[1]
+    search_calls = 0
+
+    def handler(request):
+        nonlocal search_calls
+        if request.method == "POST":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        if request.url.path.endswith("/search"):
+            search_calls += 1
+            items = [item] if search_calls <= 2 else []
+            return httpx.Response(200, json={"total": len(items), "itemSummaries": items})
+        return httpx.Response(200, json={"itemId": item["itemId"]})
+
+    monkeypatch.setattr(
+        cli,
+        "EbayClient",
+        lambda settings: EbayClient(settings, transport=httpx.MockTransport(handler)),
+    )
+    command = [
+        "scan-target",
+        "--target",
+        "future-ds2-7609839",
+        "--probe-legacy-id",
+        legacy_id,
+        "--json",
+    ]
+    assert cli.main(command) == 0
+    assert json.loads(capsys.readouterr().out)["probe_found_in_this_run"] is True
+    assert cli.main(command) == 0
+    second = json.loads(capsys.readouterr().out)
+    assert second["probe_found_in_this_run"] is False
+    assert second["results"][1]["total_stored"] == 1
 
 
 def test_target_scan_production_requires_shared_db(tmp_path, monkeypatch, capsys):
