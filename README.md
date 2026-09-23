@@ -7,6 +7,8 @@ The current foundation has two connected parts: a local Python CLI ingests activ
 See [ROADMAP.md](ROADMAP.md) for the accuracy-gated development plan, pressing-versus-copy
 identity model, provider constraints, and criteria that must be met before valuation, alerts,
 hosting, or expansion into other collectible categories.
+The current measurement, denominators, and open gaps are recorded in
+[`docs/vinyl-measurement-2026-09-23.md`](docs/vinyl-measurement-2026-09-23.md).
 
 The internal `finder.watchlist` module has a versioned buyer target and pure triage function.
 It accepts a catalog family or exact release, buyer-set pre-tax delivered subtotal ceiling,

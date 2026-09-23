@@ -24,8 +24,10 @@ For each date, check:
 | UTC date | Run URL | Fetched / new / updated | Invalid / suppressed / unprocessed | Unknown shipping / fixed delivered subtotal known / auctions | Detail failures / Browse requests / retries | Outcome or issue |
 | --- | --- | --- | --- | --- | --- | --- |
 | 2026-09-22 | [Successful repeat scan #4](https://github.com/nictowey/Finder/actions/runs/35786205343) | 10 / 0 / 10 | 0 / 0 / 0 | 0 / 10 / 0 | 0 / not instrumented / not instrumented | Passed with no persistence drift; bounded limit reached. Earlier scans on this date count as the same day. |
+| 2026-09-23 | [Production bounded scan #5](https://github.com/nictowey/Finder/actions/runs/35814465415) | 10 / 10 / 0 | 0 / 0 / 0 | 0 / 10 / 0 | 0 / 11 / 0 | Passed; all ten had price, shipping, condition and item specifics; no persistence or observation drift. Destination context `none`; search limit reached. |
 
-The September 22 report predates the new request counters and destination-context field.
+Two distinct UTC dates have now passed; five dates remain. The September 22 report predates the
+new request counters and destination-context field.
 Those values are unknown for this baseline; do not infer a destination from shipping coverage.
 
 Do not mark the seven-day gate complete until seven distinct dates have verified results,
