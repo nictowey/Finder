@@ -90,6 +90,13 @@ The shared backend is a free Neon project with PostgreSQL and Functions. `neon.t
 
 Run `finder scan` with `FINDER_DATABASE_URL` set to the *same Neon production database* used by the Function. Finder accepts Neon's `postgresql://` connection string and selects the installed `psycopg` driver. A different database would leave Production data outside the deletion handler's reach. Neon's Free plan has resource limits and no production SLA; monitor its usage and eBay's endpoint-down alert email, and move to a paid service if delivery reliability requires it.
 
+Candidate evidence writes now require an existing listing and synchronize on the same seller
+lock as the PostgreSQL deletion transaction. A match that finishes after a seller deletion
+cannot recreate stored candidate evidence. This has offline regression coverage; concurrent
+hosted-PostgreSQL transactions have not yet been integration-tested. The current table-level
+retention inventory and open provider questions are in
+[`docs/decisions/0001-provider-use.md`](docs/decisions/0001-provider-use.md).
+
 ### Live eBay validation
 
 `scripts/validate_live_ebay.py` runs a bounded end-to-end check: it loads the selected keyset, obtains an application OAuth token, searches the `ebay-api-smoke` monitor (`vinyl`, one page of ten, with item details) through the normal scan path, and verifies that listings normalize and round-trip through persistence. By default it uses a temporary in-memory database, keeping smoke-test data out of normal Finder scans. It prints only aggregate, non-identifying JSON because the repository's Actions logs are public.

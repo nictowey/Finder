@@ -2,8 +2,11 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from decimal import Decimal
 
+import pytest
+
 from finder.adapters.discogs.normalize import normalize_release, product_from_variant
 from finder.adapters.ebay.normalize import normalize_listing
+from finder.errors import PersistenceError
 from finder.matching import score_variant
 from finder.persistence import SqlAlchemyListingRepository
 
@@ -135,3 +138,27 @@ def test_catalog_and_match_candidate_persistence(
     assert repository.get_candidates("ebay", listing.marketplace_item_id, "discogs") == [candidate]
     repository.replace_candidates("ebay", listing.marketplace_item_id, "discogs", [])
     assert repository.get_candidates("ebay", listing.marketplace_item_id, "discogs") == []
+
+
+def test_candidate_evidence_cannot_reappear_after_seller_deletion(
+    repository, search_payload, discogs_release, observed_at
+):
+    raw = search_payload["itemSummaries"][0]
+    raw["seller"]["userId"] = "seller-for-deletion"
+    listing = normalize_listing(raw, observed_at)
+    variant = normalize_release(discogs_release, observed_at)
+    candidate = score_variant(listing, variant, observed_at)
+    repository.upsert(listing)
+    repository.replace_candidates("ebay", listing.marketplace_item_id, "discogs", [candidate])
+
+    assert repository.delete_ebay_seller("seller-for-deletion") == 1
+    assert repository.get_candidates("ebay", listing.marketplace_item_id, "discogs") == []
+    with pytest.raises(PersistenceError, match="missing listing"):
+        repository.replace_candidates("ebay", listing.marketplace_item_id, "discogs", [candidate])
+    assert repository.get_candidates("ebay", listing.marketplace_item_id, "discogs") == []
+
+
+def test_candidates_require_an_existing_listing(repository, discogs_release, observed_at):
+    variant = normalize_release(discogs_release, observed_at)
+    with pytest.raises(PersistenceError, match="missing listing"):
+        repository.replace_candidates("ebay", "never-imported", variant.catalog_source, [])
