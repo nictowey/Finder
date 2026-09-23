@@ -63,3 +63,25 @@ again at decision time. This record is a product decision request, not a legal d
 
 No provider outreach or approval is recorded yet. A future decision must record its evidence
 and update `ROADMAP.md` and `AGENTS.md` before crossing a gate.
+
+## Current data inventory for the retention question
+
+This is the implementation as inspected on 2026-09-23, not a provider-approved retention
+schedule. Production scans write to the shared Neon PostgreSQL database. Local Sandbox databases
+and developer CLI copies require a separate cleanup procedure before retaining real data there.
+
+| Storage | Marketplace-derived content | Current lifecycle and deletion |
+| --- | --- | --- |
+| `listings` | Current item ID, title, prices, shipping, seller ID and username, condition, image/listing URLs, specifics, selected source metadata | Updated on repeat observation. Seller-deletion handler removes eBay rows for the notified stable seller ID. No age-based expiry exists. |
+| `listing_observations` | Full normalized snapshots for each observed timestamp, including seller and item values | Append-only until deletion of that seller's matched listing IDs. No age-based expiry exists. |
+| `listing_variant_candidates` | Listing and catalog IDs, candidate score, and evidence values from seller listing and Discogs catalog | Replaced by an explicit match run and deleted with that seller's listing IDs. Candidate replacement now checks that the listing still exists and locks the seller on PostgreSQL before writing. |
+| `ebay_deleted_users` | Stable seller ID tombstone | Retained to prevent reimport after a deletion notice. No expiry is defined; confirm required retention or minimization with eBay. |
+| `products`, `variants` | Discogs catalog identity and normalized release metadata | Upserted catalog data without eBay seller values. Display freshness and paid-use conditions require separate review. No age-based expiry exists. |
+| GitHub Actions output | Aggregate scan field counts, request totals, failures and synthetic catalog results; no listing IDs, titles, sellers or URLs in intended live logs | GitHub log retention is a separate account setting and has not been verified in this review. Do not upload real replay fixtures. |
+
+Open design questions: permitted maximum retention for current snapshots and observations,
+whether manual real-listing labels or tuned matching rules count as restricted algorithm use,
+whether anonymizing a fixture suffices, treatment of database backups and local copies after a
+seller notice, and the retention period for seller tombstones. The deletion path has unit tests
+and a successful eBay test notification, but the candidate/deletion concurrency guard has not
+been exercised against concurrent transactions on the hosted PostgreSQL database.

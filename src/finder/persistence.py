@@ -392,6 +392,29 @@ class SqlAlchemyListingRepository:
             raise PersistenceError("Candidate identities do not match the replacement scope.")
         try:
             with self.engine.begin() as conn:
+                listing_key = self._key(marketplace, item_id)
+                current = conn.execute(select(listings.c.data).where(listing_key)).scalar()
+                if current is None:
+                    raise PersistenceError("Cannot attach candidates to a missing listing.")
+                seller_id = current.get("seller_id") if marketplace == "ebay" else None
+                if seller_id and conn.dialect.name == "postgresql":
+                    # Lock in the same order as the deletion endpoint: seller, then row.
+                    # A deletion that wins first leaves no listing to attach evidence to.
+                    conn.execute(select(func.pg_advisory_xact_lock(func.hashtext(seller_id))))
+                current = conn.execute(
+                    select(listings.c.data).where(listing_key).with_for_update()
+                ).scalar()
+                if current is None or (seller_id and current.get("seller_id") != seller_id):
+                    raise PersistenceError("Listing changed during candidate replacement.")
+                if (
+                    seller_id
+                    and conn.execute(
+                        select(ebay_deleted_users.c.seller_id).where(
+                            ebay_deleted_users.c.seller_id == seller_id
+                        )
+                    ).first()
+                ):
+                    raise PersistenceError("Cannot attach candidates to a deleted seller.")
                 conn.execute(delete(listing_variant_candidates).where(scope))
                 if candidates:
                     conn.execute(

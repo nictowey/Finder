@@ -87,6 +87,9 @@ The open provider-use decision and bounded Production audit are documented in
 ### Production status
 
 The free Neon Production branch and deletion Function are deployed with Production credentials.
+Candidate persistence now guards against recreating eBay-derived evidence after a seller
+deletion. PostgreSQL concurrency behavior still needs an integration check; see the data
+inventory in `docs/decisions/0001-provider-use.md` before expanding retention.
 eBay accepted the endpoint and sent test notifications; new deletion tombstones appeared in the
 shared PostgreSQL database. The September 22, 2026 Production smoke workflow fetched,
 normalized, stored, and read back 10 live listings. This validates ingestion, persistence, and
