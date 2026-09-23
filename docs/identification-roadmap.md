@@ -20,7 +20,7 @@ performance on any vinyl. Other marketplaces and market-value estimates are sepa
 | --- | --- | --- |
 | Can a pressing be saved and scanned? | Owner login, two watches, scheduled worker and private inbox work. | Observe scheduled operation over time and verify push on the owner's device. |
 | Does search find what is listed? | A bounded scan found the owner-supplied DS2 example. The recurring worker now samples older inventory and directly rechecks one known lead on alternating refreshes. | Eight newest results per query and at most 36 sampled older results per query; offsets shift. No independent coverage denominator. |
-| Does the watch distinguish neighboring pressings? | Sparse color/numbering/identifier claims can surface a lead. | The initial scheduled policy compared only the target; the richer CLI comparison was separate. |
+| Does the watch distinguish neighboring pressings? | Policy v2 compares up to five catalog alternatives per watch. The refreshed DS2 lead had four plausible competitors, so its alert was withheld. | This bounded sample does not establish catalog completeness or pressing precision. |
 | Do identification rules work on real listings? | Synthetic rule tests pass. | No approved real-listing holdout, measured wrong-pressing rate, or missed-listing audit. |
 | Does a low price mean a deal? | Optional buyer ceiling and shipping checks exist. | No qualified sold-transaction source or measured valuation model. |
 
@@ -159,17 +159,20 @@ other refresh directly checks one existing possible pressing omitted by that sca
 review can be updated without depending on search rank. The cursor persists on interruption
 and resets on watch edits. An unavailable/ended item is separated from active leads without
 calling it sold. The nominal three-watch refresh ceiling is 4,464 Browse requests/day, before
-initial sweeps, retries or other jobs. The actual app quota and independent missed-listing
-sample remain outstanding. This limited sample cannot establish 95% recall or guarantee that
+initial sweeps, retries or other jobs. The [read-only Production quota check](https://github.com/nictowey/Finder/actions/runs/35857263684)
+reported a 5,000-call daily `buy.browse` window, 4,940 remaining at approximately 11:54 UTC.
+The nominal margin is only 536 calls without a shared reservation across workflows; independent
+missed-listing sampling remains outstanding. This limited sample cannot establish 95% recall or guarantee that
 new offers appear within one hour. See [watchlist limits](private-watchlist.md).
 The [first Production deployment](https://github.com/nictowey/Finder/actions/runs/35855743741)
 passed with two completed watches and an older sample on each. It added one inbox row; the
-known DS2 lead remained outside the six-hour active inbox in this first pass. Its direct
-alternate recheck, independent recall, and scan timing remain to be verified.
-An isolated read-only quota workflow can now report actual Production Browse resource limits
-and remaining calls without printing credentials or listing identities. Its first live response
-must be checked before increasing search volume. It does not enforce a global reservation across
-workflows.
+known DS2 lead remained outside the six-hour active inbox in this first pass. The subsequent
+[private scan](https://github.com/nictowey/Finder/actions/runs/35857378734) completed both
+watches without failures. Its direct check refreshed that **already known** lead into the active
+inbox under policy v2; four of five sampled alternatives remained compatible, withholding its
+alert. Neither direct recheck nor the quota response measures discovery recall, exact identity,
+or scheduled scan timing. The quota probe reports only aggregate rates and does not enforce a
+global reservation across workflows.
 
 Stages 1–2 and synthetic tooling can proceed immediately. The existing
 [provider-use record](decisions/0001-provider-use.md) governs real evaluation retention,
