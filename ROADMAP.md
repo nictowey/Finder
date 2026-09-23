@@ -399,6 +399,10 @@ generic core:
 
 - Separate family match evidence from pressing match evidence.
 - Add explicit positive, negative, and missing evidence.
+- The internal target check now produces a bounded anonymous comparison of same-family
+  candidates in the manual workflow summary. Inspect candidate-level field agreement, seller
+  and catalog disagreements, missing seller evidence, and unscored runout presence. This is a
+  review aid, not a precision measure or an exact pressing assertion.
 - Treat color, edition, country, disc count, and format conflicts as variant-level conflicts.
 - Allow matrix/runout evidence to disambiguate only when its source is reliable.
 - Version the matching policy and store the version with each decision.

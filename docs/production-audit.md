@@ -75,7 +75,10 @@ The manual `Production target match check` workflow reads the newest 100 stored 
 locates exactly one item using the Production environment's private probe secret, and retrieves
 at most ten Discogs release details including the pinned target. It writes no listing labels or
 candidate records. Public output is restricted to decision codes, field names, and retrieval
-flags; the known item identity is not printed. This is diagnostic, not an exact pressing claim.
+flags; the known item identity is not printed. Its job summary includes an anonymous target-first
+comparison table of same-family alternatives, seller/catalog disagreements, missing evidence,
+and unscored runout presence. Scores are heuristics, and a missing seller field is a review gap,
+not a requirement for an eBay description. This is diagnostic, not an exact pressing claim.
 
 | UTC date | Run | Aggregate result | Interpretation |
 | --- | --- | --- | --- |

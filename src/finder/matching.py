@@ -5,7 +5,7 @@ import unicodedata
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 
-from finder.categories.vinyl import from_listing, from_variant
+from finder.categories.vinyl import from_listing, from_variant, has_numbered_claim
 from finder.domain import (
     EvidenceRecord,
     Listing,
@@ -15,7 +15,7 @@ from finder.domain import (
     Variant,
 )
 
-MATCH_POLICY_VERSION = "vinyl-decision-v4"
+MATCH_POLICY_VERSION = "vinyl-decision-v5"
 
 
 def _normalized(value: str) -> str:
@@ -65,17 +65,13 @@ def _vinyl_release(variant: Variant) -> bool:
 
 
 def _catalog_numbered(variant: Variant) -> bool:
-    return any(
-        re.search(r"\bnumbered\b", value.lower()) for value in from_variant(variant).editions
-    )
+    return has_numbered_claim(from_variant(variant).editions)
 
 
 def _seller_structured_numbered(listing: Listing) -> bool:
     # A title or a bare serial number is a weaker, unverified seller claim. Only explicit
     # item specifics make a numbered catalog variant plausible; neither proves the copy.
-    return any(
-        re.search(r"\bnumbered\b", value.lower()) for value in from_listing(listing).editions
-    )
+    return has_numbered_claim(from_listing(listing).editions)
 
 
 def _exact_evidence(
