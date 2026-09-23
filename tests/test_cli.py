@@ -150,6 +150,8 @@ def test_match_cli_persists_auditable_candidate(
     result = json.loads(capsys.readouterr().out)
     assert result["candidates"][0]["status"] == "strong_candidate"
     assert result["decision"]["outcome"] == "probable_variant"
+    assert result["retrieval"]["query_kinds"] == ["barcode", "q"]
+    assert result["retrieval"]["incomplete"] is False
     repository = SqlAlchemyRepository.from_url(database_url)
     try:
         saved = repository.get_candidates("ebay", listing.marketplace_item_id, "discogs")

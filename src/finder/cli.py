@@ -196,12 +196,13 @@ def _match(args: argparse.Namespace) -> int:
             )
         with DiscogsClient(settings) as client:
             provider = DiscogsCatalogProvider(client)
-            variants = provider.search_releases(listing.title, limit=args.limit)
+            retrieval = provider.search_for_listing(listing, limit=args.limit)
+            variants = retrieval.variants
             candidates = rank_variants(listing, variants)
             for variant in variants:
                 repository.upsert_product(provider.product_for(variant))
                 repository.upsert_variant(variant)
-            decision = decide_match(listing, variants)
+            decision = decide_match(listing, variants, retrieval_incomplete=retrieval.incomplete)
             repository.replace_candidates(
                 listing.marketplace,
                 listing.marketplace_item_id,
@@ -216,6 +217,13 @@ def _match(args: argparse.Namespace) -> int:
         "listing_title": listing.title,
         "attribution": "Candidate catalog data provided by Discogs",
         "attribution_url": "https://www.discogs.com",
+        "retrieval": {
+            "query_kinds": retrieval.query_kinds,
+            "search_truncated": retrieval.search_truncated,
+            "candidate_limit_reached": retrieval.candidate_limit_reached,
+            "identifiers_omitted": retrieval.identifiers_omitted,
+            "incomplete": retrieval.incomplete,
+        },
         "decision": decision.model_dump(mode="json"),
         "candidates": [
             {
@@ -235,6 +243,8 @@ def _match(args: argparse.Namespace) -> int:
         print("Candidate catalog data provided by Discogs: https://www.discogs.com")
         print(f"Listing: {listing.title}")
         print(f"Decision: {decision.outcome} ({decision.policy_version})")
+        if retrieval.incomplete:
+            print("Catalog search was bounded; other pressings may be missing.")
         if decision.conflicts:
             print(f"Conflicting fields: {', '.join(decision.conflicts)}")
         if decision.missing_evidence:

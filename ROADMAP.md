@@ -337,8 +337,14 @@ Status: **In progress; eBay Production access is working, real labels are missin
 `vinyl-decision-v2` now implements the first provisional outcome contract. The match CLI reports
 family-only, probable variant, ambiguity, rejection, or insufficient evidence with provenance,
 conflicts, and missing evidence. It never emits `exact_variant`: the synthetic evaluation cases
-are policy tests, not a measured live-listing precision gate. Candidate retrieval remains a
-bounded single title query, so a sole candidate does not establish unique pressing identity.
+are policy tests, not a measured live-listing precision gate. The match CLI now combines up to
+three bounded Discogs release searches (one valid seller barcode, one catalog number, and the
+listing title), deduplicates candidates, and marks truncated or omitted search coverage. A sole
+candidate does not establish unique pressing identity; incomplete retrieval cannot produce even
+a provisional probable-variant decision.
+The September 23 authenticated smoke check returned ten releases for a synthetic listing and
+four strong candidates. This validates the new request path, while real eBay precision and true
+release recall remain unmeasured.
 
 ### 2.1 Target ontology
 
@@ -354,6 +360,8 @@ generic core:
 ### 2.2 Candidate retrieval
 
 - Generate multiple Discogs queries from artist/title plus strong identifiers when present.
+- Measure whether these first-page searches actually return the true release on a permitted,
+  labeled dataset; a seller's barcode or catalog number remains an unverified claim.
 - Retrieve candidates at the master/family level before ranking exact releases.
 - Normalize aliases, punctuation, featured artists, alternate catalog-number formatting, and
   barcode formatting without discarding original values.

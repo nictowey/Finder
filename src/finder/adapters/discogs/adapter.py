@@ -1,10 +1,27 @@
+import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from itertools import zip_longest
 
 from finder.adapters.discogs.client import DiscogsClient
 from finder.adapters.discogs.normalize import normalize_release, product_from_variant
-from finder.domain import Product, Variant
+from finder.categories.vinyl import from_listing
+from finder.domain import Listing, Product, Variant
 from finder.errors import CatalogResponseError, ConfigurationError
+
+
+@dataclass(frozen=True)
+class CandidateRetrieval:
+    variants: list[Variant]
+    query_kinds: list[str]
+    search_truncated: bool
+    candidate_limit_reached: bool
+    identifiers_omitted: bool
+
+    @property
+    def incomplete(self) -> bool:
+        return self.search_truncated or self.candidate_limit_reached or self.identifiers_omitted
 
 
 class DiscogsCatalogProvider:
@@ -24,10 +41,59 @@ class DiscogsCatalogProvider:
             raise ConfigurationError("Catalog query cannot be empty.")
         if not 1 <= limit <= 25:
             raise ConfigurationError("Catalog result limit must be between 1 and 25.")
+        results, _ = self._search({"q": query.strip()}, limit)
+        return self._hydrate(self._ids(results)[:limit])
+
+    def search_for_listing(self, listing: Listing, *, limit: int = 10) -> CandidateRetrieval:
+        """Use at most three searches and `limit` detail requests for provisional candidates.
+
+        All search values are seller claims. Diversifying retrieval is not verification of an
+        identifier and does not establish complete coverage of a release family.
+        """
+        if not 1 <= limit <= 25:
+            raise ConfigurationError("Catalog result limit must be between 1 and 25.")
+        fingerprint = from_listing(listing)
+        barcodes = list(
+            dict.fromkeys(
+                digits
+                for value in fingerprint.barcodes
+                if len(digits := re.sub(r"\D", "", value)) in (8, 12, 13, 14)
+            )
+        )
+        catnos = list(
+            dict.fromkeys(value.strip() for value in fingerprint.catalog_numbers if value.strip())
+        )
+        plans: list[tuple[str, str]] = []
+        if barcodes:
+            plans.append(("barcode", barcodes[0]))
+        if catnos:
+            plans.append(("catno", catnos[0]))
+        if listing.title.strip():
+            plans.append(("q", listing.title.strip()))
+        if not plans:
+            raise ConfigurationError("Listing has no usable catalog search value.")
+        identifiers_omitted = len(barcodes) > 1 or len(catnos) > 1
+        per_page = min(limit, 10)
+        result_lists = []
+        truncated = False
+        for name, value in plans:
+            results, possibly_more = self._search({name: value}, per_page)
+            result_lists.append(self._ids(results))
+            truncated |= possibly_more
+        unique = list(dict.fromkeys(id for row in zip_longest(*result_lists) for id in row if id))
+        return CandidateRetrieval(
+            variants=self._hydrate(unique[:limit]),
+            query_kinds=[name for name, _ in plans],
+            search_truncated=truncated,
+            candidate_limit_reached=len(unique) > limit,
+            identifiers_omitted=identifiers_omitted,
+        )
+
+    def _search(self, query: dict[str, str], limit: int) -> tuple[list, bool]:
         payload = self.client.get(
             "/database/search",
             params={
-                "q": query.strip(),
+                **query,
                 "type": "release",
                 "format": "Vinyl",
                 "genre": "Hip Hop",
@@ -38,17 +104,31 @@ class DiscogsCatalogProvider:
         results = payload.get("results")
         if not isinstance(results, list):
             raise CatalogResponseError("Discogs search response has invalid results.")
-        variants = []
+        pagination = payload.get("pagination", {})
+        pages = pagination.get("pages") if isinstance(pagination, dict) else None
+        # A full first page may have more results even if pagination is absent.
+        return results[:limit], len(results) >= limit or (isinstance(pages, int) and pages > 1)
+
+    @staticmethod
+    def _ids(results: list) -> list[int]:
+        ids = []
         seen: set[int] = set()
         for result in results:
             release_id = result.get("id") if isinstance(result, dict) else None
             if (
                 isinstance(release_id, bool)
                 or not isinstance(release_id, int)
+                or release_id <= 0
                 or release_id in seen
             ):
                 continue
             seen.add(release_id)
+            ids.append(release_id)
+        return ids
+
+    def _hydrate(self, release_ids: list[int]) -> list[Variant]:
+        variants = []
+        for release_id in release_ids:
             detail = self.client.get(f"/releases/{release_id}")
             if detail.get("id") != release_id:
                 raise CatalogResponseError("Discogs release response has a mismatched ID.")

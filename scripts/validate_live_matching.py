@@ -66,14 +66,23 @@ def main() -> int:
     try:
         with DiscogsClient(settings) as client:
             provider = DiscogsCatalogProvider(client, now=lambda: observed_at)
-            variants = provider.search_releases("Kendrick Lamar DAMN", limit=5)
-        selected = next((variant for variant in variants if _barcodes(variant)), None)
+            initial = provider.search_releases("Kendrick Lamar DAMN", limit=5)
+        selected = next((variant for variant in initial if _barcodes(variant)), None)
         if selected is None:
             raise AssertionError("No barcode-bearing Discogs release was returned")
 
         listing = _synthetic_listing(selected, observed_at)
         assert listing.total_acquisition_cost == Decimal("25.00")
         assert repository.upsert(listing) == "new"
+
+        with DiscogsClient(settings) as client:
+            provider = DiscogsCatalogProvider(client, now=lambda: observed_at)
+            retrieval = provider.search_for_listing(listing, limit=10)
+        variants = retrieval.variants
+        assert "barcode" in retrieval.query_kinds
+        assert any(
+            variant.catalog_variant_id == selected.catalog_variant_id for variant in variants
+        )
 
         for variant in variants:
             repository.upsert_product(provider.product_for(variant))
@@ -121,6 +130,8 @@ def main() -> int:
                 {
                     "status": "passed",
                     "query": "Kendrick Lamar DAMN",
+                    "query_kinds": retrieval.query_kinds,
+                    "retrieval_incomplete": retrieval.incomplete,
                     "releases_evaluated": len(variants),
                     "selected_release_id": selected.catalog_variant_id,
                     "selected_score": selected_candidate.score,
