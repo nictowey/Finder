@@ -1,5 +1,6 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import httpx
@@ -18,6 +19,7 @@ from finder.errors import (
     ConfigurationError,
 )
 from finder.matching import decide_match
+from finder.watchlist import WatchTarget, assess_watch_target
 
 
 @pytest.fixture
@@ -115,6 +117,142 @@ def test_listing_retrieval_diversifies_queries_deduplicates_and_reports_shared_b
     assert len(calls) == 5  # three searches, two unique release detail calls
     assert not result.incomplete
     assert decide_match(listing, result.variants).outcome == "ambiguous"
+
+
+def test_exact_numbered_target_survives_zero_search_results_for_buyer_review(
+    discogs_settings, discogs_release, search_payload, observed_at
+):
+    """Synthetic positive with no seller identifier; no actual marketplace data is stored."""
+    listing = normalize_listing(
+        {
+            **search_payload["itemSummaries"][0],
+            "title": "Future DS2 purple hand-numbered vinyl",
+            "localizedAspects": [
+                {"name": "Artist", "value": "Future"},
+                {"name": "Color", "value": "Purple"},
+                {"name": "Features", "value": "Numbered"},
+            ],
+        },
+        observed_at,
+    )
+    release = {
+        **discogs_release,
+        "id": 333,
+        "master_id": 33,
+        "title": "DS2",
+        "artists": [{"name": "Future"}],
+        "formats": [
+            {
+                "name": "Vinyl",
+                "qty": "2",
+                "descriptions": ["LP", "Club Edition", "Limited Edition", "Numbered"],
+                "text": "Purple",
+            }
+        ],
+        "identifiers": [],
+    }
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        if request.url.path == "/database/search":
+            return httpx.Response(200, json={"results": []})
+        assert request.url.path == "/releases/333"
+        return httpx.Response(200, json=release)
+
+    with DiscogsClient(discogs_settings, transport=httpx.MockTransport(handler)) as client:
+        retrieval = DiscogsCatalogProvider(client, now=lambda: observed_at).search_for_listing(
+            listing, target_release_id=333
+        )
+    assert calls == ["/database/search", "/releases/333"]
+    assert [variant.catalog_variant_id for variant in retrieval.variants] == ["333"]
+    assert retrieval.target_not_in_search and retrieval.incomplete
+    decision = decide_match(listing, retrieval.variants, retrieval_incomplete=retrieval.incomplete)
+    assert decision.outcome == "family_only"
+    assert decision.candidate_ids == ["333"]
+    assert "pressing_identifier" in decision.missing_evidence
+    target = WatchTarget(
+        id="numbered-ds2",
+        marketplace="ebay",
+        catalog_source="discogs",
+        variant_id="333",
+        maximum_delivered_subtotal=Decimal("40"),
+        currency="USD",
+        destination_country="US",
+        destination_postal_code="10001",
+        created_at=observed_at,
+    )
+    assessment = assess_watch_target(
+        target,
+        listing,
+        decision,
+        as_of=observed_at,
+        maximum_age=timedelta(hours=1),
+        destination_quote_verified=False,
+    )
+    assert assessment.status == "review"
+    assert "exact_pressing_unconfirmed" in assessment.reasons
+    assert "catalog_search_incomplete" in assessment.reasons
+    assert "numbered_structured_claim_missing" not in assessment.reasons
+
+    # An otherwise similar ordinary-copy listing has less supporting evidence; both
+    # remain review-only, but the missing numbered claim is visible to the reviewer.
+    ordinary_listing = listing.model_copy(
+        update={
+            "title": "Future DS2 purple vinyl",
+            "item_specifics": {
+                key: values for key, values in listing.item_specifics.items() if key != "Features"
+            },
+        }
+    )
+    ordinary_decision = decide_match(
+        ordinary_listing, retrieval.variants, retrieval_incomplete=retrieval.incomplete
+    )
+    ordinary_assessment = assess_watch_target(
+        target,
+        ordinary_listing,
+        ordinary_decision,
+        as_of=observed_at,
+        maximum_age=timedelta(hours=1),
+        destination_quote_verified=False,
+    )
+    assert ordinary_assessment.status == "review"
+    assert "numbered_structured_claim_missing" in ordinary_assessment.reasons
+
+
+def test_target_reserves_one_detail_slot_when_search_returns_competitors(
+    discogs_settings, discogs_release, search_payload, observed_at
+):
+    listing = normalize_listing(search_payload["itemSummaries"][0], observed_at)
+    details = []
+
+    def handler(request):
+        if request.url.path == "/database/search":
+            return httpx.Response(200, json={"results": [{"id": 111}, {"id": 222}]})
+        release_id = int(request.url.path.rsplit("/", 1)[1])
+        details.append(release_id)
+        return httpx.Response(200, json={**discogs_release, "id": release_id})
+
+    with DiscogsClient(discogs_settings, transport=httpx.MockTransport(handler)) as client:
+        result = DiscogsCatalogProvider(client).search_for_listing(
+            listing, limit=1, target_release_id=333
+        )
+    assert details == [333]
+    assert result.target_not_in_search and result.candidate_limit_reached
+    assert result.incomplete
+
+
+@pytest.mark.parametrize("invalid", [0, -1, True, "333"])
+def test_target_release_id_must_be_positive_integer(
+    discogs_settings, search_payload, observed_at, invalid
+):
+    listing = normalize_listing(search_payload["itemSummaries"][0], observed_at)
+    with DiscogsClient(
+        discogs_settings,
+        transport=httpx.MockTransport(lambda _: pytest.fail("Invalid target used network")),
+    ) as client:
+        with pytest.raises(ConfigurationError, match="positive integer"):
+            DiscogsCatalogProvider(client).search_for_listing(listing, target_release_id=invalid)
 
 
 def test_truncated_catalog_search_prevents_probable_pressing_claim(
