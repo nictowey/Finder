@@ -195,3 +195,42 @@ capacity. Deployment #18 subsequently advanced evaluation without repeating exha
 pages: zero searches, 29 detail calls and 37 additional evaluations (fresh cache reuse accounts
 for the difference). One watch completed evaluation of all 21 retained references; 333 remained
 pending across the other two. These are deployment invocations, not scheduled-run evidence.
+
+
+### Final rollout checkpoint
+
+Runtime commit `f9ab586946651cdfcddd345d348b8fca6663fa3a`, deployment
+[#19](https://github.com/nictowey/Finder/actions/runs/35927361045), passed all offline,
+PostgreSQL and owner-only access gates. The three watches retain their settings, dismissals,
+alert history and the single registered device. Existing operational history, including the
+earlier quota-parser pause, remains anchored at its original observation start.
+
+The independent [22:15 UTC scheduled catch-up](https://github.com/nictowey/Finder/actions/runs/35927264369)
+reported `neon_catchup` and was correlated to the automatic dispatch in the private dashboard.
+Two due watches resumed successfully, adding 32 evaluations with 27 detail calls and zero
+repeated search pages; the already-drained watch was not scanned unnecessarily. Notification
+dispatch reported zero eligible events and one device. No real phone delivery is claimed.
+The owner's previously confirmed visible **test** delivery remains a separate observation.
+
+At 22:18:35 UTC, all six initial queries remained exhausted (16 baseline page responses
+including replay), with 434 retained references, 159 evaluated and 275 durably pending. The
+new scanner used 155 Browse attempts over the observed rollout and automatic continuations:
+28 searches and 127 detail calls. Older rollout scans outside the flag are separate consumers.
+The authenticated inbox successfully displayed a second 50-row page; no global display cap
+was reached. Search retrieval passed the old sampling depth, but no exact-pressing accuracy
+improvement or independently measured relevant-lead recall is asserted.
+
+Periodic full reconciliation has not yet become due in this observation period. Incremental
+windows were validated against returned origin timestamps; the 24-hour overlap and second
+traversal remain mitigations rather than a snapshot or arbitrary-indexing-delay guarantee.
+Remaining pending work is intentional, visible continuation, not completed identification.
+
+
+A second unattended invocation, [GitHub schedule run #13](https://github.com/nictowey/Finder/actions/runs/35927598173),
+continued at 22:19 UTC after deployment. It evaluated another 16 references using 14 detail
+requests; the other two watches were no longer due. The latest dashboard checkpoint therefore
+shows 175 evaluated and 259 pending, with the same 434 retained references and all six initial
+queries exhausted. Observed new-path Browse usage is now 169 attempts (28 search, 141 detail).
+The latest watch preflight reading was 4,070 remaining; notification dispatch still had no
+eligible events. Both independent scheduling paths have now exercised resumable work, without
+establishing a long-term reliability or delivery guarantee.
