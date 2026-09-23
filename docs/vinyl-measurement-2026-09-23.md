@@ -29,6 +29,18 @@ the separate manual panel completed without that stacked request load. A full fi
 not show whether a more relevant catalog release lies beyond the cap, and the missing folk
 selection shows the chosen query and small initial cap do not guarantee genre coverage.
 
+The manual `Private target evaluation panel` workflow is a repeatable, non-retaining probe
+for up to twelve owner-supplied release IDs in the `FINDER_EVAL_RELEASE_IDS` Production
+secret. Run batches `0`, `1`, and `2` in order, up to four releases per batch. For each
+release it hydrates the selected Discogs record, samples up to five catalog alternatives,
+then uses the generated eBay target queries against one five-item best-match page each.
+At most three queries per target give a maximum of 72 Browse requests per four-target
+batch without retries; this probe disables eBay retries. It prints only ordinal, query,
+page-cap and policy-status counts, never release IDs, listing identities, titles or prices.
+It retains no listing data. These counts are an integration and search-pressure diagnostic,
+not a labeled pressing evaluation or a discovery-recall measurement. The live watches and
+their three-slot quota remain independent of this probe.
+
 ## What cannot be inferred yet
 
 | Product question | Current status | Measurement needed |
