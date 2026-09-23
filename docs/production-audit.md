@@ -68,3 +68,15 @@ The two runs share one date and do not count as another day of the seven-day **b
 audit. The first query's ten-item cap means target recall remains unmeasured. An item outside
 the first page, a differently worded listing, or a new listing between samples may still be
 missed. A positive probe does not establish a catalog match, condition, or market value.
+
+## Private target pressing check
+
+The manual `Production target match check` workflow reads the newest 100 stored eBay snapshots,
+locates exactly one item using the Production environment's private probe secret, and retrieves
+at most ten Discogs release details including the pinned target. It writes no listing labels or
+candidate records. Public output is restricted to decision codes, field names, and retrieval
+flags; the known item identity is not printed. This is diagnostic, not an exact pressing claim.
+
+| UTC date | Run | Aggregate result | Interpretation |
+| --- | --- | --- | --- |
+| 2026-09-23 | [Target match check #1](https://github.com/nictowey/Finder/actions/runs/35811037387) | Completed; pinned target retrieved and scored 25 (`rejected`). Matched color and edition; artist, format, and title comparisons conflicted. One release evaluated; target absent from seller-text search, so retrieval incomplete. No structured pressing identifier. Decision `insufficient_data`. | The user identifies the supplied listing as the numbered release, but Finder did not recognize it. This is a known false negative in this private example. Do not promote the pinned target merely because it was directly fetched or because color and edition overlap. Review artist/title extraction and aliases, seller specifics, and additional independent copy evidence before changing the decision policy. Subject to the provider-use review, measure effects on a labeled held-out set rather than tuning to one listing. |
