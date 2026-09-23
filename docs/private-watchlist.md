@@ -151,8 +151,12 @@ the pink/green release are discovery examples, not enough to estimate accuracy a
   [first manual scan](https://github.com/nictowey/Finder/actions/runs/35887951829)
   completed all three watches with zero failures and ten new inbox rows. The one-query newest
   page hit its cap. Inspection found a seller-artist inversion that the deployed review policy
-  incorrectly treated as a conflict. A matching correction is pending live deployment and
-  verification; these rows cannot be used to estimate pressing precision.
+  incorrectly treated as a conflict. [Deployment #7](https://github.com/nictowey/Finder/actions/runs/35889251386)
+  passed 271 Python and 16 Node tests; the [fresh scan #7](https://github.com/nictowey/Finder/actions/runs/35889541611)
+  completed the revised third watch with zero failures and four new inbox rows. The eleven
+  visible Dean rows no longer cite artist conflict, but all cite barcode or catalog-number
+  conflict, including same-album titles. This repairs the observed reason for rejection;
+  none of those rows establishes an exact pressing or a deal.
 - The scheduled workflow ran around 06:00 and 11:02 EDT on September 23, approximately five
   hours apart. Manual dispatches filled some gaps, but the schedule has not met a 30-minute
   freshness expectation. [Quota check #4](https://github.com/nictowey/Finder/actions/runs/35887651796)

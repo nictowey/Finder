@@ -21,7 +21,7 @@ performance on any vinyl. Other marketplaces and market-value estimates are sepa
 | Can a pressing be saved and scanned? | Owner login, three watches, scheduled worker and private inbox work. | Observe scheduled operation over time and verify push on the owner's device. |
 | Does search find what is listed? | A bounded scan found the owner-supplied DS2 example. The recurring worker now samples older inventory and directly rechecks one known lead on alternating refreshes. | Eight newest results per query and at most 36 sampled older results per query; offsets shift. No independent coverage denominator. |
 | Does the watch distinguish neighboring pressings? | Policy v2 compares up to five catalog alternatives per watch. The refreshed DS2 lead had four plausible competitors, so its alert was withheld. | This bounded sample does not establish catalog completeness or pressing precision. |
-| Does it handle varied artist metadata and album titles? | The third live target exposed an erroneous conflict for an inverted seller artist field. Synthetic regressions now cover exact `Last, First` equivalence, different artists, a longer competing album title, repeated title words that look like colors, and title negation/lots. | Deploy and confirm on the live third watch; expand to representative labeled cases without suppressing other editions. |
+| Does it handle varied artist metadata and album titles? | The third live target exposed an erroneous conflict for an inverted seller artist field. Synthetic regressions cover exact `Last, First` equivalence, different artists, a longer competing album title, repeated title words that look like colors, and title negation/lots. A deployed fresh scan showed no false artist conflict in eleven visible Dean rows. | The observed rows all had barcode or catalog-number conflicts, so the fresh scan did not validate a positive pressing call. Expand to representative labeled cases without suppressing other editions. |
 | Do identification rules work on real listings? | Synthetic rule tests pass. | No approved real-listing holdout, measured wrong-pressing rate, or missed-listing audit. |
 | Does a low price mean a deal? | Optional buyer ceiling and shipping checks exist. | No qualified sold-transaction source or measured valuation model. |
 
@@ -178,8 +178,11 @@ global reservation across workflows.
 The owner's 11 additional Discogs links provide a varied target queue; only the older
 non-rap release was activated as the third live watch. Its [first scan](https://github.com/nictowey/Finder/actions/runs/35887951829)
 completed all three watches but exposed an inverted seller-artist false conflict and a
-shorter-versus-longer album-title ambiguity. A fix is being tested, not counted as live
-precision until the target is rescanned. Scheduled runs at roughly 06:00 and 11:02 EDT
+shorter-versus-longer album-title ambiguity. The [deployed correction](https://github.com/nictowey/Finder/actions/runs/35889251386)
+and [fresh scan](https://github.com/nictowey/Finder/actions/runs/35889541611) removed
+the false artist-conflict reason in eleven visible Dean rows. All still conflicted on seller
+identifiers, so this is not evidence of successful positive identification. Scheduled runs
+at roughly 06:00 and 11:02 EDT
 showed that GitHub's twice-hourly cron did not deliver the expected cadence on this date.
 The [16:17 UTC quota probe](https://github.com/nictowey/Finder/actions/runs/35887651796)
 reported 4,880 calls remaining in the 5,000-call daily Browse window. Improve scheduling

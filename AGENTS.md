@@ -113,7 +113,7 @@ The open provider-use decision and bounded Production audit are documented in
 ### Verified baseline
 
 - Latest verified implementation baseline: current `main` after required checks
-- Offline suite: 262 Python and 16 Node tests passing; rerun required checks before commit
+- Offline suite: 271 Python and 16 Node tests passing; rerun required checks before commit
 - Ruff lint and formatting checks passing
 - Live Discogs validation passing through GitHub Actions
 - Multi-query Discogs smoke passed on the `discogs-candidate-retrieval-2026` branch; this uses
@@ -131,9 +131,11 @@ The open provider-use decision and bounded Production audit are documented in
   with 4,940 remaining at approximately 11:54 UTC on September 23. The nominal three-watch
   daily refresh maximum of 4,464 calls does not reserve capacity for other work or retries.
 - Third live watch first scan completed all three watches but exposed a false artist conflict
-  on an inverted seller name. A synthetic correction for exact comma inversion and competing
-  album-title claims is under test; a subsequent live run must verify it. Scheduled workflow
-  runs were roughly five hours apart on September 23, so scan freshness is unproven.
+  on an inverted seller name. The correction for exact comma inversion and competing album
+  title claims is merged and deployed; the fresh live third-watch scan showed eleven visible
+  rows with identifier conflicts, none with the false artist-conflict reason. No positive
+  exact-pressing call was validated. Scheduled workflow runs were roughly five hours apart
+  on September 23, so scan freshness is unproven.
 
 ### Production status
 
