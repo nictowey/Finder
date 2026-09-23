@@ -138,6 +138,9 @@ Discogs behavior in the eBay adapter or marketplace behavior in catalog provider
 - Use official APIs; do not add scraping.
 - Discogs access is limited to `/database/search` and `/releases/{id}`.
 - Do not use Discogs marketplace, pricing, sales-history, seller, order, or fee data for Finder.
+- For a catalog-numbered pressing, a shared barcode/color or a seller title serial claim alone
+  must not promote the candidate; an explicit structured numbered claim is still unverified.
+  Keep the individual copy number separate from the catalog release identity.
 - eBay's API agreement restricts using eBay content to suggest or model prices for eBay items;
   obtain a written provider-use decision before deal scoring, price-based alerts, or paid launch.
 - Review eBay's intermediate-copy and algorithm-training restrictions before retaining real

@@ -46,6 +46,20 @@ def _vinyl_release(variant: Variant) -> bool:
     return any(_normalized(str(item.get("name", ""))) == "vinyl" for item in variant.formats)
 
 
+def _catalog_numbered(variant: Variant) -> bool:
+    return any(
+        re.search(r"\bnumbered\b", value.lower()) for value in from_variant(variant).editions
+    )
+
+
+def _seller_structured_numbered(listing: Listing) -> bool:
+    # A title or a bare serial number is a weaker, unverified seller claim. Only explicit
+    # item specifics make a numbered catalog variant plausible; neither proves the copy.
+    return any(
+        re.search(r"\bnumbered\b", value.lower()) for value in from_listing(listing).editions
+    )
+
+
 def _exact_evidence(
     field: str, listing_values: list[str], variant_values: list[str], weight: int
 ) -> MatchEvidence | None:
@@ -168,6 +182,7 @@ def decide_match(
     single strong candidate is therefore only probable until labeled live-data gates pass.
     """
     ranked = rank_variants(listing, variants)
+    seller_numbered = _seller_structured_numbered(listing)
     by_id = {variant.catalog_variant_id: variant for variant in variants}
     family_candidates = []
     for candidate in ranked:
@@ -211,6 +226,9 @@ def decide_match(
                 "unofficial" in value.lower() for value in from_listing(listing).editions
             )
             conflict = conflict or (unofficial and not seller_unofficial)
+            # Shared barcodes and colors do not establish a limited numbered edition.
+            # An explicit seller item-specific is necessary but not authenticity proof.
+            conflict = conflict or (_catalog_numbered(variant) and not seller_numbered)
             if candidate.status == "strong_candidate" and identifier and not conflict:
                 competing.append(candidate)
 
@@ -290,6 +308,10 @@ def decide_match(
         missing.append("unambiguous_pressing_evidence")
     if retrieval_incomplete:
         missing.append("catalog_search_incomplete")
+    if not seller_numbered and any(
+        _catalog_numbered(by_id[candidate.catalog_variant_id]) for candidate in representative
+    ):
+        missing.append("numbered_structured_claim_missing")
     if ranked and not any(_vinyl_release(variant) for variant in variants):
         missing.append("vinyl_catalog_release")
     return MatchDecision(
