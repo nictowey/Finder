@@ -12,6 +12,7 @@ from finder.adapters.discogs.client import DiscogsClient
 from finder.adapters.ebay.adapter import EbayAdapter
 from finder.adapters.ebay.client import EbayClient
 from finder.adapters.ebay.target_search import plan_target_search, run_target_scan
+from finder.categories.target_review import review_target_listing
 from finder.categories.vinyl_target import parse_discogs_release_id, target_from_release
 from finder.config import (
     load_database_url,
@@ -54,6 +55,11 @@ def _parser() -> argparse.ArgumentParser:
         target_command.add_argument("--json", action="store_true")
         target_command.add_argument("--env-file", type=Path, default=Path(".env"))
         if command == "scan-target":
+            target_command.add_argument(
+                "--review",
+                action="store_true",
+                help="Privately triage this scan against the selected pressing",
+            )
             target_command.add_argument(
                 "--show-listings",
                 action="store_true",
@@ -138,6 +144,7 @@ def _scan(args: argparse.Namespace) -> int:
 
 
 def _target(args: argparse.Namespace) -> int:
+    selected_variant = None
     if args.target:
         if args.query:
             raise ConfigurationError(
@@ -149,6 +156,7 @@ def _target(args: argparse.Namespace) -> int:
         discogs_settings = load_discogs_settings(args.env_file)
         with DiscogsClient(discogs_settings) as client:
             variant = DiscogsCatalogProvider(client).get_release(release_id)
+        selected_variant = variant
         target = target_from_release(variant, queries=args.query)
     monitors = plan_target_search(target, mode=args.mode)
     payload = {
@@ -177,6 +185,11 @@ def _target(args: argparse.Namespace) -> int:
     if args.probe_legacy_id is not None and not re.fullmatch(r"[0-9]{9,20}", args.probe_legacy_id):
         raise ConfigurationError("The probe legacy item ID must contain 9–20 digits.")
 
+    if args.review and selected_variant is None:
+        discogs_settings = load_discogs_settings(args.env_file)
+        with DiscogsClient(discogs_settings) as client:
+            selected_variant = DiscogsCatalogProvider(client).get_release(target.catalog_variant_id)
+
     settings = load_settings(args.env_file)
     configure_logging(settings.log_level)
     database_url = settings.database_url.get_secret_value()
@@ -193,6 +206,42 @@ def _target(args: argparse.Namespace) -> int:
     try:
         with EbayClient(settings) as client:
             run = run_target_scan(target, EbayAdapter(client), repository, mode=args.mode)
+        if args.review:
+            reviewed = []
+            counts = {
+                status: 0
+                for status in ("possible_pressing", "family_review", "conflicting", "unrelated")
+            }
+            for item_id in sorted(run.discovered_item_ids):
+                listing = repository.get("ebay", item_id)
+                if listing is None:
+                    continue
+                assessment = review_target_listing(listing, selected_variant)
+                counts[assessment.status] += 1
+                if assessment.status == "unrelated":
+                    continue
+                reviewed.append(
+                    {
+                        "item_id": listing.marketplace_item_id,
+                        "title": listing.title,
+                        "url": listing.listing_url,
+                        "delivered_subtotal": (
+                            str(listing.total_acquisition_cost)
+                            if listing.total_acquisition_cost is not None
+                            else None
+                        ),
+                        "currency": listing.currency,
+                        **assessment.model_dump(),
+                    }
+                )
+            priority = {"possible_pressing": 0, "family_review": 1, "conflicting": 2}
+            reviewed.sort(key=lambda row: (priority[row["status"]], row["item_id"]))
+            payload["review"] = {
+                "scope": "selected_catalog_release_only",
+                "not_verified_pressings": True,
+                "counts": counts,
+                "listings": reviewed,
+            }
         if args.show_listings:
             payload["discovered_listings"] = [
                 {

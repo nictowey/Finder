@@ -41,7 +41,13 @@ def target_from_release(variant: Variant, *, queries: list[str] | None = None) -
     default_query = f"{artist} {variant.title}".strip()
     if artist.casefold() in ("various", "various artists"):
         default_query = variant.title
-    chosen = queries if queries is not None else [default_query]
+    if queries is None:
+        # Sellers often write ASAP for A$AP and omit title apostrophes. Keep the
+        # original broad search too; neither query requires pressing details.
+        alias = default_query.replace("$", "S").replace("’", "").replace("'", "")
+        chosen = list(dict.fromkeys([default_query, alias]))
+    else:
+        chosen = queries
     if not 1 <= len(chosen) <= 3 or any(not q.strip() or len(q.strip()) > 100 for q in chosen):
         raise ConfigurationError("Supply one to three nonblank searches of at most 100 characters.")
     normalized = [q.strip() for q in chosen]

@@ -8,6 +8,7 @@ from scripts.probe_color_pair import (
     choose_review_listing,
     summarize_discovery,
     summarize_review,
+    summarize_target_review,
 )
 
 
@@ -39,6 +40,7 @@ def test_color_pair_probe_distinguishes_structured_and_title_claims(
         "structured_color_pair": 1,
         "title_color_pair": 2,
     }
+    assert summarize_target_review([listing, title_only], variant) == {"possible_pressing": 2}
     chosen = choose_review_listing([title_only, listing])
     assert chosen is not None and chosen[1] == "structured_color_pair"
 

@@ -64,7 +64,7 @@ Route: [Discogs Help Center](https://support.discogs.com/hc/en-us). Its
 [API terms](https://support.discogs.com/hc/en-us/articles/360009334593-API-Terms-of-Use)
 direct questions about intended use there. Submit from the account that owns the API access.
 
-**Subject:** Review of Discogs catalog API use in a vinyl watchlist with eBay links
+**Subject:** Review of Finder catalog use and a proposed Discogs marketplace watchlist
 
 > Hello Discogs team,
 >
@@ -91,6 +91,16 @@ direct questions about intended use there. Submit from the account that owns the
 > and whether separately obtained CC0 catalog data from a Discogs data dump has different
 > application/use conditions from data obtained through the API. We would appreciate a written
 > decision for the exact free outbound-link journey and the separate paid proposal.
+>
+> We would also like to monitor active **Discogs marketplace listings for a collector-selected
+> release**, using only documented API endpoints, and link buyers back to the listing on
+> Discogs. We understand marketplace inventory and prices are Restricted Data. Is a free private
+> buyer watchlist permitted to retrieve, temporarily retain, display, and notify on those
+> listings using a user-set maximum price? What refresh/deletion and attribution rules apply?
+> Would a public free tool, a paid subscription, or comparing a Discogs listing against an
+> independently licensed sold-price range be permitted? Please distinguish these uses and
+> identify any required written agreement. We will not call listings undervalued or ingest
+> marketplace data while those permissions remain open.
 
 ## Decision handling
 

@@ -91,6 +91,19 @@ def test_vinyl_target_accepts_any_genre_and_rejects_cd(discogs_release):
     assert target_from_release(compilation).queries == ["Invented Orchestral Album"]
 
 
+def test_default_search_includes_seller_spelling_alias(discogs_release, observed_at):
+    variant = normalize_release(
+        {
+            **discogs_release,
+            "title": "Don't Be Dumb",
+            "artists": [{"name": "A$AP Rocky"}],
+        },
+        observed_at,
+    )
+    target = target_from_release(variant)
+    assert target.queries == ["A$AP Rocky Don't Be Dumb", "ASAP Rocky Dont Be Dumb"]
+
+
 @pytest.mark.parametrize(
     "queries",
     [[], ["Future DS2"] * 2, ["Future DS2", " ", "Future Dirty Sprite 2"], ["x"] * 4],
@@ -239,7 +252,16 @@ def test_arbitrary_vinyl_release_plan_scan_and_private_listing_review(
     )
     assert (
         cli.main(
-            ["scan-target", "--release", "1234", "--mode", "initial", "--show-listings", "--json"]
+            [
+                "scan-target",
+                "--release",
+                "1234",
+                "--mode",
+                "initial",
+                "--show-listings",
+                "--review",
+                "--json",
+            ]
         )
         == 0
     )
@@ -247,6 +269,10 @@ def test_arbitrary_vinyl_release_plan_scan_and_private_listing_review(
     assert result["complete"] is True
     assert len(result["discovered_listings"]) == 1
     assert result["discovered_listings"][0]["item_id"] == item["itemId"]
+    assert result["review"]["counts"]["family_review"] == 1
+    assert result["review"]["listings"][0]["status"] == "family_review"
+    assert result["review"]["listings"][0]["url"]
+    assert result["review"]["not_verified_pressings"] is True
     assert ebay_searches == ["Sample Quartet Invented String Record"]
     assert (
         cli.main(["match", "--item-id", item["itemId"], "--target-release-id", "1234", "--json"])
