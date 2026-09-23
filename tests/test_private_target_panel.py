@@ -82,3 +82,60 @@ def test_panel_aggregates_one_batch_without_serializing_identity(
     assert "55555" not in serialized
     assert "987654321" not in serialized
     assert "Example Album" not in serialized
+
+
+def test_optional_coverage_audit_counts_new_leads_without_exposing_ids(
+    discogs_release, search_payload, observed_at
+):
+    variant = normalize_release(
+        {
+            **discogs_release,
+            "id": 55555,
+            "artists": [{"name": "Example Artist"}, {"name": "Second Artist"}],
+        },
+        observed_at,
+    )
+
+    def listing(item_id):
+        return normalize_listing(
+            {
+                **search_payload["itemSummaries"][0],
+                "itemId": item_id,
+                "title": "Example Artist Example Album LP",
+            },
+            observed_at,
+        )
+
+    first, second = listing("v1|987654321|0"), listing("v1|123456789|0")
+
+    class Catalog:
+        def get_release(self, release_id):
+            return variant
+
+        def search_alternatives(self, release):
+            return AlternativeRetrieval([], True)
+
+    class Adapter:
+        stats = SimpleNamespace(limit_reached=False)
+
+        def search(self, monitor, *, seen_item_ids):
+            assert monitor.source_options["page_size"] == 5
+            chosen = [first, second] if "audit-newest" in monitor.id else [first]
+            if "audit-artist" in monitor.id:
+                assert monitor.query == "Second Artist Example Album"
+            for row in chosen:
+                if row.marketplace_item_id not in seen_item_ids:
+                    seen_item_ids.add(row.marketplace_item_id)
+                    yield ListingObservation(listing=row)
+
+    result = probe_batch(
+        [55555], batch=0, catalog=Catalog(), adapter=Adapter(), coverage_audit=True
+    )
+    audit = result["results"][0]["coverage_audit"]
+    assert audit["queries"] == 2
+    assert audit["overlap_with_initial"] == 1
+    assert audit["additional_sampled"] == 1
+    assert audit["additional_review_counts"]["family_review"] == 1
+    assert result["maximum_browse_requests_without_retries"] == 30
+    assert "123456789" not in json.dumps(result)
+    assert "55555" not in json.dumps(result)

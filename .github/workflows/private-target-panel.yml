@@ -8,6 +8,11 @@ on:
         required: true
         type: choice
         options: ['0', '1', '2']
+      coverage_audit:
+        description: Also sample a different search sort and second catalog artist
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -48,6 +53,11 @@ jobs:
       - name: Measure four private targets without retaining listings
         env:
           TARGET_BATCH: ${{ inputs.batch }}
+          COVERAGE_AUDIT: ${{ inputs.coverage_audit }}
         run: |
           set -euo pipefail
-          python scripts/measure_private_target_panel.py --batch "$TARGET_BATCH"
+          if [ "$COVERAGE_AUDIT" = true ]; then
+            python scripts/measure_private_target_panel.py --batch "$TARGET_BATCH" --coverage-audit
+          else
+            python scripts/measure_private_target_panel.py --batch "$TARGET_BATCH"
+          fi
