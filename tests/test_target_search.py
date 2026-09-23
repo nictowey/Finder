@@ -38,6 +38,39 @@ def test_ds2_target_search_is_broad_and_bounded():
     )
 
 
+def test_initial_scan_samples_newest_and_deduplicates_relevance_overlap(
+    settings, repository, search_payload, observed_at
+):
+    target = EbaySearchTarget(id="synthetic", catalog_variant_id=1, queries=["Example Album"])
+    template = search_payload["itemSummaries"][0]
+    first = {**template, "itemId": "synthetic-relevance"}
+    second = {**template, "itemId": "synthetic-newest"}
+    requests = []
+
+    def handler(request):
+        if request.method == "POST":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        if request.url.path.endswith("/search"):
+            sort = request.url.params.get("sort")
+            requests.append(sort)
+            rows = [first, second] if sort == "newlyListed" else [first]
+            return httpx.Response(200, json={"total": len(rows), "itemSummaries": rows})
+        item_id = request.url.path.rsplit("/", 1)[-1]
+        requests.append(item_id)
+        return httpx.Response(200, json=first if item_id == first["itemId"] else second)
+
+    with EbayClient(settings, transport=httpx.MockTransport(handler)) as client:
+        run = run_target_scan(
+            target, EbayAdapter(client, now=lambda: observed_at), repository, mode="initial"
+        )
+        assert client.browse_requests == 4  # Two search pages, two unique details.
+    assert run.expected_queries == 2
+    assert [item.status for item in run.summaries] == ["completed", "completed"]
+    assert run.found_legacy_item("synthetic-newest")
+    assert repository.count() == 2
+    assert requests == [None, "synthetic-relevance", "newlyListed", "synthetic-newest"]
+
+
 def test_inventory_cursor_resumes_rotates_and_resets_for_edits():
     target = EbaySearchTarget(
         id="synthetic", catalog_variant_id=1, queries=["Artist Album", "Album alias"]
@@ -272,7 +305,7 @@ def test_two_queries_dedupe_detail_and_persist_distinct_items(
             searches.append(request.url.params["q"])
             assert request.url.params["category_ids"] == "176985"
             assert request.url.params["limit"] == "10"
-            assert "sort" not in request.url.params
+            assert request.url.params.get("sort") == ("newlyListed" if len(searches) == 3 else None)
             items = [item_a] if len(searches) == 1 else [item_a, item_b]
             return httpx.Response(200, json={"total": len(items), "itemSummaries": items})
         item_id = request.url.path.rsplit("/", 1)[-1]
@@ -286,9 +319,13 @@ def test_two_queries_dedupe_detail_and_persist_distinct_items(
         run = run_target_scan(
             target, EbayAdapter(client, now=lambda: observed_at), repository, mode="initial"
         )
-    assert searches == target.queries
+    assert searches == [*target.queries, target.queries[0]]
     assert detail_calls == [item_a["itemId"], item_b["itemId"]]
-    assert [(result.new, result.skipped_invalid) for result in run.summaries] == [(1, 0), (1, 1)]
+    assert [(result.new, result.skipped_invalid) for result in run.summaries] == [
+        (1, 0),
+        (1, 1),
+        (0, 2),
+    ]
     assert run.summaries[1].skip_reasons == {"duplicate_in_scan": 1}
     assert run.found_legacy_item(item_a["itemId"].split("|")[1])
     assert not run.found_legacy_item("406542550752")
@@ -316,6 +353,13 @@ def test_target_plan_cli_needs_no_credentials(monkeypatch, capsys):
     assert plan["maximum_search_requests"] == 2
     assert plan["maximum_detail_requests"] == 20
     assert plan["searches"][0]["query"] == "Future DS2"
+    assert (
+        cli.main(["target-plan", "--target", "future-ds2-7609839", "--mode", "initial", "--json"])
+        == 0
+    )
+    initial_plan = json.loads(capsys.readouterr().out)
+    assert initial_plan["maximum_search_requests"] == 3
+    assert initial_plan["searches"][-1]["options"]["sort"] == "newlyListed"
 
 
 def test_arbitrary_vinyl_release_plan_scan_and_private_listing_review(
@@ -405,7 +449,7 @@ def test_arbitrary_vinyl_release_plan_scan_and_private_listing_review(
     assert result["review"]["listings"][0]["status"] == "possible_pressing"
     assert result["review"]["listings"][0]["url"]
     assert result["review"]["not_verified_pressings"] is True
-    assert ebay_searches == ["Sample Quartet Invented String Record"]
+    assert ebay_searches == ["Sample Quartet Invented String Record"] * 2
     assert (
         cli.main(["match", "--item-id", item["itemId"], "--target-release-id", "1234", "--json"])
         == 0

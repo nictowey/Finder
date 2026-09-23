@@ -19,7 +19,7 @@ performance on any vinyl. Other marketplaces and market-value estimates are sepa
 | Question | Verified baseline | Gap to close |
 | --- | --- | --- |
 | Can a pressing be saved and scanned? | Owner login, three watches, scheduled worker and private inbox work. | Observe scheduled operation over time and verify push on the owner's device. |
-| Does search find what is listed? | A bounded scan found the owner-supplied DS2 example. The recurring worker now samples older inventory and directly rechecks one known lead on alternating refreshes. | Eight newest results per query and at most 36 sampled older results per query; offsets shift. No independent coverage denominator. |
+| Does search find what is listed? | A bounded scan found the owner-supplied DS2 example. The recurring worker samples older inventory and rechecks known leads. A same-API alternate-search probe across 11 targets found seven additional possible-pressing leads outside initial five-result pages. New watches now sample one newest page as well as relevance pages. | Eight newest results per query on refresh and at most 36 sampled older results per query; offsets shift. No independent coverage denominator. |
 | Does the watch distinguish neighboring pressings? | Policy v3 compares up to five catalog alternatives per watch. The refreshed DS2 lead had four plausible competitors, so its alert was withheld. Explicitly incomplete alternative searches also withhold notifications while preserving inbox leads. | This bounded sample does not establish catalog completeness or pressing precision. |
 | Does it handle varied artist metadata and album titles? | The third live target exposed an erroneous conflict for an inverted seller artist field. Synthetic regressions cover exact `Last, First` equivalence, different artists, a longer competing album title, repeated title words that look like colors, and title negation/lots. A deployed fresh scan showed no false artist conflict in eleven visible Dean rows. | The observed rows all had barcode or catalog-number conflicts, so the fresh scan did not validate a positive pressing call. Expand to representative labeled cases without suppressing other editions. |
 | Do identification rules work on real listings? | Synthetic rule tests pass. | No approved real-listing holdout, measured wrong-pressing rate, or missed-listing audit. |
@@ -187,6 +187,21 @@ showed that GitHub's twice-hourly cron did not deliver the expected cadence on t
 The [16:17 UTC quota probe](https://github.com/nictowey/Finder/actions/runs/35887651796)
 reported 4,880 calls remaining in the 5,000-call daily Browse window. Improve scheduling
 and observe actual scan delays before a timely-new-listing promise.
+
+The private [11-target alternate-search sample](https://github.com/nictowey/Finder/pull/52)
+ran in [batch 0](https://github.com/nictowey/Finder/actions/runs/35900779621),
+[batch 1](https://github.com/nictowey/Finder/actions/runs/35900912144), and
+[batch 2](https://github.com/nictowey/Finder/actions/runs/35900619471). Relative to the
+initial best-match pages of five, the alternate newest-page and second-artist sample found
+seven additional `possible_pressing` leads (five EsDeeKid, two Ikonika) and six additional
+`family_review` leads. These statuses describe unverified seller claims. The samples used the
+same API in sequence, not an independently assembled denominator, and were not the complete
+production refresh plan. Two structured artist conflicts on the three-artist Larry June target
+remained unresolved after exact joined-credit support; they were not reclassified as matches.
+The first-scan dual-sort change checks one newest page of ten for the broad first query in
+addition to its relevance pages, sharing item deduplication. It does not expand every recurring
+scan or establish coverage of listings never returned by the API. The nominal 4,464-call/day
+refresh ceiling remains unchanged; initial scans, retries, and probe usage add to it.
 
 Stages 1–2 and synthetic tooling can proceed immediately. The existing
 [provider-use record](decisions/0001-provider-use.md) governs real evaluation retention,

@@ -44,12 +44,16 @@ class EbaySearchTarget(BaseModel):
 
 
 def plan_target_search(
-    target: EbaySearchTarget, *, mode: Literal["initial", "refresh"], page_size: int = 10
+    target: EbaySearchTarget,
+    *,
+    mode: Literal["initial", "refresh"],
+    page_size: int = 10,
+    include_initial_newest: bool = False,
 ) -> list[Monitor]:
-    """At most three newest/relevance searches with a bounded result page."""
+    """Up to three bounded base queries, optionally one initial newest sample."""
     if not 1 <= page_size <= 10:
         raise ValueError("Target search page size must be between 1 and 10")
-    return [
+    monitors = [
         Monitor(
             id=f"{target.id}-v{target.plan_version}-{index}",
             name=f"{target.id} search {index}",
@@ -68,6 +72,20 @@ def plan_target_search(
         )
         for index, query in enumerate(target.queries, 1)
     ]
+    if include_initial_newest and mode == "initial":
+        # A relevance page alone missed plausible leads in the private panel.
+        # Sample the broad query's newest page once when a watch is created.
+        broad = monitors[0]
+        monitors.append(
+            broad.model_copy(
+                update={
+                    "id": f"{broad.id}-initial-newest",
+                    "description": "Initial newest-listings sample; coverage remains bounded",
+                    "source_options": {**broad.source_options, "sort": "newlyListed"},
+                }
+            )
+        )
+    return monitors
 
 
 @dataclass(frozen=True)
@@ -207,7 +225,10 @@ def run_target_scan(
     ):
         raise ValueError("Invalid inventory page for this target")
     monitors = plan_target_search(
-        target, mode=mode, page_size=refresh_page_size if mode == "refresh" else 10
+        target,
+        mode=mode,
+        page_size=refresh_page_size if mode == "refresh" else 10,
+        include_initial_newest=True,
     )
     if inventory is not None:
         template = monitors[inventory.query_index]
