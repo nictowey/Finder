@@ -355,6 +355,9 @@ a provisional probable-variant decision.
 The September 23 authenticated smoke check returned ten releases for a synthetic listing and
 four strong candidates. This validates the new request path, while real eBay precision and true
 release recall remain unmeasured.
+For a saved exact release, retrieval now includes one bounded catalog artist/title search in
+addition to the seller-derived searches. It may reveal competing pressings under the existing
+ten-detail default; a release found only by that catalog query is still a seller-search miss.
 
 ### 2.1 Target ontology
 
@@ -374,6 +377,8 @@ generic core:
   that release even if seller-text search misses it. Record the search miss, keep competing
   search results under the same limit, and send a no-identifier match to human review rather
   than silently dropping a known target or asserting an exact pressing.
+- Search the target catalog artist/title once for bounded competing candidates when the seller
+  text is too noisy; do not count that as discovery of the release from the seller listing.
 - Measure whether these first-page searches actually return the true release on a permitted,
   labeled dataset; a seller's barcode or catalog number remains an unverified claim.
 - Retrieve candidates at the master/family level before ranking exact releases.

@@ -75,6 +75,10 @@ The open provider-use decision and bounded Production audit are documented in
    - Versioned, configurable, at most three queries of ten items, with initial and refresh modes
    - DS2 title-alias plan and cross-query item deduplication; a bounded Production scan found
      the user-supplied example on September 23, 2026, but target recall is unmeasured
+9. Internal target-family candidate retrieval
+   - A saved release is hydrated directly and a bounded catalog-derived artist/title query
+     adds potential competing releases alongside seller-derived searches
+   - The catalog query does not count as seller-text recall or prove complete family coverage
 
 ### Verified baseline
 
@@ -153,6 +157,9 @@ Discogs behavior in the eBay adapter or marketplace behavior in catalog provider
 - An exact watch target can reserve one Discogs detail slot even when seller-text search misses
   the release. A directly fetched target is a candidate to assess, never proof that the eBay
   listing is that release. Preserve target search-miss and missing numbered-claim reasons.
+- Target evaluation may use one additional catalog-derived family search (four searches total)
+  to retrieve competitors. Keep the same detail cap and distinguish seller-search recall from
+  catalog-derived retrieval.
 - eBay's API agreement restricts using eBay content to suggest or model prices for eBay items;
   obtain a written provider-use decision before deal scoring, price-based alerts, or paid launch.
 - Review eBay's intermediate-copy and algorithm-training restrictions before retaining real

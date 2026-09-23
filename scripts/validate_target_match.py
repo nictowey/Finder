@@ -35,6 +35,9 @@ def summarize_match(listing: Listing, retrieval: CandidateRetrieval, target_id: 
     """Project the decision onto an allowlist free of seller and catalog values."""
     ranked = rank_variants(listing, retrieval.variants)
     target = next((item for item in ranked if item.catalog_variant_id == str(target_id)), None)
+    target_variant = next(
+        (item for item in retrieval.variants if item.catalog_variant_id == str(target_id)), None
+    )
     decision = decide_match(listing, retrieval.variants, retrieval_incomplete=retrieval.incomplete)
     return {
         "status": "completed",
@@ -75,6 +78,13 @@ def summarize_match(listing: Listing, retrieval: CandidateRetrieval, target_id: 
         "retrieval": {
             "query_kinds": retrieval.query_kinds,
             "releases_evaluated": len(retrieval.variants),
+            "same_family_competitors": sum(
+                item.catalog_variant_id != str(target_id)
+                and item.catalog_product_id == target_variant.catalog_product_id
+                for item in retrieval.variants
+            )
+            if target_variant
+            else 0,
             "target_not_in_search": retrieval.target_not_in_search,
             "search_truncated": retrieval.search_truncated,
             "candidate_limit_reached": retrieval.candidate_limit_reached,

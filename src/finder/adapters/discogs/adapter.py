@@ -54,11 +54,13 @@ class DiscogsCatalogProvider:
     def search_for_listing(
         self, listing: Listing, *, limit: int = 10, target_release_id: int | None = None
     ) -> CandidateRetrieval:
-        """Use at most three searches and `limit` detail requests for provisional candidates.
+        """Use at most four searches and `limit` detail requests for provisional candidates.
 
         All search values are seller claims. Diversifying retrieval is not verification of an
         identifier and does not establish complete coverage of a release family. A user-saved
         exact release is retrieved directly, but never treated as a confirmed listing match.
+        A target-derived family search can supply competitors when seller text is too noisy;
+        it cannot count as the seller search finding the target.
         """
         if not 1 <= limit <= 25:
             raise ConfigurationError("Catalog result limit must be between 1 and 25.")
@@ -90,16 +92,29 @@ class DiscogsCatalogProvider:
             raise ConfigurationError("Listing has no usable catalog search value.")
         identifiers_omitted = len(barcodes) > 1 or len(catnos) > 1
         per_page = min(limit, 10)
+        target = self._hydrate([target_release_id])[0] if target_release_id else None
         result_lists = []
         truncated = False
         for name, value in plans:
             results, possibly_more = self._search({name: value}, per_page)
             result_lists.append(self._ids(results))
             truncated |= possibly_more
+        seller_ids = list(
+            dict.fromkeys(id for row in zip_longest(*result_lists) for id in row if id)
+        )
+        target_not_in_search = target_release_id is not None and target_release_id not in seller_ids
+        query_kinds = [name for name, _ in plans]
+        if target is not None and target.artists and target.title:
+            artist = re.sub(r"\s+\(\d+\)$", "", target.artists[0])
+            family_query = f"{artist} {target.title}"
+            if family_query.casefold() != listing.title.strip().casefold():
+                results, possibly_more = self._search({"q": family_query}, per_page)
+                result_lists.append(self._ids(results))
+                truncated |= possibly_more
+                query_kinds.append("target_family")
         search_ids = list(
             dict.fromkeys(id for row in zip_longest(*result_lists) for id in row if id)
         )
-        target_not_in_search = target_release_id is not None and target_release_id not in search_ids
         # Reserve one bounded detail slot for the user's target. Otherwise broad title search
         # can crowd out the release the collector actually requested.
         unique = (
@@ -107,9 +122,12 @@ class DiscogsCatalogProvider:
             if target_release_id is not None
             else search_ids
         )
+        variants = ([target] if target is not None else []) + self._hydrate(
+            [id for id in unique[:limit] if id != target_release_id]
+        )
         return CandidateRetrieval(
-            variants=self._hydrate(unique[:limit]),
-            query_kinds=[name for name, _ in plans],
+            variants=variants,
+            query_kinds=query_kinds,
             search_truncated=truncated,
             candidate_limit_reached=len(unique) > limit,
             identifiers_omitted=identifiers_omitted,
