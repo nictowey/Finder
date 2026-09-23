@@ -101,6 +101,16 @@ def test_other_album_with_same_artist_and_color_is_not_a_family_match(search_pay
     assert decide_match(listing, [numbered]).outcome == "insufficient_data"
 
 
+def test_fuzzy_format_miss_is_not_a_manufacturing_conflict(search_payload, observed_at):
+    listing, numbered, _ = _numbered_case(search_payload, observed_at)
+    listing = listing.model_copy(
+        update={"item_specifics": {**listing.item_specifics, "Format": ["Long-playing record"]}}
+    )
+    decision = decide_match(listing, [numbered])
+    assert decision.outcome == "family_only"
+    assert "format" not in decision.conflicts
+
+
 def test_numbered_claim_with_shared_identifiers_stays_ambiguous(search_payload, observed_at):
     listing, numbered, ordinary = _numbered_case(search_payload, observed_at, features="Numbered")
     decision = decide_match(listing, [numbered, ordinary])

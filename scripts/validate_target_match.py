@@ -46,7 +46,31 @@ def summarize_match(listing: Listing, retrieval: CandidateRetrieval, target_id: 
             {item.field for item in target.evidence if item.matched} if target else set()
         ),
         "target_conflicting_fields": sorted(
-            {item.field for item in target.evidence if not item.matched} if target else set()
+            {
+                item.field
+                for item in target.evidence
+                if not item.matched
+                and item.field
+                in (
+                    "artist",
+                    "barcode",
+                    "catalog_number",
+                    "color",
+                    "edition",
+                    "country",
+                )
+            }
+            if target
+            else set()
+        ),
+        "target_unmatched_soft_fields": sorted(
+            {
+                item.field
+                for item in target.evidence
+                if not item.matched and item.field in ("title", "format")
+            }
+            if target
+            else set()
         ),
         "retrieval": {
             "query_kinds": retrieval.query_kinds,

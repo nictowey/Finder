@@ -15,7 +15,7 @@ from finder.domain import (
     Variant,
 )
 
-MATCH_POLICY_VERSION = "vinyl-decision-v3"
+MATCH_POLICY_VERSION = "vinyl-decision-v4"
 
 
 def _normalized(value: str) -> str:
@@ -272,7 +272,9 @@ def decide_match(
             item.field
             for candidate in representative
             for item in candidate.evidence
+            # Fuzzy title and format misses are not evidence of a different pressing.
             if not item.matched
+            and item.field in ("artist", "barcode", "catalog_number", "color", "edition", "country")
         }
     )
     if _non_vinyl_listing(listing):

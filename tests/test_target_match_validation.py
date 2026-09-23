@@ -26,6 +26,9 @@ def test_target_match_summary_never_emits_provider_values(
     raw["itemId"] = "v1|123456789012|0"
     raw["title"] = "Example Artist Example Album vinyl private listing marker"
     listing = normalize_listing(raw, observed_at)
+    listing = listing.model_copy(
+        update={"item_specifics": {**listing.item_specifics, "Format": ["Long-playing record"]}}
+    )
     variant = normalize_release(discogs_release, observed_at)
     retrieval = CandidateRetrieval(
         variants=[variant],
@@ -41,5 +44,7 @@ def test_target_match_summary_never_emits_provider_values(
     assert summary["target_retrieved"]
     assert summary["retrieval"]["incomplete"]
     assert summary["decision"]["outcome"] != "exact_variant"
+    assert "format" in summary["target_unmatched_soft_fields"]
+    assert "format" not in summary["target_conflicting_fields"]
     for sensitive in ("123456789012", "private listing marker", listing.title, "Example Artist"):
         assert sensitive not in public_log
