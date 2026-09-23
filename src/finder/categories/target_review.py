@@ -25,6 +25,8 @@ class TargetReview(BaseModel):
     status: Literal["possible_pressing", "family_review", "conflicting", "unrelated"]
     clues: list[str]
     verify: list[str]
+    alternatives_checked: int | None = None
+    alternatives_not_ruled_out: int | None = None
 
 
 def review_target_listing(listing: Listing, variant: Variant) -> TargetReview:
@@ -108,4 +110,46 @@ def review_target_listing(listing: Listing, variant: Variant) -> TargetReview:
         status="possible_pressing" if possible else "family_review",
         clues=clues,
         verify=verify,
+    )
+
+
+def review_target_with_alternatives(
+    listing: Listing,
+    target: Variant,
+    alternatives: list[Variant] | None,
+    *,
+    search_incomplete: bool = True,
+) -> TargetReview:
+    """Expose competing explanations without hiding a sparse but useful target lead.
+
+    A competitor with missing evidence remains unresolved. Counting zero competitors in
+    this bounded search never proves unique identity or permits an exact pressing claim.
+    """
+    review = review_target_listing(listing, target)
+    if alternatives is None:
+        return review
+    unique = {
+        row.catalog_variant_id: row
+        for row in alternatives
+        if row.catalog_source == target.catalog_source
+        and row.catalog_variant_id != target.catalog_variant_id
+        and any(str(fmt.get("name", "")).casefold() == "vinyl" for fmt in row.formats)
+    }
+    # The sparse family check handles normalized artist/title spelling and also keeps
+    # plausible candidates whose master grouping is absent or differs in the catalog.
+    considered = [review_target_listing(listing, row) for row in unique.values()]
+    unresolved = sum(row.status in ("possible_pressing", "family_review") for row in considered)
+    verify = [value for value in review.verify if value != "catalog_alternatives_not_checked"]
+    if search_incomplete:
+        verify.append("catalog_alternative_search_incomplete")
+    if not unique:
+        verify.append("no_competing_pressings_retrieved")
+    if unresolved and review.status in ("possible_pressing", "family_review"):
+        verify.append("other_pressings_not_ruled_out")
+    return review.model_copy(
+        update={
+            "verify": verify,
+            "alternatives_checked": len(unique),
+            "alternatives_not_ruled_out": unresolved,
+        }
     )

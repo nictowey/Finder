@@ -1,10 +1,16 @@
-from datetime import timedelta
+from contextlib import nullcontext
+from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 from sqlalchemy import select, update
 
+from finder import watch_worker
+from finder.adapters.discogs.adapter import AlternativeRetrieval
 from finder.adapters.discogs.normalize import normalize_release
+from finder.adapters.ebay.client import EbayClient
 from finder.adapters.ebay.normalize import normalize_listing
+from finder.errors import CatalogRequestError
 from finder.watch_store import (
     SavedWatch,
     WatchStore,
@@ -121,17 +127,43 @@ def test_sparse_lead_can_notify_but_unknown_shipping_and_condition_cannot(
         }
     )
     watch = SavedWatch(release_id=123)
-    result = assess_review(watch, row, variant, now=observed_at)
+    result = assess_review(watch, row, variant, now=observed_at, alternatives=[])
     assert result["notify"]
     assert result["status"] == "possible_pressing"
     budget = watch.model_copy(
         update={"maximum_subtotal": 100, "country": "US", "postal_code": "12345"}
     )
     row = row.model_copy(update={"shipping_cost": None})
-    assert not assess_review(budget, row, variant, now=observed_at)["notify"]
+    assert not assess_review(budget, row, variant, now=observed_at, alternatives=[])["notify"]
     condition = watch.model_copy(update={"condition_ids": ["99999"]})
-    assert not assess_review(condition, row, variant, now=observed_at)["notify"]
-    assert not assess_review(watch, row, variant, now=observed_at + timedelta(hours=2))["notify"]
+    assert not assess_review(condition, row, variant, now=observed_at, alternatives=[])["notify"]
+    assert not assess_review(
+        watch, row, variant, now=observed_at + timedelta(hours=2), alternatives=[]
+    )["notify"]
+
+
+def test_ambiguous_and_unchecked_leads_stay_visible_without_alerts(
+    search_payload, discogs_release, observed_at
+):
+    variant = normalize_release(discogs_release, observed_at)
+    row = listing(search_payload, observed_at).model_copy(
+        update={
+            "title": "Example Artist Example Album LP",
+            "item_specifics": {"Barcode": ["0123456789012"]},
+            "quality_flags": [],
+            "price_kind": "fixed_price",
+            "listing_ends_at": None,
+        }
+    )
+    watch = SavedWatch(release_id=123)
+    unchecked = assess_review(watch, row, variant, now=observed_at)
+    assert unchecked["status"] == "possible_pressing" and not unchecked["notify"]
+    competitor = variant.model_copy(update={"catalog_variant_id": "222"})
+    ambiguous = assess_review(watch, row, variant, now=observed_at, alternatives=[competitor])
+    assert ambiguous["status"] == "possible_pressing" and not ambiguous["notify"]
+    assert "other_pressings_not_ruled_out" in ambiguous["verify"]
+    assert ambiguous["alternatives_not_ruled_out"] == 1
+    assert ambiguous["policy"] == "private-target-review-v2"
 
 
 def test_pilot_capacity(store):
@@ -139,3 +171,64 @@ def test_pilot_capacity(store):
         store.add(SavedWatch(release_id=release_id))
     with pytest.raises(ValueError):
         store.add(SavedWatch(release_id=4))
+
+
+@pytest.mark.parametrize("catalog_failed", [False, True])
+def test_worker_reuses_alternatives_and_keeps_review_when_catalog_fails(
+    repository, store, settings, discogs_release, search_payload, monkeypatch, catalog_failed
+):
+    now = datetime.now(UTC)
+    target = normalize_release(discogs_release, now)
+    calls = []
+
+    class Provider:
+        def __init__(self, client):
+            pass
+
+        def get_release(self, release_id):
+            return target
+
+        def search_alternatives(self, variant):
+            calls.append(variant.catalog_variant_id)
+            if catalog_failed:
+                raise CatalogRequestError("Synthetic lookup failure")
+            other = variant.model_copy(update={"catalog_variant_id": "222"})
+            return AlternativeRetrieval([other], True)
+
+    items = [
+        {
+            **search_payload["itemSummaries"][0],
+            "itemId": f"synthetic-{index}",
+            "title": "Example Artist Example Album LP",
+            "localizedAspects": [{"name": "Barcode", "value": "0123456789012"}],
+        }
+        for index in range(2)
+    ]
+
+    def handler(request):
+        if request.method == "POST":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        if request.url.path.endswith("/search"):
+            return httpx.Response(200, json={"total": 2, "itemSummaries": items})
+        item_id = request.url.path.rsplit("/", 1)[-1]
+        return httpx.Response(200, json=next(item for item in items if item["itemId"] == item_id))
+
+    monkeypatch.setattr(watch_worker, "DiscogsClient", lambda _: nullcontext(None))
+    monkeypatch.setattr(watch_worker, "DiscogsCatalogProvider", Provider)
+    monkeypatch.setattr(
+        watch_worker,
+        "EbayClient",
+        lambda config: EbayClient(config, transport=httpx.MockTransport(handler)),
+    )
+    store.add(SavedWatch(release_id=111), now=now)
+    report = watch_worker.run_due_watches(repository, settings, None)
+    assert report == {"attempted": 1, "completed": 1, "failed": 0, "new_inbox_rows": 2}
+    assert calls == ["111"]  # Once for the watch, not once per listing.
+    with repository.engine.connect() as conn:
+        rows = conn.execute(select(inbox.c.data)).scalars().all()
+        assert all(row["status"] == "possible_pressing" for row in rows)
+        assert all(not row["notify"] for row in rows)
+        assert not conn.execute(select(outbox)).all()
+        summary = conn.execute(select(watches.c.summary)).scalar_one()
+        assert summary["catalog_check_failed"] == catalog_failed
+        assert summary["ambiguous_leads"] == (0 if catalog_failed else 2)

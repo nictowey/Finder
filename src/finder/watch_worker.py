@@ -7,13 +7,16 @@ from finder.adapters.discogs.client import DiscogsClient
 from finder.adapters.ebay.adapter import EbayAdapter
 from finder.adapters.ebay.client import EbayClient
 from finder.adapters.ebay.target_search import run_target_scan
-from finder.categories.target_review import review_target_listing
+from finder.categories.target_review import review_target_with_alternatives
 from finder.categories.vinyl_target import target_from_release
+from finder.errors import CatalogError
 from finder.watch_store import SavedWatch, WatchStore
 
 
-def assess_review(watch, listing, variant, *, now):
-    review = review_target_listing(listing, variant)
+def assess_review(watch, listing, variant, *, now, alternatives=None, search_incomplete=True):
+    review = review_target_with_alternatives(
+        listing, variant, alternatives, search_incomplete=search_incomplete
+    )
     reasons = list(review.verify)
     subtotal = listing.total_acquisition_cost
     budget = "no_ceiling"
@@ -28,6 +31,10 @@ def assess_review(watch, listing, variant, *, now):
         else:
             budget = "within_ceiling" if subtotal <= watch.maximum_subtotal else "over_ceiling"
     blocked = []
+    if review.alternatives_checked is None:
+        blocked.append("catalog_alternatives_not_checked")
+    elif review.alternatives_not_ruled_out:
+        blocked.append("other_pressings_not_ruled_out")
     if listing.price_kind != "fixed_price":
         blocked.append("auction_final_price_unknown")
     if watch.condition_ids and listing.condition_id not in watch.condition_ids:
@@ -61,7 +68,7 @@ def assess_review(watch, listing, variant, *, now):
         "notify": review.status == "possible_pressing"
         and not blocked
         and budget in ("no_ceiling", "within_ceiling"),
-        "policy": "private-target-review-v1",
+        "policy": "private-target-review-v2",
     }
 
 
@@ -76,7 +83,14 @@ def run_due_watches(repository, settings, discogs_settings, *, limit=3):
         try:
             watch = SavedWatch.model_validate(claim["config"])
             with DiscogsClient(discogs_settings) as client:
-                variant = DiscogsCatalogProvider(client).get_release(watch.release_id)
+                provider = DiscogsCatalogProvider(client)
+                variant = provider.get_release(watch.release_id)
+                try:
+                    catalog_check = provider.search_alternatives(variant)
+                except CatalogError:
+                    # Still surface discovered listings, but no notifications based on a
+                    # missing comparison. Do not expose provider payloads in public logs.
+                    catalog_check = None
             target = target_from_release(variant).model_copy(update={"id": "private-watch"})
             destination_settings = settings.model_copy(
                 update={
@@ -99,7 +113,21 @@ def run_due_watches(repository, settings, discogs_settings, *, limit=3):
             for item_id in scan.discovered_item_ids:
                 listing = repository.get("ebay", item_id)
                 if listing:
-                    reviews.append((listing, assess_review(watch, listing, variant, now=now)))
+                    reviews.append(
+                        (
+                            listing,
+                            assess_review(
+                                watch,
+                                listing,
+                                variant,
+                                now=now,
+                                alternatives=catalog_check.variants if catalog_check else None,
+                                search_incomplete=catalog_check.search_incomplete
+                                if catalog_check
+                                else True,
+                            ),
+                        )
+                    )
             report["new_inbox_rows"] += store.finish(
                 claim,
                 reviews,
@@ -108,6 +136,18 @@ def run_due_watches(repository, settings, discogs_settings, *, limit=3):
                     "observed": len(reviews),
                     "page_cap_reached": any(row.limit_reached for row in scan.summaries),
                     "complete": complete,
+                    "catalog_alternatives_checked": len(catalog_check.variants)
+                    if catalog_check
+                    else None,
+                    "catalog_search_incomplete": catalog_check.search_incomplete
+                    if catalog_check
+                    else True,
+                    "catalog_check_failed": catalog_check is None,
+                    "ambiguous_leads": sum(
+                        row[1]["status"] == "possible_pressing"
+                        and bool(row[1]["alternatives_not_ruled_out"])
+                        for row in reviews
+                    ),
                 },
                 success=complete,
                 now=now,

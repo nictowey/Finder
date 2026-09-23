@@ -4,7 +4,7 @@ import pytest
 
 from finder.adapters.discogs.normalize import normalize_release
 from finder.adapters.ebay.normalize import normalize_listing
-from finder.categories.target_review import review_target_listing
+from finder.categories.target_review import review_target_listing, review_target_with_alternatives
 
 
 @pytest.fixture
@@ -88,3 +88,68 @@ def test_identifier_can_surface_uncolored_vinyl_for_review(
     assert row.status == "possible_pressing"
     assert "seller_identifier_claim" in row.clues
     assert "catalog_alternatives_not_checked" in row.verify
+
+
+def test_shared_color_stays_visible_with_ambiguous_alternative(
+    search_payload, observed_at, release
+):
+    listing = _listing(search_payload, observed_at, "ASAP Rocky Dont Be Dumb Pink Green vinyl")
+    other = release.model_copy(update={"catalog_variant_id": "222"})
+    row = review_target_with_alternatives(listing, release, [release, other, other])
+    assert row.status == "possible_pressing"
+    assert row.alternatives_checked == row.alternatives_not_ruled_out == 1
+    assert "other_pressings_not_ruled_out" in row.verify
+    assert "catalog_alternative_search_incomplete" in row.verify
+    assert "catalog_alternatives_not_checked" not in row.verify
+
+
+def test_missing_competitor_color_is_unresolved_not_ruled_out(search_payload, observed_at, release):
+    listing = _listing(search_payload, observed_at, "ASAP Rocky Dont Be Dumb Pink Green vinyl")
+    other = release.model_copy(update={"catalog_variant_id": "222", "formats": [{"name": "Vinyl"}]})
+    row = review_target_with_alternatives(listing, release, [other], search_incomplete=False)
+    assert row.alternatives_not_ruled_out == 1
+
+
+def test_contradicted_color_and_other_album_do_not_add_ambiguity(
+    search_payload, observed_at, release
+):
+    listing = _listing(search_payload, observed_at, "ASAP Rocky Dont Be Dumb Pink Green vinyl")
+    other_color = release.model_copy(
+        update={"catalog_variant_id": "222", "formats": [{"name": "Vinyl", "text": "Blue"}]}
+    )
+    other_album = release.model_copy(update={"catalog_variant_id": "333", "title": "Other"})
+    row = review_target_with_alternatives(
+        listing, release, [other_color, other_album], search_incomplete=False
+    )
+    assert row.status == "possible_pressing"
+    assert row.alternatives_checked == 2
+    assert row.alternatives_not_ruled_out == 0
+    assert "other_pressings_not_ruled_out" not in row.verify
+
+
+def test_shared_barcode_needs_discriminating_evidence(search_payload, discogs_release, observed_at):
+    target = normalize_release(discogs_release, observed_at)
+    other = target.model_copy(update={"catalog_variant_id": "222"})
+    listing = _listing(
+        search_payload,
+        observed_at,
+        "Example Artist Example Album LP",
+        (("Barcode", "0123456789012"),),
+    )
+    row = review_target_with_alternatives(listing, target, [other])
+    assert row.alternatives_not_ruled_out == 1
+    assert row.status == "possible_pressing"
+
+
+def test_missing_or_empty_catalog_comparison_never_proves_uniqueness(
+    search_payload, observed_at, release
+):
+    listing = _listing(search_payload, observed_at, "ASAP Rocky Dont Be Dumb Pink Green vinyl")
+    failed = review_target_with_alternatives(listing, release, None)
+    assert failed.alternatives_checked is None
+    assert "catalog_alternatives_not_checked" in failed.verify
+    empty = review_target_with_alternatives(listing, release, [])
+    assert empty.status == "possible_pressing"
+    assert empty.alternatives_checked == 0
+    assert "no_competing_pressings_retrieved" in empty.verify
+    assert "catalog_alternative_search_incomplete" in empty.verify

@@ -1,5 +1,15 @@
 # Finder Product Roadmap
 
+## Active execution plan: reliable pressing discovery
+
+The owner's September 23 direction is to prioritize correct pressing identification, search
+coverage and trustworthy live results. Follow [the execution and acceptance plan](docs/identification-roadmap.md)
+for delivery order, explicit sample denominators, manual review inputs and release checks.
+The first implementation adds bounded alternative-pressing comparison to the scheduled watch;
+next are coverage accounting, resumable inventory discovery and a private adjudication workflow.
+The roadmap below retains the architecture and provider decisions; where sequencing differs,
+the active execution plan takes precedence. UI completion is not an accuracy milestone.
+
 ## Current delivery: private watchlist loop
 
 The owner authorized completion of an internal usable product on September 23, 2026.
@@ -729,6 +739,9 @@ credentials or unnecessary personal data.
 - Define data deletion and incident-response procedures before user accounts.
 
 ## Next six concrete work packages
+
+The immediate delivery order is now maintained in [the active execution plan](docs/identification-roadmap.md).
+The following packages remain dependencies for evaluation, public release and valuation.
 
 1. **Provider-rights decision record.** Send the concrete inquiries in
    [`docs/decisions/provider-outreach.md`](docs/decisions/provider-outreach.md) through the

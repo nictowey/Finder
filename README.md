@@ -18,6 +18,8 @@ public signup, payments, and additional collectible categories remain future wor
 See [ROADMAP.md](ROADMAP.md) for the accuracy-gated development plan, pressing-versus-copy
 identity model, provider constraints, and criteria that must be met before valuation, alerts,
 hosting, or expansion into other collectible categories.
+The current implementation sequence and measurable acceptance checks are in the
+[reliable pressing discovery plan](docs/identification-roadmap.md).
 The current measurement, denominators, and open gaps are recorded in
 [`docs/vinyl-measurement-2026-09-23.md`](docs/vinyl-measurement-2026-09-23.md).
 
