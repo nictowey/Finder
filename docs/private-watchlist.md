@@ -30,8 +30,9 @@ six hours. A dedicated production auth email sender is needed before an external
    private watchlist**. Deployment injects the credential into a private Neon Function, never
    the browser. The Neon schedule checks for due watches every ten minutes and dispatches the
    existing worker only when a watch is due and no worker lease is active. The credential was
-   installed September 23 and deployment #12 passed; the first automatic dispatch remains
-   unverified. The current token expires October 23, 2026; rotate it before expiration.
+   installed September 23 and deployment #12 passed. A due-time `workflow_dispatch` at
+   20:05:03 UTC completed three watches; see the verified run below. The current token expires
+   October 23, 2026; rotate it before expiration.
 
 An unset owner email fails closed. Sign-in uses the managed provider's rate-limited email OTP;
 the Function proxies only the two needed login endpoints and never returns credentials in JSON.
@@ -185,7 +186,16 @@ the pink/green release are discovery examples, not enough to estimate accuracy a
   used the production environment dispatch secret and passed the same offline, PostgreSQL,
   live-scan and access gates. The worker completed three due watches with zero failures or
   quota pauses and five new inbox rows. The independent Neon schedule is configured, but
-  a due-time automatic dispatch has not yet been observed; measure latency before a timing claim.
+  a due-time automatic dispatch had not yet been observed at deployment; measure sustained
+  latency before a timing claim.
+- [Catch-up worker run](https://github.com/nictowey/Finder/actions/runs/35913571867)
+  began at 20:05:03 UTC as `workflow_dispatch` on `main`, at the independent trigger's minute-five
+  slot and after the three watches became due. It completed successfully by 20:06:12 UTC:
+  three attempted and completed, zero failed, zero quota-paused, and ten new inbox rows.
+  The signed-in dashboard showed last successes at 20:05:39, 20:05:55 and 20:06:07 UTC.
+  This is the first observed due-time catch-up, not proof of sustained scheduler reliability,
+  complete search coverage, or push delivery. GitHub's run metadata identifies the dispatch
+  event but does not independently identify the API caller.
 - [Policy v3 deployment #8](https://github.com/nictowey/Finder/actions/runs/35898807819)
   passed 273 Python and 16 Node tests, isolated PostgreSQL checks and private access checks.
   It completed three due watches with zero scan failures and six new inbox rows. The policy
