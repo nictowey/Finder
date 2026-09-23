@@ -197,6 +197,12 @@ A signature is not automatically a new pressing:
 - Individually numbered copies of one edition generally share a pressing identity. The copy
   number is a collectible attribute, not a new variant, unless reliable catalog evidence says
   otherwise.
+- The DS2-style failure case is a numbered purple club edition beside other DS2 vinyl. A
+  shared barcode or color is not proof of the numbered edition; the current matcher requires
+  an explicit structured seller claim even for a *probable* numbered candidate. A title-only
+  serial claim, a generic “first pressing” item specific, and an uninspected image do not
+  verify the copy. An item-specific “Numbered” claim is still unverified seller evidence, not
+  authentication of the serial or a route to `exact_variant`.
 - Condition and sealed status describe the offered copy, not the pressing.
 
 Valuation of a signed or numbered copy will eventually require comparable transactions with the

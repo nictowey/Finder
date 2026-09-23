@@ -3,8 +3,90 @@
 from finder.adapters.discogs.normalize import normalize_release
 from finder.adapters.ebay.normalize import normalize_listing
 from finder.categories.vinyl import CollectibleAttribute, VinylFingerprint, from_listing
-from finder.domain import MatchDecision
+from finder.domain import MatchDecision, Variant
 from finder.matching import MATCH_POLICY_VERSION, decide_match
+
+
+def _numbered_case(search_payload, observed_at, *, features=None, title="Future DS2 purple vinyl"):
+    """Synthetic DS2-style releases; never store a real seller listing in public tests."""
+    raw = search_payload["itemSummaries"][0]
+    raw["title"] = title
+    raw["localizedAspects"] = [
+        {"name": "Artist", "value": "Future"},
+        {"name": "Barcode", "value": "0000000000000"},
+        {"name": "Color", "value": "Purple"},
+    ]
+    if features:
+        raw["localizedAspects"].append({"name": "Features", "value": features})
+    listing = normalize_listing(raw, observed_at)
+    base = {
+        "catalog_source": "discogs",
+        "catalog_product_id": "ds2-family",
+        "title": "DS2",
+        "artists": ["Future"],
+        "release_year": 2015,
+        "country": "US",
+        "identifiers": {"Barcode": ["0000000000000"]},
+        "observed_at": observed_at,
+    }
+    numbered = Variant(
+        **base,
+        catalog_variant_id="numbered-purple",
+        formats=[
+            {"name": "Vinyl", "descriptions": ["LP", "Club Edition", "Numbered"], "text": "Purple"}
+        ],
+    )
+    ordinary = Variant(
+        **base,
+        catalog_variant_id="ordinary-purple",
+        formats=[{"name": "Vinyl", "descriptions": ["LP"], "text": "Purple"}],
+    )
+    return listing, numbered, ordinary
+
+
+def test_numbered_release_needs_explicit_seller_claim(search_payload, observed_at):
+    listing, numbered, _ = _numbered_case(search_payload, observed_at)
+    decision = decide_match(listing, [numbered])
+    assert decision.outcome == "family_only"
+    assert "numbered_structured_claim_missing" in decision.missing_evidence
+
+
+def test_numbered_seller_claim_is_not_exact_proof(search_payload, observed_at):
+    listing, numbered, _ = _numbered_case(search_payload, observed_at, features="Numbered")
+    decision = decide_match(listing, [numbered])
+    assert decision.outcome == "probable_variant"
+    assert "numbered_structured_claim_missing" not in decision.missing_evidence
+    assert decision.outcome != "exact_variant"
+
+
+def test_numbered_claim_without_pressing_identifier_stays_family_only(search_payload, observed_at):
+    listing, numbered, _ = _numbered_case(search_payload, observed_at, features="Numbered")
+    listing = listing.model_copy(
+        update={
+            "item_specifics": {
+                key: values for key, values in listing.item_specifics.items() if key != "Barcode"
+            }
+        }
+    )
+    decision = decide_match(listing, [numbered])
+    assert decision.outcome == "family_only"
+    assert "pressing_identifier" in decision.missing_evidence
+
+
+def test_numbered_claim_with_shared_identifiers_stays_ambiguous(search_payload, observed_at):
+    listing, numbered, ordinary = _numbered_case(search_payload, observed_at, features="Numbered")
+    decision = decide_match(listing, [numbered, ordinary])
+    assert decision.outcome == "ambiguous"
+    assert set(decision.candidate_ids) == {"numbered-purple", "ordinary-purple"}
+
+
+def test_title_serial_claim_alone_cannot_prove_numbered_release(search_payload, observed_at):
+    listing, numbered, _ = _numbered_case(
+        search_payload, observed_at, title="Future DS2 hand-numbered #123 purple vinyl"
+    )
+    decision = decide_match(listing, [numbered])
+    assert decision.outcome == "family_only"
+    assert "numbered_structured_claim_missing" in decision.missing_evidence
 
 
 def _listing(search_payload, observed_at, **specifics):
