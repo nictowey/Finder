@@ -1,0 +1,42 @@
+name: Cross-genre vinyl catalog measurement
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: finder-vinyl-catalog-panel
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DISCOGS_TOKEN: ${{ secrets.DISCOGS_TOKEN }}
+      DISCOGS_USER_AGENT: Finder/0.2 +https://github.com/nictowey/Finder
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install Finder
+        run: python -m pip install -e '.[dev]'
+
+      - name: Measure catalog-derived title retrieval
+        run: |
+          set -euo pipefail
+          if [[ -z "$DISCOGS_TOKEN" ]]; then
+            echo "DISCOGS_TOKEN repository secret is not configured."
+            exit 1
+          fi
+          python scripts/measure_live_catalog.py

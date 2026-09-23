@@ -13,6 +13,7 @@ from finder.adapters.discogs.client import DiscogsClient
 from finder.categories.vinyl_target import target_from_release
 from finder.config import load_discogs_settings
 from finder.domain import Listing
+from finder.errors import CatalogRateLimitError
 
 QUERIES = (
     ("jazz", "Miles Davis Kind of Blue", "Jazz"),
@@ -29,43 +30,52 @@ def measure() -> dict:
     with DiscogsClient(settings) as client:
         provider = DiscogsCatalogProvider(client)
         for genre, query, catalog_genre in QUERIES:
-            initial = provider.search_releases(query, limit=3)
-            eligible = [
-                variant
-                for variant in initial
-                if catalog_genre in variant.genres
-                and variant.artists
-                and any(str(fmt.get("name", "")).casefold() == "vinyl" for fmt in variant.formats)
-            ]
-            if not eligible:
-                rows.append({"genre": genre, "eligible_in_first_three": False})
-                continue
-            selected = eligible[0]
-            target_from_release(selected)
-            now = datetime.now(UTC)
-            listing = Listing(
-                marketplace="ebay",
-                marketplace_item_id=f"synthetic-{genre}",
-                title=f"{selected.artists[0]} {selected.title} vinyl",
-                first_observed_at=now,
-                last_observed_at=now,
-            )
-            retrieval = provider.search_for_listing(listing, limit=4)
-            rows.append(
-                {
-                    "genre": genre,
-                    "eligible_in_first_three": True,
-                    "selected_release_in_title_results": any(
-                        variant.catalog_variant_id == selected.catalog_variant_id
-                        for variant in retrieval.variants
-                    ),
-                    "candidates_hydrated": len(retrieval.variants),
-                    "first_page_full_or_truncated": retrieval.search_truncated,
-                    "candidate_limit_reached": retrieval.candidate_limit_reached,
-                    "query_kinds": retrieval.query_kinds,
-                }
-            )
+            try:
+                initial = provider.search_releases(query, limit=3)
+                eligible = [
+                    variant
+                    for variant in initial
+                    if catalog_genre in variant.genres
+                    and variant.artists
+                    and any(
+                        str(fmt.get("name", "")).casefold() == "vinyl" for fmt in variant.formats
+                    )
+                ]
+                if not eligible:
+                    rows.append({"genre": genre, "eligible_in_first_three": False})
+                    continue
+                selected = eligible[0]
+                target_from_release(selected)
+                now = datetime.now(UTC)
+                listing = Listing(
+                    marketplace="ebay",
+                    marketplace_item_id=f"synthetic-{genre}",
+                    title=f"{selected.artists[0]} {selected.title} vinyl",
+                    first_observed_at=now,
+                    last_observed_at=now,
+                )
+                retrieval = provider.search_for_listing(listing, limit=4)
+                rows.append(
+                    {
+                        "genre": genre,
+                        "eligible_in_first_three": True,
+                        "selected_release_in_title_results": any(
+                            variant.catalog_variant_id == selected.catalog_variant_id
+                            for variant in retrieval.variants
+                        ),
+                        "candidates_hydrated": len(retrieval.variants),
+                        "first_page_full_or_truncated": retrieval.search_truncated,
+                        "candidate_limit_reached": retrieval.candidate_limit_reached,
+                        "query_kinds": retrieval.query_kinds,
+                    }
+                )
+            except CatalogRateLimitError:
+                rows.append({"genre": genre, "rate_limited": True})
+                break
     return {
+        "status": "complete"
+        if len(rows) == len(QUERIES) and not rows[-1].get("rate_limited")
+        else "incomplete_rate_limited",
         "scope": "catalog_derived_synthetic_titles",
         "max_catalog_requests_without_retries": len(QUERIES) * (1 + 3 + 1 + 4),
         "panel": rows,
@@ -80,4 +90,6 @@ def measure() -> dict:
 
 
 if __name__ == "__main__":
-    print(json.dumps(measure(), indent=2))
+    report = measure()
+    print(json.dumps(report, indent=2))
+    raise SystemExit(0 if report["status"] == "complete" else 1)

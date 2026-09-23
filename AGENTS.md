@@ -83,6 +83,11 @@ The open provider-use decision and bounded Production audit are documented in
    - Manual target check reports target and same-family candidate positions, field-level
      agreement, seller/catalog disagreements, missing evidence and unscored runouts
    - Public job summary contains no listing, seller or release identities or evidence values
+11. Cross-genre measurement baseline
+   - A synthetic policy panel spans jazz, rock, classical, electronic, and folk with paired
+     candidate pressings and explicit abstentions; it does not estimate real-listing precision
+   - A bounded Discogs title probe checks catalog-derived seller-like titles without pinning
+     the selected release. See `docs/vinyl-measurement-2026-09-23.md` for its limits.
 
 ### Verified baseline
 
@@ -119,6 +124,9 @@ numbered copy, catalog coverage, and any real-listing precision remain unverifie
 The September 23 anonymous pressing comparison rendered successfully in the manual workflow.
 Seller title and item specifics claimed numbering, and the pinned target alone was catalog-marked
 numbered among six sampled same-family releases. No individual-copy verification was performed.
+The September 23 broad Production scan fetched and persisted ten new listings without skips,
+enrichment failures, or persistence drift. It is the second distinct successful UTC day of the
+seven-day audit; the sample hit its page cap and had no verified buyer destination context.
 
 ## Architecture boundaries
 

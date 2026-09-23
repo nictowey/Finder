@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 
 from finder.adapters.discogs.adapter import CandidateRetrieval
 from finder.adapters.discogs.normalize import normalize_release
+from finder.errors import CatalogRateLimitError
 from scripts import measure_live_catalog
 
 
@@ -71,3 +72,35 @@ def test_catalog_measurement_reports_only_aggregate_and_keeps_misses(monkeypatch
     assert "Private Example Artist" not in output
     assert "Synthetic Private Album" not in output
     assert "9999" not in output
+    assert result["status"] == "complete"
+
+
+def test_rate_limit_retains_partial_anonymous_counts(monkeypatch):
+    class Client:
+        def __init__(self, settings):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    class Provider:
+        def __init__(self, client):
+            pass
+
+        def search_releases(self, query, *, limit):
+            if query == measure_live_catalog.QUERIES[1][1]:
+                raise CatalogRateLimitError("retry later")
+            return []
+
+    monkeypatch.setattr(measure_live_catalog, "load_discogs_settings", lambda: object())
+    monkeypatch.setattr(measure_live_catalog, "DiscogsClient", Client)
+    monkeypatch.setattr(measure_live_catalog, "DiscogsCatalogProvider", Provider)
+    result = measure_live_catalog.measure()
+    assert result["status"] == "incomplete_rate_limited"
+    assert result["panel"] == [
+        {"genre": "jazz", "eligible_in_first_three": False},
+        {"genre": "rock", "rate_limited": True},
+    ]
