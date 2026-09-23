@@ -94,7 +94,16 @@ def review_target_listing(listing: Listing, variant: Variant) -> TargetReview:
         verify.append("pressing_identifier_absent")
     if "edition" in fields and not fields["edition"].matched:
         verify.append("edition_needs_review")
-    possible = color_match and (not catalog_numbered or seller_numbered)
+    identifier_match = any(
+        fields.get(field) and fields[field].matched for field in ("barcode", "catalog_number")
+    )
+    if identifier_match:
+        clues.append("seller_identifier_claim")
+    # Numbering is a copy claim. It can bring a listing to review without
+    # proving the specific numbered copy is genuine.
+    possible = (color_match or identifier_match or (catalog_numbered and seller_numbered)) and (
+        not catalog_numbered or seller_numbered
+    )
     return TargetReview(
         status="possible_pressing" if possible else "family_review",
         clues=clues,

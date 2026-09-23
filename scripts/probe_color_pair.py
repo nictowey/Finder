@@ -62,10 +62,17 @@ def summarize_discovery(listings: list[Listing]) -> dict:
     return {"stored_from_this_run": len(listings), **dict(sorted(counts.items()))}
 
 
-def summarize_target_review(listings: list[Listing], variant: Variant) -> dict[str, int]:
+def summarize_target_review(listings: list[Listing], variant: Variant) -> dict:
     """Only aggregate controlled status codes; never include listing evidence."""
-    counts = Counter(review_target_listing(listing, variant).status for listing in listings)
-    return dict(sorted(counts.items()))
+    reviews = [review_target_listing(listing, variant) for listing in listings]
+    counts = Counter(review.status for review in reviews)
+    conflict_reasons = Counter(
+        reason for review in reviews if review.status == "conflicting" for reason in review.verify
+    )
+    return {
+        "statuses": dict(sorted(counts.items())),
+        "conflicts": dict(sorted(conflict_reasons.items())),
+    }
 
 
 def choose_review_listing(listings: list[Listing]) -> tuple[Listing, str] | None:

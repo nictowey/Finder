@@ -110,6 +110,7 @@ workflow's public output omits listing and catalog identities, evidence values, 
 | --- | --- | --- | --- |
 | 2026-09-23 | [Color-pair probe #1](https://github.com/nictowey/Finder/actions/runs/35815976859) | Three queries fetched 30 results, representing 22 distinct observed listings; eight overlaps were skipped. Four titles and one structured color specific claimed the pair. All searches hit their ten-item cap. | The selected listing claimed both colors in title and structured specifics, but the target scored 35 with a false `color` text disagreement and an `edition` disagreement. Eight catalog releases were evaluated, seven in the same family. `family_only`. |
 | 2026-09-23 | [Color-pair probe #2](https://github.com/nictowey/Finder/actions/runs/35816313720) | The same bounded counts: 30 fetched, 22 distinct, eight cross-query duplicates, four title pair claims and one structured pair claim. No partial detail failures. | With version 6 palette comparison, the target scored 50 and matched artist, title, and the **complete pink/green pair**. A scored `edition` disagreement remains. The selected listing supplies no structured barcode, catalog number, or runout. Eight releases were evaluated, seven in the same family; the target was not returned by seller-text catalog search and the search was truncated. `family_only`. |
+| 2026-09-23 | [Sparse review probe #3](https://github.com/nictowey/Finder/actions/runs/35817159685) | Three queries again fetched 30 results and 22 distinct listings with eight overlaps; the page caps remain reached. | The target-aware review found one `possible_pressing`, eight `family_review`, and 13 `conflicting` rows. These classifications compare each listing to the **one selected release** and are not manually verified labels. The separately retrieved eight-release comparison of the selected color-pair row still returned `family_only` with an edition text disagreement, no seller identifier, and incomplete search. |
 
 The catalog release is vinyl with both colors and has barcode and catalog-number data but no
 runout data in the normalized entry. Its identifiers cannot substitute for seller evidence.
@@ -118,3 +119,5 @@ colors separately and a seller puts them together; a partial or different color 
 conflicts. The remaining edition disagreement has not been adjudicated against this seller's
 copy. A color claim cannot confirm the physical discs or distinguish every neighboring
 pressing. Do not use the heuristic score as a probability or an undervaluation signal.
+The next aggregate check will break down controlled conflict reasons; no real seller or listing
+values will be committed as labeled fixtures until provider use is cleared.
