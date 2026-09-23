@@ -5,6 +5,13 @@ on:
   push:
     paths:
       - ".github/workflows/discogs-smoke.yml"
+      - "src/finder/adapters/discogs/**"
+      - "src/finder/categories/vinyl.py"
+      - "src/finder/matching.py"
+      - "src/finder/cli.py"
+      - "scripts/validate_live_matching.py"
+      - "tests/test_discogs.py"
+      - "pyproject.toml"
 
 permissions:
   contents: read

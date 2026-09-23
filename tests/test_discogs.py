@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -7,6 +8,7 @@ import pytest
 from finder.adapters.discogs.adapter import DiscogsCatalogProvider
 from finder.adapters.discogs.client import DiscogsClient
 from finder.adapters.discogs.normalize import normalize_release
+from finder.adapters.ebay.normalize import normalize_listing
 from finder.config import DiscogsSettings
 from finder.errors import (
     CatalogAuthenticationError,
@@ -15,6 +17,7 @@ from finder.errors import (
     CatalogResponseError,
     ConfigurationError,
 )
+from finder.matching import decide_match
 
 
 @pytest.fixture
@@ -69,6 +72,115 @@ def test_catalog_search_uses_only_database_and_release_endpoints(
     product = provider.product_for(variants[0])
     assert product.catalog_product_id == "99"
     assert product.resource_url == "https://www.discogs.com/master/99"
+
+
+def test_listing_retrieval_diversifies_queries_deduplicates_and_reports_shared_barcode(
+    discogs_settings, discogs_release, search_payload
+):
+    listing = normalize_listing(
+        {
+            **search_payload["itemSummaries"][0],
+            "title": "Example Artist Example Album vinyl LP",
+            "localizedAspects": [
+                {"name": "Artist", "value": "Example Artist"},
+                {"name": "UPC", "value": "0123456789012"},
+                {"name": "Catalog Number", "value": "EX-101"},
+            ],
+        },
+        datetime(2026, 9, 23, tzinfo=UTC),
+    )
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if request.url.path == "/database/search":
+            params = request.url.params
+            assert params["type"] == "release" and params["format"] == "Vinyl"
+            assert params["per_page"] == "10"
+            if "barcode" in params:
+                assert params["barcode"] == "0123456789012"
+                return httpx.Response(200, json={"results": [{"id": 111}, {"id": 222}]})
+            if "catno" in params:
+                assert params["catno"] == "EX-101"
+                return httpx.Response(200, json={"results": [{"id": 222}]})
+            assert "Example Album" in params["q"]
+            return httpx.Response(200, json={"results": [{"id": 111}]})
+        detail = {**discogs_release, "id": int(request.url.path.rsplit("/", 1)[1])}
+        return httpx.Response(200, json=detail)
+
+    with DiscogsClient(discogs_settings, transport=httpx.MockTransport(handler)) as client:
+        result = DiscogsCatalogProvider(client).search_for_listing(listing)
+    assert result.query_kinds == ["barcode", "catno", "q"]
+    assert [variant.catalog_variant_id for variant in result.variants] == ["111", "222"]
+    assert len(calls) == 5  # three searches, two unique release detail calls
+    assert not result.incomplete
+    assert decide_match(listing, result.variants).outcome == "ambiguous"
+
+
+def test_truncated_catalog_search_prevents_probable_pressing_claim(
+    discogs_settings, discogs_release, search_payload
+):
+    listing = normalize_listing(
+        {
+            **search_payload["itemSummaries"][0],
+            "title": "Example Artist Example Album vinyl LP",
+            "localizedAspects": [
+                {"name": "Artist", "value": "Example Artist"},
+                {"name": "UPC", "value": "0123456789012"},
+            ],
+        },
+        datetime(2026, 9, 23, tzinfo=UTC),
+    )
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if request.url.path == "/database/search":
+            if "barcode" in request.url.params:
+                return httpx.Response(
+                    200, json={"pagination": {"pages": 3}, "results": [{"id": 111}]}
+                )
+            return httpx.Response(200, json={"results": [{"id": 111}]})
+        return httpx.Response(200, json=discogs_release)
+
+    with DiscogsClient(discogs_settings, transport=httpx.MockTransport(handler)) as client:
+        result = DiscogsCatalogProvider(client).search_for_listing(listing, limit=3)
+    assert len(calls) == 3
+    assert result.incomplete and result.search_truncated
+    decision = decide_match(listing, result.variants, retrieval_incomplete=result.incomplete)
+    assert decision.outcome == "family_only"
+    assert "catalog_search_incomplete" in decision.missing_evidence
+
+
+def test_listing_retrieval_caps_detail_requests_and_flags_omitted_identifiers(
+    discogs_settings, discogs_release, search_payload
+):
+    listing = normalize_listing(
+        {
+            **search_payload["itemSummaries"][0],
+            "localizedAspects": [
+                {"name": "UPC", "value": "0123456789012"},
+                {"name": "UPC", "value": "0123456789013"},
+            ],
+        },
+        datetime(2026, 9, 23, tzinfo=UTC),
+    )
+    detail_ids = []
+
+    def handler(request):
+        if request.url.path == "/database/search":
+            results = (
+                [{"id": 111}, {"id": 222}] if "barcode" in request.url.params else [{"id": 222}]
+            )
+            return httpx.Response(200, json={"results": results})
+        detail_ids.append(request.url.path.rsplit("/", 1)[1])
+        return httpx.Response(200, json=discogs_release)
+
+    with DiscogsClient(discogs_settings, transport=httpx.MockTransport(handler)) as client:
+        result = DiscogsCatalogProvider(client).search_for_listing(listing, limit=1)
+    assert result.incomplete and result.identifiers_omitted
+    assert result.candidate_limit_reached
+    assert detail_ids == ["111"]
 
 
 @pytest.mark.parametrize(

@@ -159,7 +159,9 @@ def rank_variants(
     )
 
 
-def decide_match(listing: Listing, variants: list[Variant]) -> MatchDecision:
+def decide_match(
+    listing: Listing, variants: list[Variant], *, retrieval_incomplete: bool = False
+) -> MatchDecision:
     """Distinguish an album family from a pressing without claiming unmeasured exact accuracy.
 
     A bounded catalog search cannot establish that every pressing was considered. Even a
@@ -217,7 +219,7 @@ def decide_match(listing: Listing, variants: list[Variant]) -> MatchDecision:
     elif len(families) > 1 or len(competing) > 1:
         outcome = "ambiguous"
     elif len(competing) == 1:
-        outcome = "probable_variant"
+        outcome = "family_only" if retrieval_incomplete else "probable_variant"
     elif len(families) == 1:
         outcome = "family_only"
     elif any(
@@ -286,6 +288,8 @@ def decide_match(listing: Listing, variants: list[Variant]) -> MatchDecision:
         missing.append("pressing_identifier")
     if outcome != "probable_variant":
         missing.append("unambiguous_pressing_evidence")
+    if retrieval_incomplete:
+        missing.append("catalog_search_incomplete")
     if ranked and not any(_vinyl_release(variant) for variant in variants):
         missing.append("vinyl_catalog_release")
     return MatchDecision(
