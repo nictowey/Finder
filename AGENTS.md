@@ -110,12 +110,12 @@ The open provider-use decision and bounded Production audit are documented in
    - Developer Analytics now gates each due watch against the shared Browse quota with a
      worst-case request allowance and a reserve; there is still no atomic reservation across
      independent workflows or guarantee of future capacity
-14. Scheduler catch-up preparation
+14. Scheduler catch-up activation
    - GitHub's twice-hourly cron delivered only two scheduled watch runs on September 23;
-     actual timeliness is unproven
-   - A Neon Function trigger is deployed to dispatch the existing worker for due, unleased
-     watches using a repository-scoped Actions-write credential; its first live dispatch and
-     delivery latency have not yet been observed
+     sustained timeliness is unproven
+   - The independent Neon trigger is deployed for due, unleased watches using a
+     repository-scoped Actions-write credential. A due-time `workflow_dispatch` at 20:05:03 UTC
+     completed three scans; longer-term delivery latency remains unmeasured
    - Each watch is due at least 30 minutes after completion, bounding daily scan volume
 
 ### Verified baseline
@@ -155,7 +155,9 @@ The open provider-use decision and bounded Production audit are documented in
   passed the same gates with the independent Neon trigger configured. Three due watches
   completed without failures or quota pauses, adding five new inbox rows. The repository-scoped
   dispatch token is stored as a production environment secret and expires October 23, 2026;
-  no Neon-originated dispatch has yet been verified.
+  a due-time `workflow_dispatch` at 20:05:03 UTC subsequently completed three watches with
+  zero failures or quota pauses and ten new inbox rows. The signed-in dashboard showed fresh
+  last-success times; sustained scheduler reliability remains unmeasured.
 
 ### Production status
 
