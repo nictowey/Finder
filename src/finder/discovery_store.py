@@ -441,6 +441,7 @@ class DiscoveryStore:
             "outcomes": counts,
             "watermarks": [q["watermark"] for q in state["queries"]],
             "last_activity_at": state["last_activity_at"],
+            "last_reconciliation_at": state.get("last_reconciliation_at"),
             "scope": (
                 "Configured queries · EBAY_US · worldwide locations · all conditions · "
                 "fixed price, auction, best offer"
