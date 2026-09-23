@@ -8,6 +8,18 @@ See [ROADMAP.md](ROADMAP.md) for the accuracy-gated development plan, pressing-v
 identity model, provider constraints, and criteria that must be met before valuation, alerts,
 hosting, or expansion into other collectible categories.
 
+The internal `finder.watchlist` module has a versioned buyer target and pure triage function.
+It accepts a catalog family or exact release, buyer-set pre-tax delivered subtotal ceiling,
+currency, explicit accepted provider condition IDs, and destination. It yields `candidate`,
+`review`, or `excluded` with reasons. Exact-release requests stay in review while the current
+matcher can establish only a probable pressing; auctions, unknown shipping, unverified
+destination quotes, stale listings, and incomplete catalog retrieval also require review.
+`candidate` means the internal rules passed, **not** a verified live offer, market value, or
+collector alert. No watchlist storage, scheduling, public display, or user accounts are enabled.
+The caller must establish that shipping was quoted for the saved destination; the presence of
+a numeric shipping amount does not prove that. Provider-use gates are in
+[`docs/decisions/0001-provider-use.md`](docs/decisions/0001-provider-use.md).
+
 ## Quick start
 
 Requires Python 3.11+. Run these commands from the repository root:
