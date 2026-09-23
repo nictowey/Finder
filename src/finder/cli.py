@@ -158,7 +158,7 @@ def _target(args: argparse.Namespace) -> int:
             variant = DiscogsCatalogProvider(client).get_release(release_id)
         selected_variant = variant
         target = target_from_release(variant, queries=args.query)
-    monitors = plan_target_search(target, mode=args.mode)
+    monitors = plan_target_search(target, mode=args.mode, include_initial_newest=True)
     payload = {
         "target": target.id,
         "catalog_source": target.catalog_source,

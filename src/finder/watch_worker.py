@@ -192,8 +192,23 @@ def run_due_watches(repository, settings, discogs_settings, *, limit=3):
                                 "partial_details": item.partial_details,
                                 "status": item.status,
                             }
-                            for i, item in enumerate(scan.summaries[: len(target.queries)])
+                            for i, item in enumerate(
+                                scan.summaries[: len(target.queries)]
+                                if mode == "refresh"
+                                else scan.summaries[len(target.queries) :]
+                            )
                         ],
+                        "initial_relevance": [
+                            {
+                                "query_position": i + 1,
+                                "returned": item.fetched,
+                                "cap_reached": item.limit_reached,
+                                "status": item.status,
+                            }
+                            for i, item in enumerate(scan.summaries[: len(target.queries)])
+                        ]
+                        if mode == "initial"
+                        else None,
                         "inventory_sample": {
                             "query_position": inventory.query_index + 1,
                             "offset": inventory.offset,

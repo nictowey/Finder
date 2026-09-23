@@ -6,8 +6,10 @@ The owner's September 23 direction is to prioritize correct pressing identificat
 coverage and trustworthy live results. Follow [the execution and acceptance plan](docs/identification-roadmap.md)
 for delivery order, explicit sample denominators, manual review inputs and release checks.
 The scheduled watch compares bounded alternative pressings and now records query coverage while
-rotating a small older-inventory sample and refreshing known leads. These are recovery mechanics,
-not measured search recall. Next are a permitted independent missed-listing audit, actual quota
+rotating a small older-inventory sample and refreshing known leads. An eleven-target same-API
+alternate-search sample found additional unverified leads, and initial watch scans now check
+both relevance and newest results. These are recovery mechanics, not measured search recall.
+Next are a permitted independent missed-listing audit, actual quota
 accounting and a private adjudication workflow.
 The roadmap below retains the architecture and provider decisions; where sequencing differs,
 the active execution plan takes precedence. UI completion is not an accuracy milestone.
