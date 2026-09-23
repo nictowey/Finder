@@ -5,11 +5,13 @@ import logging
 import os
 import sys
 
+from sqlalchemy import insert, select, update
 from sqlalchemy.engine import make_url
 
 from finder.config import load_discogs_settings, load_settings
 from finder.persistence import SqlAlchemyRepository
 from finder.watch_store import SavedWatch, WatchStore, migrate
+from finder.watch_store import settings as private_settings
 from finder.watch_worker import run_due_watches
 
 
@@ -26,6 +28,23 @@ def main():
         repo = SqlAlchemyRepository.from_url(url)
         try:
             migrate(repo.engine)
+            rollout = os.environ.get("FINDER_DISCOVERY_SLOTS", "unchanged")
+            if rollout not in ("unchanged", "1", "1,2,3", "off"):
+                raise ValueError("Unsupported discovery rollout")
+            if rollout != "unchanged":
+                slots = [] if rollout == "off" else [int(value) for value in rollout.split(",")]
+                with repo.engine.begin() as conn:
+                    key = private_settings.c.key == "discovery_rollout"
+                    if conn.execute(select(private_settings).where(key)).first():
+                        conn.execute(
+                            update(private_settings).where(key).values(data={"slots": slots})
+                        )
+                    else:
+                        conn.execute(
+                            insert(private_settings).values(
+                                key="discovery_rollout", data={"slots": slots}
+                            )
+                        )
             # Optional secret-backed bootstrap. Never commit real catalog identities.
             if "--seed" in sys.argv:
                 store = WatchStore(repo.engine)

@@ -48,9 +48,17 @@ class EbayClient:
         # Aggregate request counts only; never retain request paths, IDs, or headers.
         self.browse_requests = 0
         self.browse_retries = 0
+        self.request_limit = None
+        self._budget = None
+        self._live_transport = transport is None
+        self.search_requests = 0
+        self.detail_requests = 0
+        self.quota_requests = 0
 
     def close(self) -> None:
         self.http.close()
+        if self._budget:
+            self._budget.close()
 
     def __enter__(self) -> "EbayClient":
         return self
@@ -85,8 +93,27 @@ class EbayClient:
         for attempt in range(self.max_retries + 1):
             response = None
             if path.startswith("/buy/"):
+                if self.request_limit is not None and self.browse_requests >= self.request_limit:
+                    raise RateLimitError("Invocation Browse budget reached")
+                if self.settings.ebay_environment == "production" and self._live_transport:
+                    if self._budget is None:
+                        from finder.adapters.ebay.budget import BrowseBudget
+
+                        self._budget = BrowseBudget(
+                            self.settings.database_url.get_secret_value(),
+                            lambda: self.get(
+                                "/developer/analytics/v1_beta/rate_limit/",
+                                headers={},
+                                params={"api_context": "buy", "api_name": "browse"},
+                            ),
+                        )
+                    self._budget.debit()
+                self.search_requests += "item_summary/search" in path
+                self.detail_requests += "/item/" in path
                 self.browse_requests += 1
                 self.browse_retries += attempt > 0
+            if path.startswith("/developer/analytics/"):
+                self.quota_requests += 1
             try:
                 response = self.http.request(method, path, **kwargs)
             except httpx.RequestError:
@@ -166,7 +193,9 @@ class EbayClient:
         return max(0.0, self._expires_at - self.clock())
 
     def get(self, path: str, *, headers: dict[str, str], params: dict | None = None) -> dict:
-        # Paths are constructed internally; never follow provider-supplied pagination/item URLs.
+        # Never send bearer credentials to a provider-supplied host or redirect.
+        if not path.startswith("/") or path.startswith("//") or "\\" in path or "://" in path:
+            raise ResponseError("Only internal API paths are permitted")
         for refresh in range(2):
             request_headers = {**headers, "Authorization": f"Bearer {self._access_token()}"}
             response = self._request("GET", path, headers=request_headers, params=params)

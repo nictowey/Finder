@@ -1,5 +1,6 @@
 """Portable SQLAlchemy repository with a database-enforced composite identity."""
 
+from contextlib import nullcontext
 from typing import Literal, Protocol
 
 from sqlalchemy import (
@@ -129,12 +130,14 @@ class SqlAlchemyListingRepository:
     def _key(marketplace: str, item_id: str):
         return (listings.c.marketplace == marketplace) & (listings.c.marketplace_item_id == item_id)
 
-    def upsert(self, listing: Listing) -> UpsertResult:
+    def upsert(self, listing: Listing, *, connection=None, record_observation=True) -> UpsertResult:
         key = self._key(listing.marketplace, listing.marketplace_item_id)
         # Retry a concurrent insert once; the composite PK remains the authority.
         for attempt in range(2):
             try:
-                with self.engine.begin() as conn:
+                with (
+                    nullcontext(connection) if connection is not None else self.engine.begin()
+                ) as conn:
                     if listing.marketplace == "ebay" and listing.seller_id:
                         if conn.dialect.name == "postgresql":
                             # The deletion endpoint takes the same lock before tombstoning.
@@ -161,7 +164,7 @@ class SqlAlchemyListingRepository:
                     observation_exists = conn.execute(
                         select(listing_observations.c.observed_at).where(observation_key)
                     ).first()
-                    if observation_exists is None:
+                    if observation_exists is None and record_observation:
                         conn.execute(
                             listing_observations.insert().values(
                                 marketplace=listing.marketplace,

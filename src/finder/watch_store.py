@@ -1,5 +1,6 @@
 """Private pilot storage, with versioned, additive schema and deletion cascades."""
 
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Literal
@@ -158,13 +159,20 @@ NEW_TABLES = [
 
 
 def migrate(engine):
-    """Additive migrations: pilot (1), operational history (2); no existing columns change."""
+    """Additive pilot (1), operations (2), discovery (3); existing columns are unchanged."""
+    from finder.discovery_store import progress, work
+
+    for table in (progress, work):
+        if table not in NEW_TABLES:
+            NEW_TABLES.append(table)
     with engine.begin() as conn:
         schema.create_all(conn, tables=NEW_TABLES)
         if not conn.execute(select(migrations).where(migrations.c.version == 1)).first():
             conn.execute(insert(migrations).values(version=1))
         if not conn.execute(select(migrations).where(migrations.c.version == 2)).first():
             conn.execute(insert(migrations).values(version=2))
+        if not conn.execute(select(migrations).where(migrations.c.version == 3)).first():
+            conn.execute(insert(migrations).values(version=3))
         if not conn.execute(select(settings).where(settings.c.key == "operations_since")).first():
             conn.execute(
                 insert(settings).values(
@@ -288,6 +296,7 @@ class WatchStore:
                     watches.c.id == claim["id"],
                     watches.c.revision == claim["revision"],
                     watches.c.lease_token == claim["lease_token"],
+                    watches.c.lease_until > (now or datetime.now(UTC)).isoformat(),
                 )
                 .values(
                     lease_token=None,
@@ -349,10 +358,13 @@ class WatchStore:
         success=True,
         unavailable_item_ids=(),
         now=None,
+        connection=None,
+        checkpoint=False,
+        next_delay_minutes=30,
     ):
         now = now or datetime.now(UTC)
         stamp = now.isoformat()
-        with self.engine.begin() as conn:
+        with nullcontext(connection) if connection is not None else self.engine.begin() as conn:
             row = (
                 conn.execute(
                     select(watches)
@@ -416,7 +428,11 @@ class WatchStore:
                         )
                     )
                     added += 1
-                if eligible and not (old and (old["alerted"] or old["dismissed"])):
+                if (
+                    eligible
+                    and not (old and (old["alerted"] or old["dismissed"]))
+                    and not data.get("digest_covered")
+                ):
                     conn.execute(
                         insert(outbox).values(
                             id=str(uuid4()),
@@ -428,6 +444,8 @@ class WatchStore:
                             attempts=0,
                         )
                     )
+                    conn.execute(update(inbox).where(key).values(alerted=True))
+                if eligible and data.get("digest_covered"):
                     conn.execute(update(inbox).where(key).values(alerted=True))
                 if not eligible:
                     conn.execute(
@@ -468,6 +486,8 @@ class WatchStore:
                             outbox.c.status == "pending",
                         )
                     )
+            if checkpoint:
+                return added
             if (
                 not success
                 and isinstance(row["summary"], dict)
@@ -480,8 +500,15 @@ class WatchStore:
                 lease_until=None,
                 # Bound daily calls even when GitHub and Neon both schedule workers.
                 # Ten-minute catch-up ticks keep a due watch's added wait below ten minutes.
-                next_scan_at=(now + timedelta(minutes=30)).isoformat(),
-                status="healthy" if success else "failed",
+                next_scan_at=(now + timedelta(minutes=next_delay_minutes)).isoformat(),
+                status=(
+                    "quota_paused"
+                    if (summary or {}).get("coverage", {}).get("partial_reason")
+                    == "quota_or_attempt_budget"
+                    else "healthy"
+                    if success
+                    else "failed"
+                ),
                 summary=summary or {},
             )
             if catalog is not None:
@@ -497,7 +524,14 @@ class WatchStore:
                     scan_attempts.c.id == claim["lease_token"], scan_attempts.c.status == "started"
                 )
                 .values(
-                    status="completed" if success else "failed",
+                    status=(
+                        "quota_paused"
+                        if (summary or {}).get("coverage", {}).get("partial_reason")
+                        == "quota_or_attempt_budget"
+                        else "completed"
+                        if success
+                        else "failed"
+                    ),
                     finished_at=stamp,
                     metrics=scan_metrics(summary or {}, added),
                 )

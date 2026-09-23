@@ -1,5 +1,17 @@
 # Finder
 
+## Resumable discovery revision — September 23, 2026
+
+The new implementation replaces scheduled samples with durable full search passes, overlapping
+incremental windows, periodic reconciliation, a deletion-aware evaluation queue, shared
+request debits and a paginated inbox. See [the discovery contract](docs/resumable-discovery.md) for scope,
+completion states, failure behavior, estimates and rollout/rollback controls. Earlier sampled
+scan descriptions below are historical and remain applicable only while rollout is disabled.
+Local validation: 313 Python and 32 Node tests, Ruff and TypeScript; live deployment and cadence
+validation are still pending and must be recorded separately. Existing operational history
+is retained. No marketplace recall or pressing-accuracy claim follows from this change.
+
+
 Finder is the foundation for a marketplace-monitoring and mispricing-detection platform. The eventual workflow is: define a monitor → discover listings → identify the exact product and variant → compare against real comparable transactions → evaluate opportunities → alert the user.
 
 The private collector pilot now has a hosted watchlist dashboard, saved Discogs pressing targets,

@@ -55,9 +55,13 @@ def assess_review(watch, listing, variant, *, now, alternatives=None, search_inc
         blocked.append("listing_ended")
     if listing.last_observed_at < now - timedelta(hours=1):
         blocked.append("listing_stale")
-    if not listing.details_observed_at or any(
-        flag in listing.quality_flags
-        for flag in ("details_unavailable", "item_specifics_stale", "details_not_requested")
+    if (
+        not listing.details_observed_at
+        or listing.details_observed_at < now - timedelta(hours=1)
+        or any(
+            flag in listing.quality_flags
+            for flag in ("details_unavailable", "item_specifics_stale", "details_not_requested")
+        )
     ):
         blocked.append("details_need_refresh")
     if not watch.country or not watch.postal_code:
@@ -86,6 +90,9 @@ def assess_review(watch, listing, variant, *, now, alternatives=None, search_inc
 
 
 def run_due_watches(repository, settings, discogs_settings, *, limit=3, context=None):
+    from finder.discovery_worker import rollout_slots, run_chunk
+
+    slots = rollout_slots(repository.engine)
     store = WatchStore(repository.engine)
     report = {
         "attempted": 0,
@@ -100,6 +107,11 @@ def run_due_watches(repository, settings, discogs_settings, *, limit=3, context=
         if claim is None:
             break
         report["attempted"] += 1
+        if claim["slot"] in slots:
+            result = run_chunk(repository, settings, discogs_settings, claim)
+            for key, value in result.items():
+                report[key] = report.get(key, 0) + value
+            continue
         phase = "catalog_unavailable"
         ebay_client = None
         quota = None
