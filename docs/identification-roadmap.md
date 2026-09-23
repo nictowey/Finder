@@ -207,8 +207,8 @@ The next reliability change checks the shared Browse quota before each due watch
 100-call reserve beyond one full worst-case initial watch. A low or unavailable quota pauses
 the watch without advancing its cursor. It also adds an independent Neon scheduled dispatcher
 for the existing Python worker, conditioned on a fine-grained repository Actions-write token.
-Until that credential is installed and a live trigger is observed, the backup is **not active**
-and timely discovery has not been established. The worker enforces a 30-minute interval even
+The credential is installed, and a due-time dispatch was observed on September 23. Timely
+discovery has not been established over a representative observation period. The worker enforces a 30-minute interval even
 when both schedulers fire. The trigger's actual delivery, quota usage, and watch latency need
 14 days of production observation before the reliability gate can pass.
 The [first Production run under this gate](https://github.com/nictowey/Finder/actions/runs/35905240731)
@@ -216,10 +216,12 @@ completed three due watches without errors or quota pauses and inserted eight ne
 The [follow-up deployment](https://github.com/nictowey/Finder/actions/runs/35910197545)
 passed the same gates after the repository-scoped dispatch credential was stored in the
 production environment, completing three due watches with zero failures or quota pauses
-and five new inbox rows. The Neon schedule is configured, but a live automatic dispatch and
-its latency have not yet been verified; the 14-day observation requirement still applies.
-The deployment passed 285 Python and 19 Node tests. The live catch-up trigger and 14-day
-cadence remain unverified until automatic runs are observed.
+and five new inbox rows. The [first due-time catch-up run](https://github.com/nictowey/Finder/actions/runs/35913571867)
+was dispatched at 20:05:03 UTC and completed three watches with zero failures or quota pauses
+and ten new inbox rows. The signed-in dashboard showed success times from 20:05:39 to 20:06:07
+UTC. GitHub records a `workflow_dispatch` event, not the caller's identity; the timing matches
+the Neon minute-five schedule. The deployment passed 285 Python and 19 Node tests. The
+14-day observation requirement and representative latency measurement still apply.
 
 Stages 1–2 and synthetic tooling can proceed immediately. The existing
 [provider-use record](decisions/0001-provider-use.md) governs real evaluation retention,
