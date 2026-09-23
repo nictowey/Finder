@@ -42,8 +42,13 @@ session, its expiry, verified email, and owner allow-list. No external auth SDK 
   `3 * 48 * (3 * (1 + 8) + ((1 + 6) + 1) / 2)`. The initial scans, retries and manual
   workflows add calls. [eBay publishes a default 5,000 calls/day](https://developer.ebay.com/develop/get-started/api-call-limits)
   for Browse methods other than `getItems`; the application-specific remaining quota has not
-  been checked. Never raise watch
-  capacity or search depth on the strength of the nominal calculation alone.
+  been checked. Never raise watch capacity or search depth on the strength of the nominal
+  calculation alone.
+- The manual **Production eBay Browse quota** workflow reads the official Developer Analytics
+  endpoint with the existing Production application token. It reports only resource names,
+  limits, remaining calls and time windows in public Actions logs. If the response is missing
+  or malformed, it fails without changing watch state or blocking the scheduled scan. Compare
+  all relevant windows, other jobs and retries before increasing capacity.
 - Each scan records query counts, returned items, provider total, page caps, partial details,
   request attempts and retries in the private watch summary. The inventory cursor includes a
   plan signature and watch revision; after a failed scan it retries the same page. A page offset
