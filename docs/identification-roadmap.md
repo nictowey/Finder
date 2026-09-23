@@ -141,6 +141,17 @@ qualification item and must not be represented as connected today.
 
 ## Execution and decisions
 
+Stage 1 was merged in [PR #39](https://github.com/nictowey/Finder/pull/39). The
+[authenticated catalog check](https://github.com/nictowey/Finder/actions/runs/35822937443)
+passed and exercised five alternatives with one unresolved competitor on a synthetic listing.
+The [private deployment](https://github.com/nictowey/Finder/actions/runs/35823068795) passed;
+both saved watches scanned successfully and five new review rows were added. In the hosted inbox,
+the pink/green lead had five alternatives checked with no competing fit in that bounded sample.
+The older known DS2 lead retained its prior assessment because the newest-first capped scan did
+not rediscover it. This is direct evidence of the stage 2 inventory/reassessment gap. It is not
+evidence that the listing ended or that either pressing is verified. Notification delivery
+requires the current policy and saved-watch revision; older assessments must be refreshed.
+
 Stages 1–2 and synthetic tooling can proceed immediately. The existing
 [provider-use record](decisions/0001-provider-use.md) governs real evaluation retention,
 public release, images and valuation. Its unresolved questions must be settled before the

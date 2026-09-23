@@ -106,7 +106,7 @@ The open provider-use decision and bounded Production audit are documented in
 ### Verified baseline
 
 - Latest verified implementation baseline: current `main` after required checks
-- Offline suite: 250 Python and 15 Node tests passing; rerun required checks before commit
+- Offline suite: 250 Python and 16 Node tests passing; rerun required checks before commit
 - Ruff lint and formatting checks passing
 - Live Discogs validation passing through GitHub Actions
 - Multi-query Discogs smoke passed on the `discogs-candidate-retrieval-2026` branch; this uses

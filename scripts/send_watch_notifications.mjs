@@ -9,7 +9,9 @@ export async function deliver(db, send=webpush.sendNotification.bind(webpush)) {
   await db.query(`UPDATE finder_outbox o SET status='expired' WHERE status IN ('pending','sending') AND NOT EXISTS (
     SELECT 1 FROM finder_inbox i JOIN finder_watches w ON w.id=i.watch_id
     WHERE i.watch_id=o.watch_id AND i.marketplace=o.marketplace AND i.marketplace_item_id=o.marketplace_item_id
-    AND w.enabled AND NOT i.dismissed AND i.last_seen_at >= $1 AND (i.data->>'notify')='true')`,[new Date(Date.now()-3600000).toISOString()]);
+    AND w.enabled AND NOT i.dismissed AND i.last_seen_at >= $1 AND (i.data->>'notify')='true'
+    AND (i.data->>'policy')=$2
+    AND (i.data->>'watch_revision')=w.revision::text)`,[new Date(Date.now()-3600000).toISOString(),'private-target-review-v2']);
   const pending=(await db.query("UPDATE finder_outbox SET status='sending',attempts=attempts+1 WHERE status IN ('pending','sending') AND attempts<3 RETURNING id")).rows;
   if(!pending.length) return {delivered:0,devices:subscriptions.length};
   let sent=0,failed=0;

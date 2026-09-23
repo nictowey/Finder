@@ -7,6 +7,24 @@ test("no browser subscription leaves inbox usable without sending",async()=>{
   const result=await deliver(db,async()=>{throw new Error("must not send");});
   assert.equal(result.delivered,0);
 });
+test("dispatcher invalidates old policy and watch revisions before claiming alerts",async()=>{
+  let checked=false;
+  const db={query:async(sql:string,values:any[]=[])=>{
+    if(sql.includes("key='vapid'"))return {rows:[{data:{publicKey:'p',privateKey:'s'}}]};
+    if(sql.includes('SELECT id,data'))return {rows:[{id:'device',data:{}}]};
+    if(sql.includes("status='expired'")){
+      assert.equal(values[1],'private-target-review-v2');
+      assert.ok(sql.includes("(i.data->>'policy')=$2"));
+      assert.ok(sql.includes("(i.data->>'watch_revision')=w.revision::text"));
+      checked=true;
+    }
+    if(sql.includes('RETURNING id'))assert.ok(checked);
+    return {rows:[]};
+  }};
+  const result=await deliver(db,async()=>{throw new Error('Expired assessments must not send');});
+  assert.equal(result.delivered,0);
+  assert.ok(checked);
+});
 test("push payload is generic and retries keep the stable browser topic",async()=>{
   const queries:{sql:string;values:any[]}[]=[];
   const db={query:async(sql:string,values:any[]=[])=>{
