@@ -7,7 +7,7 @@
 | Production ingestion, broad rap monitor | [Scan #5](https://github.com/nictowey/Finder/actions/runs/35814465415): 10 fetched; 10 new; 0 invalid, suppressed, or unprocessed; 0 detail failures; 11 Browse GET attempts; 0 retries. | One capped first page on September 23, not all relevant listings. This is the second distinct successful UTC date toward the seven-day ingestion audit. |
 | Cost and listing fields in that sample | 10/10 had quoted shipping, a fixed-price delivered subtotal, condition, and item specifics; 0/10 had `listing_ends_at`. | Ten normalized eBay responses. Destination context was `none`, so these quotes are not verified for any buyer's postal code. |
 | Synthetic pressing decisions | 35 fabricated cases, seven scenarios in each of jazz, rock, classical, electronic, and folk. The policy made 20 provisional pressing calls, all 20 agreed with the constructed truth; 15 cases withheld a pressing call (five ambiguous, five insufficient, five rejected); zero exact-variant calls. | The scorer was given both catalog variants in every case. Genres reuse the same scenario templates, so 20/20 is **not** a real-world precision estimate or an independent holdout. |
-| Live catalog title retrieval | Pending authenticated cross-genre workflow result. | Favorable catalog-derived titles without seller identifiers; cannot estimate actual seller-title recall. |
+| Live catalog title retrieval | [Catalog panel #1](https://github.com/nictowey/Finder/actions/runs/35815105736) completed. Jazz, rock, classical, and electronic each had an eligible Vinyl release in the first three search results; all four selected releases appeared in the first four results from a catalog-derived title. The folk query had no eligible release in its first three results. | Five chosen catalog queries, four eligible selected releases, four favorable synthetic title lookups. This is 4/4 retrieval **conditional on selection**, not a 4/5 real-listing recall rate. All four title-search first pages were full or reported more results. |
 
 The synthetic panel is rerunnable with `python scripts/measure_vinyl_identity.py`. The live
 Discogs panel runs in the manual `Cross-genre vinyl catalog measurement` workflow with
@@ -17,6 +17,11 @@ searches on a synthetic title copied from that release with at most four hydrate
 No selected release is pinned during retrieval. Request budget without retries: at most 45
 Discogs catalog calls across five genres. These probes neither read Discogs marketplace data nor
 include real eBay listings in a labeled dataset.
+The first attempt to run the panel immediately after authenticated matching validation hit
+Discogs' rate limit ([smoke #28](https://github.com/nictowey/Finder/actions/runs/35814753513));
+the separate manual panel completed without that stacked request load. A full first page does
+not show whether a more relevant catalog release lies beyond the cap, and the missing folk
+selection shows the chosen query and small initial cap do not guarantee genre coverage.
 
 ## What cannot be inferred yet
 
