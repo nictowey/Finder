@@ -107,13 +107,20 @@ The open provider-use decision and bounded Production audit are documented in
    - Eight newest items per query; alternating six-item older samples and one direct known-lead
      recheck; stale results still need independent coverage and availability measurement
    - A disappeared/ended direct recheck is marked unavailable, never inferred sold
-   - A separate read-only Developer Analytics probe reports Production Browse quota aggregates;
-     it does not enforce a cross-workflow request budget or guarantee future capacity
+   - Developer Analytics now gates each due watch against the shared Browse quota with a
+     worst-case request allowance and a reserve; there is still no atomic reservation across
+     independent workflows or guarantee of future capacity
+14. Scheduler catch-up preparation
+   - GitHub's twice-hourly cron delivered only two scheduled watch runs on September 23;
+     actual timeliness is unproven
+   - A Neon Function trigger can dispatch the existing worker for due, unleased watches, but
+     remains inactive until a repository-scoped Actions-write credential is installed
+   - Each watch is due at least 30 minutes after completion, bounding daily scan volume
 
 ### Verified baseline
 
 - Latest verified implementation baseline: current `main` after required checks
-- Offline suite: 273 Python and 16 Node tests passing; rerun required checks before commit
+- Offline suite: 285 Python and 19 Node tests passing; rerun required checks before commit
 - Ruff lint and formatting checks passing
 - Live Discogs validation passing through GitHub Actions
 - Multi-query Discogs smoke passed on the `discogs-candidate-retrieval-2026` branch; this uses
@@ -139,6 +146,10 @@ The open provider-use decision and bounded Production audit are documented in
 - A non-retaining panel sampled all eleven owner-supplied targets across three successful
   batches. Ten of twelve five-result query pages were capped; its possible/family/conflicting
   counts are unverified policy output, not measured pressing accuracy or discovery recall.
+- [Production deployment #11](https://github.com/nictowey/Finder/actions/runs/35905240731)
+  passed all tests, isolated PostgreSQL checks, private-access checks, and three live due
+  watch scans under the quota guard. Zero scans failed or paused; eight new inbox rows appeared.
+  This is one successful scan, not a scheduler reliability measurement.
 
 ### Production status
 
