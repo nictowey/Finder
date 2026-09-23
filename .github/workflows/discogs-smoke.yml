@@ -10,6 +10,7 @@ on:
       - "src/finder/matching.py"
       - "src/finder/cli.py"
       - "scripts/validate_live_matching.py"
+      - "scripts/measure_live_catalog.py"
       - "tests/test_discogs.py"
       - "pyproject.toml"
 
@@ -61,3 +62,9 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/validate_live_matching.py
+
+      - name: Measure cross-genre catalog title retrieval
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/measure_live_catalog.py
