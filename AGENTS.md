@@ -109,6 +109,9 @@ The September 23 manual DS2 target scan completed two bounded queries, with 12 d
 normalized results and two overlaps. A private probe found the known listing in that run.
 The first query reached its ten-item cap; exact pressing identity and broader recall remain
 unverified. See `docs/production-audit.md` for aggregate run records.
+The private DS2 match check now identifies the album family and a bounded catalog query surfaced
+five other same-family releases among ten evaluated. The catalog query hit its cap; the specific
+numbered copy, catalog coverage, and any real-listing precision remain unverified.
 
 ## Architecture boundaries
 

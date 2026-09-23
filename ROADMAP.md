@@ -358,6 +358,11 @@ release recall remain unmeasured.
 For a saved exact release, retrieval now includes one bounded catalog artist/title search in
 addition to the seller-derived searches. It may reveal competing pressings under the existing
 ten-detail default; a release found only by that catalog query is still a seller-search miss.
+The September 23 private DS2 rerun evaluated ten releases, including five alternatives in the
+same catalog family, and the first-page catalog search hit its cap. The listing remains
+`family_only` with no structured pressing identifier. Next measure candidate coverage and
+review evidence across diverse targets under permitted evaluation terms; do not infer that ten
+releases exhaust the family or that this one example measures exact-pressing accuracy.
 
 ### 2.1 Target ontology
 
