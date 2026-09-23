@@ -37,11 +37,20 @@ session, its expiry, verified email, and owner allow-list. No external auth SDK 
   across queries. At full use this is at most 4,752 Browse requests per day, excluding other
   operator workflows and retries. Actual quotas must be checked before increasing capacity.
 - Initial discovery uses relevance; subsequent scans use newest first. Page caps are visible.
+- Policy `private-target-review-v2` retrieves up to five catalog alternatives per watch using
+  one search and at most five additional release requests, reused across every listing in that
+  scan. The selected release still costs its existing one request. A full three-watch scan
+  therefore uses at most 21 catalog requests before retries; it does not enumerate a complete
+  release family. Failed alternative retrieval is shown and withholds notifications.
+- Shared or missing evidence may leave another retrieved pressing compatible. Those leads stay
+  visible in Possible pressings with a competing-fit count, but do not notify automatically.
+  Zero competing fits within a bounded sample does not prove unique identity.
 - Leases expire after twelve minutes. Edits invalidate in-flight work through revision checks.
 - Inbox identity is watch + marketplace + listing. Dismissal survives rescans and edits.
 - One notification event per listing per watch. Raising a ceiling can notify a previously
   ineligible listing; an already alerted listing does not alert again after editing.
-- Possible pressing leads can notify without a ceiling. Ceiling notifications additionally
+- Possible pressing leads with a completed alternatives check and no unresolved retrieved
+  competitor can notify without a ceiling. Ceiling notifications additionally
   require known same-currency fixed price and shipping, matching requested destination context,
   and an accepted condition when specified. All delivery totals need checkout verification.
 - Unknown shipping, auction prices, failed detail enrichment, stale listings, explicit conflicts,

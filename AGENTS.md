@@ -24,6 +24,9 @@ behind adapters. Category-specific identity rules belong in category modules.
 
 The accuracy-gated development sequence and product decisions are maintained in `ROADMAP.md`.
 Read it before proposing or implementing a new phase.
+The active delivery order is `docs/identification-roadmap.md`: identify competing pressings,
+account for search gaps, add resumable discovery, collect permitted manual adjudications, and
+measure on a holdout. Prioritize these over interface polish or more categories.
 
 The current product blockers are permission for a buyer-facing eBay deal signal, a lawful,
 commercially usable source of sold transactions, and a decision on using Discogs API-derived
@@ -96,11 +99,14 @@ The open provider-use decision and bounded Production audit are documented in
      provisional leads for both saved targets, including the known DS2 listing
    - Watch creation and inbox filters passed in the hosted dashboard; push delivery on the
      owner's own device is still unverified
+   - Scheduled policy v2 retrieves up to five alternatives once per watch; unresolved
+     competing pressings remain visible and suppress notifications. Lookup failures also
+     withhold notifications without dropping discovery. Catalog coverage is still bounded.
 
 ### Verified baseline
 
 - Latest verified implementation baseline: current `main` after required checks
-- Offline suite: 239 Python and 15 Node tests passing; rerun required checks before commit
+- Offline suite: 250 Python and 15 Node tests passing; rerun required checks before commit
 - Ruff lint and formatting checks passing
 - Live Discogs validation passing through GitHub Actions
 - Multi-query Discogs smoke passed on the `discogs-candidate-retrieval-2026` branch; this uses
@@ -249,6 +255,10 @@ A material change is complete only when:
 - Any applicable live smoke test passes.
 
 ## Near-term priorities
+
+Follow the ordered deliverables in `docs/identification-roadmap.md`. Bounded alternative
+comparison is implemented; next close the capped-search and inventory-reconciliation gaps.
+The dependencies below still govern the corresponding real-data and release decisions.
 
 1. Resolve and record eBay's intended-use, retention, and evaluation rights and qualify a
    permitted sold-comparables source before treating price-based deal detection as buildable.

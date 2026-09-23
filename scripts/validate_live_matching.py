@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from finder.adapters.discogs.adapter import DiscogsCatalogProvider
 from finder.adapters.discogs.client import DiscogsClient
+from finder.categories.target_review import review_target_with_alternatives
 from finder.categories.vinyl_target import target_from_release
 from finder.config import load_discogs_settings
 from finder.domain import Listing, Variant
@@ -89,6 +90,16 @@ def main() -> int:
         with DiscogsClient(settings) as client:
             provider = DiscogsCatalogProvider(client, now=lambda: observed_at)
             retrieval = provider.search_for_listing(listing, limit=10)
+            alternatives = provider.search_alternatives(selected)
+        review = review_target_with_alternatives(
+            listing,
+            selected,
+            alternatives.variants,
+            search_incomplete=alternatives.search_incomplete,
+        )
+        assert review.alternatives_checked is not None
+        assert 0 <= review.alternatives_checked <= 5
+        assert review.status != "exact_variant"
         variants = retrieval.variants
         assert "barcode" in retrieval.query_kinds
         assert any(
@@ -151,6 +162,9 @@ def main() -> int:
                     "conflicting_barcode_status": rejected.status,
                     "persisted_candidates": len(stored),
                     "other_genre_vinyl_results": len(other_genre_vinyl),
+                    "watch_alternatives_checked": review.alternatives_checked,
+                    "watch_alternatives_not_ruled_out": review.alternatives_not_ruled_out,
+                    "watch_catalog_search_incomplete": alternatives.search_incomplete,
                 }
             )
         )

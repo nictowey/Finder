@@ -31,6 +31,12 @@ class CandidateRetrieval:
         )
 
 
+@dataclass(frozen=True)
+class AlternativeRetrieval:
+    variants: list[Variant]
+    search_incomplete: bool
+
+
 class DiscogsCatalogProvider:
     name = "discogs"
 
@@ -56,6 +62,30 @@ class DiscogsCatalogProvider:
         if isinstance(release_id, bool) or not isinstance(release_id, int) or release_id <= 0:
             raise ConfigurationError("Discogs release ID must be a positive integer.")
         return self._hydrate([release_id])[0]
+
+    def search_alternatives(self, target: Variant, *, limit: int = 5) -> AlternativeRetrieval:
+        """One catalog query, up to five other details, reusable for an entire watch scan.
+
+        Results are candidates, not a complete master-release inventory. Reuse the already
+        hydrated target and never count a pinned target as independent search discovery.
+        """
+        if not 1 <= limit <= 5:
+            raise ConfigurationError("Alternative result limit must be between 1 and 5.")
+        if target.catalog_source != "discogs" or not target.title.strip():
+            raise ConfigurationError("A Discogs target with a title is required.")
+        artist = re.sub(r"\s+\(\d+\)$", "", target.artists[0]) if target.artists else ""
+        if artist.casefold() in ("various", "various artists"):
+            artist = ""
+        results, truncated = self._search({"q": f"{artist} {target.title}".strip()}, limit + 1)
+        ids = self._ids(results)
+        other_ids = [id for id in ids if str(id) != target.catalog_variant_id]
+        incomplete = (
+            truncated
+            or len(other_ids) > limit
+            or target.catalog_variant_id not in {str(id) for id in ids}
+            or len(ids) != len(results)
+        )
+        return AlternativeRetrieval(self._hydrate(other_ids[:limit]), incomplete)
 
     def search_for_listing(
         self, listing: Listing, *, limit: int = 10, target_release_id: int | None = None

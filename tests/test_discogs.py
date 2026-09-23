@@ -76,6 +76,46 @@ def test_catalog_search_uses_only_database_and_release_endpoints(
     assert product.resource_url == "https://www.discogs.com/master/99"
 
 
+@pytest.mark.parametrize("include_target", [True, False])
+def test_watch_alternatives_reuse_target_and_bound_requests(
+    discogs_settings, discogs_release, observed_at, include_target
+):
+    target = normalize_release(discogs_release, observed_at)
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        if request.url.path == "/database/search":
+            assert request.url.params["q"] == "Example Artist Example Album"
+            assert request.url.params["per_page"] == "6"
+            ids = ([111] if include_target else [999]) + list(range(222, 227))
+            return httpx.Response(200, json={"results": [{"id": id} for id in ids]})
+        id = int(request.url.path.rsplit("/", 1)[-1])
+        assert id != 111
+        return httpx.Response(200, json={**discogs_release, "id": id})
+
+    with DiscogsClient(discogs_settings, transport=httpx.MockTransport(handler)) as client:
+        result = DiscogsCatalogProvider(client).search_alternatives(target)
+    assert len(paths) == 6
+    assert len(result.variants) == 5
+    assert result.search_incomplete
+
+
+def test_alternative_search_flags_invalid_or_missing_target_results(
+    discogs_settings, discogs_release, observed_at
+):
+    target = normalize_release(discogs_release, observed_at)
+    with DiscogsClient(
+        discogs_settings,
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json={"results": [{"id": "bad"}]})
+        ),
+    ) as client:
+        result = DiscogsCatalogProvider(client).search_alternatives(target)
+    assert not result.variants
+    assert result.search_incomplete
+
+
 def test_listing_retrieval_diversifies_queries_deduplicates_and_reports_shared_barcode(
     discogs_settings, discogs_release, search_payload
 ):
