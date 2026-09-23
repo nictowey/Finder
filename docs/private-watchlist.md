@@ -41,9 +41,11 @@ session, its expiry, verified email, and owner allow-list. No external auth SDK 
 - At three watches and 48 refreshes/day, the nominal worst case is 4,464 Browse requests/day:
   `3 * 48 * (3 * (1 + 8) + ((1 + 6) + 1) / 2)`. The initial scans, retries and manual
   workflows add calls. [eBay publishes a default 5,000 calls/day](https://developer.ebay.com/develop/get-started/api-call-limits)
-  for Browse methods other than `getItems`; the application-specific remaining quota has not
-  been checked. Never raise watch capacity or search depth on the strength of the nominal
-  calculation alone.
+  for Browse methods other than `getItems`. The [Production quota probe](https://github.com/nictowey/Finder/actions/runs/35857263684)
+  returned a 5,000-call daily `buy.browse` limit and 4,940 remaining at approximately 11:54 UTC
+  on September 23. The nominal margin is only 536 calls for initial scans, retries and other
+  workflows, without a shared reservation. Never raise watch capacity or search depth on the
+  strength of the nominal calculation alone.
 - The manual **Production eBay Browse quota** workflow reads the official Developer Analytics
   endpoint with the existing Production application token. It reports only resource names,
   limits, remaining calls and time windows in public Actions logs. If the response is missing
@@ -138,7 +140,10 @@ the pink/green release are discovery examples, not enough to estimate accuracy a
   passed 256 Python and 16 Node tests, isolated PostgreSQL checks, and private access checks.
   Its two due watches both completed with zero failures and one new inbox row. The signed-in
   dashboard showed an older sample for each watch, and the DS2 newest query hit its cap. The
-  prior known DS2 lead was not visible in this first sample's fresh six-hour inbox window; the
-  alternate direct known-lead recheck has not yet been observed live. Coverage and identity
-  remain unmeasured. The previous successful scheduled scan was around 10:00 UTC and this
-  deployment scan around 11:39 UTC, so a 30-minute freshness promise is not yet supported.
+  prior known DS2 lead was not visible in this first sample's fresh six-hour inbox window.
+  The subsequent [private scan](https://github.com/nictowey/Finder/actions/runs/35857378734)
+  completed both watches without failures or new inbox rows. A direct item-detail refresh of
+  that previously known lead restored it to the fresh inbox. Policy v2 checked five alternatives;
+  four remained plausible and the alert was withheld. This does not measure discovery recall or
+  confirm the numbered pressing. The previous successful scheduled scan was around 10:00 UTC
+  and the deployment scan around 11:39 UTC, so a 30-minute freshness promise is not yet supported.

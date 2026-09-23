@@ -124,8 +124,12 @@ The open provider-use decision and bounded Production audit are documented in
   `vinyl` search returned 10 items, 9 normalized and round-tripped through persistence
   (1 skipped as ended). Sandbox inventory is test data, not vinyl market data.
 - Live inventory deployment #6 passed; two saved watches completed, one inbox row was added,
-  and the dashboard showed six sampled older results per target. The alternate known-lead
-  direct recheck and actual target recall are not yet observed or measured.
+  and the dashboard showed six sampled older results per target. Subsequent private scan #4
+  directly refreshed the known DS2 lead into the active inbox, with four of five retrieved
+  alternatives still compatible and its alert withheld. This did not measure target recall.
+- Read-only Developer Analytics quota check #3 reported a 5,000-call daily `buy.browse` limit
+  with 4,940 remaining at approximately 11:54 UTC on September 23. The nominal three-watch
+  daily refresh maximum of 4,464 calls does not reserve capacity for other work or retries.
 
 ### Production status
 
@@ -267,8 +271,9 @@ A material change is complete only when:
 ## Near-term priorities
 
 Follow the ordered deliverables in `docs/identification-roadmap.md`. Bounded alternative
-comparison and a first inventory-reconciliation pass are implemented; next independently
-audit capped-search misses and actual application quota, then add permitted manual review.
+comparison, the first inventory-reconciliation pass, a direct known-lead refresh, and an
+application quota reading are observed; next independently audit capped-search misses and
+account for shared request use, then add permitted manual review.
 The dependencies below still govern the corresponding real-data and release decisions.
 
 1. Resolve and record eBay's intended-use, retention, and evaluation rights and qualify a
