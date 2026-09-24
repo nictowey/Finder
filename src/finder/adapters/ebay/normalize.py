@@ -153,6 +153,11 @@ def normalize_listing(
         seller_feedback_score=score,
         listing_url=_text(raw.get("itemWebUrl")),
         primary_image=_text(_object(raw.get("image")).get("imageUrl")),
+        additional_images=[
+            url
+            for image in _list(raw.get("additionalImages"))[:23]
+            if (url := _text(_object(image).get("imageUrl")))
+        ],
         item_specifics=aspects,
         categories=categories,
         buying_formats=formats,

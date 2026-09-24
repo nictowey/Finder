@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createHandler, validateWatch, validPush } from "./watchlist.js";
+import { createHandler, MAX_WATCHES, validateWatch, validImage, validPush } from "./watchlist.js";
 import { html, javascript, serviceWorker } from "./watchlist-ui.js";
 
 const origin = "https://finder.example";
@@ -76,7 +76,7 @@ test('Home Screen manifest is public but dashboard data stays private',async()=>
 });
 
 test('new discovery controls preserve owner authentication and mutation origin gates',async()=>{
- for(const endpoint of ['/api/refresh-lead','/api/discovery-rollout']){
+ for(const endpoint of ['/api/refresh-lead']){
   const anonymous=setup().handler;
   assert.equal((await anonymous(new Request(origin+endpoint,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:'{}'}))).status,401);
   const owner=setup(true).handler;
@@ -131,4 +131,75 @@ test('price scope defaults to saved ceilings and all-prices is explicit', async(
  assert.equal((await handler(new Request(origin+'/api/dashboard?prices=invalid'))).status,400);
  assert.ok(html.includes('Within each watch’s ceiling'));
  assert.ok(html.includes('All prices'));
+});
+
+const owner=async()=>new Response(JSON.stringify({user:{email:'owner@example.com',emailVerified:true},session:{expiresAt:new Date(Date.now()+60000).toISOString()}}));
+
+test('watch settings validate cheat sheets, the gamble price, auctions and extra searches',()=>{
+ const watch=validateWatch({release_id:1,gamble_max:'25.50',auction_alert_minutes:60,extra_queries:[' Exampel Album '],
+  tells:[{kind:'color',value:' Pink/Green ',required:true}],anti_tells:[{kind:'keyword',value:'reissue'}]});
+ assert.equal(watch.gamble_max,'25.50');assert.equal(watch.auction_alert_minutes,60);
+ assert.deepEqual(watch.extra_queries,['Exampel Album']);
+ assert.deepEqual(watch.tells,[{kind:'color',value:'Pink/Green',required:true}]);
+ assert.deepEqual(watch.anti_tells,[{kind:'keyword',value:'reissue',required:false}]);
+ const defaults=validateWatch({release_id:1});
+ assert.equal(defaults.auction_alert_minutes,120);assert.deepEqual(defaults.tells,[]);assert.equal(defaults.gamble_max,null);
+ for(const value of [{gamble_max:'-1'},{auction_alert_minutes:5000},{auction_alert_minutes:'60'},{extra_queries:['a','b','c']},{extra_queries:['  ']},
+  {tells:[{kind:'price',value:'x'}]},{tells:[{kind:'color',value:''}]},{tells:[{kind:'color',value:'x',required:'yes'}]},{anti_tells:Array(13).fill({kind:'keyword',value:'x'})}])
+  assert.throws(()=>validateWatch({release_id:1,...value}));
+});
+
+test('photos are limited to eBay image hosts and allowed by the content policy',async()=>{
+ assert.equal(validImage('https://i.ebayimg.com/images/g/abc/s-l1600.jpg'),true);
+ for(const url of ['http://i.ebayimg.com/a.jpg','https://i.ebayimg.com.evil.test/a.jpg','https://evil.test/a.jpg','javascript:alert(1)',null])assert.equal(validImage(url),false);
+ const {handler}=setup();
+ const response=await handler(new Request(origin+'/'));
+ assert.ok(response.headers.get('Content-Security-Policy')?.includes("img-src 'self' https://i.ebayimg.com"));
+ const fresh=new Date().toISOString();
+ const db={query:async(q:string)=>{
+  if(q.includes('owner_email'))return {rows:[{data:{email:'owner@example.com'}}]};
+  if(q.includes('FROM finder_inbox i JOIN listings'))return {rows:[{watch_id:'w',marketplace:'ebay',marketplace_item_id:'1',first_seen_at:fresh,last_seen_at:fresh,revision:1,dismissed:false,
+   data:{status:'family_review',watch_revision:1,clues:[],verify:[]},listing:{title:'t',listing_url:'https://www.ebay.com/itm/1',details_observed_at:fresh,item_specifics:{},
+   primary_image:'https://i.ebayimg.com/a.jpg',additional_images:['https://evil.test/b.jpg','https://i.ebayimg.com/c.jpg']}}]};
+  if(q.includes('FROM finder_verdicts WHERE'))return {rows:[{watch_id:'w',marketplace:'ebay',marketplace_item_id:'1',verdict:'mine'}]};
+  if(q.includes('GROUP BY tier'))return {rows:[{tier:'family_review',verdict:'mine',n:1}]};
+  return {rows:[]};
+ }};
+ const data=await (await createHandler({db,origin,authURL:'https://auth.example',fetch:owner})(new Request(origin+'/api/dashboard'))).json();
+ assert.deepEqual(data.leads[0].listing.images,['https://i.ebayimg.com/a.jpg','https://i.ebayimg.com/c.jpg']);
+ assert.equal(data.leads[0].verdict,'mine');assert.equal(data.accuracy[0].n,1);assert.equal(data.max_watches,MAX_WATCHES);
+});
+
+test('verdicts are validated, recorded against the inbox row and can be cleared',async()=>{
+ const calls:[string,unknown[]][]=[];let found=true;
+ const db={query:async(q:string,v:unknown[]=[])=>{
+  if(q.includes('owner_email'))return {rows:[{data:{email:'owner@example.com'}}]};
+  calls.push([q,v]);
+  return {rows:q.includes('RETURNING verdict')&&found?[{verdict:v[3]}]:[]};
+ }};
+ const handler=createHandler({db,origin,authURL:'https://auth.example',fetch:owner});
+ const post=(body:unknown)=>handler(new Request(origin+'/api/verdict',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify(body)}));
+ const key={watch_id:'w',marketplace:'ebay',marketplace_item_id:'1'};
+ assert.equal((await post({...key,verdict:'mine'})).status,200);
+ assert.ok(calls.at(-1)![0].includes('FROM finder_inbox'));assert.equal(calls.at(-1)![1][3],'mine');
+ assert.equal((await post({...key,verdict:null})).status,200);
+ assert.ok(calls.at(-1)![0].startsWith('DELETE FROM finder_verdicts'));
+ assert.equal((await post({...key,verdict:'maybe'})).status,400);
+ assert.equal((await post({...key,marketplace:'other',verdict:'mine'})).status,400);
+ found=false;
+ assert.equal((await post({...key,verdict:'other'})).status,404);
+});
+
+test('watch capacity follows the shared maximum',async()=>{
+ let values:unknown[]=[];
+ const db={query:async(q:string,v:unknown[]=[])=>{
+  if(q.includes('owner_email'))return {rows:[{data:{email:'owner@example.com'}}]};
+  if(q.includes('generate_series')){values=v;return {rows:[]};}
+  return {rows:[]};
+ }};
+ const response=await createHandler({db,origin,authURL:'https://auth.example',fetch:owner})(new Request(origin+'/api/watches',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({release_id:1})}));
+ assert.equal(response.status,409);assert.equal(values[4],MAX_WATCHES);
+ assert.ok((await response.json()).error.includes(String(MAX_WATCHES)));
+ assert.ok(javascript.includes("state.max_watches"));assert.ok(html.includes('Cheat sheet'));
+ assert.ok(javascript.includes('data-verdict'));assert.ok(javascript.includes('Ask the seller'));
 });

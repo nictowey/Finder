@@ -1,249 +1,56 @@
 # Finder Agent Guide
 
-## Resumable discovery revision — September 23, 2026
+## Purpose and scope
 
-The new implementation replaces scheduled samples with durable full search passes, overlapping
-incremental windows, periodic reconciliation, a deletion-aware evaluation queue, shared
-request debits and a paginated inbox. See [the discovery contract](docs/resumable-discovery.md) for scope,
-completion states, failure behavior, estimates and rollout/rollback controls. Earlier sampled
-scan descriptions below are historical and remain applicable only while rollout is disabled.
-Validation: 317 Python and 32 Node tests, Ruff and TypeScript. Deployment #19 at f9ab586 passed
-all gates. All six current queries exhausted their initial passes: 434 retained references,
-175 evaluated and 259 pending at the last observation. A scheduled Neon catch-up at 22:15 UTC
-resumed evaluation; the notification step had no eligible alerts. See the discovery contract
-for request counts and the earlier recorded quota-parser pause. Daily reconciliation and
-real-listing phone delivery remain unobserved. Existing operational history
-is retained. No marketplace recall or pressing-accuracy claim follows from this change.
+Finder is the owner's **personal pressing hunter**. The owner saves specific vinyl pressings
+(Discogs releases), sets their own prices, and gets alerts when an eBay listing is plausibly
+that pressing at or below those prices. It is not a public product. Price judgments come
+from the owner, never from a model of eBay data.
 
+- Category: vinyl records, any genre. Other collectibles only after vinyl works well.
+- Marketplace: eBay Browse API only; never scrape eBay.
+- Catalog: Discogs catalog endpoints only.
+- Hosting: free tiers only (Neon PostgreSQL and Functions, GitHub Actions). Do not add paid
+  services or paid add-ons (including paid AI/vision APIs) without the owner's approval.
+- Interface: owner-only dashboard, scheduled worker, push notifications, and a Python CLI.
 
-## Purpose
+The owner decided on September 24, 2026 to run Finder for personal use only. The public-launch
+gates in `ROADMAP.md` and `docs/decisions/` are parked, not satisfied. Read
+[the personal pressing hunter plan](docs/personal-pressing-hunter-plan.md) before changing
+product behavior, and [the evidence log](docs/evidence-log.md) for dated operational history.
 
-Finder is a marketplace-monitoring and mispricing-detection platform. A user defines what
-they want monitored; Finder discovers marketplace listings, identifies the exact product and
-variant, records observations, and will eventually calculate valuations, score opportunities,
-and deliver alerts.
+## How it works
 
-Keep the core domain marketplace- and category-neutral. Marketplace-specific behavior belongs
-behind adapters. Category-specific identity rules belong in category modules.
+1. Each watch is a Discogs release plus owner settings: the price for a likely match
+   (`maximum_subtotal`), an optional lower price for unclear listings (`gamble_max`),
+   auction alert timing, extra searches, and a cheat sheet of signs (`tells`) and
+   common-version signs (`anti_tells`).
+2. `watch_profile.py` caches the release's sibling vinyl versions from the Discogs master
+   (weekly) and suggests distinguishing signs (`categories/vinyl_clues.py`). The owner accepts
+   suggestions; nothing is applied automatically.
+3. `discovery_worker.py` runs resumable search passes over up to six queries per watch
+   (album searches, owner searches, one barcode `gtin:` search), hydrates listings, and
+   re-reads them on a schedule. The new-listing cadence is 10 minutes, stretching as enabled
+   queries grow so polling stays within `POLL_BUDGET` searches per day.
+4. `watch_worker.assess_review` sorts each listing into **likely yours**
+   (`possible_pressing`), **unclear** (`family_review`) or **likely another version**
+   (`conflicting`), then decides whether it alerts. Auctions alert only near their end.
+5. The dashboard shows photos, signs found or missing, a seller-question draft and verdict
+   buttons. Verdicts measure how well each tier works.
 
-The default inbox now respects saved price ceilings before pagination; **All prices** retains
-access to higher, unknown, auction and stale references. See `docs/resumable-discovery.md`.
-
-## Current scope
-
-- Category: vinyl records
-- Any genre of vinyl; the first broad monitor and historical evaluation set focus on hip-hop/rap
-- Marketplace: eBay Browse API only; never scrape eBay
-- Catalog identity source: Discogs CC0 catalog endpoints only
-- Persistence: SQLAlchemy with SQLite locally and portable repository boundaries
-- Interface: Python CLI, private owner-only watchlist dashboard and scheduled review worker,
-  manual bounded cloud validation, and a hosted eBay deletion endpoint
-
-## Current project state
-
-### Current owner decisions and operational delivery
-
-The owner reconfirmed on September 23: build the private pressing watchlist first, keep
-hosting free, and send clearly labeled **review leads** even when retrieved pressings remain
-ambiguous or catalog search is capped. Policy v4 defaults to `review_leads`; `strict` is a
-per-watch option. Failed alternative retrieval, explicit conflicts, stale details, and invalid
-ceiling/destination/condition evidence still block alerts. Never promote a review alert to an
-exact pressing, bargain, or valuation claim. This supersedes the v3 incomplete-search alert
-hold for review mode only.
-
-Operational history is now implemented in additive migration 2: due/start/finish timestamps,
-expired and superseded attempts, quota pauses, bounded counters and dispatch correlations.
-The protected dashboard exposes current overdue/stale state and a 14-day history view.
-It never certifies reliability from elapsed days or successful workflow counts. A Home Screen
-manifest and a rate-limited, owner-only test notification support device activation. Public
-notification logs report push-service acceptance, not device receipt.
-
-Read `docs/pilot-acceptance.md` for the next evidence and usability gates. Current checks:
-292 Python and 29 Node tests, Ruff and TypeScript pass locally. Production deployment #13 passed the additive upgrade, isolated synthetic backup/restore
-rehearsal, and private-access checks. The owner subsequently confirmed visible test delivery; unattended real-listing device delivery remains unverified. These changes
-add no paid services and do not raise the three-watch cap.
-
-
-The accuracy-gated development sequence and product decisions are maintained in `ROADMAP.md`.
-Read it before proposing or implementing a new phase.
-The active delivery order is `docs/identification-roadmap.md`: identify competing pressings,
-account for search gaps, add resumable discovery, collect permitted manual adjudications, and
-measure on a holdout. Prioritize these over interface polish or more categories.
-
-The current product blockers are permission for a buyer-facing eBay deal signal, a lawful,
-commercially usable source of sold transactions, and a decision on using Discogs API-derived
-catalog data in a public view linking to eBay. Production Browse access by itself does not
-authorize price modeling or prove that an undervalued-listing product is viable. The collector
-watchlist without a fair-value claim can be developed and tested internally while these are
-resolved; public display requires the outbound-use decision.
-The open provider-use decision and bounded Production audit are documented in
-`docs/decisions/0001-provider-use.md` and `docs/production-audit.md`.
-
-### Completed
-
-1. Phase 1 — eBay ingestion foundation
-   - Configurable eBay monitor and official Browse API client
-   - Listing normalization, total acquisition cost, structured logging, retries, and errors
-   - Marketplace/item-ID upserts with first/latest observation timestamps
-   - Mocked API, normalization, configuration, persistence, and scan tests
-2. Discogs catalog identity foundation
-   - Authenticated catalog search and release normalization
-   - Generic Product and Variant persistence
-   - Deterministic listing-to-variant candidate scoring
-   - Secret-backed GitHub Actions smoke test
-3. Vinyl identity evaluation foundation
-   - Vinyl-specific metadata extraction outside the generic domain
-   - Barcode, catalog number, artist, title, year, format, color, edition, and country evidence
-   - Deterministic ranking with explicit ambiguity and conflict handling
-   - Twenty-case hip-hop vinyl policy evaluation set using synthetic identifiers
-   - Append-only listing observation history
-   - Sanitized eBay response replay tooling
-4. Live eBay Sandbox validation
-   - Environment-scoped keysets (`EBAY_SANDBOX_*`, `EBAY_PRODUCTION_*`) that are never mixed
-   - Bounded OAuth → Browse search → normalization → persistence round-trip script
-   - **eBay smoke test** workflow: Sandbox on push, Production on manual dispatch only
-5. Production deletion-compliance foundation
-   - Stable eBay seller IDs on Production listings
-   - Shared PostgreSQL storage and signed deletion endpoint on Neon Functions
-   - Seller tombstones to prevent reimport after deletion
-6. Provisional pressing decision contracts
-   - VinylFingerprint and copy-level CollectibleAttribute models
-   - Versioned MatchDecision with source EvidenceRecords, conflicts, and missing evidence
-   - Separate family and probable-variant decisions in the match CLI; exact outcome withheld
-7. Bounded multi-query Discogs candidate retrieval
-   - Up to one valid seller barcode, one catalog number, and one title search; at most 25
-     release detail lookups (default ten), with duplicate releases removed
-   - Incomplete search coverage prevents a provisional probable-variant decision
-   - Authenticated synthetic-listing validation passed on September 23, 2026; ten releases
-     included four strong candidates, so live catalog ambiguity is real
-8. Internal exact-target eBay discovery prototype
-   - Versioned, configurable, at most three queries of ten items, with initial and refresh modes
-   - DS2 title-alias plan and cross-query item deduplication; a bounded Production scan found
-     the user-supplied example on September 23, 2026, but target recall is unmeasured
-9. Internal target-family candidate retrieval
-   - A saved release is hydrated directly and a bounded catalog-derived artist/title query
-     adds potential competing releases alongside seller-derived searches
-   - The catalog query does not count as seller-text recall or prove complete family coverage
-10. Anonymous pressing comparison prototype
-   - Manual target check reports target and same-family candidate positions, field-level
-     agreement, seller/catalog disagreements, missing evidence and unscored runouts
-   - Public job summary contains no listing, seller or release identities or evidence values
-11. Cross-genre measurement baseline
-   - A synthetic policy panel spans jazz, rock, classical, electronic, and folk with paired
-     candidate pressings and explicit abstentions; it does not estimate real-listing precision
-   - A bounded Discogs title probe checks catalog-derived seller-like titles without pinning
-     the selected release. See `docs/vinyl-measurement-2026-09-23.md` for its limits.
-
-12. Private collector watchlist loop
-   - Persistent targets, bounded 30-minute schedule, leases, review inbox and browser push outbox
-   - Owner-only verified-email login is configured and signed-in dashboard access passed
-   - Live migration/deletion checks and two-watch scheduled scan passed; the inbox shows
-     provisional leads for both saved targets, including the known DS2 listing
-   - Watch creation and inbox filters passed in the hosted dashboard; push delivery on the
-     owner's own device is still unverified
-   - Scheduled policy v3 retrieves up to five alternatives once per watch; unresolved
-     competing pressings and explicitly incomplete or failed alternative searches remain
-     visible but suppress notifications. Catalog coverage is still bounded.
-13. Bounded inventory reconciliation and known-lead refresh
-   - Per-query caps, request counts and cursor progress persist in the private watch summary
-   - Eight newest items per query; alternating six-item older samples and one direct known-lead
-     recheck; stale results still need independent coverage and availability measurement
-   - A disappeared/ended direct recheck is marked unavailable, never inferred sold
-   - Developer Analytics now gates each due watch against the shared Browse quota with a
-     worst-case request allowance and a reserve; there is still no atomic reservation across
-     independent workflows or guarantee of future capacity
-14. Scheduler catch-up activation
-   - GitHub's twice-hourly cron delivered only two scheduled watch runs on September 23;
-     sustained timeliness is unproven
-   - The independent Neon trigger is deployed for due, unleased watches using a
-     repository-scoped Actions-write credential. A due-time `workflow_dispatch` at 20:05:03 UTC
-     completed three scans; longer-term delivery latency remains unmeasured
-   - Each watch is due at least 30 minutes after completion, bounding daily scan volume
-
-### Verified baseline
-
-- Latest verified implementation baseline: current `main` after required checks
-- Offline suite: 292 Python and 29 Node tests passing; rerun required checks before commit
-- Ruff lint and formatting checks passing
-- Live Discogs validation passing through GitHub Actions
-- Multi-query Discogs smoke passed on the `discogs-candidate-retrieval-2026` branch; this uses
-  a synthetic seller listing derived from a real catalog release, not a labeled eBay listing
-- Live validation: five releases persisted, one unambiguous strong candidate scored 100,
-  and a conflicting barcode was rejected
-- Live eBay Sandbox validation passed through GitHub Actions: application OAuth token issued,
-  `vinyl` search returned 10 items, 9 normalized and round-tripped through persistence
-  (1 skipped as ended). Sandbox inventory is test data, not vinyl market data.
-- Live inventory deployment #6 passed; two saved watches completed, one inbox row was added,
-  and the dashboard showed six sampled older results per target. Subsequent private scan #4
-  directly refreshed the known DS2 lead into the active inbox, with four of five retrieved
-  alternatives still compatible and its alert withheld. This did not measure target recall.
-- Read-only Developer Analytics quota check #3 reported a 5,000-call daily `buy.browse` limit
-  with 4,940 remaining at approximately 11:54 UTC on September 23. The nominal three-watch
-  daily refresh maximum of 4,464 calls does not reserve capacity for other work or retries.
-- Third live watch first scan completed all three watches but exposed a false artist conflict
-  on an inverted seller name. The correction for exact comma inversion and competing album
-  title claims is merged and deployed; the fresh live third-watch scan showed eleven visible
-  rows with identifier conflicts, none with the false artist-conflict reason. No positive
-  exact-pressing call was validated. Scheduled workflow runs were roughly five hours apart
-  on September 23, so scan freshness is unproven.
-- A non-retaining panel sampled all eleven owner-supplied targets across three successful
-  batches. Ten of twelve five-result query pages were capped; its possible/family/conflicting
-  counts are unverified policy output, not measured pressing accuracy or discovery recall.
-- [Production deployment #11](https://github.com/nictowey/Finder/actions/runs/35905240731)
-  passed all tests, isolated PostgreSQL checks, private-access checks, and three live due
-  watch scans under the quota guard. Zero scans failed or paused; eight new inbox rows appeared.
-  This is one successful scan, not a scheduler reliability measurement.
-- [Production deployment #12](https://github.com/nictowey/Finder/actions/runs/35910197545)
-  passed the same gates with the independent Neon trigger configured. Three due watches
-  completed without failures or quota pauses, adding five new inbox rows. The repository-scoped
-  dispatch token is stored as a production environment secret and expires October 23, 2026;
-  a due-time `workflow_dispatch` at 20:05:03 UTC subsequently completed three watches with
-  zero failures or quota pauses and ten new inbox rows. The signed-in dashboard showed fresh
-  last-success times; sustained scheduler reliability remains unmeasured.
-
-- [Production deployment #13](https://github.com/nictowey/Finder/actions/runs/35920314329)
-  deployed PR #59 at `16c82ba8d0da2e7bcc2ec10bea2e43b0bb71b370`. All required checks,
-  isolated PostgreSQL migration/deletion and synthetic restore/upgrade checks, and anonymous
-  access/CSRF checks passed. Production history began at 21:07:25 UTC on September 23.
-  No watches were due during deployment: zero scans attempted, not three successful scans.
-  The signed-in dashboard shows the health/history panel, review-mode settings and zero
-  registered notification devices. The first new correlated unattended dispatch remains
-  pending, as do sustained timing, discovery accuracy, and phone delivery evidence.
-
-### Production status
-
-The free Neon Production branch and deletion Function are deployed with Production credentials.
-Candidate persistence now guards against recreating eBay-derived evidence after a seller
-deletion. Isolated PostgreSQL migration, lease, deduplication and deletion-cascade checks now pass.
-Simultaneous seller-deletion races remain unmeasured; see the data
-inventory in `docs/decisions/0001-provider-use.md` before expanding retention.
-eBay accepted the endpoint and sent test notifications; new deletion tombstones appeared in the
-shared PostgreSQL database. The September 22, 2026 Production smoke workflow fetched,
-normalized, stored, and read back 10 live listings. This validates ingestion, persistence, and
-the signed deletion test path. It does not prove exact vinyl matching or deletion of a real
-seller's data. Keep the Production and Sandbox keysets separate.
-The September 23 manual DS2 target scan completed two bounded queries, with 12 distinct
-normalized results and two overlaps. A private probe found the known listing in that run.
-The first query reached its ten-item cap; exact pressing identity and broader recall remain
-unverified. See `docs/production-audit.md` for aggregate run records.
-The private DS2 match check now identifies the album family and a bounded catalog query surfaced
-five other same-family releases among ten evaluated. The catalog query hit its cap; the specific
-numbered copy, catalog coverage, and any real-listing precision remain unverified.
-The September 23 anonymous pressing comparison rendered successfully in the manual workflow.
-Seller title and item specifics claimed numbering, and the pinned target alone was catalog-marked
-numbered among six sampled same-family releases. No individual-copy verification was performed.
-The September 23 broad Production scan fetched and persisted ten new listings without skips,
-enrichment failures, or persistence drift. It is the second distinct successful UTC day of the
-seven-day audit; the sample hit its page cap and had no verified buyer destination context.
+Up to `MAX_WATCHES` (20) watches; keep `watch_store.py` and `functions/watchlist.ts` in sync.
 
 ## Architecture boundaries
 
 - `domain.py`: generic Listing, Monitor, Product, Variant, and candidate evidence
 - `adapters/base.py`: marketplace adapter protocol
 - `adapters/ebay/`: eBay transport, discovery, normalization, and offline replay
-- `config/watch_targets.toml`: versioned internal exact-target search plans
+- `config/watch_targets.toml`: optional per-release title aliases added to a watch's searches
 - `adapters/discogs/`: Discogs catalog transport and normalization
 - `categories/vinyl.py`: vinyl-specific identity extraction
+- `categories/vinyl_clues.py`: cheat-sheet signs, suggestions and seller-text matching
+- `watch_store.py`, `watch_profile.py`, `watch_worker.py`, `discovery_*.py`: private watch loop
+- `functions/watchlist*.ts`: owner-only dashboard and API
 - `matching.py`: deterministic, auditable candidate scoring and ranking
 - `persistence.py`: repository protocols, current listing snapshots, observation history,
   catalog entities, and candidate persistence
@@ -272,31 +79,34 @@ Discogs behavior in the eBay adapter or marketplace behavior in catalog provider
 - Shared identifiers may produce ambiguity and must not be resolved with arbitrary tie-breaking.
 - Active asking prices are not sold comparables or fair market value.
 
-## Provider and legal constraints
+
+## Identity and alert rules
+
+- A tier is a sorting aid from seller text and catalog data, never verification. The owner
+  confirms from photos. Never label a listing an exact pressing, a bargain or a fair value.
+- Signs are read from seller text only; explicitly negated mentions ("not a reissue") and
+  sleeve colors in titles do not count as common-version signs.
+- Every required sign present → likely yours; any common-version sign → likely another
+  version; otherwise unclear.
+- Unclear listings alert only when the owner set `gamble_max` and the delivered price is at or
+  under it. Uncertainty about other pressings is shown, not used to hold an alert, except in
+  `strict` mode.
+- Stale details, ended listings, unaccepted conditions, unconfirmed destination quotes and
+  unknown prices still block alerts.
+
+## Provider and data constraints
 
 - Use official APIs; do not add scraping.
-- Discogs access is limited to `/database/search` and `/releases/{id}`.
-- Do not use Discogs marketplace, pricing, sales-history, seller, order, or fee data for Finder.
-- For a catalog-numbered pressing, a shared barcode/color or a seller title serial claim alone
-  must not promote the candidate; an explicit structured numbered claim is still unverified.
-  Keep the individual copy number separate from the catalog release identity.
-- An explicitly negated seller claim such as "Not Numbered" is not a positive numbered claim.
-- An exact watch target can reserve one Discogs detail slot even when seller-text search misses
-  the release. A directly fetched target is a candidate to assess, never proof that the eBay
-  listing is that release. Preserve target search-miss and missing numbered-claim reasons.
-- Target evaluation may use one additional catalog-derived family search (four searches total)
-  to retrieve competitors. Keep the same detail cap and distinguish seller-search recall from
-  catalog-derived retrieval.
-- eBay's API agreement restricts using eBay content to suggest or model prices for eBay items;
-  obtain a written provider-use decision before deal scoring, price-based alerts, or paid launch.
-- Review eBay's intermediate-copy and algorithm-training restrictions before retaining real
-  labeled listings, publishing sanitized real fixtures, or tuning matching policy on them.
-- Resolve Discogs' non-Discogs traffic restriction before publicly showing API-derived catalog
-  evidence beside outbound eBay listing links, including in a free watchlist.
-- Review Discogs' API conditions for paid apps, display freshness, caching, and required notices.
-- Preserve “Data provided by Discogs” attribution wherever Discogs-derived data is displayed.
+- Discogs access is limited to `/database/search`, `/releases/{id}` and
+  `/masters/{id}/versions`. Never use Discogs marketplace, pricing, sales-history, seller,
+  order or fee data.
+- Do not build price estimates, "deal scores" or fair values from eBay content; eBay's API
+  agreement restricts that. Owner-set prices are fine.
+- Listing photos are displayed from eBay's image host only; do not store image files.
+- Keep seller-deletion handling working; it is required for the Production keyset.
+- Preserve "Data provided by Discogs" attribution wherever Discogs-derived data is displayed.
 - Never log credentials, authorization headers, OAuth responses, or full sensitive payloads.
-- Live smoke logs are public; do not log listing IDs, titles, sellers, URLs, or seller-provided
+- Actions logs are public; do not log listing IDs, titles, sellers, URLs, or seller-provided
   item-specific names there.
 
 ## Secrets
@@ -337,48 +147,16 @@ When eBay access becomes available:
 
 ## Definition of done
 
-A material change is complete only when:
+A change is complete when:
 
-- The implementation respects adapter, category, and persistence boundaries.
+- It respects adapter, category, and persistence boundaries.
 - New behavior has automated tests, including failure and ambiguity cases where relevant.
-- Existing tests, lint, and formatting pass.
+- Tests, lint, formatting and type checks pass.
 - Documentation and `.env.example` are updated when configuration changes.
 - No secrets or unsanitized marketplace identities are committed.
-- The change is reviewable in a PR, then merged to `main` with a clear message when authorized.
-- Any applicable live smoke test passes.
-
-## Near-term priorities
-
-Follow the ordered deliverables in `docs/identification-roadmap.md`. Bounded alternative
-comparison, the first inventory-reconciliation pass, a direct known-lead refresh, and an
-application quota reading are observed; next independently audit capped-search misses and
-account for shared request use, then add permitted manual review.
-The dependencies below still govern the corresponding real-data and release decisions.
-
-1. Resolve and record eBay's intended-use, retention, and evaluation rights and qualify a
-   permitted sold-comparables source before treating price-based deal detection as buildable.
-2. Audit bounded Production scans with aggregate statistics; collect real fixtures and manually
-   label listings only after the relevant data-use decision.
-3. Measure `vinyl-decision-v2` on a development and held-out evaluation set; report precision,
-   abstention, and catalog candidate-retrieval failures separately.
-4. Expand bounded Discogs candidate retrieval, including variants sharing identifiers.
-5. Complete seven bounded Production scans and field-quality measurements.
-6. Build an internal exact-item watchlist prototype with synthetic listings; involve outside
-   collectors only after ingestion, identity, listing-use, and Discogs outbound-use gates.
-   Withhold fair-value or "steal" claims.
-7. Compare target search results with a permitted manual sample to measure misses, including
-   sellers that omit the artist, title alias, or edition, before suggesting coverage.
-
-The eBay deletion endpoint and manual bounded cloud scans support Production data validation.
-The owner authorized the private watchlist loop on September 23, 2026: recurring bounded
-scans, an authenticated review inbox, and notifications for unverified possible pressings.
-Implement that pilot without claiming exact identity, complete recall, or undervaluation.
-See `docs/private-watchlist.md` for scope, deployment and acceptance checks. The broader public
-launch and valuation gates remain unchanged.
+- Schema changes are additive and covered by `scripts/check_watch_postgres.py`.
 
 ## Maintaining this file
 
-Update **Current project state**, **Verified baseline**, **Active blocker**, and
-**Near-term priorities** after each material phase. Update `ROADMAP.md` when a phase, gate, or
-product decision changes. Keep detailed implementation history in Git commits and the README;
-do not turn this file into a line-by-line changelog.
+Keep this file short and current: purpose, rules and boundaries. Record dated deployments and
+measurements in `docs/evidence-log.md`, not here.

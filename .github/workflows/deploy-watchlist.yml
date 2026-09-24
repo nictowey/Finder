@@ -2,16 +2,6 @@ name: Deploy private watchlist
 
 on:
   workflow_dispatch:
-    inputs:
-      discovery_slots:
-        description: 'Controlled discovery rollout (preserves all watch and notification data)'
-        type: choice
-        default: unchanged
-        options:
-          - unchanged
-          - '1'
-          - '1,2,3'
-          - 'off'
 
 permissions:
   contents: read
@@ -27,7 +17,6 @@ jobs:
     environment: production
     env:
       FINDER_TRIGGER_SOURCE: deployment
-      FINDER_DISCOVERY_SLOTS: ${{ inputs.discovery_slots }}
       EBAY_ENVIRONMENT: production
       DISCOGS_USER_AGENT: Finder/0.3 +https://github.com/nictowey/Finder
       EBAY_PRODUCTION_CLIENT_ID: ${{ secrets.EBAY_PRODUCTION_CLIENT_ID }}

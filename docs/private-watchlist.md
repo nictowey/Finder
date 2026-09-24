@@ -1,19 +1,9 @@
 # Private collector watchlist
 
-## Resumable discovery revision — September 23, 2026
-
-The new implementation replaces scheduled samples with durable full search passes, overlapping
-incremental windows, periodic reconciliation, a deletion-aware evaluation queue, shared
-request debits and a paginated inbox. See [the discovery contract](resumable-discovery.md) for scope,
-completion states, failure behavior, estimates and rollout/rollback controls. Earlier sampled
-scan descriptions below are historical and remain applicable only while rollout is disabled.
-Validation: 317 Python and 32 Node tests, Ruff and TypeScript. Deployment #19 passed the
-PostgreSQL upgrade/deletion/budget rehearsal and private-access gates. All six current queries
-exhausted their initial passes (434 retained references); 175 evaluated and 259 pending at the
-last observation. The 22:15 UTC scheduled catch-up resumed evaluation successfully. Daily
-reconciliation and real-listing phone delivery remain unobserved. Existing operational history
-is retained. No marketplace recall or pressing-accuracy claim follows from this change.
-
+> **Personal scope, September 24, 2026.** The owner now runs Finder as a personal pressing
+> hunter, not a public product. Public-launch, valuation and provider-approval gates below are
+> parked, not met. Current behavior: [personal pressing hunter plan](personal-pressing-hunter-plan.md) ·
+> dated history: [evidence log](evidence-log.md).
 
 ## Goal and scope
 
@@ -110,7 +100,8 @@ session, its expiry, verified email, and owner allow-list. No external auth SDK 
   cursor; the dashboard shows the paused status and the workflow fails visibly. This is a
   conservative per-watch preflight, not an atomic reservation across independent API clients.
   The manual **Production eBay Browse quota** workflow still reports aggregate rate windows.
-- Successes and failed scans next become due 30 minutes after their previous completion.
+- Idle watches next become due one poll interval after completion (10 minutes with few
+  watches, longer as watches are added); failures wait at least 30 minutes.
   The independent schedule, once enabled, checks every ten minutes, so ordinary trigger wait
   after eligibility is at most ten minutes; real end-to-end timing still needs observation.
   Both schedulers share the worker's per-watch lease and due time. Dispatch attempts have an

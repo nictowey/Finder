@@ -26,7 +26,8 @@ from finder.watch_store import WatchStore, inbox, outbox, schema, watches
 EPOCH = "1990-01-01T00:00:00.000Z"
 OVERLAP = timedelta(hours=24)
 MAX_REFERENCES = 30_000
-POLICY = "discovery-review-v1"
+POLICY = "discovery-review-v2"
+SETTINGS_CHANGED = "settings_changed"
 
 progress = Table(
     "finder_discovery",
@@ -104,10 +105,11 @@ def new_pass(lower, upper):
     }
 
 
-def start_state(target, revision, now):
+def start_state(target, revision, now, scope=None):
+    """A search pass depends on the queries and delivery scope, not on other settings."""
     anchor = iso(now)
     signature = hashlib.sha256(
-        json.dumps([target.model_dump(), revision, POLICY], sort_keys=True).encode()
+        json.dumps([target.model_dump(), scope, POLICY], sort_keys=True).encode()
     ).hexdigest()
     return {
         "signature": signature,
@@ -177,14 +179,33 @@ class DiscoveryStore:
         self.engine = engine
 
     def load(self, claim, target, now):
-        initial = start_state(target, claim["revision"], now)
+        config = claim.get("config") or {}
+        scope = [config.get("country"), config.get("postal_code")]
+        initial = start_state(target, claim["revision"], now, scope)
         with self.engine.begin() as conn:
             fence(conn, claim, now)
             saved = conn.execute(
                 select(progress.c.data).where(progress.c.watch_id == claim["id"])
             ).scalar()
             if saved and saved.get("signature") == initial["signature"]:
-                return deepcopy(saved)
+                saved = deepcopy(saved)
+                if saved.get("revision") != claim["revision"]:
+                    # Prices or cheat-sheet edits: keep search progress, re-sort what is
+                    # already known. The worker reuses stored details for this.
+                    conn.execute(
+                        update(work)
+                        .where(work.c.watch_id == claim["id"], work.c.status == "evaluated")
+                        .values(
+                            status="pending", reason=SETTINGS_CHANGED, next_check_at=now.isoformat()
+                        )
+                    )
+                    saved["revision"] = claim["revision"]
+                    conn.execute(
+                        update(progress)
+                        .where(progress.c.watch_id == claim["id"])
+                        .values(data=saved)
+                    )
+                return saved
             if saved:
                 # New search/policy pass, same inbox/dismissal/notification identities.
                 conn.execute(

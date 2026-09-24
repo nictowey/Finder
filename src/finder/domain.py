@@ -35,6 +35,7 @@ class Listing(BaseModel):
     seller_feedback_score: int | None = None
     listing_url: str | None = None
     primary_image: str | None = None
+    additional_images: list[str] = Field(default_factory=list)
     item_specifics: dict[str, list[str]] = Field(default_factory=dict)
     categories: list[dict[str, str]] = Field(default_factory=list)
     buying_formats: list[str] = Field(default_factory=list)

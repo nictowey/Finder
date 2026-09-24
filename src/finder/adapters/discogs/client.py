@@ -82,7 +82,9 @@ class DiscogsClient:
         return min(2**attempt + random.uniform(0, 0.25), 30)
 
     def get(self, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        if path != "/database/search" and not re.fullmatch(r"/releases/[1-9][0-9]*", path):
+        if path != "/database/search" and not re.fullmatch(
+            r"/(?:releases/[1-9][0-9]*|masters/[1-9][0-9]*/versions)", path
+        ):
             raise CatalogRequestError("Discogs client only permits CC0 catalog endpoints.")
         for attempt in range(self.max_retries + 1):
             self.requests += 1

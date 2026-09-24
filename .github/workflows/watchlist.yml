@@ -20,7 +20,7 @@ jobs:
   scan:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     environment: production
     env:
       FINDER_TRIGGER_SOURCE: ${{ github.event_name == 'schedule' && 'github_schedule' || (inputs.dispatch_id != '' && 'neon_catchup' || 'manual') }}
