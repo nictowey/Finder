@@ -426,3 +426,77 @@ def test_settings_edits_resort_known_listings_without_new_searches_or_reads(
     assert SETTINGS_CHANGED not in reasons
     assert {row["watch_revision"] for row in rows} == {revision + 1}
     assert all("required_sign_not_claimed" in row["verify"] for row in rows)
+
+
+@pytest.mark.parametrize("barcode", [True, False])
+def test_a_failing_barcode_search_is_switched_off_without_failing_the_watch(
+    repository, settings, discogs_release, monkeypatch, barcode
+):
+    from contextlib import nullcontext
+
+    from finder import discovery_worker as worker
+    from finder.adapters.discogs.adapter import AlternativeRetrieval
+    from finder.adapters.ebay.client import EbayClient
+    from finder.discovery_store import progress
+
+    migrate(repository.engine)
+    store = WatchStore(repository.engine)
+    store.add(SavedWatch(release_id=111), now=NOW)
+    variant = normalize_release(discogs_release, NOW)
+    monkeypatch.setattr(
+        worker, "DiscogsClient", lambda _: nullcontext(SimpleNamespace(requests=1, retries=0))
+    )
+    monkeypatch.setattr(
+        worker,
+        "DiscogsCatalogProvider",
+        lambda _: SimpleNamespace(
+            get_release=lambda _: variant,
+            search_alternatives=lambda _: AlternativeRetrieval([], False),
+        ),
+    )
+    monkeypatch.setattr(worker, "watch_queries", lambda q, v, w: ["gtin:0123456789012", "Album"])
+    reset = (NOW + timedelta(days=1)).isoformat()
+    quota = {
+        "rateLimits": [
+            {
+                "apiContext": "buy",
+                "apiName": "browse",
+                "resources": [
+                    {
+                        "name": "buy.browse",
+                        "rates": [
+                            {"remaining": 5000, "limit": 5000, "timeWindow": 86400, "reset": reset}
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+    # This item started outside the requested window, so the search cannot be trusted.
+    outside = {"itemId": "v1|1|0", "itemOriginDate": "2030-01-01T00:00:00.000Z"}
+
+    def handle(request):
+        if "oauth2" in request.url.path:
+            return httpx.Response(200, json={"access_token": "t", "expires_in": 3600})
+        if "analytics" in request.url.path:
+            return httpx.Response(200, json=quota)
+        failing = ("gtin" in request.url.params) == barcode
+        items = [outside] if failing else []
+        return httpx.Response(200, json={"total": len(items), "itemSummaries": items})
+
+    monkeypatch.setattr(
+        worker, "EbayClient", lambda s: EbayClient(s, transport=httpx.MockTransport(handle))
+    )
+    claim = store.claim(now=NOW)
+    result = worker.run_chunk(repository, settings, None, claim, now_fn=lambda: NOW)
+    kind = "barcode" if barcode else "keywords"
+    assert result[f"search_failed_{kind}_ResponseError"] == 1
+    with repository.engine.connect() as conn:
+        state = conn.execute(select(progress.c.data)).scalar()
+    if barcode:
+        assert not result.get("failed")
+        lanes = [state["queries"][0][lane] for lane in ("baseline", "incremental")]
+        assert all(lane["reason"] == "barcode_search_unavailable" for lane in lanes)
+        assert state["queries"][1]["baseline"]["status"] != "partial_provider_limit"
+    else:
+        assert result["failed"] == 1

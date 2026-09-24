@@ -151,6 +151,7 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
     added = 0
     partial = None
     failure = False
+    diagnostic = {}
     try:
         with DiscogsClient(discogs_settings) as catalog_client:
             provider = DiscogsCatalogProvider(catalog_client)
@@ -283,7 +284,22 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                             break
                     except (RateLimitError, LostLease, StorageBudget):
                         raise
-                    except Exception:
+                    except Exception as exc:
+                        # Exception class names only: provider messages can carry identities.
+                        barcode = target.queries[i].startswith("gtin:")
+                        diagnostic[
+                            f"search_failed_{'barcode' if barcode else 'keywords'}_"
+                            f"{type(exc).__name__}"
+                        ] = 1
+                        if barcode:
+                            # The barcode search is an optional extra. If eBay rejects it or
+                            # it cannot honor the date window, stop using it for this pass
+                            # rather than failing the whole watch on every scan.
+                            state["queries"][i][lane]["status"] = "partial_provider_limit"
+                            state["queries"][i][lane]["reason"] = "barcode_search_unavailable"
+                            state["round_robin"] = rotation
+                            queue.checkpoint(claim, state, now_fn())
+                            continue
                         state["queries"][i][lane]["status"] = "interrupted"
                         state["queries"][i][lane]["reason"] = "search_or_window_validation_failed"
                         state["round_robin"] = rotation
@@ -492,12 +508,14 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
             "evaluated": coverage["outcomes"].get("evaluated", 0),
             "initial_queries_exhausted": coverage["initial"]["queries_exhausted"],
             "initial_pages_committed": coverage["initial"]["pages"],
+            **diagnostic,
         }
     except LostLease:
         return {"superseded": 1, "new_inbox_rows": added}
-    except Exception:
+    except Exception as exc:
+        diagnostic[f"chunk_failed_{type(exc).__name__}"] = 1
         summary = {"error": "discovery_failed", "discovery": requests}
         if state:
             summary["coverage"] = queue.coverage(claim, state)
         store.finish(claim, [], success=False, summary=summary, now=now_fn())
-        return {"failed": 1, "new_inbox_rows": added}
+        return {"failed": 1, "new_inbox_rows": added, **diagnostic}
