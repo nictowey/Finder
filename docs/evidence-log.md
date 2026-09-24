@@ -3,6 +3,19 @@
 Dated operational and validation history, moved verbatim from `AGENTS.md` on
 September 24, 2026 when Finder became a personal pressing hunter. Newer entries go at the top.
 
+## September 24, 2026 — first owner verdicts exposed poor precision
+
+The owner judged the initial listings and reported that most were wrong: some were different
+pressings, and Nas “Rare” included other records altogether. Counts and specific false
+positive examples were not available to the developer from the private dashboard. The review
+policy now treats “Rare” as an ambiguous adjective unless the album is explicitly claimed,
+rejects a contradictory structured release title, and demotes “Likely yours” to “Unclear” when
+another retrieved pressing fits the same evidence. Judged listings leave the default review
+queue and cannot cause another notification for that item; per-watch verdict counts expose
+the measured outcome privately. The new policy is re-applied to stored listings without
+refetching every old item. These changes reduce known false positives, but have not yet been
+validated against the owner’s specific judged listings or measured for recall loss.
+
 ## September 24, 2026 — review inbox visibility investigation
 
 The public scan log for run #83 reported 731 unique references across five processed watch

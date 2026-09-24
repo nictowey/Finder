@@ -11,14 +11,17 @@ const prefix = `WITH finder_watches AS (
   SELECT * FROM jsonb_to_recordset($8::jsonb) AS x(marketplace text,marketplace_item_id text,data jsonb)
 ), finder_inbox AS (
   SELECT * FROM jsonb_to_recordset($9::jsonb) AS x(watch_id text,marketplace text,marketplace_item_id text,data jsonb,first_seen_at text,last_seen_at text,dismissed boolean)
+), finder_verdicts AS (
+  SELECT * FROM jsonb_to_recordset($10::jsonb) AS x(watch_id text,marketplace text,marketplace_item_id text,verdict text)
 ) `;
 const config = {maximum_subtotal:"20.00",currency:"USD",country:"US",postal_code:"00000"};
 const listing = {current_price:"15.00",shipping_cost:"5.00",currency:"USD",shipping_currency:"USD",price_kind:"fixed_price",details_observed_at:"2026-01-02T12:00:00.000Z",source_metadata:{delivery_country:"US",delivery_postal_code:"00000"}};
 const stamp = "2026-01-02T12:00:00.000Z";
-async function query(items:any[], watch:any=config, scope="watch", cursor:any[]= [null,null,null]) {
+async function query(items:any[], watch:any=config, scope="watch", cursor:any[]= [null,null,null], filter="possible_pressing", judged:string[]=[]) {
   const listings=items.map(x=>({marketplace:"ebay",marketplace_item_id:x.id,data:{...listing,...x.listing}}));
   const inbox=items.map(x=>({watch_id:"synthetic",marketplace:"ebay",marketplace_item_id:x.id,data:{status:"possible_pressing",watch_revision:1,...x.review},first_seen_at:stamp,last_seen_at:stamp,dismissed:false}));
-  return (await pool.query(prefix+inboxQuery,["possible_pressing",...cursor,scope,"2026-01-02T06:00:00.000Z",JSON.stringify([{id:"synthetic",config:watch,revision:1}]),JSON.stringify(listings),JSON.stringify(inbox)])).rows;
+  const verdicts=judged.map(id=>({watch_id:"synthetic",marketplace:"ebay",marketplace_item_id:id,verdict:"other"}));
+  return (await pool.query(prefix+inboxQuery,[filter,...cursor,scope,"2026-01-02T06:00:00.000Z",JSON.stringify([{id:"synthetic",config:watch,revision:1}]),JSON.stringify(listings),JSON.stringify(inbox),JSON.stringify(verdicts)])).rows;
 }
 try {
   const cases = [
@@ -42,6 +45,9 @@ try {
   assert.equal((await query(cases,{...config,maximum_subtotal:null})).length,cases.length);
   assert.equal((await query([{id:"edited"}],{...config,maximum_subtotal:"19.99"})).length,0);
   assert.equal((await query([{id:"edited"}],{...config,maximum_subtotal:"20.01"})).length,1);
+  const reviewed=[{id:"new"},{id:"judged"}];
+  assert.deepEqual((await query(reviewed,config,"watch",[null,null,null],"review",["judged"])).map(x=>x.marketplace_item_id),["new"]);
+  assert.deepEqual((await query(reviewed,config,"watch",[null,null,null],"judged",["judged"])).map(x=>x.marketplace_item_id),["judged"]);
   const many=[...Array.from({length:60},(_,i)=>({id:"z"+String(i).padStart(3,"0"),listing:{current_price:"100"}})),{id:"a"},{id:"b"}];
   assert.deepEqual((await query(many)).map(x=>x.marketplace_item_id),["b","a"]);
   const first=await query(many,config,"all");

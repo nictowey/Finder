@@ -150,16 +150,18 @@ export function createHandler(deps: Deps) {
       if (path === "/api/dashboard" && request.method === "GET") {
         const watches = (await deps.db.query("SELECT id,config,revision,status,last_started_at,last_success_at,next_scan_at,lease_until,summary,catalog,catalog_observed_at FROM finder_watches ORDER BY id")).rows;
         const tierCounts = (await deps.db.query("SELECT watch_id,data->>'status' AS tier,count(*)::int AS n FROM finder_inbox WHERE NOT dismissed GROUP BY watch_id,data->>'status'")).rows;
+        const watchVerdicts = (await deps.db.query("SELECT watch_id,tier,verdict,count(*)::int AS n FROM finder_verdicts GROUP BY watch_id,tier,verdict")).rows;
         const profiles = (await deps.db.query("SELECT watch_id,observed_at,data->'proposals' AS proposals,data->'vinyl_versions' AS vinyl_versions,data->'partial' AS partial FROM finder_watch_profiles")).rows;
         for (const watch of watches) {
           const profile = profiles.find(p => p.watch_id === watch.id);
           watch.profile = profile ? { observed_at: profile.observed_at, proposals: profile.proposals, vinyl_versions: profile.vinyl_versions, partial: profile.partial } : null;
           watch.inbox_counts = Object.fromEntries(tierCounts.filter(row => row.watch_id === watch.id).map(row => [row.tier, Number(row.n)]));
+          watch.verdict_counts = watchVerdicts.filter(row => row.watch_id === watch.id).map(({ tier, verdict, n }) => ({ tier, verdict, n: Number(n) }));
         }
         const cutoff = Date.now() - 6 * 3600_000;
         for (const watch of watches) if (Date.parse(watch.catalog_observed_at ?? "") < cutoff || !watch.catalog_observed_at) watch.catalog = null;
         const filter = url.searchParams.get("filter") || "review";
-        if (!["review","possible_pressing","family_review","conflicting","unrelated","unavailable","dismissed"].includes(filter)) return reply({error:"Invalid inbox filter"},400);
+        if (!["review","judged","possible_pressing","family_review","conflicting","unrelated","unavailable","dismissed"].includes(filter)) return reply({error:"Invalid inbox filter"},400);
         let cursor: string[] | null = null;
         if (url.searchParams.has("cursor")) {
           try { cursor = JSON.parse(url.searchParams.get("cursor")!); } catch { return reply({error:"Invalid cursor"},400); }
@@ -209,6 +211,7 @@ export function createHandler(deps: Deps) {
           WHERE watch_id=$1 AND marketplace=$2 AND marketplace_item_id=$3
           ON CONFLICT (watch_id,marketplace,marketplace_item_id) DO UPDATE SET verdict=EXCLUDED.verdict,decided_at=EXCLUDED.decided_at RETURNING verdict`,
           [...key, value.verdict, new Date().toISOString()]);
+        if (saved.rows.length) await deps.db.query("DELETE FROM finder_outbox WHERE watch_id=$1 AND marketplace=$2 AND marketplace_item_id=$3 AND status='pending'", key);
         return saved.rows.length ? reply({ ok: true }) : reply({ error: "Listing not found" }, 404);
       }
       if (path === "/api/refresh-lead" && request.method === "POST") {

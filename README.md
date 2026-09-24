@@ -19,10 +19,13 @@ Finder never claims a listing is an exact pressing, a bargain or worth a certain
    versions on Discogs and suggests signs (for example a color only your pressing has) and
    common-version signs (for example "reissue" or "180 gram"). Add the ones you agree with,
    mark the decisive ones *required*, and add your own.
-4. **Review the inbox.** Listings are sorted into *Likely yours*, *Unclear · check photos* and
-   *Likely another version*. Each card shows the photos, the signs found or missing, the
+4. **Review the inbox.** Unjudged leads appear in *To review*; judged rows move to *Judged*.
+   Listings are sorted into *Likely yours*, *Unclear · check photos* and
+   *Likely another version*. A generic album word such as “Rare” needs an explicit title
+   claim before it is shown as a lead. A sign shared with another known pressing cannot
+   make a listing *Likely yours*. Each card shows the photos, the signs found or missing, the
    delivered price, a copyable question for the seller (for label and runout photos), and
-   verdict buttons. Your verdicts build an accuracy record for each tier.
+   verdict buttons. Your verdicts build an accuracy record for each tier and watch.
 5. **Alerts.** Push notifications fire for likely matches under your price, unclear listings
    under your gamble price, and auctions whose current bid qualifies shortly before they end
    (2 hours by default).

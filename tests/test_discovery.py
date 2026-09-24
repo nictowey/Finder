@@ -271,6 +271,7 @@ def test_summary_refresh_does_not_refresh_details_and_policy_requeues(setup, sea
     state["evaluation_signature"] = "new-policy"
     queue.checkpoint(claim, state, NOW)
     assert queue.coverage(claim, state)["pending"] == 1
+    assert queue.due(claim, NOW, limit=1, pending=True)[0]["reason"] == "settings_changed"
 
 
 def test_transport_scope_window_and_unsafe_next(settings):

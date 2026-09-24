@@ -30,6 +30,55 @@ class TargetReview(BaseModel):
     alternatives_not_ruled_out: int | None = None
 
 
+# These words are commonly seller adjectives as well as record titles. A bare
+# occurrence in a long listing title cannot establish the album identity.
+WEAK_ALBUM_TITLES = {"rare"}
+RELEASE_TITLE_SUFFIXES = {
+    "album",
+    "vinyl",
+    "record",
+    "lp",
+    "single",
+    "edition",
+    "limited",
+    "remastered",
+    "reissue",
+    "pressing",
+    "colored",
+    "colour",
+    "color",
+}
+
+
+def _release_title_matches(value: str, album: str, artists: list[str]) -> bool:
+    title = _normalized(value)
+    for artist in artists:
+        if artist and title.startswith(f"{artist} "):
+            title = title[len(artist) + 1 :]
+            break
+    if title == album:
+        return True
+    if not title.startswith(f"{album} "):
+        return False
+    remaining = title[len(album) + 1 :].split()
+    return bool(remaining) and (
+        remaining[0] in RELEASE_TITLE_SUFFIXES
+        or re.fullmatch(r"(?:19|20)\d{2}", remaining[0]) is not None
+    )
+
+
+def _explicit_album_claim(listing: Listing, album: str, artists: list[str]) -> bool:
+    """A separator marks a title claim; a bare 'rare' often describes another LP."""
+    for artist in artists:
+        if artist and re.search(
+            rf"\b{re.escape(artist)}\s*[-:|–—]\s*{re.escape(album)}\b",
+            listing.title,
+            flags=re.IGNORECASE,
+        ):
+            return True
+    return False
+
+
 def _more_specific_album_claim(listing: Listing, target: Variant, other: Variant) -> bool:
     """A longer, competing catalog title can disambiguate a seller's album claim.
 
@@ -73,6 +122,16 @@ def review_target_listing(listing: Listing, variant: Variant) -> TargetReview:
         _artist_matches_catalog(value, variant.artists) for value in seller.artists
     )
     artist_conflict = bool(seller.artists and not artist_in_specifics)
+    release_titles = [
+        value
+        for key, values in listing.item_specifics.items()
+        if _normalized(key) in {"release title", "album title", "album"}
+        for value in values
+        if value.strip()
+    ]
+    structured_album = any(
+        _release_title_matches(value, album, artist_names) for value in release_titles
+    )
     family = bool(
         album
         and f" {album} " in f" {title} "
@@ -82,6 +141,14 @@ def review_target_listing(listing: Listing, variant: Variant) -> TargetReview:
         return TargetReview(status="conflicting", clues=[], verify=["non_vinyl_claim"])
     if artist_conflict:
         return TargetReview(status="conflicting", clues=[], verify=["artist_conflict"])
+    if family and release_titles and not structured_album:
+        return TargetReview(status="conflicting", clues=[], verify=["release_title_conflict"])
+    if (
+        family
+        and album in WEAK_ALBUM_TITLES
+        and not (structured_album or _explicit_album_claim(listing, album, artist_names))
+    ):
+        return TargetReview(status="unrelated", clues=[], verify=["album_title_not_established"])
     if not family:
         return TargetReview(status="unrelated", clues=[], verify=["album_family_unconfirmed"])
 
@@ -183,6 +250,9 @@ def review_target_with_alternatives(
         verify.append("no_competing_pressings_retrieved")
     if unresolved and review.status in ("possible_pressing", "family_review"):
         verify.append("other_pressings_not_ruled_out")
+        if review.status == "possible_pressing":
+            verify.append("shared_pressing_evidence")
+            review = review.model_copy(update={"status": "family_review"})
     return review.model_copy(
         update={
             "verify": verify,
