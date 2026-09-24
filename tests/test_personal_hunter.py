@@ -472,8 +472,8 @@ def test_a_failing_barcode_search_is_switched_off_without_failing_the_watch(
             }
         ]
     }
-    # This item started outside the requested window, so the search cannot be trusted.
-    outside = {"itemId": "v1|1|0", "itemOriginDate": "2030-01-01T00:00:00.000Z"}
+    # An item without a listing date cannot be placed in a window: a malformed response.
+    outside = {"itemId": "v1|1|0"}
 
     def handle(request):
         if "oauth2" in request.url.path:
@@ -490,7 +490,7 @@ def test_a_failing_barcode_search_is_switched_off_without_failing_the_watch(
     claim = store.claim(now=NOW)
     result = worker.run_chunk(repository, settings, None, claim, now_fn=lambda: NOW)
     kind = "barcode" if barcode else "keywords"
-    assert result[f"search_failed_{kind}_ResponseError"] == 1
+    assert result[f"search_failed_{kind}_SearchError_missing_start_date"] == 1
     with repository.engine.connect() as conn:
         state = conn.execute(select(progress.c.data)).scalar()
     if barcode:

@@ -291,9 +291,18 @@ def test_transport_scope_window_and_unsafe_next(settings):
     with pytest.raises(ResponseError):
         search_page(client, TARGET, 0, lower=LOW, upper=HIGH, offset=0)
     del client.get.return_value["next"]
+    # A listing dated outside the window is still a genuine match: kept and counted.
     client.get.return_value["itemSummaries"][0]["itemOriginDate"] = "2026-09-24T00:00:00Z"
-    with pytest.raises(ResponseError):
+    kept = search_page(client, TARGET, 0, lower=LOW, upper=HIGH, offset=0)
+    assert len(kept.items) == 1 and kept.window_mismatches == 1
+    del client.get.return_value["itemSummaries"][0]["itemOriginDate"]
+    with pytest.raises(ResponseError) as missing:
         search_page(client, TARGET, 0, lower=LOW, upper=HIGH, offset=0)
+    assert missing.value.code == "missing_start_date"
+    # eBay's total is an estimate: an empty page before it ends the results.
+    client.get.return_value = {"total": 450}
+    end = search_page(client, TARGET, 0, lower=LOW, upper=HIGH, offset=400)
+    assert end.items == [] and not end.more
 
 
 def quota(remaining=5000, reset=None):
