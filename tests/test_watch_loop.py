@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import insert, select, update
 
 from finder import watch_worker
 from finder.adapters.discogs.normalize import normalize_release
@@ -14,6 +14,7 @@ from finder.watch_store import (
     migrate,
     outbox,
     rollback_pilot_schema,
+    verdicts,
     watches,
 )
 from finder.watch_worker import assess_review
@@ -54,6 +55,31 @@ def test_repeated_scan_deduplicates_and_seller_deletion_cascades(
     later += timedelta(minutes=31)
     claim = store.claim(now=later)
     assert store.finish(claim, [(row, review)], now=later) == 0
+
+
+def test_judged_listing_is_not_renotified_after_price_or_policy_change(
+    repository, store, search_payload, observed_at
+):
+    row = listing(search_payload, observed_at)
+    repository.upsert(row)
+    watch_id = store.add(SavedWatch(release_id=123), now=observed_at)
+    store.finish(store.claim(now=observed_at), [(row, {"notify": False})], now=observed_at)
+    with repository.engine.begin() as conn:
+        conn.execute(
+            insert(verdicts).values(
+                watch_id=watch_id,
+                marketplace="ebay",
+                marketplace_item_id=row.marketplace_item_id,
+                verdict="other",
+                tier="family_review",
+                decided_at=observed_at.isoformat(),
+            )
+        )
+    later = observed_at + timedelta(minutes=31)
+    store.finish(store.claim(now=later), [(row, {"notify": True})], now=later)
+    with repository.engine.connect() as conn:
+        assert not conn.execute(select(outbox)).all()
+        assert conn.execute(select(verdicts.c.verdict)).scalar_one() == "other"
 
 
 def test_expired_lease_recovery_rejects_old_worker_and_edits(repository, store, observed_at):
@@ -173,10 +199,10 @@ def test_ambiguous_and_unchecked_leads_stay_visible_without_alerts(
     assert unchecked["status"] == "possible_pressing" and not unchecked["notify"]
     competitor = variant.model_copy(update={"catalog_variant_id": "222"})
     ambiguous = assess_review(watch, row, variant, now=observed_at, alternatives=[competitor])
-    assert ambiguous["status"] == "possible_pressing" and not ambiguous["notify"]
+    assert ambiguous["status"] == "family_review" and not ambiguous["notify"]
     assert "other_pressings_not_ruled_out" in ambiguous["verify"]
     assert ambiguous["alternatives_not_ruled_out"] == 1
-    assert ambiguous["policy"] == "private-target-review-v5"
+    assert ambiguous["policy"] == "private-target-review-v6"
 
 
 def test_pilot_capacity(store):
@@ -244,8 +270,8 @@ def test_review_alerts_keep_uncertainty_but_block_conflicts_failures_and_stalene
     review = assess_review(
         watch, row, variant, now=observed_at, alternatives=[competitor], search_incomplete=True
     )
-    assert review["notify"]
-    assert review["status"] == "possible_pressing"
+    assert not review["notify"]
+    assert review["status"] == "family_review"
     assert "other_pressings_not_ruled_out" in review["verify"]
     assert "catalog_alternative_search_incomplete" in review["verify"]
     # A failed alternatives lookup is shown as uncertainty; it no longer holds the alert.

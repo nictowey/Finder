@@ -459,7 +459,14 @@ class WatchStore:
                     & (inbox.c.marketplace_item_id == listing.marketplace_item_id)
                 )
                 old = conn.execute(select(inbox).where(key)).mappings().first()
-                eligible = success and data.get("notify", False)
+                already_judged = conn.execute(
+                    select(verdicts.c.verdict).where(
+                        verdicts.c.watch_id == claim["id"],
+                        verdicts.c.marketplace == listing.marketplace,
+                        verdicts.c.marketplace_item_id == listing.marketplace_item_id,
+                    )
+                ).first()
+                eligible = success and data.get("notify", False) and not already_judged
                 values = dict(data=data, last_seen_at=stamp)
                 if old:
                     conn.execute(update(inbox).where(key).values(**values))

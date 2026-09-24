@@ -119,6 +119,29 @@ def test_sparse_current_watch_titles_remain_review_leads(
     assert "artist_and_album" in row.clues
 
 
+def test_rare_as_seller_adjective_is_not_the_nas_album(
+    search_payload, discogs_release, observed_at
+):
+    target = normalize_release(
+        {**discogs_release, "title": "Rare", "artists": [{"name": "Nas"}]}, observed_at
+    )
+    adjective = _listing(search_payload, observed_at, "Nas Illmatic RARE sealed vinyl LP")
+    assert review_target_listing(adjective, target).status == "unrelated"
+    misplaced = _listing(
+        search_payload,
+        observed_at,
+        "Nas - Rare vinyl LP",
+        (("Release Title", "Illmatic"),),
+    )
+    row = review_target_listing(misplaced, target)
+    assert row.status == "conflicting"
+    assert "release_title_conflict" in row.verify
+    explicit = _listing(
+        search_payload, observed_at, "Nas Rare vinyl LP", (("Release Title", "Rare"),)
+    )
+    assert review_target_listing(explicit, target).status == "family_review"
+
+
 def test_inverted_structured_artist_keeps_target_review_and_scoring(
     search_payload, discogs_release, observed_at
 ):
@@ -254,7 +277,7 @@ def test_more_specific_competing_album_title(
     row = review_target_with_alternatives(listing, target, [sequel])
     assert row.status == expected
     if expected == "conflicting":
-        assert "competing_album_title_claim" in row.verify
+        assert "competing_album_title_claim" in row.verify or "release_title_conflict" in row.verify
     else:
         assert "competing_album_title_claim" not in row.verify
 
@@ -265,9 +288,10 @@ def test_shared_color_stays_visible_with_ambiguous_alternative(
     listing = _listing(search_payload, observed_at, "ASAP Rocky Dont Be Dumb Pink Green vinyl")
     other = release.model_copy(update={"catalog_variant_id": "222"})
     row = review_target_with_alternatives(listing, release, [release, other, other])
-    assert row.status == "possible_pressing"
+    assert row.status == "family_review"
     assert row.alternatives_checked == row.alternatives_not_ruled_out == 1
     assert "other_pressings_not_ruled_out" in row.verify
+    assert "shared_pressing_evidence" in row.verify
     assert "catalog_alternative_search_incomplete" in row.verify
     assert "catalog_alternatives_not_checked" not in row.verify
 
@@ -307,7 +331,8 @@ def test_shared_barcode_needs_discriminating_evidence(search_payload, discogs_re
     )
     row = review_target_with_alternatives(listing, target, [other])
     assert row.alternatives_not_ruled_out == 1
-    assert row.status == "possible_pressing"
+    assert row.status == "family_review"
+    assert "shared_pressing_evidence" in row.verify
 
 
 def test_missing_or_empty_catalog_comparison_never_proves_uniqueness(

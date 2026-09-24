@@ -33,6 +33,7 @@ test("default inbox includes unclear candidates and reports review tiers per wat
   if(q.includes('owner_email'))return {rows:[{data:{email:'owner@example.com'}}]};
   if(q.includes('FROM finder_watches ORDER BY id'))return {rows:[{id:'watch',config:{enabled:true},catalog_observed_at:null}]};
   if(q.includes("AS tier,count(*)"))return {rows:[{watch_id:'watch',tier:'family_review',n:3},{watch_id:'watch',tier:'unrelated',n:8}]};
+  if(q.includes('FROM finder_verdicts GROUP BY'))return {rows:[{watch_id:'watch',tier:'family_review',verdict:'other',n:2}]};
   if(q.includes('FROM finder_inbox i JOIN listings'))filter=v[0];
   return {rows:[]};
  }};
@@ -41,11 +42,14 @@ test("default inbox includes unclear candidates and reports review tiers per wat
  assert.equal(response.status,200);
  const data=await response.json();
  assert.equal(filter,'review');
- assert.deepEqual(data.watches[0].inbox_counts,{family_review:3,unrelated:8});
- assert.ok(inboxQuery.includes("$1='review' AND i.data->>'status' IN ('possible_pressing','family_review')"));
- assert.ok(html.includes('data-filter="review" class="selected"'));
- assert.ok(javascript.includes("filter='review'"));
- assert.ok(javascript.includes("filter==='review'?['possible_pressing','family_review']"));
+  assert.deepEqual(data.watches[0].inbox_counts,{family_review:3,unrelated:8});
+  assert.deepEqual(data.watches[0].verdict_counts,[{tier:'family_review',verdict:'other',n:2}]);
+  assert.ok(inboxQuery.includes("$1='review' AND v.verdict IS NULL AND i.data->>'status' IN ('possible_pressing','family_review')"));
+  assert.ok(inboxQuery.includes('LEFT JOIN finder_verdicts v'));
+  assert.ok(html.includes('data-filter="review" class="selected"'));
+  assert.ok(html.includes('data-filter="judged"'));
+  assert.ok(javascript.includes("filter='review'"));
+  assert.ok(javascript.includes("filter==='review'?!r.verdict&&['possible_pressing','family_review']"));
 });
 test("watch inputs validate prices, release links, destinations and conditions",()=>{
   assert.equal(validateWatch({release_id:"https://www.discogs.com/release/123-Example",maximum_subtotal:"50.25"}).release_id,123);
@@ -202,7 +206,9 @@ test('verdicts are validated, recorded against the inbox row and can be cleared'
  const post=(body:unknown)=>handler(new Request(origin+'/api/verdict',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify(body)}));
  const key={watch_id:'w',marketplace:'ebay',marketplace_item_id:'1'};
  assert.equal((await post({...key,verdict:'mine'})).status,200);
- assert.ok(calls.at(-1)![0].includes('FROM finder_inbox'));assert.equal(calls.at(-1)![1][3],'mine');
+ assert.ok(calls.some(([sql])=>sql.includes('FROM finder_inbox')));
+ assert.ok(calls.at(-1)![0].includes("DELETE FROM finder_outbox"));
+ assert.equal(calls.find(([sql])=>sql.includes('FROM finder_inbox'))![1][3],'mine');
  assert.equal((await post({...key,verdict:null})).status,200);
  assert.ok(calls.at(-1)![0].startsWith('DELETE FROM finder_verdicts'));
  assert.equal((await post({...key,verdict:'maybe'})).status,400);

@@ -233,7 +233,9 @@ class DiscoveryStore:
                 conn.execute(
                     update(work)
                     .where(work.c.watch_id == claim["id"], work.c.status == "evaluated")
-                    .values(status="pending", next_check_at=now.isoformat())
+                    .values(
+                        status="pending", reason=SETTINGS_CHANGED, next_check_at=now.isoformat()
+                    )
                 )
             count = conn.execute(
                 select(func.count()).select_from(work).where(work.c.watch_id == claim["id"])

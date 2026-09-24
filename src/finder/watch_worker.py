@@ -7,7 +7,7 @@ from finder.categories.target_review import review_target_with_alternatives
 from finder.categories.vinyl_clues import apply_cheat_sheet
 from finder.watch_store import WatchStore
 
-POLICY = "private-target-review-v5"
+POLICY = "private-target-review-v6"
 
 
 def _compare(watch, listing, limit, reasons):
@@ -31,6 +31,11 @@ def assess_review(watch, listing, variant, *, now, alternatives=None, search_inc
         listing, variant, alternatives, search_incomplete=search_incomplete
     ).model_dump()
     review = apply_cheat_sheet(review, listing, variant, watch.tells, watch.anti_tells)
+    # Seller signs shared by another retrieved pressing cannot justify the
+    # "Likely yours" tier, even when all owner-required signs are mentioned.
+    if review["status"] == "possible_pressing" and review["alternatives_not_ruled_out"]:
+        review["status"] = "family_review"
+        review["verify"] = sorted(set([*review["verify"], "shared_pressing_evidence"]))
     status = review["status"]
     reasons = list(review["verify"])
     budget = _compare(watch, listing, watch.maximum_subtotal, reasons)

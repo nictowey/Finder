@@ -86,8 +86,10 @@ Discogs behavior in the eBay adapter or marketplace behavior in catalog provider
   confirms from photos. Never label a listing an exact pressing, a bargain or a fair value.
 - Signs are read from seller text only; explicitly negated mentions ("not a reissue") and
   sleeve colors in titles do not count as common-version signs.
-- Every required sign present → likely yours; any common-version sign → likely another
-  version; otherwise unclear.
+- Every required sign present with no unresolved competing pressing → likely yours; any
+  common-version sign → likely another version; otherwise unclear. A generic album word such
+  as “Rare” needs an explicit title claim; a conflicting structured release title rejects it.
+- An owner verdict removes that item from the unjudged queue and blocks repeat alerts for it.
 - Unclear listings alert only when the owner set `gamble_max` and the delivered price is at or
   under it. Uncertainty about other pressings is shown, not used to hold an alert, except in
   `strict` mode.

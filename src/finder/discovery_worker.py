@@ -134,6 +134,7 @@ def detail_batch(queue, claim, now):
 
 
 def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: datetime.now(UTC)):
+    from finder.watch_worker import POLICY as REVIEW_POLICY
     from finder.watch_worker import assess_review, refresh_hours
 
     store, queue = WatchStore(repository.engine), DiscoveryStore(repository.engine)
@@ -191,6 +192,7 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
         state["evaluation_signature"] = hashlib.sha256(
             json.dumps(
                 [
+                    REVIEW_POLICY,
                     catalog_content(variant),
                     [catalog_content(v) for v in alternatives.variants] if alternatives else None,
                     alternatives.search_incomplete if alternatives else True,
