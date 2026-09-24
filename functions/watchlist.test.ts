@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHandler, MAX_WATCHES, validateWatch, validImage, validPush } from "./watchlist.js";
 import { html, javascript, serviceWorker } from "./watchlist-ui.js";
+import { inboxQuery } from "./inbox-query.js";
 
 const origin = "https://finder.example";
 function setup(authenticated=false, owner=true) {
@@ -25,6 +26,26 @@ test("verified owner can retrieve dashboard",async()=>{
   const response=await handler(new Request(origin+"/api/dashboard"));
   assert.equal(response.status,200);
   assert.deepEqual((await response.json()).leads,[]);
+});
+test("default inbox includes unclear candidates and reports review tiers per watch",async()=>{
+ let filter:unknown;
+ const db={query:async(q:string,v:unknown[]=[])=>{
+  if(q.includes('owner_email'))return {rows:[{data:{email:'owner@example.com'}}]};
+  if(q.includes('FROM finder_watches ORDER BY id'))return {rows:[{id:'watch',config:{enabled:true},catalog_observed_at:null}]};
+  if(q.includes("AS tier,count(*)"))return {rows:[{watch_id:'watch',tier:'family_review',n:3},{watch_id:'watch',tier:'unrelated',n:8}]};
+  if(q.includes('FROM finder_inbox i JOIN listings'))filter=v[0];
+  return {rows:[]};
+ }};
+ const handler=createHandler({db,origin,authURL:'https://auth.example',fetch:owner});
+ const response=await handler(new Request(origin+'/api/dashboard'));
+ assert.equal(response.status,200);
+ const data=await response.json();
+ assert.equal(filter,'review');
+ assert.deepEqual(data.watches[0].inbox_counts,{family_review:3,unrelated:8});
+ assert.ok(inboxQuery.includes("$1='review' AND i.data->>'status' IN ('possible_pressing','family_review')"));
+ assert.ok(html.includes('data-filter="review" class="selected"'));
+ assert.ok(javascript.includes("filter='review'"));
+ assert.ok(javascript.includes("filter==='review'?['possible_pressing','family_review']"));
 });
 test("watch inputs validate prices, release links, destinations and conditions",()=>{
   assert.equal(validateWatch({release_id:"https://www.discogs.com/release/123-Example",maximum_subtotal:"50.25"}).release_id,123);

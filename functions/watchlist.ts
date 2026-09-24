@@ -149,15 +149,17 @@ export function createHandler(deps: Deps) {
       }
       if (path === "/api/dashboard" && request.method === "GET") {
         const watches = (await deps.db.query("SELECT id,config,revision,status,last_started_at,last_success_at,next_scan_at,lease_until,summary,catalog,catalog_observed_at FROM finder_watches ORDER BY id")).rows;
+        const tierCounts = (await deps.db.query("SELECT watch_id,data->>'status' AS tier,count(*)::int AS n FROM finder_inbox WHERE NOT dismissed GROUP BY watch_id,data->>'status'")).rows;
         const profiles = (await deps.db.query("SELECT watch_id,observed_at,data->'proposals' AS proposals,data->'vinyl_versions' AS vinyl_versions,data->'partial' AS partial FROM finder_watch_profiles")).rows;
         for (const watch of watches) {
           const profile = profiles.find(p => p.watch_id === watch.id);
           watch.profile = profile ? { observed_at: profile.observed_at, proposals: profile.proposals, vinyl_versions: profile.vinyl_versions, partial: profile.partial } : null;
+          watch.inbox_counts = Object.fromEntries(tierCounts.filter(row => row.watch_id === watch.id).map(row => [row.tier, Number(row.n)]));
         }
         const cutoff = Date.now() - 6 * 3600_000;
         for (const watch of watches) if (Date.parse(watch.catalog_observed_at ?? "") < cutoff || !watch.catalog_observed_at) watch.catalog = null;
-        const filter = url.searchParams.get("filter") || "possible_pressing";
-        if (!["possible_pressing","family_review","conflicting","unrelated","unavailable","dismissed"].includes(filter)) return reply({error:"Invalid inbox filter"},400);
+        const filter = url.searchParams.get("filter") || "review";
+        if (!["review","possible_pressing","family_review","conflicting","unrelated","unavailable","dismissed"].includes(filter)) return reply({error:"Invalid inbox filter"},400);
         let cursor: string[] | null = null;
         if (url.searchParams.has("cursor")) {
           try { cursor = JSON.parse(url.searchParams.get("cursor")!); } catch { return reply({error:"Invalid cursor"},400); }

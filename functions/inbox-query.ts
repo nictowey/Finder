@@ -4,7 +4,8 @@ export const inboxQuery = `SELECT i.watch_id,i.marketplace,i.marketplace_item_id
   FROM finder_inbox i JOIN listings l USING(marketplace,marketplace_item_id)
   JOIN finder_watches w ON w.id=i.watch_id
   WHERE ($1='dismissed' AND i.dismissed OR $1='unavailable' AND NOT i.dismissed AND i.data->>'availability'='unavailable_on_recheck'
-    OR $1 NOT IN ('dismissed','unavailable') AND NOT i.dismissed AND i.data->>'availability' IS DISTINCT FROM 'unavailable_on_recheck' AND i.data->>'status'=$1)
+    OR $1 NOT IN ('dismissed','unavailable') AND NOT i.dismissed AND i.data->>'availability' IS DISTINCT FROM 'unavailable_on_recheck'
+      AND ($1='review' AND i.data->>'status' IN ('possible_pressing','family_review') OR i.data->>'status'=$1))
   AND ($2::text IS NULL OR (i.first_seen_at,i.watch_id,i.marketplace_item_id)<($2,$3,$4))
   AND ($5='all' OR w.config->>'maximum_subtotal' IS NULL OR CASE WHEN
     w.config->>'maximum_subtotal' ~ '^[0-9]+([.][0-9]+)?$'
