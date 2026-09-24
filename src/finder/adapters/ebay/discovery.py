@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import parse_qs, quote, urlsplit
@@ -46,11 +47,19 @@ def search_page(client, target, query_index, *, lower, upper, offset):
         location = quote(f"country={country},zip={postal}", safe="")
         headers["X-EBAY-C-ENDUSERCTX"] = f"contextualLocation={location}"
     filters.append(f"itemStartDate:[{lower}..{upper}]")
+    query = target.queries[query_index]
+    # "gtin:<digits>" searches by barcode (UPC/EAN) instead of keywords.
+    if query.startswith("gtin:"):
+        if not re.fullmatch(r"gtin:\d{8,14}", query):
+            raise ValueError("Invalid barcode search")
+        keywords = {"gtin": query.removeprefix("gtin:")}
+    else:
+        keywords = {"q": query}
     payload = client.get(
         SEARCH_PATH,
         headers=headers,
         params={
-            "q": target.queries[query_index],
+            **keywords,
             "category_ids": target.category_id,
             "limit": PAGE_SIZE,
             "offset": offset,

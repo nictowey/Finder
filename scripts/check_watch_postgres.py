@@ -13,6 +13,7 @@ from sqlalchemy.engine import make_url
 from finder.adapters.ebay.normalize import normalize_listing
 from finder.persistence import SqlAlchemyRepository
 from finder.watch_store import (
+    MAX_WATCHES,
     NEW_TABLES,
     SavedWatch,
     WatchStore,
@@ -21,8 +22,10 @@ from finder.watch_store import (
     migrate,
     migrations,
     outbox,
+    profiles,
     rollback_pilot_schema,
     scan_attempts,
+    verdicts,
 )
 
 
@@ -62,6 +65,22 @@ def main():
         store.finish(claim, [(listing, {"notify": True})], now=now)
         later = now + timedelta(minutes=31)
         store.finish(store.claim(now=later), [(listing, {"notify": True})], now=later)
+        with repo.engine.begin() as conn:
+            conn.execute(
+                insert(profiles).values(
+                    watch_id=claim["id"], release_id=123, observed_at=now.isoformat(), data={}
+                )
+            )
+            conn.execute(
+                insert(verdicts).values(
+                    watch_id=claim["id"],
+                    marketplace=listing.marketplace,
+                    marketplace_item_id=listing.marketplace_item_id,
+                    verdict="mine",
+                    tier="possible_pressing",
+                    decided_at=now.isoformat(),
+                )
+            )
         with repo.engine.connect() as conn:
             phase = "assert_dedup"
             assert len(conn.execute(select(inbox)).all()) == 1
@@ -176,11 +195,37 @@ def main():
         with repo.engine.connect() as conn:
             assert not conn.execute(select(inbox)).all()
             assert not conn.execute(select(outbox)).all()
+            assert not conn.execute(select(verdicts)).all()
             assert not conn.execute(select(work)).all()
             assert conn.execute(select(progress)).first()
         rollback_pilot_schema(repo.engine)
         phase = "remigrate"
         migrate(repo.engine)
+        # Production tables predate the wider watch limit; its old check must be replaced.
+        phase = "widen_watch_slots"
+        with repo.engine.begin() as conn:
+            conn.execute(
+                text("ALTER TABLE finder_watches DROP CONSTRAINT finder_watches_slot_range")
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE finder_watches ADD CONSTRAINT finder_watches_slot_check "
+                    "CHECK (slot >= 1 AND slot <= 3)"
+                )
+            )
+        migrate(repo.engine)
+        with repo.engine.connect() as conn:
+            checks = (
+                conn.execute(
+                    text(
+                        "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                        "WHERE conrelid = 'finder_watches'::regclass AND contype = 'c'"
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(checks) == 1 and f"slot <= {MAX_WATCHES}" in checks[0]
         print(
             '{"postgres_migration_lease_dedup_deletion":"passed","synthetic_backup_restore_upgrade":"passed","discovery_shared_budget":"passed"}'
         )

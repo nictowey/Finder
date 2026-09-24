@@ -30,13 +30,14 @@ try {
     {id:"other-currency",listing:{currency:"EUR"}},
     {id:"shipping-currency",listing:{shipping_currency:"EUR"}},
     {id:"auction",listing:{price_kind:"current_bid"}},
+    {id:"unknown-kind",listing:{price_kind:"unknown"}},
     {id:"stale",listing:{details_observed_at:"2026-01-01T00:00:00.000Z"}},
     {id:"revision",review:{watch_revision:0}},
     {id:"wrong-destination",listing:{source_metadata:{delivery_country:"US",delivery_postal_code:"99999"}}},
     {id:"failed-details",listing:{quality_flags:["details_unavailable"]}},
     {id:"bad-number",listing:{current_price:"NaN"}},
   ];
-  assert.deepEqual((await query(cases)).map(x=>x.marketplace_item_id).sort(),["boundary","under"]);
+  assert.deepEqual((await query(cases)).map(x=>x.marketplace_item_id).sort(),["auction","boundary","under"]);
   assert.equal((await query(cases,config,"all")).length,cases.length);
   assert.equal((await query(cases,{...config,maximum_subtotal:null})).length,cases.length);
   assert.equal((await query([{id:"edited"}],{...config,maximum_subtotal:"19.99"})).length,0);

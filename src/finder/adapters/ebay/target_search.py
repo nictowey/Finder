@@ -30,7 +30,7 @@ class EbaySearchTarget(BaseModel):
     id: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     catalog_source: Literal["discogs"] = "discogs"
     catalog_variant_id: int = Field(gt=0)
-    queries: list[str] = Field(min_length=1, max_length=3)
+    queries: list[str] = Field(min_length=1, max_length=6)
     marketplace_id: str = Field(default="EBAY_US", pattern=r"^EBAY_[A-Z]{2,10}$")
     category_id: str = Field(default="176985", pattern=r"^\d+$")
 

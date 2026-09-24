@@ -63,6 +63,43 @@ class DiscogsCatalogProvider:
             raise ConfigurationError("Discogs release ID must be a positive integer.")
         return self._hydrate([release_id])[0]
 
+    def get_releases(self, release_ids: list[int]) -> list[Variant]:
+        return self._hydrate(release_ids)
+
+    def vinyl_versions(self, master_id: int, *, max_pages: int = 3) -> tuple[list[int], bool]:
+        """Release IDs of a master's vinyl versions, and whether the list was cut short."""
+        if isinstance(master_id, bool) or not isinstance(master_id, int) or master_id <= 0:
+            raise ConfigurationError("Discogs master ID must be a positive integer.")
+        ids: list[int] = []
+        for page in range(1, max_pages + 1):
+            payload = self.client.get(
+                f"/masters/{master_id}/versions",
+                params={"format": "Vinyl", "per_page": 100, "page": page},
+            )
+            versions = payload.get("versions")
+            if not isinstance(versions, list):
+                raise CatalogResponseError("Discogs versions response has invalid versions.")
+            for row in versions:
+                if not isinstance(row, dict):
+                    continue
+                formats = row.get("major_formats")
+                text = row.get("format") if isinstance(row.get("format"), str) else ""
+                vinyl = (isinstance(formats, list) and "Vinyl" in formats) or "Vinyl" in text
+                release_id = row.get("id")
+                if (
+                    vinyl
+                    and isinstance(release_id, int)
+                    and not isinstance(release_id, bool)
+                    and release_id > 0
+                    and release_id not in ids
+                ):
+                    ids.append(release_id)
+            pagination = payload.get("pagination")
+            pages = pagination.get("pages") if isinstance(pagination, dict) else None
+            if not isinstance(pages, int) or page >= pages:
+                return ids, False
+        return ids, True
+
     def search_alternatives(self, target: Variant, *, limit: int = 5) -> AlternativeRetrieval:
         """One catalog query, up to five other details, reusable for an entire watch scan.
 

@@ -9,12 +9,16 @@ type DB = { query: (sql: string, values?: unknown[]) => Promise<{ rows: any[] }>
 type Deps = { db: DB; authURL: string; origin: string; fetch: typeof fetch; sendPush?: typeof webpush.sendNotification };
 let pool: Pool | undefined;
 class InputError extends Error {}
+// Keep in sync with MAX_WATCHES in src/finder/watch_store.py.
+export const MAX_WATCHES = 20;
+const CLUE_KINDS = ["keyword", "color", "catalog_number", "barcode", "label", "country", "numbered"];
+const VERDICTS = ["mine", "other", "unsure", "bought"];
 
 function reply(data: unknown, status = 200, type = "application/json"): Response {
   return new Response(type === "application/json" ? JSON.stringify(data) : String(data), {
     status, headers: { "Content-Type": type, "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
-      "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" },
+      "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https://i.ebayimg.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" },
   });
 }
 
@@ -33,13 +37,41 @@ async function body(request: Request): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString()); } catch { throw new InputError("json"); }
 }
 
+function money(value: any, name: string): string | null {
+  const text = value === "" || value == null ? null : String(value);
+  if (text !== null && (!/^\d{1,7}(?:\.\d{1,2})?$/.test(text) || Number(text) <= 0)) throw new InputError(name);
+  return text;
+}
+
+function clues(value: any) {
+  const rows = value ?? [];
+  if (!Array.isArray(rows) || rows.length > 12) throw new InputError("signs");
+  return rows.map((row: any) => {
+    const text = typeof row?.value === "string" ? row.value.trim() : "";
+    if (!row || typeof row !== "object" || !CLUE_KINDS.includes(row.kind) || !text || text.length > 80 ||
+      (row.required !== undefined && typeof row.required !== "boolean")) throw new InputError("signs");
+    return { kind: row.kind, value: text, required: row.required ?? false };
+  });
+}
+
+export function validImage(value: unknown): value is string {
+  try {
+    const url = new URL(String(value));
+    return url.protocol === "https:" && url.hostname === "i.ebayimg.com" && !url.username && !url.port && url.href.length < 1024;
+  } catch { return false; }
+}
+
 export function validateWatch(value: any) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new InputError("watch");
   const release = String(value.release_id ?? "").trim();
   const match = release.match(/^(?:https:\/\/(?:www\.)?discogs\.com\/(?:[a-z]{2}\/)?release\/)?([1-9]\d*)(?:-[^?#]*)?(?:[?#].*)?$/);
   if (!match || !Number.isSafeInteger(Number(match[1]))) throw new InputError("release");
-  const ceiling = value.maximum_subtotal === "" || value.maximum_subtotal == null ? null : String(value.maximum_subtotal);
-  if (ceiling !== null && (!/^\d{1,7}(?:\.\d{1,2})?$/.test(ceiling) || Number(ceiling) <= 0)) throw new InputError("ceiling");
+  const ceiling = money(value.maximum_subtotal, "ceiling");
+  const gamble = money(value.gamble_max, "gamble");
+  const auction = value.auction_alert_minutes ?? 120;
+  if (!Number.isInteger(auction) || auction < 0 || auction > 1440) throw new InputError("auction");
+  const extra = value.extra_queries ?? [];
+  if (!Array.isArray(extra) || extra.length > 2 || extra.some((q: any) => typeof q !== "string" || !q.trim() || q.trim().length > 100)) throw new InputError("searches");
   if (!/^[A-Z]{3}$/.test(value.currency ?? "USD")) throw new InputError("currency");
   const country = value.country || null, postal = value.postal_code || null;
   if (Boolean(country) !== Boolean(postal) || (country && !/^[A-Z]{2}$/.test(country)) ||
@@ -50,7 +82,9 @@ export function validateWatch(value: any) {
   if (value.enabled !== undefined && typeof value.enabled !== "boolean") throw new InputError("enabled");
   if (typeof (value.label ?? "") !== "string" || (value.label ?? "").length > 120) throw new InputError("label");
   return { release_id: Number(match[1]), label: (value.label ?? "").trim(), maximum_subtotal: ceiling,
-    currency: value.currency ?? "USD", condition_ids: conditions, country, postal_code: postal, enabled: value.enabled ?? true, alert_mode: value.alert_mode ?? "review_leads" };
+    currency: value.currency ?? "USD", condition_ids: conditions, country, postal_code: postal, enabled: value.enabled ?? true, alert_mode: value.alert_mode ?? "review_leads",
+    gamble_max: gamble, auction_alert_minutes: auction, tells: clues(value.tells), anti_tells: clues(value.anti_tells),
+    extra_queries: extra.map((q: string) => q.trim()) };
 }
 
 export function validPush(value: any): boolean {
@@ -115,6 +149,11 @@ export function createHandler(deps: Deps) {
       }
       if (path === "/api/dashboard" && request.method === "GET") {
         const watches = (await deps.db.query("SELECT id,config,revision,status,last_started_at,last_success_at,next_scan_at,lease_until,summary,catalog,catalog_observed_at FROM finder_watches ORDER BY id")).rows;
+        const profiles = (await deps.db.query("SELECT watch_id,observed_at,data->'proposals' AS proposals,data->'vinyl_versions' AS vinyl_versions,data->'partial' AS partial FROM finder_watch_profiles")).rows;
+        for (const watch of watches) {
+          const profile = profiles.find(p => p.watch_id === watch.id);
+          watch.profile = profile ? { observed_at: profile.observed_at, proposals: profile.proposals, vinyl_versions: profile.vinyl_versions, partial: profile.partial } : null;
+        }
         const cutoff = Date.now() - 6 * 3600_000;
         for (const watch of watches) if (Date.parse(watch.catalog_observed_at ?? "") < cutoff || !watch.catalog_observed_at) watch.catalog = null;
         const filter = url.searchParams.get("filter") || "possible_pressing";
@@ -138,21 +177,37 @@ export function createHandler(deps: Deps) {
           row.evidence_stale = !l.details_observed_at || Date.parse(l.details_observed_at)<cutoff || row.data.watch_revision!==row.revision;
           row.listing = row.evidence_stale ? {title:"Previously discovered listing · awaiting fresh details",listing_url:l.listing_url,item_specifics:{}} :
             { title:l.title,listing_url:l.listing_url,condition:l.condition,condition_id:l.condition_id,
+              images:[l.primary_image,...(Array.isArray(l.additional_images)?l.additional_images:[])].filter(validImage).slice(0,12),
               current_price:l.current_price,shipping_cost:l.shipping_cost,currency:l.currency,
               price_kind:l.price_kind,listing_ends_at:l.listing_ends_at,item_specifics:l.item_specifics,
               details_observed_at:l.details_observed_at,last_observed_at:l.last_observed_at };
           if(row.evidence_stale) row.data={status:row.data.status,availability:row.data.availability,clues:[],verify:["reference_only_current_availability_unverified"],budget:"needs_refresh",notify:false};
           delete row.revision;
         }
+        const ids = leads.map(row => row.marketplace_item_id);
+        const decided = ids.length ? (await deps.db.query("SELECT watch_id,marketplace,marketplace_item_id,verdict FROM finder_verdicts WHERE marketplace_item_id = ANY($1)", [ids])).rows : [];
+        for (const row of leads) row.verdict = decided.find(v => v.watch_id === row.watch_id && v.marketplace === row.marketplace && v.marketplace_item_id === row.marketplace_item_id)?.verdict ?? null;
+        const accuracy = (await deps.db.query("SELECT tier,verdict,count(*)::int AS n FROM finder_verdicts GROUP BY tier,verdict")).rows;
         const push = (await deps.db.query("SELECT data FROM finder_private_settings WHERE key='vapid'")).rows[0]?.data;
         const operations = await readOperations(deps.db, watches);
-        return reply({ watches, leads, next_cursor: nextCursor, operations, push_key: push?.publicKey ?? null, email: owner, now: new Date().toISOString() });
+        return reply({ watches, leads, next_cursor: nextCursor, operations, accuracy, max_watches: MAX_WATCHES, push_key: push?.publicKey ?? null, email: owner, now: new Date().toISOString() });
       }
-      if (path === "/api/discovery-rollout" && request.method === "POST") {
-        const value=await body(request);
-        if(!Array.isArray(value.slots) || value.slots.some((n:any)=>![1,2,3].includes(n))) return reply({error:"Invalid rollout"},400);
-        await deps.db.query("INSERT INTO finder_private_settings(key,data) VALUES('discovery_rollout',$1) ON CONFLICT(key) DO UPDATE SET data=EXCLUDED.data",[{slots:[...new Set(value.slots)]}]);
-        return reply({ok:true});
+      if (path === "/api/verdict" && request.method === "POST") {
+        const value = await body(request);
+        if (typeof value.watch_id !== "string" || value.marketplace !== "ebay" || typeof value.marketplace_item_id !== "string" ||
+          value.marketplace_item_id.length > 255 || (value.verdict !== null && !VERDICTS.includes(value.verdict))) return reply({ error: "Invalid verdict" }, 400);
+        const key = [value.watch_id, value.marketplace, value.marketplace_item_id];
+        if (value.verdict === null) {
+          await deps.db.query("DELETE FROM finder_verdicts WHERE watch_id=$1 AND marketplace=$2 AND marketplace_item_id=$3", key);
+          return reply({ ok: true });
+        }
+        // The tier is recorded once, when first judged, so accuracy compares like with like.
+        const saved = await deps.db.query(`INSERT INTO finder_verdicts(watch_id,marketplace,marketplace_item_id,verdict,tier,decided_at)
+          SELECT watch_id,marketplace,marketplace_item_id,$4,COALESCE(data->>'status','unknown'),$5 FROM finder_inbox
+          WHERE watch_id=$1 AND marketplace=$2 AND marketplace_item_id=$3
+          ON CONFLICT (watch_id,marketplace,marketplace_item_id) DO UPDATE SET verdict=EXCLUDED.verdict,decided_at=EXCLUDED.decided_at RETURNING verdict`,
+          [...key, value.verdict, new Date().toISOString()]);
+        return saved.rows.length ? reply({ ok: true }) : reply({ error: "Listing not found" }, 404);
       }
       if (path === "/api/refresh-lead" && request.method === "POST") {
         const value=await body(request);
@@ -166,10 +221,10 @@ export function createHandler(deps: Deps) {
         // Serialize limit checks, including concurrent requests.
         const id = randomUUID();
         const result = await deps.db.query(`INSERT INTO finder_watches(id,slot,config,revision,enabled,next_scan_at,status)
-          SELECT $1,n,$2,1,$3,$4,'pending' FROM generate_series(1,3) n
+          SELECT $1,n,$2,1,$3,$4,'pending' FROM generate_series(1,$5::int) n
           WHERE n NOT IN (SELECT slot FROM finder_watches) ORDER BY n LIMIT 1
-          ON CONFLICT DO NOTHING RETURNING id`, [id, watch, watch.enabled, new Date().toISOString()]);
-        return result.rows.length ? reply({ id }, 201) : reply({ error: "This pilot supports three watches to stay within the scan budget." }, 409);
+          ON CONFLICT DO NOTHING RETURNING id`, [id, watch, watch.enabled, new Date().toISOString(), MAX_WATCHES]);
+        return result.rows.length ? reply({ id }, 201) : reply({ error: `Finder supports ${MAX_WATCHES} watches to stay within the daily eBay request budget.` }, 409);
       }
       const watchPath = path.match(/^\/api\/watches\/([a-zA-Z0-9-]{1,36})$/);
       if (watchPath && request.method === "PUT") {

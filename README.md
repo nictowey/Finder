@@ -1,64 +1,42 @@
 # Finder
 
-## Resumable discovery revision — September 23, 2026
-
-The new implementation replaces scheduled samples with durable full search passes, overlapping
-incremental windows, periodic reconciliation, a deletion-aware evaluation queue, shared
-request debits and a paginated inbox. See [the discovery contract](docs/resumable-discovery.md) for scope,
-completion states, failure behavior, estimates and rollout/rollback controls. Earlier sampled
-scan descriptions below are historical and remain applicable only while rollout is disabled.
-Validation: 317 Python and 32 Node tests, Ruff and TypeScript. Deployment #19 passed the
-PostgreSQL upgrade/deletion/budget rehearsal and private-access gates. All six current queries
-exhausted their initial passes (434 retained references); 175 evaluated and 259 pending at the
-last observation. The 22:15 UTC scheduled catch-up resumed evaluation successfully. Daily
-reconciliation and real-listing phone delivery remain unobserved. Existing operational history
-is retained. No marketplace recall or pressing-accuracy claim follows from this change.
-
-
-Finder is the foundation for a marketplace-monitoring and mispricing-detection platform. The eventual workflow is: define a monitor → discover listings → identify the exact product and variant → compare against real comparable transactions → evaluate opportunities → alert the user.
-
-The private collector pilot now has a hosted watchlist dashboard, saved Discogs pressing targets,
-recurring eBay scans, an evidence-aware review inbox, optional buyer price ceilings, and browser
-push delivery. It uses the official eBay Browse and Discogs catalog APIs. Possible pressing
-leads remain unverified; there is no sold-comparables valuation or automatic exact-match claim.
+Finder is a personal tool for hunting specific vinyl pressings on eBay. Save the Discogs
+release you want, set the most you'd pay, and Finder watches eBay and alerts you when a
+listing is plausibly that pressing at or under your price. You confirm from the photos;
+Finder never claims a listing is an exact pressing, a bargain or worth a certain amount.
 
 **[Open the private Finder dashboard](https://br-soft-forest-b4fo15q2-watchlist.compute.c-6.us-east-2.aws.neon.tech/)**
+(owner email and verification code required).
 
-Access requires the configured owner email and its verification code. Owner sign-in is active;
-the owner has saved the pink/green Don't Be Dumb and numbered DS2 pressing targets. See
-[private watchlist setup and limits](docs/private-watchlist.md). The pilot supports three watches and
-has a 30-minute minimum scan interval, subject to scheduler delay. GitHub's cron has missed
-multiple runs; the independent Neon trigger is active and its first due-time dispatch succeeded
-on September 23, 2026. Sustained freshness still needs measurement.
-Discogs marketplace listings,
-public signup, payments, and additional collectible categories remain future work.
-Refreshes search eight newest items per query, alternate a small older-inventory sample with a
-direct check of one known possible pressing, and show when search pages are capped. The inbox
-separates unavailable rechecks from active leads. Search coverage and pressing accuracy remain
-unmeasured; see the [scan and request limits](docs/private-watchlist.md).
-The manual **Production eBay Browse quota** workflow checks actual remaining API calls through
-eBay's official analytics endpoint and outputs only aggregate limits and usage.
+## Using the dashboard
 
-See [ROADMAP.md](ROADMAP.md) for the accuracy-gated development plan, pressing-versus-copy
-identity model, provider constraints, and criteria that must be met before valuation, alerts,
-hosting, or expansion into other collectible categories.
-The current implementation sequence and measurable acceptance checks are in the
-[reliable pressing discovery plan](docs/identification-roadmap.md).
-The current measurement, denominators, and open gaps are recorded in
-[`docs/vinyl-measurement-2026-09-23.md`](docs/vinyl-measurement-2026-09-23.md).
+1. **Add a pressing.** Paste a Discogs *release* link (not a master). Up to 20 watches.
+2. **Set your prices.** "Maximum when it's likely yours" applies to listings that show every
+   required sign of your pressing. "Maximum for unclear listings" is optional and usually
+   lower: rare copies are often listed generically, so this is what you'd gamble on one.
+   Prices are item + shipping to your saved destination, excluding tax and duties.
+3. **Build the cheat sheet.** Finder compares your release with the album's other vinyl
+   versions on Discogs and suggests signs (for example a color only your pressing has) and
+   common-version signs (for example "reissue" or "180 gram"). Add the ones you agree with,
+   mark the decisive ones *required*, and add your own.
+4. **Review the inbox.** Listings are sorted into *Likely yours*, *Unclear · check photos* and
+   *Likely another version*. Each card shows the photos, the signs found or missing, the
+   delivered price, a copyable question for the seller (for label and runout photos), and
+   verdict buttons. Your verdicts build an accuracy record for each tier.
+5. **Alerts.** Push notifications fire for likely matches under your price, unclear listings
+   under your gamble price, and auctions whose current bid qualifies shortly before they end
+   (2 hours by default).
 
-The internal `finder.watchlist` module has a versioned buyer target and pure triage function.
-It accepts a catalog family or exact release, buyer-set pre-tax delivered subtotal ceiling,
-currency, explicit accepted provider condition IDs, and destination. It yields `candidate`,
-`review`, or `excluded` with reasons. Exact-release requests stay in review while the current
-matcher can establish only a probable pressing; auctions, unknown shipping, unverified
-destination quotes, stale listings, and incomplete catalog retrieval also require review.
-`candidate` means the internal rules passed, **not** a verified live offer, market value, or
-collector alert. The separate private `watch_store` / `watch_worker` loop deliberately surfaces
-uncertain leads through an owner-only review inbox; it does not promote these to exact matches.
-The caller must establish that shipping was quoted for the saved destination; the presence of
-a numeric shipping amount does not prove that. Provider-use gates are in
-[`docs/decisions/0001-provider-use.md`](docs/decisions/0001-provider-use.md).
+How it searches: each watch runs up to six searches (the album, spelling variants, up to two
+of your own searches such as misspellings, and the barcode). New listings are checked about
+every 10 minutes with a few watches; the interval stretches as you add watches so that the
+daily eBay request quota (5,000 calls) is not exceeded. Listings are read from seller text
+only, so signs a seller doesn't write down are "unclear", not "no".
+
+Everything runs on free tiers (Neon and GitHub Actions). Design and limits:
+[personal pressing hunter plan](docs/personal-pressing-hunter-plan.md). Dated operational
+history: [evidence log](docs/evidence-log.md). Technical detail of the search passes:
+[resumable discovery](docs/resumable-discovery.md).
 
 ## Quick start
 

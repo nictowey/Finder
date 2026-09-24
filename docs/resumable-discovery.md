@@ -1,5 +1,10 @@
 # Resumable private inventory discovery
 
+> **Personal scope, September 24, 2026.** The owner now runs Finder as a personal pressing
+> hunter, not a public product. Public-launch, valuation and provider-approval gates below are
+> parked, not met. Current behavior: [personal pressing hunter plan](personal-pressing-hunter-plan.md) ·
+> dated history: [evidence log](evidence-log.md).
+
 Implementation revision: September 23, 2026. Rollout evidence is recorded separately below;
 offline tests are not a claim about production coverage or pressing accuracy.
 
@@ -43,7 +48,8 @@ The baseline upper bound is fixed when the new plan starts. Independent per-quer
 windows start 24 hours before that anchor, then resume from the last exhausted upper bound
 minus 24 hours, including after outages. Each selected window processes every page before its
 watermark advances; its detail work is already durable and pending counts stay visible. New
-windows open no more frequently than every 30 minutes. Baseline and incremental lanes rotate
+windows open no more often than the poll interval: 10 minutes, stretched to keep
+new-listing polls across all enabled queries within 2,000 searches a day. Baseline and incremental lanes rotate
 across queries during backfill. The API's `itemOriginDate` must fall within the requested start
 window on returned summaries; absence or contradiction interrupts rather than certifying the
 filter. No manually supplied listing is counted as independent discovery.
@@ -126,15 +132,14 @@ about 1,388/day before retries, newly discovered items, and other consumers. Thi
 not measured production demand. Continuous backlogs can exceed the daily quota; the guard
 pauses work with visible partial coverage rather than reducing depth or incurring costs.
 
-## Rollout and rollback
+## Deployment and rollback
 
 Deploy through **Deploy private watchlist** after the normal Python, Node, lint, format, type,
-and isolated PostgreSQL gates. `discovery_slots=1` enables one existing slot; `1,2,3` expands
-only after bounded live validation. `unchanged` preserves the rollout. An explicit slot selection makes those unleased watches
-due for one bounded validation chunk without changing revisions or prior successes. `off` restores the old
-scanner for rollback without dropping data. Old and new scanners never run for the same watch
-in one invocation, and both use the shared budget guard. Rolling back code leaves additive
-tables intact. Never invoke destructive pilot-schema rollback on production.
+and isolated PostgreSQL gates. Since September 24, 2026 every watch uses this scanner; the
+old sampled scanner and its `discovery_slots` rollout switch were removed. To roll back, deploy
+an earlier commit: schema changes are additive, so older code keeps working on the same
+tables (an older build still enforces its own three-watch limit in the dashboard). Never invoke
+destructive pilot-schema rollback on production.
 
 The isolated PostgreSQL rehearsal covers migration/backup/restore, discovery transaction
 writes, seller-deletion cascades and three concurrent quota contenders competing for two calls

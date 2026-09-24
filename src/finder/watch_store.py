@@ -21,10 +21,15 @@ from sqlalchemy import (
     delete,
     insert,
     select,
+    text,
     update,
 )
 
+from finder.categories.vinyl_clues import Clue
 from finder.persistence import listings
+
+# The Browse request budget, not storage, bounds this; cadence stretches as watches grow.
+MAX_WATCHES = 20
 
 
 class SavedWatch(BaseModel):
@@ -38,6 +43,13 @@ class SavedWatch(BaseModel):
     postal_code: str | None = Field(default=None, pattern=r"^[A-Za-z0-9 -]{1,16}$")
     enabled: bool = True
     alert_mode: Literal["review_leads", "strict"] = "review_leads"
+    # The most the owner would pay when the pressing is unclear; unset means no alert.
+    gamble_max: Decimal | None = Field(default=None, gt=0, allow_inf_nan=False)
+    # Minutes before an auction ends when a qualifying bid alerts; 0 disables.
+    auction_alert_minutes: int = Field(default=120, ge=0, le=1440)
+    tells: list[Clue] = Field(default_factory=list, max_length=12)
+    anti_tells: list[Clue] = Field(default_factory=list, max_length=12)
+    extra_queries: list[str] = Field(default_factory=list, max_length=2)
 
     @model_validator(mode="after")
     def valid_destination(self):
@@ -45,6 +57,8 @@ class SavedWatch(BaseModel):
             raise ValueError("Provide both country and postal code")
         if any(not value.isdigit() for value in self.condition_ids):
             raise ValueError("Condition IDs must be numeric")
+        if any(not query.strip() or len(query) > 100 for query in self.extra_queries):
+            raise ValueError("Extra searches must be nonblank and at most 100 characters")
         return self
 
 
@@ -56,7 +70,7 @@ watches = Table(
     schema,
     Column("id", String(36), primary_key=True),
     Column("slot", Integer, nullable=False, unique=True),
-    CheckConstraint("slot >= 1 AND slot <= 3"),
+    CheckConstraint(f"slot >= 1 AND slot <= {MAX_WATCHES}", name="finder_watches_slot_range"),
     Column("config", JSON, nullable=False),
     Column("revision", Integer, nullable=False, default=1),
     Column("enabled", Boolean, nullable=False, default=True),
@@ -146,6 +160,30 @@ dispatch_attempts = Table(
     Column("http_status", Integer),
     Index("finder_dispatch_attempts_started", "started_at"),
 )
+profiles = Table(
+    "finder_watch_profiles",
+    schema,
+    Column("watch_id", String(36), primary_key=True),
+    Column("release_id", Integer, nullable=False),
+    Column("observed_at", String(40), nullable=False),
+    Column("data", JSON, nullable=False),
+    ForeignKeyConstraint(["watch_id"], ["finder_watches.id"], ondelete="CASCADE"),
+)
+verdicts = Table(
+    "finder_verdicts",
+    schema,
+    Column("watch_id", String(36), primary_key=True),
+    Column("marketplace", String(64), primary_key=True),
+    Column("marketplace_item_id", String(255), primary_key=True),
+    Column("verdict", String(16), nullable=False),
+    Column("tier", String(32), nullable=False),
+    Column("decided_at", String(40), nullable=False),
+    ForeignKeyConstraint(
+        ["watch_id", "marketplace", "marketplace_item_id"],
+        ["finder_inbox.watch_id", "finder_inbox.marketplace", "finder_inbox.marketplace_item_id"],
+        ondelete="CASCADE",
+    ),
+)
 NEW_TABLES = [
     migrations,
     watches,
@@ -155,11 +193,37 @@ NEW_TABLES = [
     subscriptions,
     scan_attempts,
     dispatch_attempts,
+    profiles,
+    verdicts,
 ]
 
 
+def _widen_watch_slots(conn):
+    """Replace the three-slot check on existing PostgreSQL tables; data is unchanged."""
+    if conn.dialect.name != "postgresql":
+        return
+    wanted = f"slot <= {MAX_WATCHES}"
+    rows = conn.execute(
+        text(
+            "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = 'finder_watches'::regclass AND contype = 'c'"
+        )
+    ).all()
+    checks = [(name, definition) for name, definition in rows if "slot" in definition]
+    if len(checks) == 1 and wanted in checks[0][1]:
+        return
+    for name, _ in checks:
+        conn.execute(text(f'ALTER TABLE finder_watches DROP CONSTRAINT "{name}"'))
+    conn.execute(
+        text(
+            "ALTER TABLE finder_watches ADD CONSTRAINT finder_watches_slot_range "
+            f"CHECK (slot >= 1 AND slot <= {MAX_WATCHES})"
+        )
+    )
+
+
 def migrate(engine):
-    """Additive pilot (1), operations (2), discovery (3); existing columns are unchanged."""
+    """Additive pilot (1), operations (2), discovery (3), cheat sheets and verdicts (4)."""
     from finder.discovery_store import progress, work
 
     for table in (progress, work):
@@ -173,6 +237,9 @@ def migrate(engine):
             conn.execute(insert(migrations).values(version=2))
         if not conn.execute(select(migrations).where(migrations.c.version == 3)).first():
             conn.execute(insert(migrations).values(version=3))
+        _widen_watch_slots(conn)
+        if not conn.execute(select(migrations).where(migrations.c.version == 4)).first():
+            conn.execute(insert(migrations).values(version=4))
         if not conn.execute(select(settings).where(settings.c.key == "operations_since")).first():
             conn.execute(
                 insert(settings).values(
@@ -197,7 +264,7 @@ class WatchStore:
         with self.engine.begin() as conn:
             if not conn.execute(select(watches.c.id).where(watches.c.id == watch_id)).first():
                 used = set(conn.execute(select(watches.c.slot)).scalars())
-                slot = next((n for n in range(1, 4) if n not in used), None)
+                slot = next((n for n in range(1, MAX_WATCHES + 1) if n not in used), None)
                 if slot is None:
                     raise ValueError("Pilot watch limit reached")
                 conn.execute(
@@ -328,25 +395,6 @@ class WatchStore:
                     },
                 )
             )
-
-    def recheck_candidate(self, claim, *, excluded: set[str]) -> str | None:
-        """Choose the oldest possible lead not rediscovered by this scan."""
-        with self.engine.connect() as conn:
-            rows = conn.execute(
-                select(inbox.c.marketplace_item_id)
-                .where(
-                    inbox.c.watch_id == claim["id"],
-                    inbox.c.marketplace == "ebay",
-                    inbox.c.dismissed.is_(False),
-                    inbox.c.data["status"].as_string() == "possible_pressing",
-                    inbox.c.data["availability"]
-                    .as_string()
-                    .is_distinct_from("unavailable_on_recheck"),
-                )
-                .order_by(inbox.c.last_seen_at, inbox.c.marketplace_item_id)
-                .limit(100)
-            ).scalars()
-            return next((item_id for item_id in rows if item_id not in excluded), None)
 
     def finish(
         self,

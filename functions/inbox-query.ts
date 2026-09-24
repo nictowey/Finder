@@ -1,5 +1,5 @@
-// Apply each watch's current ceiling before keyset pagination. Discovery and
-// notification eligibility remain independent of this owner-facing view.
+// Apply each watch's current ceiling before keyset pagination. Auctions compare the
+// current bid. Discovery and notification eligibility remain independent of this view.
 export const inboxQuery = `SELECT i.watch_id,i.marketplace,i.marketplace_item_id,i.data,i.first_seen_at,i.last_seen_at,i.dismissed,l.data AS listing,w.revision
   FROM finder_inbox i JOIN listings l USING(marketplace,marketplace_item_id)
   JOIN finder_watches w ON w.id=i.watch_id
@@ -12,7 +12,7 @@ export const inboxQuery = `SELECT i.watch_id,i.marketplace,i.marketplace_item_id
     AND l.data->>'shipping_cost' ~ '^[0-9]+([.][0-9]+)?$'
     AND l.data->>'currency'=w.config->>'currency'
     AND l.data->>'shipping_currency'=w.config->>'currency'
-    AND l.data->>'price_kind'='fixed_price'
+    AND l.data->>'price_kind' IN ('fixed_price','current_bid')
     AND l.data->>'details_observed_at' >= $6
     AND i.data->>'watch_revision'=w.revision::text
     AND l.data->'source_metadata'->>'delivery_country'=w.config->>'country'

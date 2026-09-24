@@ -1,12 +1,20 @@
 # Personal pressing hunter: plan
 
-Status: **proposed, not implemented.** Written September 24, 2026.
+Status: **implemented, awaiting deployment.** Written and approved September 24, 2026.
 
 This plan turns Finder into a personal tool for spotting specific vinyl pressings on eBay
-at or below a price the owner sets. It is not a public product. Several gates in `AGENTS.md`
-and `ROADMAP.md` were written for a public launch. Where this plan relaxes them, the owner has
-to approve that explicitly and those files need updating before implementation (see
-[Decisions needed](#decisions-needed)).
+at or below a price the owner sets. It is not a public product.
+
+## Owner decisions (September 24, 2026)
+
+- Personal scope approved: public-launch gates in `ROADMAP.md` are parked, and alerts may
+  include uncertain pressings, gated by the owner's own prices.
+- **Add-ons stay free.** Paid photo reading with a vision model was declined; listing
+  photos are shown in the inbox instead (section 6).
+- **As many watches as possible:** 20, the most the 5,000-call daily eBay quota supports with
+  room for details and retries. Cadence stretches as watches are added (section 3).
+- Hosting: keep GitHub Actions dispatched by the existing Neon trigger (section 10).
+- Everything else below was approved as written.
 
 ## Goal
 
@@ -25,15 +33,14 @@ photo-reading results) for me to decide in under a minute.
 
 1. **The owner's number, not a model's.** Each watch has hand-set prices, researched from sold
    listings, Discogs history or price guides. The tool only compares against them.
-2. **Observation is separate from judgment.** Text rules and photo reading report what they
-   saw. Plain, deterministic code turns those observations into a tier.
+2. **Observation is separate from judgment.** Text rules report what the seller wrote.
+   Plain, deterministic code turns those observations into a tier.
 3. **"Not visible" beats a guess.** Missing evidence means *unclear*, never *confirmed* and
    never *rejected*.
-4. **Measure before trusting.** Every automated signal starts in shadow mode. It becomes
-   decisive only after the owner's own verdicts show it's accurate.
+4. **Measure before trusting.** The owner's verdicts measure each tier before its alerts are
+   relied on.
 5. **Personal-use terms stance.** Official APIs only, no scraping, no eBay-derived price
-   modeling. Listing photos are sent to the vision model for inference only; images are not
-   stored (see [Terms and data handling](#terms-and-data-handling)).
+   modeling, no stored images (see [Terms and data handling](#terms-and-data-handling)).
 
 ## Pipeline
 
@@ -46,8 +53,6 @@ eBay searches (broad, barcode, bargain, auctions ending) ─────┤
                                                               │
                                                   price gate (two owner-set prices)
                                                               │
-                                  photo reading (vision model, only for listings that pass)
-                                                              │
                                   alert: tier, clues, photos, "ask the seller" draft
                                                               │
                                   owner's verdict ──► personal accuracy record
@@ -59,18 +64,17 @@ Each watch keeps today's fields (Discogs release, currency, destination, conditi
 
 | Field | Purpose |
 | --- | --- |
-| `confirmed_max` | The most I'd pay when the evidence says it's my pressing. Replaces `maximum_subtotal`. |
-| `gamble_max` | The most I'd pay for an *unclear* listing, where the rare pressing isn't claimed but isn't ruled out. Usually well below `confirmed_max`. Optional. |
-| `tells` | Signs of my pressing: `{id, kind, value, weight: required\|supporting, source: derived\|owner}`. |
+| `maximum_subtotal` | The most I'd pay when the evidence says it's my pressing (the existing field, relabeled in the dashboard). |
+| `gamble_max` | The most I'd pay for an *unclear* listing, where the rare pressing isn't claimed but isn't ruled out. Usually well below `maximum_subtotal`. Optional. |
+| `tells` | Signs of my pressing: `{kind, value, required}`, up to 12. |
 | `anti_tells` | Signs of a common version, in the same shape. |
-| `auction_alerts` | Whether to check auctions ending soon, and how early to alert (default 2 hours). |
+| `auction_alert_minutes` | How long before an auction ends to alert (default 120; 0 turns auction alerts off). |
+| `extra_queries` | Up to two of the owner's own searches, such as misspellings or "lot". |
 
-`kind` is one of: `color`, `catalog_number`, `barcode_present`, `barcode_absent`, `label_name`,
-`label_design`, `runout_text`, `country`, `year_range`, `numbered`, `weight_180g`, `keyword`,
-`sticker_text`, `insert`.
-
-`tells` and `anti_tells` are shared by the text rules and the photo reading, so one cheat sheet
-drives both.
+As built, `kind` is one of `keyword`, `color`, `catalog_number`, `barcode`, `label`, `country`
+or `numbered`. Keywords recognize common spellings of edition terms ("180g", "re-press").
+Label designs, runout text and barcode absence can't be read from seller text, so they're left
+to the owner's photo check.
 
 ## 2. All versions and distinguishing facts
 
@@ -106,28 +110,29 @@ every sibling is proposed as a tell.
 | Broad artist + album, vinyl category, `sort=newlyListed` | Main feed; finds rare copies listed generically | Every 10 minutes |
 | Barcode (`gtin=`), when the target or a sibling has one | Catches listings with poor titles that eBay matched to a product | Every 30 minutes |
 | Bargain variants: common misspellings, artist-only + "lot", album-only | Poorly written listings | Every 30–60 minutes |
-| Auctions ending soon (`buyingOptions:{AUCTION}`, end-time filter, `sort=endingSoonest`) | Low-competition auctions | Hourly |
+| Auctions | Already found by the album searches; re-read as their alert window opens | — |
 
-- The existing resumable discovery engine (`discovery_worker.py`) stays as the full-backlog
-  pass when a watch is created and for daily reconciliation. The newest-listing polls above are
-  the fast path.
-- Remove the legacy sampled scan path in `watch_worker.run_due_watches` once discovery is
-  confirmed on all slots.
+- As built, every search runs through the resumable discovery engine: a full backlog pass
+  when a watch is created, new-listing windows every poll interval, and daily reconciliation.
+  The poll interval is `max(10, ceil(1440 × enabled queries / 2000))` minutes: 10 minutes for up
+  to about 13 queries, about 44 minutes for 20 watches of three searches each.
+- The legacy sampled scan path was removed. A worker run now claims due watches until about
+  nine minutes are used, instead of a fixed three.
+- Listing re-reads: likely leads every 6 hours, unclear every 24, others weekly; qualifying
+  auctions just as their alert window opens.
 
-**eBay request budget** (5,000 Browse calls/day; estimates to re-check once live):
+**eBay request budget** (5,000 Browse calls/day; estimates for 20 watches, to re-check live):
 
-| Item | Calls/day for 5 watches |
+| Item | Calls/day |
 | --- | --- |
-| Broad polls: 5 × 144 | 720 |
-| Barcode polls: 5 × 48 | 240 |
-| Bargain variants: 5 × 2 queries × 24 | 240 |
-| Auction checks: 5 × 24 | 120 |
-| Detail fetches for new or changed listings | 300–800 |
-| Daily reconciliation passes | 200–600 |
-| **Total** | **~1,800–2,700**, leaving the existing shared reserve intact |
+| New-listing polls across all enabled queries | ≤ 2,000 by design |
+| Detail reads: new or changed listings, plus re-reads (likely 4/day, unclear 1/day, others weekly) | ~1,000–1,700 at ~150 listings per watch |
+| Daily reconciliation passes (~6 per query) | ~360 |
+| **Total** | **~3,400–4,100**, under the 4,800 usable above the 200-call reserve |
 
-The shared budget table (`adapters/ebay/budget.py`) keeps enforcing the reserve. Raising the
-three-watch cap to five is an owner decision.
+Detail reads grow with the number of listings each watch accumulates, so popular albums cost
+more. If the quota runs short, the shared budget guard (`adapters/ebay/budget.py`) pauses
+scans until eBay resets it rather than exceeding it; the dashboard shows those pauses.
 
 ## 4. Text triage (three tiers)
 
@@ -149,143 +154,36 @@ shipping stays unknown).
 
 | Tier | Alert when |
 | --- | --- |
-| likely_target | subtotal ≤ `confirmed_max` |
+| likely_target | subtotal ≤ `maximum_subtotal` (any price when unset) |
 | unclear | subtotal ≤ `gamble_max` |
 | auction (any tier except likely_other) | current bid + shipping ≤ the tier's max, and the auction ends within the alert window |
 | likely_other | never |
 
-An unknown subtotal still appears in the inbox but doesn't alert unless the owner turns that on.
+An unknown subtotal still appears in the inbox but doesn't alert when a price applies.
 
-## 6. Photo reading
+## 6. Photo reading (declined)
 
-### When it runs
-
-Only for listings that pass the price gate, and only once per distinct photo set: a hash of the
-ordered image URLs. A photo change triggers a re-run. There is a hard daily spend cap; when
-reached, alerts go out without photo reading and say so.
-
-### Input
-
-- Up to 12 listing images (`image` + `additionalImages` from the item detail call). Request
-  the largest eBay size, download, downscale to **1600 px on the long edge**, and send as
-  base64. Base64 rather than the URL source lets the code control size and cost and avoids
-  failed remote fetches.
-- The watch's `tells` and `anti_tells`, plus a short description of the closest sibling
-  versions (for example "Version B: black vinyl, barcode on back, label text …").
-- **Seller text is not included.** The photo pass must be independent evidence from the text
-  triage and must not anchor on the title.
-
-### Model call
-
-- Anthropic Python SDK, `client.messages.parse(...)` with a Pydantic schema (structured
-  output), adaptive thinking, and effort starting at `medium`. Measure before raising it.
-- Model: `claude-opus-5` by default; see the cost table for alternatives, which are the owner's
-  choice.
-- Enable the server-side refusal fallback (`fallbacks`) as the SDK guidance recommends for
-  this model.
-- The system prompt holds the fixed instructions. The per-watch cheat sheet follows it. Prompt
-  caching will usually **not** apply, because the prefix is shorter than the minimum cacheable
-  length. Don't design around caching.
-- The Message Batches API (half price, results usually within an hour, at most 24 hours) is
-  **not** used for alerts, where speed matters. It may be used for non-urgent re-checks and for
-  the evaluation runs in phase 5.
-
-### Output schema (sketch)
-
-```python
-class PhotoRole(StrEnum):
-    label_a = "label_a"; label_b = "label_b"; runout = "runout"; vinyl = "vinyl"
-    cover_front = "cover_front"; cover_back = "cover_back"; sticker = "sticker"
-    insert = "insert"; spine = "spine"; other = "other"
-
-class PhotoNote(BaseModel):
-    index: int
-    role: PhotoRole
-    stock_or_catalog_image: bool      # not a photo of the actual copy
-    legible: bool
-
-class TellCheck(BaseModel):
-    tell_id: str
-    status: Literal["confirmed", "contradicted", "not_visible"]
-    photo_index: int | None
-    observed: str | None              # exact text read, or what was seen
-
-class PhotoReading(BaseModel):
-    photos: list[PhotoNote]
-    vinyl_color: str | None
-    label_text: list[str]             # quoted exactly as read
-    runout_text: list[str]            # quoted exactly; empty if not legible
-    barcode_visible: Literal["present", "absent", "not_visible"]
-    copy_number: str | None           # for numbered editions
-    tells: list[TellCheck]
-    anti_tells: list[TellCheck]
-    closest_version: Literal["target", "sibling", "unclear"]
-    seller_questions: list[str]       # photos that would settle it
-```
-
-Key instructions in the prompt:
-
-- Report only what's visible; default to `not_visible`.
-- Quote label and runout text exactly; never fill it in from memory of the album.
-- Flag stock or catalog photos. Evidence from a stock photo counts as not visible.
-- Lighting changes how vinyl color looks; report a color claim as confirmed only when it's
-  unambiguous.
-
-### Turning the reading into a tier (plain code, not the model)
-
-- Any photo from the actual copy confirming an anti-tell → **likely_other**.
-- All required tells confirmed from actual-copy photos, and nothing contradicted →
-  **likely_target**.
-- Otherwise the text tier stands, with the photo evidence attached.
-- `closest_version` is stored and shown, but it's advisory and never decides the tier.
-
-### Rollout
-
-1. **Shadow mode:** the reading runs and appears in the inbox, but doesn't change tiers or
-   alerts.
-2. After at least 30 owner verdicts (section 8), compare. Enable tier changes only if photo
-   **confirmed** results are wrong in at most 1 of 30 cases. A wrong confirmation is the costly
-   error.
-
-### Cost estimate (to verify with `count_tokens` on real listings)
-
-Image tokens scale with pixel area (roughly one token per 28×28-pixel patch). A 1600×1200 photo
-is about 2,500 tokens. With 8 photos, ~1.5k tokens of instructions and cheat sheet, and ~1.5k
-output tokens including thinking:
-
-| Model | Price per million input / output tokens | Per listing (est.) | 20 listings/day (est.) |
-| --- | --- | --- | --- |
-| `claude-opus-5` (default) | $5 / $25 | ~$0.15 | ~$3/day, ~$90/month |
-| `claude-sonnet-5` | $2 / $10 | ~$0.06 | ~$1.20/day |
-| `claude-haiku-4-5` | $1 / $5 | ~$0.03 | ~$0.60/day |
-
-Volume is the biggest unknown: the price gate and photo-hash deduplication decide how many
-listings reach this step. The daily spend cap bounds the worst case. This is the first recurring
-cost in a project that has so far kept hosting free.
-
-### Known limits
-
-- Runout etchings are often not photographed, or illegible from glare.
-- Many represses use identical labels; photos can't separate them.
-- Sealed copies show no label, vinyl or runout.
-- Vinyl color varies with lighting; splatter and marble patterns vary per copy.
-- Sellers reuse other people's or catalog photos.
+Automated photo reading with a vision model was designed here but declined on September 24:
+at an estimated $0.03–0.15 per listing it would have been the project's first recurring cost.
+Instead the inbox shows up to 12 listing photos straight from eBay's image host, beside the
+signs found or missing, and the owner judges them. Nothing is stored or sent to third parties.
+A free alternative (for example local OCR of label text) can be revisited if manual review
+becomes the bottleneck; it is not planned.
 
 ## 7. Alerts
 
 Push notifications (existing), linking to an inbox card that shows:
 
 - Tier, delivered subtotal against the relevant maximum, and time left for auctions.
-- Text clues and anti-clues found; the photo-reading results with the photo that shows each
-  item.
+- Signs of the pressing found, required signs not mentioned, and common-version signs found.
 - The listing photos, inline in the private dashboard and not stored.
-- An **"ask the seller"** draft built from `seller_questions`, for example: "Could you share a
-  photo of the dead wax on side A? I'm looking for the etching '…'." The owner sends it by hand
-  on eBay; the buyer API can't message sellers.
+- An **"ask the seller"** draft asking for label and runout photos and listing the watch's
+  signs. The owner copies it into eBay; the buyer API can't message sellers.
 
 ## 8. Owner verdicts (the accuracy record)
 
 Each inbox card has buttons: **my pressing**, **other version**, **can't tell**, **bought**.
+The dashboard's "Your verdicts" panel summarizes them per tier.
 Store the item ID, watch, verdict, text tier and photo tier at the time. Store no listing
 content beyond what the inbox already keeps.
 
@@ -293,7 +191,6 @@ This builds the missing accuracy measurement from ordinary use:
 
 - Precision of the *likely_target* tier, from text alone and with photos.
 - How often *unclear* copies turn out to be the target.
-- Photo reading's wrong-confirmation rate, which is the gate in section 6.
 
 ## 9. What to cut
 
@@ -321,38 +218,23 @@ push delivery, the owner-only dashboard, and the privacy rule for public logs.
 Recommendation: start with the first option, since it needs no new infrastructure. Revisit if
 dispatch latency or Actions limits get in the way.
 
-## Phases
+## Delivery status
 
-| Phase | Deliverable | Done when |
+| Phase | Deliverable | Status |
 | --- | --- | --- |
-| 0. Clean-up | Remove the legacy scan path; trim the docs | Tests pass; one dated evidence log remains |
-| 1. Versions + cheat sheet | Master versions fetch, distinguishing-fact proposals, dashboard editor | Acceptance in section 2 passes for both test targets |
-| 2. Triage + price + searches | Three tiers, two prices, anti-tells, barcode/bargain/auction searches, 10-minute cadence | A week of live runs within budget; no unclear or likely-other alerts above their prices |
-| 3. Photos in alerts + verdicts | Inline photos, verdict buttons, accuracy page | Owner can decide from the card; verdicts recorded |
-| 4. Photo reading, shadow mode | Model call, schema, cost cap, results shown | 30+ verdicts collected alongside readings |
-| 5. Photo reading, live | Photo evidence can change tiers | Wrong confirmations ≤ 1 in 30; spend within cap |
+| 0. Clean-up | Legacy scan path removed; docs trimmed into an evidence log | Done |
+| 1. Versions + cheat sheet | Master versions, suggestions, dashboard editor | Done |
+| 2. Triage + prices + searches | Three tiers, gamble price, auctions, barcode and extra searches, adaptive cadence, 20 watches | Done |
+| 3. Photos + verdicts | Inline photos, verdict buttons, accuracy panel, seller question | Done |
+| 4–5. Photo reading | Declined (paid) | — |
 
-Each phase is its own PR with tests, following the existing required checks.
+Live acceptance still to observe after deployment: daily Browse use stays under the quota with
+the watches actually saved, alerts arrive within about one poll interval, and at least 30
+verdicts per tier before trusting its accuracy.
 
 ## Terms and data handling
 
 - eBay: official Browse API only, no scraping, no eBay-derived price modeling. Listing photos
-  are sent to the model for inference and then discarded. Only the extracted observations
-  are kept, and they're deleted with the listing on seller-deletion notices. Whether eBay's
-  content rules cover sending photos to a third-party model isn't spelled out; treat it as a
-  gray area acceptable for personal use, not for a product.
+  are displayed from eBay's image host and never stored.
 - Discogs: catalog endpoints only (adding `/masters/{id}/versions`). No marketplace or
   price data. Keep "Data provided by Discogs" attribution in the dashboard.
-- Anthropic API key: new encrypted Actions secret `ANTHROPIC_API_KEY`. Never logged. Update
-  `.env.example` when implemented.
-
-## Decisions needed
-
-1. **Personal scope:** approve relaxing the public-launch gates in `AGENTS.md` and `ROADMAP.md`
-   for personal use (alerts on uncertain pressings, price-gated by the owner's own numbers).
-2. **Photo-reading model and spend cap:** `claude-opus-5` by default; a cheaper model is
-   the owner's choice. Proposed starting cap: $3/day.
-3. **Watch cap:** keep three, or raise to five within the request budget above.
-4. **Hosting for faster polling:** see section 10.
-5. **Repository visibility:** it affects free Actions minutes and whether the public-log rules
-   are still needed.

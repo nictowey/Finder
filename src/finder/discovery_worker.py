@@ -2,7 +2,9 @@
 
 import hashlib
 import json
+import math
 import os
+import re
 import time
 import tomllib
 from copy import deepcopy
@@ -11,7 +13,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from finder.adapters.discogs.adapter import DiscogsCatalogProvider
+from finder.adapters.discogs.adapter import AlternativeRetrieval, DiscogsCatalogProvider
 from finder.adapters.discogs.client import DiscogsClient
 from finder.adapters.ebay.adapter import EbayAdapter
 from finder.adapters.ebay.client import EbayClient
@@ -21,37 +23,72 @@ from finder.categories.vinyl_target import target_from_release
 from finder.discovery_store import (
     EPOCH,
     OVERLAP,
+    SETTINGS_CHANGED,
     DiscoveryStore,
     LostLease,
     StorageBudget,
     advance_pass,
     new_pass,
+    progress,
 )
 from finder.errors import CatalogError, RateLimitError
-from finder.watch_store import SavedWatch, WatchStore
-from finder.watch_store import settings as private_settings
+from finder.watch_profile import load_profile, siblings_of
+from finder.watch_store import SavedWatch, WatchStore, watches
 
 # These are chunk limits, never coverage limits. Hard client attempt cap includes retries.
 SEARCH_CALLS = 8
 DETAIL_CALLS = 16
 ATTEMPT_LIMIT = 40
 CHUNK_SECONDS = 150
+MAX_QUERIES = 6
+RESORT_LIMIT = 300
+# Browse searches per day set aside for new-listing polls across every enabled watch.
+# The rest of the 5,000-call quota covers details, reconciliation and retries.
+POLL_BUDGET = 2000
+MIN_POLL_MINUTES = 10
+_quota_cache = {}
 
 
-def rollout_slots(engine):
+def poll_minutes(engine):
+    """New-listing cadence: every 10 minutes for a few watches, stretching as they grow."""
     with engine.connect() as conn:
-        config = conn.execute(
-            select(private_settings.c.data).where(private_settings.c.key == "discovery_rollout")
-        ).scalar()
-    return config.get("slots", []) if config else []
+        rows = conn.execute(
+            select(progress.c.data)
+            .select_from(watches.outerjoin(progress, progress.c.watch_id == watches.c.id))
+            .where(watches.c.enabled.is_(True))
+        ).scalars()
+        queries = sum(
+            len(data["queries"]) if isinstance(data, dict) and data.get("queries") else 3
+            for data in rows
+        )
+    return max(MIN_POLL_MINUTES, math.ceil(1440 * queries / POLL_BUDGET))
 
 
-def prepare_passes(state, now, reconciliation_hours):
+def watch_queries(target_queries, variant, watch):
+    """Album searches first, then the owner's own searches, then the barcode."""
+    queries = list(target_queries) + list(watch.extra_queries)
+    barcodes = [
+        digits
+        for kind, values in variant.identifiers.items()
+        if "barcode" in kind.casefold()
+        for value in values
+        if len(digits := re.sub(r"\D", "", value)) in (12, 13)
+    ]
+    if barcodes:
+        queries.append(f"gtin:{barcodes[0]}")
+    unique = []
+    for query in queries:
+        if query.strip() and query.casefold() not in {q.casefold() for q in unique}:
+            unique.append(query.strip())
+    return unique[:MAX_QUERIES]
+
+
+def prepare_passes(state, now, reconciliation_hours, poll_every=30):
     for q in state["queries"]:
         inc = q["incremental"]
         if inc["status"] == "search_exhausted" and now - datetime.fromisoformat(
             inc["started_at"].replace("Z", "+00:00")
-        ) >= timedelta(minutes=30):
+        ) >= timedelta(minutes=poll_every):
             # No jump after an outage: start from the last exhausted upper bound.
             lower = datetime.fromisoformat(q["watermark"].replace("Z", "+00:00")) - OVERLAP
             q["incremental"] = new_pass(iso(lower), iso(now))
@@ -97,7 +134,7 @@ def detail_batch(queue, claim, now):
 
 
 def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: datetime.now(UTC)):
-    from finder.watch_worker import assess_review
+    from finder.watch_worker import assess_review, refresh_hours
 
     store, queue = WatchStore(repository.engine), DiscoveryStore(repository.engine)
     watch = SavedWatch.model_validate(claim["config"])
@@ -118,12 +155,15 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
         with DiscogsClient(discogs_settings) as catalog_client:
             provider = DiscogsCatalogProvider(catalog_client)
             variant = provider.get_release(watch.release_id)
-            requests["catalog_requests"] += 1
-            try:
-                alternatives = provider.search_alternatives(variant)
-                requests["catalog_requests"] += 1 + len(alternatives.variants)
-            except CatalogError:
-                alternatives = None
+            profile = load_profile(repository.engine, claim["id"], provider, variant, now_fn())
+            if profile is not None:
+                # Every vinyl version on Discogs, cached weekly, replaces a capped search.
+                alternatives = AlternativeRetrieval(siblings_of(profile), profile["partial"])
+            else:
+                try:
+                    alternatives = provider.search_alternatives(variant)
+                except CatalogError:
+                    alternatives = None
         requests["catalog_requests"] = catalog_client.requests
         requests["catalog_retries"] = catalog_client.retries
         target = target_from_release(variant).model_copy(update={"id": "private-watch"})
@@ -135,9 +175,10 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
 
                     alias_plan = EbaySearchTarget.model_validate(configured_target)
                     queries = list(dict.fromkeys(target.queries + alias_plan.queries))
-                    if len(queries) > 3:
-                        raise ValueError("Alias plan exceeds the supported three queries")
                     target = target.model_copy(update={"queries": queries})
+        target = target.model_copy(
+            update={"queries": watch_queries(target.queries, variant, watch)}
+        )
         state = queue.load(claim, target, now_fn())
 
         def catalog_content(value):
@@ -156,8 +197,12 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                 sort_keys=True,
             ).encode()
         ).hexdigest()
+        poll_every = poll_minutes(repository.engine)
         prepare_passes(
-            state, now_fn(), max(6, int(os.environ.get("FINDER_RECONCILIATION_HOURS", "24")))
+            state,
+            now_fn(),
+            max(6, int(os.environ.get("FINDER_RECONCILIATION_HOURS", "24"))),
+            poll_every,
         )
         queue.checkpoint(claim, state, now_fn())
         configured = settings.model_copy(
@@ -168,17 +213,26 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
             try:
                 # Actual app quota, not the published default. Shared atomic debits in
                 # EbayClient subsequently enforce the reserve on every network attempt.
-                quota = summarize_browse_quota(
-                    client.get(
-                        "/developer/analytics/v1_beta/rate_limit/",
-                        headers={},
-                        params={"api_context": "buy", "api_name": "browse"},
+                # Many short chunks share one worker run: reuse a live reading for five
+                # minutes. The per-request shared debit still enforces the reserve.
+                cached = _quota_cache.get("browse")
+                live = getattr(client, "_live_transport", False)
+                if live and cached and time.monotonic() - cached[0] < 300:
+                    remaining = cached[1]
+                else:
+                    quota = summarize_browse_quota(
+                        client.get(
+                            "/developer/analytics/v1_beta/rate_limit/",
+                            headers={},
+                            params={"api_context": "buy", "api_name": "browse"},
+                        )
                     )
-                )
-                pool = [r for r in quota["resources"] if r["name"] == "buy.browse"]
-                if len(pool) != 1:
-                    raise RateLimitError("Shared quota missing")
-                remaining = min(r["remaining"] for r in pool[0]["rates"])
+                    pool = [r for r in quota["resources"] if r["name"] == "buy.browse"]
+                    if len(pool) != 1:
+                        raise RateLimitError("Shared quota missing")
+                    remaining = min(r["remaining"] for r in pool[0]["rates"])
+                    if live:
+                        _quota_cache["browse"] = (time.monotonic(), remaining)
                 requests.update(quota_remaining=remaining, quota_required=ATTEMPT_LIMIT + 200)
                 if remaining < ATTEMPT_LIMIT + 200:
                     raise RateLimitError("Insufficient quota for chunk")
@@ -243,6 +297,46 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                         )
                 # Reserve a quarter of detail slots for oldest existing leads. Pending
                 # failures are delayed, so one bad item cannot monopolize the queue.
+                # A price or cheat-sheet edit re-sorts known listings from stored details,
+                # with no eBay calls. Plausible ones are re-read soon so alerts stay fresh.
+                for item in queue.due(claim, now_fn(), limit=RESORT_LIMIT, pending=True):
+                    if item["reason"] != SETTINGS_CHANGED:
+                        continue
+                    if time.monotonic() >= deadline:
+                        partial = "execution_budget"
+                        break
+                    previous = repository.get("ebay", item["item_id"])
+                    if (
+                        previous is None
+                        or previous.source_metadata.get("delivery_country") != watch.country
+                        or previous.source_metadata.get("delivery_postal_code") != watch.postal_code
+                    ):
+                        continue  # Left pending; the detail loop reads it from eBay.
+                    review = assess_review(
+                        watch,
+                        previous,
+                        variant,
+                        now=now_fn(),
+                        alternatives=alternatives.variants if alternatives else None,
+                        search_incomplete=alternatives.search_incomplete if alternatives else True,
+                    )
+                    hours = refresh_hours(watch, previous, review, now_fn())
+                    if review["status"] in ("possible_pressing", "family_review") and (
+                        "details_need_refresh" in review["verify"]
+                    ):
+                        hours = min(hours, 0.1)
+                    _, inserted = queue.disposition(
+                        claim,
+                        item,
+                        now_fn(),
+                        status="evaluated",
+                        listing=previous,
+                        repository=repository,
+                        review=review,
+                        state=state,
+                        refresh_hours=hours,
+                    )
+                    added += inserted or 0
                 batch = detail_batch(queue, claim, now_fn())
                 adapter = EbayAdapter(client, now=now_fn)
                 for item in batch:
@@ -295,9 +389,7 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                                 repository=repository,
                                 review=review,
                                 state=state,
-                                refresh_hours=4
-                                if review["status"] in ("possible_pressing", "family_review")
-                                else 24,
+                                refresh_hours=refresh_hours(watch, listing, review, now_fn()),
                             )
                             added += inserted or 0
                         else:
@@ -359,13 +451,13 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
         # Active work resumes at the next ten-minute catch-up, not the full monitor interval.
         # Rate limit and provider failures back off; the shared guard still applies.
         delay = (
-            30
+            max(30, poll_every)
             if failure or partial == "quota_or_attempt_budget"
             else 1
             if next_task(state)
             or coverage["pending"]
             or queue.due(claim, now_fn(), limit=1, pending=False)
-            else 30
+            else poll_every
         )
         result = store.finish(
             claim,
