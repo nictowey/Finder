@@ -9,7 +9,7 @@ export const inboxQuery = `SELECT i.watch_id,i.marketplace,i.marketplace_item_id
     OR $1 NOT IN ('dismissed','unavailable') AND NOT i.dismissed AND i.data->>'availability' IS DISTINCT FROM 'unavailable_on_recheck'
       AND ($1='review' AND v.verdict IS NULL AND i.data->>'status' IN ('possible_pressing','family_review') OR i.data->>'status'=$1))
   AND ($2::text IS NULL OR (i.first_seen_at,i.watch_id,i.marketplace_item_id)<($2,$3,$4))
-  AND ($5='all' OR w.config->>'maximum_subtotal' IS NULL OR CASE WHEN
+  AND ($1='judged' OR $5='all' OR w.config->>'maximum_subtotal' IS NULL OR CASE WHEN
     w.config->>'maximum_subtotal' ~ '^[0-9]+([.][0-9]+)?$'
     AND l.data->>'current_price' ~ '^[0-9]+([.][0-9]+)?$'
     AND l.data->>'shipping_cost' ~ '^[0-9]+([.][0-9]+)?$'
