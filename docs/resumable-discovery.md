@@ -50,9 +50,10 @@ minus 24 hours, including after outages. Each selected window processes every pa
 watermark advances; its detail work is already durable and pending counts stay visible. New
 windows open no more often than the poll interval: 10 minutes, stretched to keep
 new-listing polls across all enabled queries within 2,000 searches a day. Baseline and incremental lanes rotate
-across queries during backfill. The API's `itemOriginDate` must fall within the requested start
-window on returned summaries; absence or contradiction interrupts rather than certifying the
-filter. No manually supplied listing is counted as independent discovery.
+across queries during backfill. Every returned summary must carry an `itemOriginDate`; a missing
+date interrupts the pass. A date outside the requested window is kept (it is still a match for
+the query) and counted as `window_mismatches` in the scan report. eBay's result total is an
+estimate, so an empty page before it ends the traversal instead of interrupting it. No manually supplied listing is counted as independent discovery.
 
 Every time partition receives a second complete traversal. This replay recovers some movement
 and delayed indexing (covered by synthetic insertion/removal tests); it is not a marketplace

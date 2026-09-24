@@ -13,6 +13,18 @@ question in the inbox. Paid photo reading was declined to keep add-ons free. See
 [the plan](personal-pressing-hunter-plan.md). Live request use, alert timing and tier accuracy
 are not yet observed.
 
+## September 24, 2026 — first scans after deployment
+
+Deployment [#21](https://github.com/nictowey/Finder/actions/runs/35982251931) passed all gates.
+Its first scan completed one watch (22 references, 8 searches, 16 detail reads). Two of the
+next three scheduled runs completed two watches and reported one watch failed. PR #70 contained
+barcode-search failures and added error-type counters; run
+[#67](https://github.com/nictowey/Finder/actions/runs/35986120957) then showed the failing
+search was a keyword search (`ResponseError`), not the barcode search. The search validator
+treated two routine eBay behaviors as corruption: an empty or summary-less page before eBay's
+estimated total, and a listing dated just outside the requested window. Both are now tolerated
+(the latter counted as `window_mismatches`), and failures report a fixed code.
+
 ## Resumable discovery revision — September 23, 2026
 
 The new implementation replaces scheduled samples with durable full search passes, overlapping

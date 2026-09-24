@@ -257,6 +257,10 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                             upper=part["upper"],
                             offset=part["offset"],
                         )
+                        if page.window_mismatches:
+                            diagnostic["window_mismatches"] = (
+                                diagnostic.get("window_mismatches", 0) + page.window_mismatches
+                            )
                         next_state = deepcopy(state)
                         advanced = advance_pass(current, page, now_fn())
                         next_state["queries"][i][lane] = advanced
@@ -287,9 +291,10 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                     except Exception as exc:
                         # Exception class names only: provider messages can carry identities.
                         barcode = target.queries[i].startswith("gtin:")
+                        code = getattr(exc, "code", None)
                         diagnostic[
                             f"search_failed_{'barcode' if barcode else 'keywords'}_"
-                            f"{type(exc).__name__}"
+                            f"{type(exc).__name__}" + (f"_{code}" if code else "")
                         ] = 1
                         if barcode:
                             # The barcode search is an optional extra. If eBay rejects it or

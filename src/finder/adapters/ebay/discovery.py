@@ -18,12 +18,23 @@ def iso(value):
     return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+class SearchError(ResponseError):
+    """A fixed diagnostic code that is safe for public logs."""
+
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
 @dataclass
 class SearchPage:
     items: list[dict]
     total: int
     more: bool
     fingerprint: str
+    # Items whose listing date fell outside the requested window. They are genuine
+    # matches for the query, so they are kept; the count is reported for diagnosis.
+    window_mismatches: int = 0
 
 
 def summary_fingerprint(raw):
@@ -69,12 +80,14 @@ def search_page(client, target, query_index, *, lower, upper, offset):
     )
     total = payload.get("total")
     if type(total) is not int or total < 0:
-        raise ResponseError("Invalid search total")
-    items = payload.get("itemSummaries", [] if total == 0 else None)
+        raise SearchError("invalid_total", "Invalid search total")
+    # eBay omits itemSummaries on an empty page, including one before its estimated total.
+    items = payload.get("itemSummaries", [])
     if not isinstance(items, list) or len(items) > PAGE_SIZE:
-        raise ResponseError("Invalid search page")
-    if not items and total > offset:
-        raise ResponseError("Empty page before reported end")
+        raise SearchError("invalid_page", "Invalid search page")
+    # eBay's total is an estimate. An empty page before it is the end of the results,
+    # not corruption; the second traversal and daily reconciliation re-check the range.
+    estimated_end = not items and total > offset
     next_url = payload.get("next")
     if next_url:
         # Never follow a URL supplied by the provider. Even the continuation hint is
@@ -83,7 +96,7 @@ def search_page(client, target, query_index, *, lower, upper, offset):
         try:
             next_offset = int(parse_qs(link.query)["offset"][0])
         except (KeyError, ValueError, TypeError):
-            raise ResponseError("Invalid pagination link") from None
+            raise SearchError("invalid_next", "Invalid pagination link") from None
         if (
             link.scheme != "https"
             or link.netloc != expected.netloc
@@ -93,8 +106,11 @@ def search_page(client, target, query_index, *, lower, upper, offset):
             or link.fragment
             or next_offset != offset + PAGE_SIZE
         ):
-            raise ResponseError("Unsafe pagination link")
+            raise SearchError("unsafe_next", "Unsafe pagination link")
     ids = []
+    mismatches = 0
+    low = datetime.fromisoformat(lower.replace("Z", "+00:00"))
+    high = datetime.fromisoformat(upper.replace("Z", "+00:00"))
     for item in items:
         if (
             not isinstance(item, dict)
@@ -102,27 +118,23 @@ def search_page(client, target, query_index, *, lower, upper, offset):
             or not item["itemId"]
         ):
             # Replay the entire page; never checkpoint past an unaccounted item.
-            raise ResponseError("Search item lacks identity")
+            raise SearchError("missing_identity", "Search item lacks identity")
         if len(item["itemId"]) > 255:
-            raise ResponseError("Invalid item identity")
+            raise SearchError("invalid_identity", "Invalid item identity")
         origin = item.get("itemOriginDate")
-        # Verify the documented filter on actual responses before advancing a watermark.
-        # Creation date is deliberately not substituted for availability/origin date.
+        # Every item needs a listing date. Creation date is deliberately not substituted.
         try:
             start = datetime.fromisoformat(origin.replace("Z", "+00:00"))
-            valid = (
-                datetime.fromisoformat(lower.replace("Z", "+00:00"))
-                <= start
-                <= datetime.fromisoformat(upper.replace("Z", "+00:00"))
-            )
         except (ValueError, TypeError, AttributeError):
-            valid = False
-        if not valid:
-            raise ResponseError("Start-date window could not be verified")
+            raise SearchError("missing_start_date", "Search item lacks a start date") from None
+        if start.tzinfo is None:
+            raise SearchError("missing_start_date", "Search item lacks a start date")
+        mismatches += not low <= start <= high
         ids.append(item["itemId"])
     return SearchPage(
         items,
         total,
-        bool(next_url) or offset + len(items) < total,
+        not estimated_end and (bool(next_url) or offset + len(items) < total),
         hashlib.sha256(json.dumps(ids).encode()).hexdigest(),
+        mismatches,
     )
