@@ -19,7 +19,7 @@ export async function deliver(db, send=webpush.sendNotification.bind(webpush)) {
     AND w.enabled AND NOT i.dismissed AND i.last_seen_at >= $1 AND (i.data->>'notify')='true'
     AND NOT EXISTS (SELECT 1 FROM finder_verdicts v WHERE v.watch_id=i.watch_id AND v.marketplace=i.marketplace AND v.marketplace_item_id=i.marketplace_item_id)
     AND (i.data->>'policy')=$2
-    AND (i.data->>'watch_revision')=w.revision::text)`,[new Date(Date.now()-3600000).toISOString(),'private-target-review-v6',new Date().toISOString()]);
+    AND (i.data->>'watch_revision')=w.revision::text)`,[new Date(Date.now()-3600000).toISOString(),'private-target-review-v7',new Date().toISOString()]);
   await db.query("UPDATE finder_outbox SET status='failed' WHERE attempts>=3 AND status IN ('pending','sending')");
   if(!key || !subscriptions.length) return report({status:!key?'not_configured':'no_devices',accepted_events:0,devices:subscriptions.length});
   const pending=(await db.query("UPDATE finder_outbox SET status='sending',attempts=attempts+1 WHERE status IN ('pending','sending') AND attempts<3 RETURNING id")).rows;
