@@ -48,6 +48,7 @@ try {
   const reviewed=[{id:"new"},{id:"judged"}];
   assert.deepEqual((await query(reviewed,config,"watch",[null,null,null],"review",["judged"])).map(x=>x.marketplace_item_id),["new"]);
   assert.deepEqual((await query(reviewed,config,"watch",[null,null,null],"judged",["judged"])).map(x=>x.marketplace_item_id),["judged"]);
+  assert.deepEqual((await query([{id:"costly",listing:{current_price:"100.00"}}],config,"watch",[null,null,null],"judged",["costly"])).map(x=>x.marketplace_item_id),["costly"]);
   const many=[...Array.from({length:60},(_,i)=>({id:"z"+String(i).padStart(3,"0"),listing:{current_price:"100"}})),{id:"a"},{id:"b"}];
   assert.deepEqual((await query(many)).map(x=>x.marketplace_item_id),["b","a"]);
   const first=await query(many,config,"all");
