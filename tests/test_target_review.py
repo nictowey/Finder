@@ -90,6 +90,35 @@ def test_identifier_can_surface_uncolored_vinyl_for_review(
     assert "catalog_alternatives_not_checked" in row.verify
 
 
+@pytest.mark.parametrize(
+    ("artists", "album", "seller_title"),
+    [
+        (["Nas"], "Rare", "Nas - Rare Vinyl Record LP"),
+        (
+            ["Larry June", "2 Chainz", "The Alchemist"],
+            "Life Is Beautiful",
+            "2 Chainz Larry June The Alchemist Life Is Beautiful Vinyl LP",
+        ),
+    ],
+)
+def test_sparse_current_watch_titles_remain_review_leads(
+    search_payload, discogs_release, observed_at, artists, album, seller_title
+):
+    target = normalize_release(
+        {
+            **discogs_release,
+            "title": album,
+            "artists": [{"name": name} for name in artists],
+            "formats": [{"name": "Vinyl", "descriptions": ["LP"]}],
+            "identifiers": [],
+        },
+        observed_at,
+    )
+    row = review_target_listing(_listing(search_payload, observed_at, seller_title), target)
+    assert row.status == "family_review"
+    assert "artist_and_album" in row.clues
+
+
 def test_inverted_structured_artist_keeps_target_review_and_scoring(
     search_payload, discogs_release, observed_at
 ):

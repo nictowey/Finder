@@ -3,6 +3,19 @@
 Dated operational and validation history, moved verbatim from `AGENTS.md` on
 September 24, 2026 when Finder became a personal pressing hunter. Newer entries go at the top.
 
+## September 24, 2026 — review inbox visibility investigation
+
+The public scan log for run #83 reported 731 unique references across five processed watch
+chunks, 701 evaluated outcomes, 29 pending, and one new inbox row in that run. These are
+aggregate counts, not proof that the Nas or Larry June / 2 Chainz examples were retrieved or
+that any particular row met its price ceiling. The dashboard opened on `possible_pressing`
+only, while seller titles that establish artist and album without pressing evidence are
+classified `family_review`. The default inbox now includes both reviewable tiers, and each
+watch shows aggregate counts by classification. The saved price and six-hour evidence
+freshness filters remain in force; `All prices` can expose older references with withheld
+seller detail. Production classification for the named examples still needs an authenticated
+inbox check after deployment.
+
 ## September 24, 2026 — personal pressing hunter
 
 Implemented, not yet deployed: legacy sampled scan path removed; up to 20 watches with an
