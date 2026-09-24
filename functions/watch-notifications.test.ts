@@ -13,7 +13,7 @@ test("dispatcher invalidates old policy and watch revisions before claiming aler
     if(sql.includes("key='vapid'"))return {rows:[{data:{publicKey:'p',privateKey:'s'}}]};
     if(sql.includes('SELECT id,data'))return {rows:[{id:'device',data:{}}]};
     if(sql.includes("status='expired'")){
-      assert.equal(values[1],'private-target-review-v6');
+      assert.equal(values[1],'private-target-review-v7');
       assert.ok(sql.includes('NOT EXISTS (SELECT 1 FROM finder_verdicts'));
       assert.ok(sql.includes("(i.data->>'policy')=$2"));
       assert.ok(sql.includes("(i.data->>'watch_revision')=w.revision::text"));

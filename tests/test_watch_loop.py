@@ -6,6 +6,7 @@ from sqlalchemy import insert, select, update
 from finder import watch_worker
 from finder.adapters.discogs.normalize import normalize_release
 from finder.adapters.ebay.normalize import normalize_listing
+from finder.categories.vinyl_clues import Clue
 from finder.watch_store import (
     MAX_WATCHES,
     SavedWatch,
@@ -196,13 +197,13 @@ def test_ambiguous_and_unchecked_leads_stay_visible_without_alerts(
     )
     watch = SavedWatch(release_id=123, alert_mode="strict")
     unchecked = assess_review(watch, row, variant, now=observed_at)
-    assert unchecked["status"] == "possible_pressing" and not unchecked["notify"]
+    assert unchecked["status"] == "family_review" and not unchecked["notify"]
     competitor = variant.model_copy(update={"catalog_variant_id": "222"})
     ambiguous = assess_review(watch, row, variant, now=observed_at, alternatives=[competitor])
     assert ambiguous["status"] == "family_review" and not ambiguous["notify"]
     assert "other_pressings_not_ruled_out" in ambiguous["verify"]
     assert ambiguous["alternatives_not_ruled_out"] == 1
-    assert ambiguous["policy"] == "private-target-review-v6"
+    assert ambiguous["policy"] == "private-target-review-v7"
 
 
 def test_pilot_capacity(store):
@@ -274,9 +275,19 @@ def test_review_alerts_keep_uncertainty_but_block_conflicts_failures_and_stalene
     assert review["status"] == "family_review"
     assert "other_pressings_not_ruled_out" in review["verify"]
     assert "catalog_alternative_search_incomplete" in review["verify"]
-    # A failed alternatives lookup is shown as uncertainty; it no longer holds the alert.
+    # Failed comparison leaves this as an unclear lead; an optional gamble price
+    # can still alert, but the likely-match price must not apply.
     unchecked = assess_review(watch, row, variant, now=observed_at, alternatives=None)
-    assert unchecked["notify"] and "catalog_alternatives_not_checked" in unchecked["verify"]
+    assert unchecked["status"] == "family_review"
+    assert not unchecked["notify"]
+    assert "catalog_alternatives_not_checked" in unchecked["verify"]
+    with_tell = watch.model_copy(
+        update={"tells": [Clue(kind="barcode", value="0123456789012", required=True)]}
+    )
+    assert (
+        assess_review(with_tell, row, variant, now=observed_at, alternatives=None)["status"]
+        == "family_review"
+    )
     assert not assess_review(
         watch, row, variant, now=observed_at + timedelta(hours=2), alternatives=[competitor]
     )["notify"]

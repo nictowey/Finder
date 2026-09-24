@@ -3,6 +3,20 @@
 Dated operational and validation history, moved verbatim from `AGENTS.md` on
 September 24, 2026 when Finder became a personal pressing hunter. Newer entries go at the top.
 
+## September 24, 2026 — conservative review after owner verdicts
+
+Deployment [#75](https://github.com/nictowey/Finder/actions/runs/36006972142) passed
+330 Python and 38 Node tests, the isolated PostgreSQL check, and private-access
+verification. Its scan completed five watches with no failures, evaluated 507 stored
+candidates and left 223 pending at that point. The scheduled catch-up
+[#76](https://github.com/nictowey/Finder/actions/runs/36007810219) completed two more
+watch chunks without failures and reported zero pending for those two watches.
+The live dashboard serves the Judged history with all prices. A further policy
+change moves a candidate to Unclear when the catalog comparison itself failed;
+the likely-match price must not cause an alert without that comparison. An optional
+unclear-listing gamble price can still allow an alert. Accuracy against the owner's
+judged records remains unmeasured from these public aggregate logs.
+
 ## September 24, 2026 — first owner verdicts exposed poor precision
 
 The owner judged the initial listings and reported that most were wrong: some were different
