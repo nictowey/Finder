@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import httpx
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import event, select, update
 
 from finder.adapters.ebay.budget import reconcile
 from finder.adapters.ebay.client import EbayClient
@@ -22,7 +22,9 @@ from finder.watch_store import (
     inbox,
     migrate,
     outbox,
+    scan_attempts,
     subscriptions,
+    verdicts,
     watches,
 )
 
@@ -248,6 +250,134 @@ def test_atomic_detail_evaluation_digest_dedup_dismissal_and_deletion(setup, sea
     assert queue.coverage(claim, state)["unique_retrieved"] == 0
 
 
+@pytest.mark.parametrize("verdict", ["mine", "other", "unsure", "bought"])
+@pytest.mark.parametrize("timing", ["before", "during_finish"])
+def test_judged_baseline_item_cannot_consume_the_initial_digest(
+    setup, search_payload, verdict, timing, monkeypatch
+):
+    repo, _, claim, queue, state = setup
+    queue.checkpoint(claim, state, NOW, items=[raw(1), raw(2)])
+    first, second = queue.due(claim, NOW, limit=10, pending=True)
+
+    def listing(item):
+        return normalize_listing(
+            {**search_payload["itemSummaries"][0], "itemId": item["item_id"]}, NOW
+        ).model_copy(update={"seller_id": "synthetic-seller", "details_observed_at": NOW})
+
+    queue.disposition(
+        claim,
+        first,
+        NOW,
+        status="evaluated",
+        listing=listing(first),
+        repository=repo,
+        review={"notify": False, "status": "family_review"},
+        state=state,
+    )
+
+    def save_verdict(conn):
+        conn.execute(
+            verdicts.insert().values(
+                watch_id=claim["id"],
+                marketplace="ebay",
+                marketplace_item_id=first["item_id"],
+                verdict=verdict,
+                tier="family_review",
+                decided_at=NOW.isoformat(),
+            )
+        )
+
+    if timing == "before":
+        with repo.engine.begin() as conn:
+            save_verdict(conn)
+    else:
+        finish = WatchStore.finish
+
+        def finish_after_verdict(store, claim, reviews, **kwargs):
+            if reviews[0][0].marketplace_item_id == first["item_id"]:
+                save_verdict(kwargs["connection"])
+            return finish(store, claim, reviews, **kwargs)
+
+        monkeypatch.setattr(WatchStore, "finish", finish_after_verdict)
+    queue.disposition(
+        claim,
+        first,
+        NOW,
+        status="evaluated",
+        listing=listing(first),
+        repository=repo,
+        review={"notify": True, "status": "possible_pressing"},
+        state=state,
+    )
+    after_judged = state["initial_digest_sent"]
+    queue.disposition(
+        claim,
+        second,
+        NOW,
+        status="evaluated",
+        listing=listing(second),
+        repository=repo,
+        review={"notify": True, "status": "possible_pressing"},
+        state=state,
+    )
+    with repo.engine.connect() as conn:
+        events = conn.execute(select(outbox.c.marketplace_item_id)).scalars().all()
+        assert conn.execute(select(verdicts.c.verdict)).scalar_one() == verdict
+    assert events == [second["item_id"]]
+    assert not after_judged
+    assert state["initial_digest_sent"]
+
+
+def test_initial_digest_event_and_flag_roll_back_together_and_retry_once(setup, search_payload):
+    repo, _, claim, queue, state = setup
+    queue.checkpoint(claim, state, NOW, items=[raw(1)])
+    item = queue.due(claim, NOW, limit=1, pending=True)[0]
+    listing = normalize_listing(
+        {**search_payload["itemSummaries"][0], "itemId": item["item_id"]}, NOW
+    ).model_copy(update={"seller_id": "synthetic-seller", "details_observed_at": NOW})
+
+    def fail_checkpoint(conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith("UPDATE finder_discovery SET"):
+            raise RuntimeError("synthetic checkpoint failure")
+
+    event.listen(repo.engine, "before_cursor_execute", fail_checkpoint)
+    try:
+        with pytest.raises(RuntimeError, match="synthetic checkpoint failure"):
+            queue.disposition(
+                claim,
+                item,
+                NOW,
+                status="evaluated",
+                listing=listing,
+                repository=repo,
+                review={"notify": True, "status": "possible_pressing"},
+                state=state,
+            )
+    finally:
+        event.remove(repo.engine, "before_cursor_execute", fail_checkpoint)
+    assert not state["initial_digest_sent"]
+    assert not queue.load(claim, TARGET, NOW)["initial_digest_sent"]
+    with repo.engine.connect() as conn:
+        assert not conn.execute(select(outbox)).first()
+        assert not conn.execute(select(inbox)).first()
+    for _ in range(2):
+        queue.disposition(
+            claim,
+            item,
+            NOW,
+            status="evaluated",
+            listing=listing,
+            repository=repo,
+            review={"notify": True, "status": "possible_pressing"},
+            state=state,
+        )
+    assert state["initial_digest_sent"]
+    with repo.engine.connect() as conn:
+        assert conn.execute(select(outbox.c.marketplace_item_id)).scalars().all() == [
+            item["item_id"]
+        ]
+
+
 def test_detail_failure_remains_pending_and_cannot_count_as_evaluated(setup):
     _, _, claim, queue, state = setup
     queue.checkpoint(claim, state, NOW, items=[raw(1)])
@@ -272,6 +402,43 @@ def test_summary_refresh_does_not_refresh_details_and_policy_requeues(setup, sea
     queue.checkpoint(claim, state, NOW)
     assert queue.coverage(claim, state)["pending"] == 1
     assert queue.due(claim, NOW, limit=1, pending=True)[0]["reason"] == "settings_changed"
+
+
+@pytest.mark.parametrize("resort", ["policy", "settings"])
+def test_changed_summary_overrides_cached_resort_reason(setup, resort):
+    repo, _, claim, queue, state = setup
+    queue.checkpoint(claim, state, NOW, items=[raw(1)])
+    item = queue.due(claim, NOW, limit=1, pending=True)[0]
+    queue.disposition(claim, item, NOW, status="evaluated")
+    if resort == "policy":
+        state["evaluation_signature"] = "new-policy"
+        queue.checkpoint(claim, state, NOW)
+    else:
+        claim = {**claim, "revision": claim["revision"] + 1}
+        with repo.engine.begin() as conn:
+            conn.execute(update(watches).values(revision=claim["revision"]))
+        state = queue.load(claim, TARGET, NOW)
+    assert queue.due(claim, NOW, limit=1, pending=True)[0]["reason"] == "settings_changed"
+    changed = {**raw(1), "price": {"value": "99.00", "currency": "USD"}}
+    queue.checkpoint(claim, state, NOW, items=[changed])
+    # Replaying the same page still leaves one detail-required work row.
+    queue.checkpoint(claim, state, NOW, items=[changed, changed])
+    pending = queue.due(claim, NOW, limit=10, pending=True)
+    assert len(pending) == 1
+    assert pending[0]["kind"] == "existing_listing_updated"
+    assert pending[0]["reason"] is None
+
+
+def test_unavailable_rediscovery_requires_new_details_even_when_summary_unchanged(setup):
+    _, _, claim, queue, state = setup
+    queue.checkpoint(claim, state, NOW, items=[raw(1)])
+    item = queue.due(claim, NOW, limit=1, pending=True)[0]
+    queue.disposition(claim, item, NOW, status="unavailable", reason="item_unavailable")
+    queue.checkpoint(claim, state, NOW, items=[raw(1)])
+    pending = queue.due(claim, NOW, limit=10, pending=True)
+    assert len(pending) == 1
+    assert pending[0]["kind"] == "existing_listing_updated"
+    assert pending[0]["reason"] is None
 
 
 def test_transport_scope_window_and_unsafe_next(settings):
@@ -475,6 +642,93 @@ def test_worker_end_to_end_pages_resume_and_no_duplicate_hydration(
     with repo.engine.connect() as conn:
         due_at = conn.execute(select(watches.c.next_scan_at)).scalar()
     assert datetime.fromisoformat(due_at) == clock[0] + timedelta(minutes=1)
+
+
+@pytest.mark.parametrize("change", ["edited", "replaced", "deleted", "expired", "reclaimed"])
+def test_worker_records_lost_lease_without_changing_newer_watch_state(
+    setup, settings, discogs_settings, discogs_release, monkeypatch, change
+):
+    from contextlib import nullcontext
+
+    from finder import discovery_worker as worker
+    from finder.adapters.discogs.adapter import AlternativeRetrieval
+    from finder.adapters.discogs.normalize import normalize_release
+
+    repo, store, claim, _, _ = setup
+    variant = normalize_release(discogs_release, NOW)
+    clock = [NOW]
+    expected_watch = []
+
+    def fetch_release(_):
+        # The owner or another worker changes the fence while a provider read is in flight.
+        clock[0] += timedelta(minutes=13 if change in ("expired", "reclaimed") else 1)
+        if change in ("edited", "replaced", "deleted"):
+            with repo.engine.begin() as conn:
+                if change == "deleted":
+                    conn.execute(watches.delete().where(watches.c.id == claim["id"]))
+                else:
+                    conn.execute(
+                        update(watches)
+                        .where(watches.c.id == claim["id"])
+                        .values(
+                            revision=claim["revision"] + 1,
+                            config={**claim["config"], "maximum_subtotal": "25"},
+                            lease_token=None,
+                            lease_until=None,
+                            status="pending",
+                        )
+                    )
+        if change in ("replaced", "reclaimed"):
+            assert store.claim(now=clock[0]) is not None
+        with repo.engine.connect() as conn:
+            expected_watch.extend(dict(row) for row in conn.execute(select(watches)).mappings())
+        return variant
+
+    monkeypatch.setattr(
+        worker, "DiscogsClient", lambda _: nullcontext(SimpleNamespace(requests=1, retries=0))
+    )
+    monkeypatch.setattr(worker, "load_profile", lambda *args: None)
+    monkeypatch.setattr(
+        worker,
+        "DiscogsCatalogProvider",
+        lambda _: SimpleNamespace(
+            get_release=fetch_release,
+            search_alternatives=lambda _: AlternativeRetrieval([], False),
+        ),
+    )
+    marketplace = Mock(side_effect=AssertionError("Lost worker must stop before eBay"))
+    monkeypatch.setattr(worker, "EbayClient", marketplace)
+
+    assert run_chunk(repo, settings, discogs_settings, claim, now_fn=lambda: clock[0]) == {
+        "superseded": 1,
+        "new_inbox_rows": 0,
+    }
+    marketplace.assert_not_called()
+    with repo.engine.connect() as conn:
+        assert [dict(row) for row in conn.execute(select(watches)).mappings()] == expected_watch
+        attempt = (
+            conn.execute(select(scan_attempts).where(scan_attempts.c.id == claim["lease_token"]))
+            .mappings()
+            .first()
+        )
+        if change == "deleted":
+            assert attempt is None
+        else:
+            assert attempt["status"] == ("abandoned" if change == "reclaimed" else "superseded")
+            assert attempt["finished_at"] == (
+                None if change == "reclaimed" else clock[0].isoformat()
+            )
+        assert conn.execute(select(inbox)).first() is None
+        assert conn.execute(select(outbox)).first() is None
+    # A later recovery cannot reclassify an explicitly cancelled run as a killed worker.
+    store.claim(now=NOW + timedelta(minutes=30))
+    with repo.engine.connect() as conn:
+        status = conn.execute(
+            select(scan_attempts.c.status).where(scan_attempts.c.id == claim["lease_token"])
+        ).scalar()
+    assert status == (
+        None if change == "deleted" else "abandoned" if change == "reclaimed" else "superseded"
+    )
 
 
 def test_three_watches_progress_fairly_and_telemetry_failure_preserves_cursor(

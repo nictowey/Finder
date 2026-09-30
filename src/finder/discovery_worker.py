@@ -518,6 +518,9 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
             **diagnostic,
         }
     except LostLease:
+        # Close the old attempt without touching the edited/reclaimed watch. Otherwise
+        # normal cancellation would later look like a worker that died mid-scan.
+        store.finish(claim, [], success=False, now=now_fn())
         return {"superseded": 1, "new_inbox_rows": added}
     except Exception as exc:
         diagnostic[f"chunk_failed_{type(exc).__name__}"] = 1
