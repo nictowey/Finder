@@ -4,11 +4,12 @@ export const inboxQuery = `SELECT i.watch_id,i.marketplace,i.marketplace_item_id
   FROM finder_inbox i JOIN listings l USING(marketplace,marketplace_item_id)
   JOIN finder_watches w ON w.id=i.watch_id
   LEFT JOIN finder_decisions v ON v.watch_id=i.watch_id AND v.marketplace=i.marketplace AND v.marketplace_item_id=i.marketplace_item_id
-  WHERE ($1='dismissed' AND i.dismissed OR $1='judged' AND (v.verdict IS NOT NULL OR v.purchased) AND NOT i.dismissed
+  WHERE ($1='dismissed' AND i.dismissed OR $1='judged' AND (v.verdict IS NOT NULL OR v.purchased)
     OR $1='unavailable' AND NOT i.dismissed AND i.data->>'availability'='unavailable_on_recheck'
     OR $1 NOT IN ('dismissed','unavailable') AND NOT i.dismissed AND i.data->>'availability' IS DISTINCT FROM 'unavailable_on_recheck'
       AND ($1='review' AND v.verdict IS NULL AND NOT COALESCE(v.purchased,false) AND i.data->>'status' IN ('possible_pressing','family_review') OR i.data->>'status'=$1))
   AND ($2::text IS NULL OR (i.first_seen_at,i.watch_id,i.marketplace_item_id)<($2,$3,$4))
+  AND ($1<>'judged' OR (($7='all' OR v.verdict=$7) AND ($8='all' OR v.purchased)))
   AND ($1='judged' OR $5='all' OR w.config->>'maximum_subtotal' IS NULL OR CASE WHEN
     w.config->>'maximum_subtotal' ~ '^[0-9]+([.][0-9]+)?$'
     AND l.data->>'current_price' ~ '^[0-9]+([.][0-9]+)?$'

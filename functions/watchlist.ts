@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { decisionInput, saveDecisionQuery } from "./decisions.js";
+import { decisionSummaryQuery } from "./decision-summary.js";
 import { inboxQuery } from "./inbox-query.js";
 import { readOperations } from "./operations.js";
 import webpush from "web-push";
@@ -169,7 +170,11 @@ export function createHandler(deps: Deps) {
         }
         const priceScope = url.searchParams.get("prices") || "watch";
         if (!["watch", "all"].includes(priceScope)) return reply({error:"Invalid price filter"},400);
-        const leads = (await deps.db.query(inboxQuery, [filter,...(cursor || [null,null,null]),priceScope,new Date(cutoff).toISOString()])).rows;
+        const judgment = url.searchParams.get("judgment") || "all";
+        const purchased = url.searchParams.get("purchased") || "all";
+        if (!["all","mine","other","unsure"].includes(judgment) || !["all","yes"].includes(purchased)) return reply({error:"Invalid judgment filter"},400);
+        if (filter!=="judged" && (judgment!=="all" || purchased!=="all")) return reply({error:"Judgment filters require the Judged view"},400);
+        const leads = (await deps.db.query(inboxQuery, [filter,...(cursor || [null,null,null]),priceScope,new Date(cutoff).toISOString(),judgment,purchased])).rows;
         const more = leads.length > 50;
         if (more) leads.pop();
         const tail = leads.at(-1);
@@ -197,9 +202,13 @@ export function createHandler(deps: Deps) {
           row.verdict_provenance=decision?.prediction?.source??null;
         }
         const accuracy = (await deps.db.query("SELECT tier,verdict,count(*)::int AS n FROM finder_decisions WHERE verdict IS NOT NULL GROUP BY tier,verdict")).rows;
+        const summary = (await deps.db.query(decisionSummaryQuery,[judgment,purchased])).rows[0] || {};
+        const counts = (keys:string[]) => Object.fromEntries(keys.map(key=>[key,Number(summary[key]||0)]));
+        const judged_counts = counts(["all","mine","other","unsure","purchased"]);
+        const decision_totals = counts(["judged","mine","other","unsure","purchased","purchase_only","dismissed_judged"]);
         const push = (await deps.db.query("SELECT data FROM finder_private_settings WHERE key='vapid'")).rows[0]?.data;
         const operations = await readOperations(deps.db, watches);
-        return reply({ watches, leads, next_cursor: nextCursor, operations, accuracy, max_watches: MAX_WATCHES, push_key: push?.publicKey ?? null, email: owner, now: new Date().toISOString() });
+        return reply({ watches, leads, next_cursor: nextCursor, operations, accuracy, judged_counts, decision_totals, filtered_total: filter==='judged'?Number(summary.filtered_total||0):null, max_watches: MAX_WATCHES, push_key: push?.publicKey ?? null, email: owner, now: new Date().toISOString() });
       }
       if (["/api/verdict","/api/purchase"].includes(path) && request.method === "POST") {
         const value=await body(request), args=decisionInput(value,path==="/api/purchase");

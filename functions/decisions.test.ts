@@ -11,7 +11,8 @@ CREATE TABLE finder_verdicts(watch_id text,marketplace text,marketplace_item_id 
 CREATE TABLE finder_decisions(watch_id text,marketplace text,marketplace_item_id text,verdict text,purchased boolean NOT NULL,tier text,decided_at text,updated_at text NOT NULL,prediction json,legacy json,PRIMARY KEY(watch_id,marketplace,marketplace_item_id),FOREIGN KEY(watch_id,marketplace,marketplace_item_id) REFERENCES finder_inbox ON DELETE CASCADE);
 CREATE TABLE finder_outbox(watch_id text,marketplace text,marketplace_item_id text,status text);
 INSERT INTO finder_watches VALUES('w');
-INSERT INTO finder_inbox VALUES('w','ebay','1','{"status":"family_review","policy":"test-v1","watch_revision":1,"clues":["private seller text"]}','2026-09-30T12:00:00Z');`;
+INSERT INTO finder_inbox VALUES('w','ebay','1','{"status":"family_review","policy":"test-v1","watch_revision":1,"clues":["private seller text"]}','2026-09-30T12:00:00Z');
+ALTER TABLE finder_inbox ADD COLUMN dismissed boolean DEFAULT false;`;
 const key={watch_id:'w',marketplace:'ebay',marketplace_item_id:'1'};
 async function setup(){const db=new PGlite();await db.exec(schema);for(const name of ['decision_bridge.sql','save_decision.sql'])await db.exec(readFileSync(new URL('../src/finder/'+name,import.meta.url),'utf8'));return db;}
 async function save(db:PGlite,value:object,purchase=false){return db.query(saveDecisionQuery,decisionInput({...key,...value},purchase)!);}

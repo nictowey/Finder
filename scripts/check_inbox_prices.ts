@@ -6,13 +6,13 @@ import { inboxQuery } from "../functions/inbox-query.js";
 
 const pool = new Pool({connectionString:process.env.FINDER_DATABASE_URL});
 const prefix = `WITH finder_watches AS (
-  SELECT * FROM jsonb_to_recordset($7::jsonb) AS x(id text,config jsonb,revision integer)
+  SELECT * FROM jsonb_to_recordset($9::jsonb) AS x(id text,config jsonb,revision integer)
 ), listings AS (
-  SELECT * FROM jsonb_to_recordset($8::jsonb) AS x(marketplace text,marketplace_item_id text,data jsonb)
+  SELECT * FROM jsonb_to_recordset($10::jsonb) AS x(marketplace text,marketplace_item_id text,data jsonb)
 ), finder_inbox AS (
-  SELECT * FROM jsonb_to_recordset($9::jsonb) AS x(watch_id text,marketplace text,marketplace_item_id text,data jsonb,first_seen_at text,last_seen_at text,dismissed boolean)
+  SELECT * FROM jsonb_to_recordset($11::jsonb) AS x(watch_id text,marketplace text,marketplace_item_id text,data jsonb,first_seen_at text,last_seen_at text,dismissed boolean)
 ), finder_decisions AS (
-  SELECT * FROM jsonb_to_recordset($10::jsonb) AS x(watch_id text,marketplace text,marketplace_item_id text,verdict text,purchased boolean)
+  SELECT * FROM jsonb_to_recordset($12::jsonb) AS x(watch_id text,marketplace text,marketplace_item_id text,verdict text,purchased boolean)
 ) `;
 const config = {maximum_subtotal:"20.00",currency:"USD",country:"US",postal_code:"00000"};
 const listing = {current_price:"15.00",shipping_cost:"5.00",currency:"USD",shipping_currency:"USD",price_kind:"fixed_price",details_observed_at:"2026-01-02T12:00:00.000Z",source_metadata:{delivery_country:"US",delivery_postal_code:"00000"}};
@@ -21,7 +21,7 @@ async function query(items:any[], watch:any=config, scope="watch", cursor:any[]=
   const listings=items.map(x=>({marketplace:"ebay",marketplace_item_id:x.id,data:{...listing,...x.listing}}));
   const inbox=items.map(x=>({watch_id:"synthetic",marketplace:"ebay",marketplace_item_id:x.id,data:{status:"possible_pressing",watch_revision:1,...x.review},first_seen_at:stamp,last_seen_at:stamp,dismissed:false}));
   const verdicts=judged.map(id=>({watch_id:"synthetic",marketplace:"ebay",marketplace_item_id:id,verdict:"other"}));
-  return (await pool.query(prefix+inboxQuery,[filter,...cursor,scope,"2026-01-02T06:00:00.000Z",JSON.stringify([{id:"synthetic",config:watch,revision:1}]),JSON.stringify(listings),JSON.stringify(inbox),JSON.stringify(verdicts)])).rows;
+  return (await pool.query(prefix+inboxQuery,[filter,...cursor,scope,"2026-01-02T06:00:00.000Z","all","all",JSON.stringify([{id:"synthetic",config:watch,revision:1}]),JSON.stringify(listings),JSON.stringify(inbox),JSON.stringify(verdicts)])).rows;
 }
 try {
   const cases = [

@@ -47,3 +47,20 @@ concurrent mixed outcomes, view navigation, safe seller content and photo contro
 Before production deployment, run the isolated PostgreSQL migration/lock/backup checks and
 inspect desktop and phone rendering and keyboard focus in an authenticated preview. The
 private static design preview does not migrate or modify Finder production.
+
+## Saved-judgment tracking follow-up
+
+The Judged view now filters saved identities (All, My pressing, Other version,
+Can’t tell) before server pagination. Bought only is an independent intersection.
+Stable category totals describe every saved listing, including dismissed records;
+the matching total describes the active filters. Dismissed saved listings remain
+restorable, without returning to the unjudged alert queue.
+
+Your verdicts starts with global owner-label totals and a separate purchase count.
+The prediction breakdown is explicitly historical and its percentage is the share
+marked My pressing, not overall classifier accuracy. Unknown legacy prediction
+values remain visible. Per-watch summaries include every tier and unresolved label.
+Entering Your verdicts refreshes the snapshot, with a timestamp and manual Refresh.
+A confirmed save updates local totals even when a subsequent GET fails; the refresh
+status remains explicit. Synthetic API/DOM tests cover pagination, combined filters,
+report navigation, edit/clear/purchase changes and failed/stale refreshes.

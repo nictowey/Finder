@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {JSDOM} from 'jsdom';
 import {html,javascript,stylesheet} from './watchlist-ui.js';
-import {dashboardFixture} from './watchlist-ui-fixture.js';
+import {dashboardFixture,fixtureDashboard} from './watchlist-ui-fixture.js';
 
 const tick=()=>new Promise<void>(resolve=>setImmediate(resolve));
 const response=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status});
@@ -12,7 +12,7 @@ async function app(initial=dashboardFixture(),fetcher?:(url:string,opts:any)=>Pr
  const requests:{url:string;body:any}[]=[];const saved=structuredClone(initial);
  const w=dom.window;w.matchMedia=(()=>({matches:false})) as any;w.HTMLElement.prototype.scrollIntoView=()=>{};w.setInterval=(()=>0) as any;
  w.fetch=(async(url:any,opts:any={})=>{const body=opts.body?JSON.parse(opts.body):null;requests.push({url:String(url),body});if(fetcher)return fetcher(String(url),opts);if(String(url).startsWith('/api/dashboard'))return response(saved);const row=saved.leads.find(r=>r.marketplace_item_id===body?.marketplace_item_id);if(row){if(String(url)==='/api/verdict'){row.verdict=body.verdict;row.verdict_tier ||= row.data.status;row.verdict_decided_at ||= new Date().toISOString();row.verdict_provenance ||= 'recorded_prediction';}if(String(url)==='/api/purchase')row.purchased=body.purchased;return response({ok:true,verdict:row.verdict,purchased:row.purchased,verdict_tier:row.verdict_tier,verdict_decided_at:row.verdict_decided_at,verdict_provenance:row.verdict_provenance});}return response({ok:true});}) as any;
- w.eval(javascript);await tick();await tick();
+ w.eval(javascript+';window.testSavedState=()=>JSON.parse(JSON.stringify(state));');await tick();await tick();
  return {dom,w,doc:w.document,requests,saved,close:()=>dom.window.close(),click:(selector:string)=>(w.document.querySelector(selector) as HTMLButtonElement).click()};
 }
 
@@ -136,4 +136,59 @@ test('paired editor fields align below optional hints and verdict copy preserves
  assert.ok(stylesheet.includes('gap:16px;margin-bottom:18px'));
  assert.ok(html.includes('the prediction recorded with each judgment'));
  assert.ok(!html.includes('when you first judged each listing'));
+});
+
+test('Judged categories query the whole dataset and combine independently with Bought',async()=>{
+ const data=dashboardFixture(),source=data.leads[0];data.leads=Array.from({length:121},(_,i)=>({...structuredClone(source),marketplace_item_id:String(i).padStart(3,'0'),verdict:i<70?'mine':i<110?'other':i<120?'unsure':null,purchased:i%2===0,dismissed:i===0}));
+ const a=await app(data,async(url)=>response(fixtureDashboard(data,url)));
+ try{a.click('[data-filter="judged"]');await tick();assert.equal(a.doc.querySelectorAll('.lead').length,50);assert.match(a.doc.querySelector('#leadcount')!.textContent!,/121 matching/);assert.equal(a.doc.querySelector('[data-judgment-count="mine"]')!.textContent,'(70)');
+ a.click('[data-judgment="mine"]');await tick();assert.equal(a.doc.querySelectorAll('.lead').length,50);assert.match(a.doc.querySelector('#leadcount')!.textContent!,/70 matching/);
+ a.click('#nextpage');await tick();assert.equal(a.doc.querySelectorAll('.lead').length,20);assert.match(a.doc.querySelector('#leads')!.textContent!,/Dismissed/);
+ a.click('[data-judgment="other"]');await tick();assert.equal(a.doc.querySelectorAll('.lead').length,40);assert.equal((a.doc.querySelector('#firstpage') as HTMLButtonElement).disabled,true);assert.ok(!a.requests.at(-1)!.url.includes('cursor='));
+ a.click('#purchased-filter');await tick();assert.equal(a.doc.querySelectorAll('.lead').length,20);assert.match(a.doc.querySelector('#leadcount')!.textContent!,/20 matching/);assert.equal(a.doc.querySelector('[data-judgment-count="other"]')!.textContent,'(40)');
+ a.click('[data-judgment="unsure"]');await tick();assert.equal(a.doc.querySelectorAll('.lead').length,5);assert.equal(a.doc.querySelectorAll('[data-verdict][aria-pressed="true"]').length,5);
+ a.click('[data-judgment="all"]');await tick();assert.match(a.doc.querySelector('#leadcount')!.textContent!,/61 matching/);
+ a.click('[data-filter="review"]');await tick();assert.match(a.requests.at(-1)!.url,/judgment=all&purchased=all/);
+ }finally{a.close();}
+});
+
+test('Your verdicts totals include every original tier and refresh when entered',async()=>{
+ const data=dashboardFixture();data.leads[0].verdict='mine';data.leads[0].verdict_tier=null;data.leads[1].verdict='unsure';data.leads[1].verdict_tier='unexpected-legacy';data.leads[2].purchased=true;
+ const a=await app(data,async(url)=>response(fixtureDashboard(data,url)));
+ try{assert.match(a.doc.querySelector('#decision-totals')!.textContent!,/2 saved pressing judgments/);assert.match(a.doc.querySelector('#accuracy')!.textContent!,/Unknown prediction/);assert.match(a.doc.querySelector('#watches')!.textContent!,/1 can’t tell/);
+ data.leads[2].verdict='other';data.leads[2].verdict_tier='conflicting';a.w.location.hash='#accuracy';await tick();await tick();assert.match(a.doc.querySelector('#decision-totals')!.textContent!,/3 saved pressing judgments/);assert.equal(a.doc.querySelector('[data-open-judgment="other"] strong')!.textContent,'1');assert.equal(a.doc.querySelector('[data-open-judgment="bought"] strong')!.textContent,'1');
+ a.click('[data-open-judgment="unsure"]');await tick();await tick();assert.equal(a.w.location.hash,'#review');assert.equal(a.doc.querySelectorAll('.lead').length,1);assert.equal(a.doc.querySelector('[data-judgment="unsure"]')!.getAttribute('aria-pressed'),'true');
+ }finally{a.close();}
+});
+
+test('confirmed save updates totals immediately even if the following reload fails',async()=>{
+ const data=dashboardFixture();let reads=0;
+ const a=await app(data,async(url,opts)=>{if(url.startsWith('/api/dashboard'))return ++reads===1?response(fixtureDashboard(data,url)):response({error:'Temporary outage'},500);const body=JSON.parse(opts.body),r=data.leads.find(x=>x.marketplace_item_id===body.marketplace_item_id)!;r.verdict=body.verdict;r.verdict_tier=r.data.status;return response({ok:true,...r});});
+ try{a.click('[data-verdict="0|other"]');await tick();await tick();assert.equal(a.doc.querySelector('[data-open-judgment="other"] strong')!.textContent,'1');assert.match(a.doc.querySelector('#decision-totals')!.textContent!,/1 saved pressing judgments/);assert.match(a.doc.querySelector('#verdict-updated')!.textContent!,/refresh pending/);assert.equal((a.doc.querySelector('#refresh-verdicts') as HTMLButtonElement).disabled,false);
+ }finally{a.close();}
+});
+
+test('save, edit, clear and purchase update category totals after server reload',async()=>{
+ const data=dashboardFixture();const fetcher=async(url:string,opts:any)=>{if(url.startsWith('/api/dashboard'))return response(fixtureDashboard(data,url));const body=JSON.parse(opts.body),r=data.leads.find(x=>x.marketplace_item_id===body.marketplace_item_id)!;if(url==='/api/verdict'){r.verdict=body.verdict;r.verdict_tier ||= r.data.status;}else r.purchased=body.purchased;return response({ok:true,...r});};
+ const a=await app(data,fetcher);try{
+ a.click('[data-verdict="0|mine"]');await tick();await tick();a.click('[data-filter="judged"]');await tick();assert.equal(a.doc.querySelector('[data-judgment-count="mine"]')!.textContent,'(1)');
+ a.click('[data-verdict="0|other"]');await tick();await tick();assert.equal(a.doc.querySelector('[data-judgment-count="mine"]')!.textContent,'(0)');assert.equal(a.doc.querySelector('[data-judgment-count="other"]')!.textContent,'(1)');
+ a.click('[data-purchase="0"]');await tick();await tick();a.click('[data-clear="0"]');await tick();await tick();assert.equal(a.doc.querySelector('[data-judgment-count="all"]')!.textContent,'(1)');assert.equal(a.doc.querySelector('[data-judgment-count="other"]')!.textContent,'(0)');assert.equal(a.doc.querySelector('#purchased-count')!.textContent,'(1)');assert.match(a.doc.querySelector('#decision-totals')!.textContent!,/0 saved pressing judgments/);
+ const b=await app(data,fetcher);try{b.click('[data-filter="judged"]');await tick();assert.equal(b.doc.querySelectorAll('.lead').length,1);assert.equal(b.doc.querySelectorAll('[data-verdict][aria-pressed="true"]').length,0);}finally{b.close();}
+ }finally{a.close();}
+});
+
+test('category switches ignore obsolete responses and empty filtered states are actionable',async()=>{
+ const data=dashboardFixture();data.leads[0].verdict='mine';const slow=deferred<Response>();
+ const a=await app(data,async(url)=>url.includes('judgment=other')?slow.promise:response(fixtureDashboard(data,url)));
+ try{a.click('[data-filter="judged"]');await tick();a.click('[data-judgment="other"]');a.click('[data-judgment="unsure"]');await tick();slow.resolve(response(fixtureDashboard(data,'/api/dashboard?filter=judged&judgment=other')));await tick();assert.equal(a.doc.querySelector('[data-judgment="unsure"]')!.getAttribute('aria-pressed'),'true');assert.match(a.doc.querySelector('#leads')!.textContent!,/No saved listings match/);assert.match(a.doc.querySelector('#leads')!.textContent!,/turn off Bought only/);
+ }finally{a.close();}
+});
+
+test('purchase-only save and identity clear keep all saved counters separate after failed refresh',async()=>{
+ const data=dashboardFixture();let failReads=false;
+ const a=await app(data,async(url,opts)=>{if(url.startsWith('/api/dashboard'))return failReads?response({error:'Refresh failed'},500):response(fixtureDashboard(data,url));const body=JSON.parse(opts.body),r=data.leads.find(x=>x.marketplace_item_id===body.marketplace_item_id)!;if(url==='/api/purchase')r.purchased=body.purchased;else{r.verdict=body.verdict;r.verdict_tier ||= r.data.status;}return response({ok:true,...r});});
+ try{failReads=true;a.click('[data-purchase="0"]');await tick();await tick();let counters=(a.w as any).testSavedState().decision_totals;assert.equal(counters.judged,0);assert.equal(counters.purchase_only,1);assert.equal((a.w as any).testSavedState().judged_counts.all,1);
+ failReads=false;a.click('[data-filter="judged"]');await tick();a.click('[data-verdict="0|mine"]');await tick();await tick();failReads=true;a.click('[data-clear="0"]');await tick();await tick();counters=(a.w as any).testSavedState().decision_totals;assert.equal(counters.judged,0);assert.equal(counters.mine,0);assert.equal(counters.purchase_only,1);assert.equal((a.w as any).testSavedState().judged_counts.all,1);assert.equal(counters.dismissed_judged,0);
+ }finally{a.close();}
 });
