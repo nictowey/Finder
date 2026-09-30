@@ -27,6 +27,29 @@ test("verified owner can retrieve dashboard",async()=>{
   assert.equal(response.status,200);
   assert.deepEqual((await response.json()).leads,[]);
 });
+
+test("dashboard reports judged outcomes across the whole history with separate freshness",async()=>{
+  const db={query:async(q:string,values:unknown[]=[])=>{
+    if(q.includes("owner_email"))return {rows:[{data:{email:"owner@example.com"}}]};
+    if(q.includes("FROM finder_verdicts v")){
+      assert.ok(!q.includes("LIMIT"));
+      assert.equal(values.length,1);
+      assert.ok(Number.isFinite(Date.parse(String(values[0]))));
+      return {rows:[{judged_tier:"family_review",current_tier:"unrelated",verdict:"mine",evidence:"stale",n:4}]};
+    }
+    return {rows:[]};
+  }};
+  const owner=async()=>new Response(JSON.stringify({user:{email:"owner@example.com",emailVerified:true},session:{expiresAt:new Date(Date.now()+60000).toISOString()}}));
+  const handler=createHandler({db,origin,authURL:"https://auth.example",fetch:owner});
+  const response=await handler(new Request(origin+"/api/dashboard?filter=judged"));
+  const data=await response.json();
+  assert.equal(data.judgment_review.total.total,4);
+  assert.equal(data.judgment_review.confirmed.stale,4);
+  assert.equal(data.judgment_review.confirmed.fresh_outside_review,0);
+  assert.ok(!JSON.stringify(data.judgment_review).includes("marketplace_item_id"));
+  assert.ok(javascript.includes("verdictReviewHtml(state.judgment_review)"));
+  assert.ok(javascript.includes("tier recorded when you judged"));
+});
 test("default inbox includes unclear candidates and reports review tiers per watch",async()=>{
  let filter:unknown;
  const db={query:async(q:string,v:unknown[]=[])=>{
@@ -66,6 +89,27 @@ test("frontend scripts parse and do not use HTML insertion for notices",()=>{
   assert.ok(html.includes("Scheduled scans can be delayed"));
   assert.ok(!html.includes("Checks about every 30 minutes"));
   assert.ok(javascript.includes("newestCount===1?'query':'queries'"));
+});
+
+test("generic review notifications do not promise an unverified price ceiling",async()=>{
+  const handlers:Record<string,(event:any)=>void>={};
+  const notifications:{title:string;options:any}[]=[];
+  const self={
+    addEventListener:(name:string,handler:(event:any)=>void)=>{handlers[name]=handler;},
+    registration:{showNotification:async(title:string,options:any)=>{notifications.push({title,options});}},
+  };
+  new Function("self",serviceWorker)(self);
+  let done:Promise<unknown>|undefined;
+  handlers.push({data:{json:()=>({kind:"review-inbox"})},waitUntil:(value:Promise<unknown>)=>{done=value;}});
+  await done;
+  assert.equal(notifications[0].title,"Finder · New listing to check");
+  assert.equal(notifications[0].options.body,"A listing may be the pressing you want. Check its price, photos and signs in Finder.");
+  assert.equal(notifications[0].options.tag,"finder-review-inbox");
+  assert.deepEqual(notifications[0].options.data,{url:"/"});
+  handlers.push({data:{json:()=>({kind:"test"})},waitUntil:(value:Promise<unknown>)=>{done=value;}});
+  await done;
+  assert.equal(notifications[1].options.body,"Test received. Notifications can display on this device.");
+  assert.equal(notifications[1].options.tag,"finder-test");
 });
 test("OTP cookie proxy keeps credentials out of response JSON",async()=>{
   const db={query:async()=>({rows:[{data:{email:"owner@example.com"}}]})};

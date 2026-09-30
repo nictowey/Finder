@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { inboxQuery } from "./inbox-query.js";
 import { readOperations } from "./operations.js";
+import { summarizeVerdictReview, verdictReviewQuery } from "./verdict-review.js";
 import webpush from "web-push";
 import { html, javascript, serviceWorker, stylesheet } from "./watchlist-ui.js";
 
@@ -192,9 +193,10 @@ export function createHandler(deps: Deps) {
         const decided = ids.length ? (await deps.db.query("SELECT watch_id,marketplace,marketplace_item_id,verdict FROM finder_verdicts WHERE marketplace_item_id = ANY($1)", [ids])).rows : [];
         for (const row of leads) row.verdict = decided.find(v => v.watch_id === row.watch_id && v.marketplace === row.marketplace && v.marketplace_item_id === row.marketplace_item_id)?.verdict ?? null;
         const accuracy = (await deps.db.query("SELECT tier,verdict,count(*)::int AS n FROM finder_verdicts GROUP BY tier,verdict")).rows;
+        const judgment_review = summarizeVerdictReview((await deps.db.query(verdictReviewQuery,[new Date(cutoff).toISOString()])).rows);
         const push = (await deps.db.query("SELECT data FROM finder_private_settings WHERE key='vapid'")).rows[0]?.data;
         const operations = await readOperations(deps.db, watches);
-        return reply({ watches, leads, next_cursor: nextCursor, operations, accuracy, max_watches: MAX_WATCHES, push_key: push?.publicKey ?? null, email: owner, now: new Date().toISOString() });
+        return reply({ watches, leads, next_cursor: nextCursor, operations, accuracy, judgment_review, max_watches: MAX_WATCHES, push_key: push?.publicKey ?? null, email: owner, now: new Date().toISOString() });
       }
       if (path === "/api/verdict" && request.method === "POST") {
         const value = await body(request);
