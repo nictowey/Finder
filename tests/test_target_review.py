@@ -154,6 +154,48 @@ def test_rare_as_seller_adjective_is_not_the_nas_album(
     assert review_target_listing(explicit, target).status == "family_review"
 
 
+@pytest.mark.parametrize("structured_title", ["Do n't Drift", "Do n’t Drift", "Don't Drift"])
+def test_spaced_contraction_in_release_title_preserves_a_partial_color_lead(
+    search_payload, discogs_release, observed_at, structured_title
+):
+    target = normalize_release(
+        {
+            **discogs_release,
+            "title": "Don't Drift",
+            "formats": [{"name": "Vinyl", "text": "Pink/Green", "descriptions": ["LP"]}],
+        },
+        observed_at,
+    )
+    row = _listing(
+        search_payload,
+        observed_at,
+        "Example Artist Dont Drift pink and green vinyl",
+        (("Release Title", structured_title), ("Color", "Green")),
+    )
+    review = review_target_listing(row, target)
+    assert review.status == "family_review"
+    assert "color_pair_incomplete" in review.verify
+    assert "release_title_conflict" not in review.verify
+
+
+@pytest.mark.parametrize(
+    "structured_title", ["Do Not Drift", "Don't Drift II", "Do n't Drift Remixed", "Do nt Drift"]
+)
+def test_contraction_spacing_does_not_relax_other_structured_title_conflicts(
+    search_payload, discogs_release, observed_at, structured_title
+):
+    target = normalize_release({**discogs_release, "title": "Don't Drift"}, observed_at)
+    row = _listing(
+        search_payload,
+        observed_at,
+        "Example Artist Dont Drift vinyl",
+        (("Release Title", structured_title),),
+    )
+    review = review_target_listing(row, target)
+    assert review.status == "conflicting"
+    assert "release_title_conflict" in review.verify
+
+
 def test_inverted_structured_artist_keeps_target_review_and_scoring(
     search_payload, discogs_release, observed_at
 ):

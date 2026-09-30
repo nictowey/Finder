@@ -29,7 +29,15 @@ _COLOR_ALIASES = {"grey": "gray", "transparent": "clear"}
 def _plain_text(value: str) -> str:
     # Sellers omit apostrophes and commonly spell A$AP as ASAP. Preserve word
     # boundaries while normalizing these two frequent catalog/title differences.
-    value = value.replace("$", "s").replace("’", "'").replace("'", "")
+    value = value.replace("$", "s").replace("’", "'")
+    # Catalog/seller text can split an explicit negative contraction: "Do n't".
+    # Join only recognizable auxiliaries with n't, not unrelated title words.
+    value = re.sub(
+        r"\b(do|does|did|is|are|was|were|have|has|had|could|would|should|must|ca|wo|sha)\s+n't\b",
+        r"\1n't",
+        value,
+        flags=re.IGNORECASE,
+    ).replace("'", "")
     return unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode().lower()
 
 

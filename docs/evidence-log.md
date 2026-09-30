@@ -32,6 +32,14 @@ an estimate of current model precision. The report reads existing rows only and 
 no additional listing content or identities. Its exact PostgreSQL query is exercised
 against synthetic in-memory tables, including timestamp-offset and six-hour-boundary cases.
 
+A bounded refresh of previously owner-confirmed records exposed a clear structured-title
+normalization defect: spacing inside an explicit negative contraction created a false album
+conflict. Analogous synthetic titles now normalize that spacing, while other albums, expanded
+words, missing apostrophes and remix/sequel suffixes remain negative controls. A single-disc
+color claim against a two-color target still stays Unclear. The weak-title separator rule is
+unchanged: the remaining examples involve an ambiguity/recall tradeoff rather than a proven
+normalization error. Owner judgments were not changed, and this is retrospective evidence.
+
 ## September 24, 2026 — conservative review after owner verdicts
 
 Deployment [#75](https://github.com/nictowey/Finder/actions/runs/36006972142) passed
