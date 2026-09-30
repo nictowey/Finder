@@ -16,6 +16,13 @@ classifications and notification eligibility are replaced when the change is dep
 This is an offline policy correction, not a measurement of real listing accuracy or recall.
 It has not been deployed by this work; owner-verdict validation remains necessary.
 
+The existing no-ceiling alert contract is unchanged: it can surface a possible pressing
+without a known delivered subtotal. A notification-copy regression showed that the generic
+message nevertheless promised "at or under your price". The message now asks the owner to
+check the price, photos and signs, preserving its routing, generic payload and test message.
+The short agent guide now distinguishes universal alert blocks from ceiling-only quote
+requirements, consistent with the personal plan's price gate.
+
 ## September 24, 2026 — conservative review after owner verdicts
 
 Deployment [#75](https://github.com/nictowey/Finder/actions/runs/36006972142) passed
