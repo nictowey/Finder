@@ -86,6 +86,9 @@ Discogs behavior in the eBay adapter or marketplace behavior in catalog provider
   confirms from photos. Never label a listing an exact pressing, a bargain or a fair value.
 - Signs are read from seller text only; explicitly negated mentions ("not a reissue") and
   sleeve colors in titles do not count as common-version signs.
+- Explicitly denied target or required colors conflict; they cannot create likely or
+  unclear-price alerts. Keep positive clauses separate from negated alternatives, and
+  exclude artist, album, sleeve, cover and label color words from disc-color evidence.
 - Every required sign present with a successful catalog comparison and no unresolved
   competing pressing → likely yours; any common-version sign → likely another version;
   otherwise unclear. A generic album word such
@@ -94,8 +97,11 @@ Discogs behavior in the eBay adapter or marketplace behavior in catalog provider
 - Unclear listings alert only when the owner set `gamble_max` and the delivered price is at or
   under it. Uncertainty about other pressings is shown, not used to hold an alert, except in
   `strict` mode.
-- Stale details, ended listings, unaccepted conditions, unconfirmed destination quotes and
-  unknown prices still block alerts.
+- Stale details, ended listings and unaccepted conditions block alerts. When an owner price
+  applies, the delivered subtotal must be known, same-currency and destination-confirmed.
+  No-ceiling review leads can alert with unknown totals or an unset destination; a saved
+  destination must still match. Label missing information, and never claim an unverified
+  price threshold in a generic notification.
 
 ## Provider and data constraints
 
