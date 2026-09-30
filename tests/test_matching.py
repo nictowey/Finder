@@ -2,7 +2,55 @@ import pytest
 
 from finder.adapters.discogs.normalize import normalize_release
 from finder.adapters.ebay.normalize import normalize_listing
-from finder.matching import decide_match, score_variant
+from finder.matching import _palette, _seller_color_claims, decide_match, score_variant
+
+
+@pytest.mark.parametrize(
+    ("values", "positive", "denied"),
+    [
+        (["Neither pink nor green"], set(), {"pink", "green"}),
+        (["Not pink or translucent green"], set(), {"pink", "green"}),
+        (["Not only pink but green"], {"pink", "green"}, set()),
+        (["Not black, pink vinyl"], {"pink"}, {"black"}),
+        (["Not pink", "Green"], {"green"}, {"pink"}),
+        (["Not a reissue, pink/green vinyl"], {"pink", "green"}, set()),
+        (["No grey or transparent vinyl"], set(), {"gray", "clear"}),
+        (["Not pink, green or blue"], set(), {"pink", "green", "blue"}),
+        (["Neither pink, green, nor blue"], set(), {"pink", "green", "blue"}),
+    ],
+)
+def test_seller_color_denials_have_bounded_scope(values, positive, denied):
+    claims, denials = _seller_color_claims(values)
+    assert _palette(claims) == positive
+    assert denials == denied
+    # Catalog palettes still describe raw colors; seller-language rules are separate.
+    assert _palette(values) == positive | denied
+
+
+def test_album_and_artist_names_are_removed_before_color_denials():
+    claims, denied = _seller_color_claims(
+        ["Black Sabbath - Not Black But White, Pink Vinyl"],
+        ignore=("Black Sabbath", "Not Black But White"),
+    )
+    assert _palette(claims) == {"pink"}
+    assert denied == set()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Pink vinyl, not pink sleeve",
+        "Pink vinyl with black cover",
+        "Pink vinyl, label is black",
+        "Pink vinyl with not black and white artwork",
+        "Without black sleeve pink vinyl",
+        "Not black sleeve pink vinyl",
+    ],
+)
+def test_non_disc_colors_are_not_positive_or_negative_disc_claims(value):
+    claims, denied = _seller_color_claims([value])
+    assert _palette(claims) == {"pink"}
+    assert denied == set()
 
 
 def test_strong_identifiers_create_strong_candidate(search_payload, discogs_release, observed_at):
@@ -63,6 +111,14 @@ def test_title_only_never_claims_strong_match(search_payload, discogs_release, o
         ("Pink", ["Pink", "Green"], None),
         ("Pink & Blue", ["Pink", "Green"], False),
         ("Pink & Green", ["Pink"], False),
+        ("Not pink or green", ["Pink", "Green"], False),
+        ("Pink and green, not black", ["Pink", "Green"], True),
+        ("Black vinyl, not pink or green", ["Pink", "Green"], False),
+        ("Not pink but green", ["Pink", "Green"], False),
+        ("Not pink", ["Pink"], False),
+        ("Without black sleeve pink vinyl", ["Pink"], True),
+        ("Pink vinyl", ["Pink"], True),
+        ("Transparent", ["Clear"], True),
     ],
 )
 def test_pair_color_compares_whole_palette_without_claiming_exact_pressing(

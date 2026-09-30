@@ -67,6 +67,27 @@ test("frontend scripts parse and do not use HTML insertion for notices",()=>{
   assert.ok(!html.includes("Checks about every 30 minutes"));
   assert.ok(javascript.includes("newestCount===1?'query':'queries'"));
 });
+
+test("generic review notifications do not promise an unverified price ceiling",async()=>{
+  const handlers:Record<string,(event:any)=>void>={};
+  const notifications:{title:string;options:any}[]=[];
+  const self={
+    addEventListener:(name:string,handler:(event:any)=>void)=>{handlers[name]=handler;},
+    registration:{showNotification:async(title:string,options:any)=>{notifications.push({title,options});}},
+  };
+  new Function("self",serviceWorker)(self);
+  let done:Promise<unknown>|undefined;
+  handlers.push({data:{json:()=>({kind:"review-inbox"})},waitUntil:(value:Promise<unknown>)=>{done=value;}});
+  await done;
+  assert.equal(notifications[0].title,"Finder · New listing to check");
+  assert.equal(notifications[0].options.body,"A listing may be the pressing you want. Check its price, photos and signs in Finder.");
+  assert.equal(notifications[0].options.tag,"finder-review-inbox");
+  assert.deepEqual(notifications[0].options.data,{url:"/"});
+  handlers.push({data:{json:()=>({kind:"test"})},waitUntil:(value:Promise<unknown>)=>{done=value;}});
+  await done;
+  assert.equal(notifications[1].options.body,"Test received. Notifications can display on this device.");
+  assert.equal(notifications[1].options.tag,"finder-test");
+});
 test("OTP cookie proxy keeps credentials out of response JSON",async()=>{
   const db={query:async()=>({rows:[{data:{email:"owner@example.com"}}]})};
   const handler=createHandler({db,origin,authURL:"https://auth.example/auth",fetch:(async()=>new Response('{"token":"synthetic-credential"}',{headers:{"Set-Cookie":"session=synthetic; HttpOnly; Secure; Domain=auth.example; SameSite=None"}})) as typeof fetch});
