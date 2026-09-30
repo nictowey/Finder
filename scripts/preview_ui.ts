@@ -14,9 +14,13 @@ const images:Record<string,string>={};
 for(const [i,row] of data.leads.entries())for(const [j,url] of row.listing.images.entries())images[url]=artwork(i===0?['#e5e8dc','#9aaf86','#5a7051','#173b31']:['#e7ddd1','#a7654c','#dda365','#fff3dc'],i===0?'After Hours':'Still Life',i===0?'MILO WEST':'THE PINES',j===1);
 const adapter=String.raw`
 const previewData=PREVIEW_DATA,previewImages=PREVIEW_IMAGES;
+const previewScenario=new URLSearchParams(location.search).get('scenario');
+if(previewScenario==='empty')previewData.leads=[];
+if(previewScenario==='long'){const r=previewData.leads[0];r.listing.title='Milo West — After Hours: Limited Collector Edition, Moss Green Double Vinyl with Alternate Cover, Numbered Sleeve and Bonus Insert';r.data.subtotal='9999999.99';previewData.watches[0].config.maximum_subtotal='9999999.99';r.data.signs.push('SYNTHETICCATALOG'.repeat(5));r.listing.images=Array.from({length:12},(_,i)=>r.listing.images[i%2]);}
+if(previewScenario==='saved'){const r=previewData.leads[0];r.verdict='mine';r.purchased=true;r.verdict_tier='family_review';r.verdict_decided_at=r.last_seen_at;r.verdict_provenance='recorded_prediction';}
 window.fetch=async(path,options={})=>{const body=options.body?JSON.parse(options.body):null;await new Promise(r=>setTimeout(r,350));
  if(path.startsWith('/api/dashboard'))return {ok:true,json:async()=>structuredClone(previewData)};
- if(path==='/api/verdict'||path==='/api/purchase'){const r=previewData.leads.find(x=>x.marketplace_item_id===body.marketplace_item_id);if(path==='/api/verdict'){r.verdict=body.verdict;r.verdict_tier ||= r.data.status;r.verdict_decided_at ||= new Date().toISOString();r.verdict_provenance ||= 'recorded_prediction';}else r.purchased=body.purchased;return {ok:true,json:async()=>({ok:true,verdict:r.verdict,purchased:r.purchased,verdict_tier:r.verdict_tier,verdict_decided_at:r.verdict_decided_at,verdict_provenance:r.verdict_provenance})};}
+ if(path==='/api/verdict'||path==='/api/purchase'){if(previewScenario==='error')return {ok:false,status:503,json:async()=>({error:'Synthetic save failure'})};if(previewScenario==='pending')await new Promise(r=>setTimeout(r,60000));const r=previewData.leads.find(x=>x.marketplace_item_id===body.marketplace_item_id);if(path==='/api/verdict'){r.verdict=body.verdict;r.verdict_tier ||= r.data.status;r.verdict_decided_at ||= new Date().toISOString();r.verdict_provenance ||= 'recorded_prediction';}else r.purchased=body.purchased;return {ok:true,json:async()=>({ok:true,verdict:r.verdict,purchased:r.purchased,verdict_tier:r.verdict_tier,verdict_decided_at:r.verdict_decided_at,verdict_provenance:r.verdict_provenance})};}
  if(path==='/api/dismiss'){const r=previewData.leads.find(x=>x.marketplace_item_id===body.marketplace_item_id);r.dismissed=body.dismissed;return {ok:true,json:async()=>({ok:true})};}
  return {ok:false,status:400,json:async()=>({error:'This is an offline design preview. This action is available in the real app.'})};
 };
@@ -29,7 +33,7 @@ const safe=(s:string)=>s.replace(/<\/script/gi,'<\\/script');
 const banner='<div class="preview-banner">DESIGN PREVIEW · SYNTHETIC LISTINGS &amp; ARTWORK · CHANGES ARE NOT SAVED</div>';
 let out=html.replace('<link rel="stylesheet" href="/app.css">','<style>'+stylesheet+'.preview-banner{background:#244f40;color:#fff;padding:10px 18px;text-align:center;font:600 9px/1.6 ui-sans-serif,sans-serif;letter-spacing:1.2px}</style>')
  .replace('<script src="/app.js" defer></script>','').replace('<link rel="manifest" href="/manifest.webmanifest">','')
- .replace('<body>','<body>'+banner).replace('</body>','<script>'+safe(adapter)+'\n'+safe(previewScript)+'</script></body>');
+ .replace('<body>','<body>'+banner).replace('class="brand" href="/"','class="brand" href="#review"').replace('</body>','<script>'+safe(adapter)+'\n'+safe(previewScript)+'</script></body>');
 // Synthetic external listing links must never lead to a real merchant item.
 out=out.replace('</body>','<script>document.addEventListener("click",e=>{const a=e.target.closest("a[target=\\"_blank\\"]");if(a){e.preventDefault();notice("Preview only. The live app opens the source listing or catalog here.");}});</script></body>');
 const target=process.argv[2]||'dist/finder-design-preview.html';mkdirSync(dirname(target),{recursive:true});writeFileSync(target,out);console.log(target);

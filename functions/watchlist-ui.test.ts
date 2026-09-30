@@ -129,3 +129,11 @@ test('narrow-card CSS constrains wrapped menus, long evidence and large prices',
  assert.ok(stylesheet.includes('grid-template-columns:20px minmax(0,1fr)'));
  assert.ok(stylesheet.includes('.evidence-row>div{min-width:0;overflow-wrap:anywhere}'));
 });
+
+test('paired editor fields align below optional hints and verdict copy preserves legacy uncertainty',()=>{
+ assert.ok(stylesheet.includes('.fields>label>input,.fields>label>select,.fields>label>textarea{margin-top:auto}'));
+ assert.ok(stylesheet.includes('repeat(auto-fit,minmax(240px,1fr))'));
+ assert.ok(stylesheet.includes('gap:16px;margin-bottom:18px'));
+ assert.ok(html.includes('the prediction recorded with each judgment'));
+ assert.ok(!html.includes('when you first judged each listing'));
+});
