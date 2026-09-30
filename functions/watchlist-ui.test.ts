@@ -121,3 +121,11 @@ test('a successful row remains saved when another simultaneous row fails',async(
  assert.equal(a.doc.querySelectorAll('.lead').length,2);a.click('[data-filter="judged"]');await tick();assert.equal(a.doc.querySelector('[data-verdict="0|mine"]')?.getAttribute('aria-pressed'),'true');assert.equal((a.doc.querySelector('#refresh') as HTMLButtonElement).disabled,false);
  }finally{a.close();}
 });
+
+test('narrow-card CSS constrains wrapped menus, long evidence and large prices',()=>{
+ assert.ok(stylesheet.includes('.filters{position:relative;'));
+ assert.ok(stylesheet.includes('.more-filters{position:static}.more-filters>div{top:calc(100% + 6px);left:0;right:0;min-width:0}'));
+ assert.ok(stylesheet.includes('.price-row{display:flex;flex-wrap:wrap;'));
+ assert.ok(stylesheet.includes('grid-template-columns:20px minmax(0,1fr)'));
+ assert.ok(stylesheet.includes('.evidence-row>div{min-width:0;overflow-wrap:anywhere}'));
+});
