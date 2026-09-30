@@ -93,7 +93,10 @@ Discogs behavior in the eBay adapter or marketplace behavior in catalog provider
   competing pressing → likely yours; any common-version sign → likely another version;
   otherwise unclear. A generic album word such
   as “Rare” needs an explicit title claim; a conflicting structured release title rejects it.
-- An owner verdict removes that item from the unjudged queue and blocks repeat alerts for it.
+- An owner identity verdict or purchase marker removes that item from the unjudged queue
+  and blocks repeat alerts. Purchasing never implies a positive identity judgment. Accuracy
+  uses explicit identity labels only; unsure remains separate from the decided denominator.
+  Preserve the first available judgment provenance when labels are edited or cleared.
 - Unclear listings alert only when the owner set `gamble_max` and the delivered price is at or
   under it. Uncertainty about other pressings is shown, not used to hold an alert, except in
   `strict` mode.

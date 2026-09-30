@@ -184,6 +184,27 @@ verdicts = Table(
         ondelete="CASCADE",
     ),
 )
+decisions = Table(
+    "finder_decisions",
+    schema,
+    Column("watch_id", String(36), primary_key=True),
+    Column("marketplace", String(64), primary_key=True),
+    Column("marketplace_item_id", String(255), primary_key=True),
+    Column("verdict", String(16)),
+    Column("purchased", Boolean, nullable=False, default=False),
+    Column("tier", String(32)),
+    Column("decided_at", String(40)),
+    Column("updated_at", String(40), nullable=False),
+    Column("prediction", JSON),
+    Column("legacy", JSON),
+    ForeignKeyConstraint(
+        ["watch_id", "marketplace", "marketplace_item_id"],
+        ["finder_inbox.watch_id", "finder_inbox.marketplace", "finder_inbox.marketplace_item_id"],
+        ondelete="CASCADE",
+    ),
+)
+
+
 NEW_TABLES = [
     migrations,
     watches,
@@ -194,6 +215,7 @@ NEW_TABLES = [
     scan_attempts,
     dispatch_attempts,
     profiles,
+    decisions,
     verdicts,
 ]
 
@@ -240,6 +262,35 @@ def migrate(engine):
         _widen_watch_slots(conn)
         if not conn.execute(select(migrations).where(migrations.c.version == 4)).first():
             conn.execute(insert(migrations).values(version=4))
+        if conn.dialect.name == "postgresql":
+            from importlib.resources import files
+
+            # The trigger and backfill commit together, covering old API writers during rollout.
+            for source in ("decision_bridge.sql", "save_decision.sql"):
+                conn.exec_driver_sql(
+                    files("finder").joinpath(source).read_text(),
+                    execution_options={"no_parameters": True},
+                )
+        if not conn.execute(select(migrations).where(migrations.c.version == 5)).first():
+            for row in conn.execute(select(verdicts)).mappings():
+                identity = row["verdict"] if row["verdict"] in ("mine", "other", "unsure") else None
+                conn.execute(
+                    insert(decisions).values(
+                        watch_id=row["watch_id"],
+                        marketplace=row["marketplace"],
+                        marketplace_item_id=row["marketplace_item_id"],
+                        verdict=identity,
+                        purchased=row["verdict"] == "bought",
+                        tier=row["tier"] if identity else None,
+                        decided_at=row["decided_at"] if identity else None,
+                        updated_at=row["decided_at"],
+                        prediction={"status": row["tier"], "source": "legacy_tier_only"}
+                        if identity
+                        else None,
+                        legacy=dict(row),
+                    )
+                )
+            conn.execute(insert(migrations).values(version=5))
         if not conn.execute(select(settings).where(settings.c.key == "operations_since")).first():
             conn.execute(
                 insert(settings).values(
@@ -251,6 +302,11 @@ def migrate(engine):
 def rollback_pilot_schema(engine):
     """Explicit operator-only rollback; destroys pilot state, preserves ingestion."""
     with engine.begin() as conn:
+        if conn.dialect.name == "postgresql":
+            conn.exec_driver_sql(
+                "DROP FUNCTION IF EXISTS finder_save_decision"
+                "(text,text,text,text,text,boolean,text,text,text)"
+            )
         schema.drop_all(conn, tables=list(reversed(NEW_TABLES)))
 
 

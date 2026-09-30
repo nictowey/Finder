@@ -17,6 +17,7 @@ from finder.watch_store import (
     NEW_TABLES,
     SavedWatch,
     WatchStore,
+    decisions,
     dispatch_attempts,
     inbox,
     migrate,
@@ -76,11 +77,26 @@ def main():
                     watch_id=claim["id"],
                     marketplace=listing.marketplace,
                     marketplace_item_id=listing.marketplace_item_id,
-                    verdict="mine",
+                    verdict="bought",
                     tier="possible_pressing",
                     decided_at=now.isoformat(),
                 )
             )
+        # Rehearse the additive upgrade from historical purchase-only feedback.
+        with repo.engine.begin() as conn:
+            conn.exec_driver_sql(
+                "DROP FUNCTION IF EXISTS finder_save_decision"
+                "(text,text,text,text,text,boolean,text,text,text)"
+            )
+            decisions.drop(conn)
+            conn.execute(delete(migrations).where(migrations.c.version == 5))
+        migrate(repo.engine)
+        migrate(repo.engine)
+        with repo.engine.connect() as conn:
+            decision = conn.execute(select(decisions)).mappings().one()
+            assert decision["purchased"] and decision["verdict"] is None
+            assert decision["tier"] is None and decision["decided_at"] is None
+            assert decision["legacy"]["verdict"] == "bought"
         with repo.engine.connect() as conn:
             phase = "assert_dedup"
             assert len(conn.execute(select(inbox)).all()) == 1
@@ -190,12 +206,24 @@ def main():
             assert sum(executor.map(lambda _: debit(), range(3))) == 2
         with repo.engine.connect() as conn:
             assert conn.execute(select(budget.c.data)).scalar()["rates"][0]["remaining"] == 200
+        phase = "feedback_identity_purchase_and_locking"
+        subprocess.run(
+            ["node", "--import", "tsx", "scripts/check_feedback.ts"],
+            check=True,
+            env={
+                **os.environ,
+                "FINDER_DATABASE_URL": isolated.set(drivername="postgresql").render_as_string(
+                    hide_password=False
+                ),
+            },
+        )
         repo.delete_ebay_seller(listing.seller_id)
         phase = "assert_deletion"
         with repo.engine.connect() as conn:
             assert not conn.execute(select(inbox)).all()
             assert not conn.execute(select(outbox)).all()
             assert not conn.execute(select(verdicts)).all()
+            assert not conn.execute(select(decisions)).all()
             assert not conn.execute(select(work)).all()
             assert conn.execute(select(progress)).first()
         rollback_pilot_schema(repo.engine)
