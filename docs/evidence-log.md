@@ -3,6 +3,37 @@
 Dated operational and validation history, moved verbatim from `AGENTS.md` on
 September 24, 2026 when Finder became a personal pressing hunter. Newer entries go at the top.
 
+## September 30, 2026 — cancelled worker attempt accounting
+
+An offline lease audit reproduced a false interruption warning: an owner edit revoked a
+running worker's lease, but the caught cancellation left its attempt marked `started` until
+the next claim marked it `abandoned`. The cancellation path now uses the existing fenced
+finish operation to mark a still-started attempt `superseded`. It does not change the newer
+watch, resurrect deleted records, or overwrite an attempt already recorded as abandoned.
+Failure-first regressions cover edits, immediate replacement, expiry, reclamation and deletion.
+This is operational accounting only; it does not change matching or notification eligibility.
+
+## September 30, 2026 — initial digest accounting after verdict suppression
+
+A second offline audit reproduced a lost initial notification: a previously judged baseline
+item consumed the digest marker even though its event was suppressed, and the next eligible
+unjudged item was incorrectly considered covered. The marker now advances only after a
+pending event exists, in the same fenced transaction as the event. Regressions cover all four
+verdicts, a judgment arriving before final eligibility, atomic rollback and idempotent retry.
+The marker records queueing, not device delivery. No existing live digest flags are reset and
+no owner verdicts, watch settings or notification history are rewritten by this correction.
+
+## September 30, 2026 — changed-summary precedence
+
+An offline reliability audit reproduced a missed detail refresh when an owner-settings or
+review-policy re-sort coincided with a changed seller search summary. The queue retained the
+cached re-sort reason, so the worker reused old details despite its changed-listing marker.
+Changed or rediscovered-unavailable summaries now clear that reason and require hydration.
+Unchanged listings still re-sort without extra provider reads. Synthetic regressions cover
+duplicate pages, both re-sort causes, successful refresh, removal and malformed detail failure,
+pending-alert removal, and owner-verdict/revision preservation. This does not change search
+bounds, notification policy, schema, or live owner settings.
+
 ## September 30, 2026 — explicit seller-color denials
 
 Synthetic regressions reproduced false positive color evidence from phrases such as

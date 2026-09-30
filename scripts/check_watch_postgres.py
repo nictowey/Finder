@@ -217,6 +217,73 @@ def main():
                 ),
             },
         )
+        # Bind the canonical purchase API to the runtime digest accounting using
+        # actual PostgreSQL triggers and the Python worker, not a hand-made mirror.
+        phase = "purchase_only_cannot_consume_initial_digest"
+        store.add(SavedWatch(release_id=456), now=discovery_time)
+        purchase_claim = store.claim(now=discovery_time)
+        assert purchase_claim and purchase_claim["id"] != discovery_claim["id"]
+        purchase_state = queue.load(
+            purchase_claim,
+            EbaySearchTarget(id="purchase-check", catalog_variant_id=456, queries=["Example"]),
+            discovery_time,
+        )
+        refs = [
+            {
+                "itemId": f"v1|{900001 + offset}|0",
+                "title": "Synthetic purchase reference",
+                "itemOriginDate": now.isoformat(),
+            }
+            for offset in range(2)
+        ]
+        queue.checkpoint(purchase_claim, purchase_state, discovery_time, items=refs)
+        first_item, second_item = queue.due(purchase_claim, discovery_time, limit=2, pending=True)
+
+        def evaluate(item, notify):
+            queue.disposition(
+                purchase_claim,
+                item,
+                discovery_time,
+                status="evaluated",
+                listing=listing.model_copy(update={"marketplace_item_id": item["item_id"]}),
+                repository=repo,
+                review={"notify": notify, "status": "possible_pressing"},
+                state=purchase_state,
+            )
+
+        evaluate(first_item, False)
+        with repo.engine.begin() as conn:
+            saved = (
+                conn.execute(
+                    text(
+                        "SELECT * FROM finder_save_decision"
+                        "(:watch,'ebay',:item,'purchase',NULL,true,:stamp,NULL,NULL)"
+                    ),
+                    {
+                        "watch": purchase_claim["id"],
+                        "item": first_item["item_id"],
+                        "stamp": discovery_time.isoformat(),
+                    },
+                )
+                .mappings()
+                .one()
+            )
+            assert saved["purchased"] and saved["verdict"] is None
+            assert saved["prediction"] is None
+        evaluate(first_item, True)
+        assert not purchase_state["initial_digest_sent"]
+        with repo.engine.connect() as conn:
+            assert not conn.execute(
+                select(outbox).where(outbox.c.watch_id == purchase_claim["id"])
+            ).first()
+        evaluate(second_item, True)
+        assert purchase_state["initial_digest_sent"]
+        with repo.engine.connect() as conn:
+            assert conn.execute(
+                select(outbox.c.marketplace_item_id).where(
+                    outbox.c.watch_id == purchase_claim["id"], outbox.c.status == "pending"
+                )
+            ).scalars().all() == [second_item["item_id"]]
         repo.delete_ebay_seller(listing.seller_id)
         phase = "assert_deletion"
         with repo.engine.connect() as conn:

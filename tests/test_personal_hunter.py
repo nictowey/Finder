@@ -377,8 +377,18 @@ def test_dashboard_and_worker_share_the_watch_limit():
     assert f"export const MAX_WATCHES = {MAX_WATCHES};" in source
 
 
-def test_settings_edits_resort_known_listings_without_new_searches_or_reads(
-    repository, settings, discogs_release, search_payload, monkeypatch
+@pytest.mark.parametrize(
+    ("listing_changed", "detail_result"),
+    [(False, "success"), (True, "success"), (True, "unavailable"), (True, "error")],
+)
+def test_settings_edits_reuse_unchanged_details_but_hydrate_changed_search_results(
+    repository,
+    settings,
+    discogs_release,
+    search_payload,
+    monkeypatch,
+    listing_changed,
+    detail_result,
 ):
     from contextlib import nullcontext
     from urllib.parse import unquote
@@ -389,7 +399,7 @@ def test_settings_edits_resort_known_listings_without_new_searches_or_reads(
     from finder.adapters.discogs.adapter import AlternativeRetrieval
     from finder.adapters.ebay.client import EbayClient
     from finder.discovery_store import SETTINGS_CHANGED, progress, work
-    from finder.watch_store import inbox, watches
+    from finder.watch_store import inbox, outbox, verdicts, watches
 
     migrate(repository.engine)
     store = WatchStore(repository.engine)
@@ -408,6 +418,7 @@ def test_settings_edits_resort_known_listings_without_new_searches_or_reads(
         for i in range(3)
     ]
     calls = {"search": 0, "detail": 0}
+    detail_changes = {}
 
     def handle(request):
         if "oauth2" in request.url.path:
@@ -443,6 +454,10 @@ def test_settings_edits_resort_known_listings_without_new_searches_or_reads(
             return httpx.Response(200, json={"total": len(items), "itemSummaries": items})
         calls["detail"] += 1
         item_id = unquote(request.url.path.split("/item/")[1])
+        if item_id in detail_changes and detail_result == "unavailable":
+            return httpx.Response(404, json={"errors": []})
+        if item_id in detail_changes and detail_result == "error":
+            return httpx.Response(200, json={"itemId": "wrong-synthetic-id"})
         return httpx.Response(
             200,
             json={
@@ -451,6 +466,7 @@ def test_settings_edits_resort_known_listings_without_new_searches_or_reads(
                 "title": "Example Artist Example Album LP",
                 "itemEndDate": None,
                 "seller": {"userId": "synthetic-seller"},
+                **detail_changes.get(item_id, {}),
             },
         )
 
@@ -471,9 +487,46 @@ def test_settings_edits_resort_known_listings_without_new_searches_or_reads(
             select(watches.c.id, watches.c.config, watches.c.revision)
         ).one()
     assert all(q["baseline"]["status"] == "search_exhausted" for q in before["queries"])
+    if listing_changed:
+        # A search detects a seller change while this same pass re-sorts settings.
+        # Fresh cached details must not hide that change for the next 6/24 hours.
+        clock[0] = NOW + timedelta(minutes=20)
+        items[0]["title"] = "A changed seller title"
+        detail_changes[items[0]["itemId"]] = {"price": {"value": "99.00", "currency": "USD"}}
     # The owner adds a required sign, as the dashboard's PUT does: new revision, due now.
     config = {**config, "tells": [{"kind": "color", "value": "Blue", "required": True}]}
     with repository.engine.begin() as conn:
+        if detail_result != "success":
+            previous = conn.execute(
+                select(inbox.c.data).where(inbox.c.marketplace_item_id == items[0]["itemId"])
+            ).scalar_one()
+            conn.execute(
+                update(inbox)
+                .where(inbox.c.marketplace_item_id == items[0]["itemId"])
+                .values(data={**previous, "notify": True})
+            )
+            conn.execute(
+                outbox.insert().values(
+                    id="synthetic-pending-event",
+                    watch_id=watch_id,
+                    marketplace="ebay",
+                    marketplace_item_id=items[0]["itemId"],
+                    created_at=clock[0].isoformat(),
+                    status="pending",
+                    attempts=0,
+                )
+            )
+        else:
+            conn.execute(
+                verdicts.insert().values(
+                    watch_id=watch_id,
+                    marketplace="ebay",
+                    marketplace_item_id=items[0]["itemId"],
+                    tier="family_review",
+                    verdict="mine",
+                    decided_at=clock[0].isoformat(),
+                )
+            )
         conn.execute(
             update(watches)
             .where(watches.c.id == watch_id)
@@ -486,11 +539,32 @@ def test_settings_edits_resort_known_listings_without_new_searches_or_reads(
         after = conn.execute(select(progress.c.data)).scalar()
         rows = conn.execute(select(inbox.c.data)).scalars().all()
         reasons = conn.execute(select(work.c.reason)).scalars().all()
-    assert calls["detail"] == details and calls["search"] == searches
+        changed_row = conn.execute(
+            select(inbox.c.data).where(inbox.c.marketplace_item_id == items[0]["itemId"])
+        ).scalar_one()
+        changed_status = conn.execute(
+            select(work.c.status).where(work.c.item_id == items[0]["itemId"])
+        ).scalar_one()
+        assert not conn.execute(
+            select(outbox).where(outbox.c.marketplace_item_id == items[0]["itemId"])
+        ).first()
+        if detail_result == "success":
+            assert conn.execute(select(verdicts.c.verdict)).scalar_one() == "mine"
+    assert calls["detail"] == details + int(listing_changed)
+    assert calls["search"] > searches if listing_changed else calls["search"] == searches
+    if listing_changed and detail_result == "success":
+        assert repository.get("ebay", items[0]["itemId"]).current_price == Decimal("99.00")
     assert after["anchor"] == before["anchor"] and after["revision"] == revision + 1
     assert SETTINGS_CHANGED not in reasons
-    assert {row["watch_revision"] for row in rows} == {revision + 1}
-    assert all("required_sign_not_claimed" in row["verify"] for row in rows)
+    if detail_result == "success":
+        assert {row["watch_revision"] for row in rows} == {revision + 1}
+        assert all("required_sign_not_claimed" in row["verify"] for row in rows)
+    else:
+        assert changed_status == ("unavailable" if detail_result == "unavailable" else "error")
+        assert not changed_row["notify"]
+        assert changed_row["watch_revision"] == revision  # No false fresh assessment.
+        if detail_result == "unavailable":
+            assert changed_row["availability"] == "unavailable_on_recheck"
 
 
 @pytest.mark.parametrize("barcode", [True, False])

@@ -19,6 +19,12 @@ on the worker's watch lock, then inserts a pending event and commits the worker.
 see and remove that event after acquiring its lock. An elapsed timer alone cannot prove that
 interleaving. This is the acceptance gate for the post-lock transaction snapshot behavior.
 
+The rehearsal also saves a purchase-only decision through the canonical SQL routine, then
+reevaluates that baseline item with the Python discovery worker. It must create no pending
+event and consume no initial digest. A second, unjudged baseline item must then create exactly
+one pending event and consume the digest. This binds the API suppression mirror to the runtime
+accounting without treating purchase as identity or a queued event as device delivery.
+
 Local SQLite and embedded PostgreSQL tests cover deterministic logic but do not substitute
 for this multi-session result. Before merging or deploying the combined UI/feedback change,
 verify this workflow succeeded on its exact reviewed PR revision. A workflow added locally,

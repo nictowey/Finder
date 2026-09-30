@@ -251,6 +251,9 @@ class DiscoveryStore:
                             status="pending",
                             next_check_at=now.isoformat(),
                             kind="existing_listing_updated",
+                            # A seller change outranks a cached settings/policy re-sort.
+                            # The worker must hydrate it even when old details are fresh.
+                            reason=None,
                         )
                     conn.execute(update(work).where(key).values(**values))
                 else:
@@ -347,22 +350,16 @@ class DiscoveryStore:
                     .mappings()
                     .first()
                 )
-                if (
+                digest_candidate = (
                     state is not None
                     and item["provider_started_at"] <= state["anchor"]
                     and review.get("notify")
                     and not (
                         prior_review and (prior_review["alerted"] or prior_review["dismissed"])
                     )
-                ):
+                )
+                if digest_candidate:
                     review = {**review, "digest_covered": state["initial_digest_sent"]}
-                    updated_state = deepcopy(state)
-                    updated_state["initial_digest_sent"] = True
-                    conn.execute(
-                        update(progress)
-                        .where(progress.c.watch_id == claim["id"])
-                        .values(data=updated_state)
-                    )
                 review = {
                     **review,
                     "discovery_kind": item["kind"],
@@ -374,6 +371,27 @@ class DiscoveryStore:
                 added = WatchStore(self.engine).finish(
                     claim, [(listing, review)], now=now, connection=conn, checkpoint=True
                 )
+                if (
+                    digest_candidate
+                    and not state["initial_digest_sent"]
+                    and conn.execute(
+                        select(outbox.c.id).where(
+                            outbox.c.watch_id == claim["id"],
+                            outbox.c.marketplace == listing.marketplace,
+                            outbox.c.marketplace_item_id == listing.marketplace_item_id,
+                            outbox.c.status == "pending",
+                        )
+                    ).first()
+                ):
+                    # A judged item can be suppressed by finish. Consume the digest
+                    # only with a queued event, atomically in this same transaction.
+                    updated_state = deepcopy(state)
+                    updated_state["initial_digest_sent"] = True
+                    conn.execute(
+                        update(progress)
+                        .where(progress.c.watch_id == claim["id"])
+                        .values(data=updated_state)
+                    )
             elif status in ("unavailable", "error", "suppressed"):
                 previous = conn.execute(
                     select(inbox.c.data).where(
