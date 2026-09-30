@@ -27,6 +27,29 @@ test("verified owner can retrieve dashboard",async()=>{
   assert.equal(response.status,200);
   assert.deepEqual((await response.json()).leads,[]);
 });
+
+test("dashboard reports judged outcomes across the whole history with separate freshness",async()=>{
+  const db={query:async(q:string,values:unknown[]=[])=>{
+    if(q.includes("owner_email"))return {rows:[{data:{email:"owner@example.com"}}]};
+    if(q.includes("FROM finder_verdicts v")){
+      assert.ok(!q.includes("LIMIT"));
+      assert.equal(values.length,1);
+      assert.ok(Number.isFinite(Date.parse(String(values[0]))));
+      return {rows:[{judged_tier:"family_review",current_tier:"unrelated",verdict:"mine",evidence:"stale",n:4}]};
+    }
+    return {rows:[]};
+  }};
+  const owner=async()=>new Response(JSON.stringify({user:{email:"owner@example.com",emailVerified:true},session:{expiresAt:new Date(Date.now()+60000).toISOString()}}));
+  const handler=createHandler({db,origin,authURL:"https://auth.example",fetch:owner});
+  const response=await handler(new Request(origin+"/api/dashboard?filter=judged"));
+  const data=await response.json();
+  assert.equal(data.judgment_review.total.total,4);
+  assert.equal(data.judgment_review.confirmed.stale,4);
+  assert.equal(data.judgment_review.confirmed.fresh_outside_review,0);
+  assert.ok(!JSON.stringify(data.judgment_review).includes("marketplace_item_id"));
+  assert.ok(javascript.includes("verdictReviewHtml(state.judgment_review)"));
+  assert.ok(javascript.includes("tier recorded when you judged"));
+});
 test("default inbox includes unclear candidates and reports review tiers per watch",async()=>{
  let filter:unknown;
  const db={query:async(q:string,v:unknown[]=[])=>{

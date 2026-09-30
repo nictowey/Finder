@@ -23,6 +23,15 @@ check the price, photos and signs, preserving its routing, generic payload and t
 The short agent guide now distinguishes universal alert blocks from ceiling-only quote
 requirements, consistent with the personal plan's price gate.
 
+The existing Your verdicts panel gains an aggregate retrospective report separating the
+tier recorded at judgment from the current stored classification. It reports fresh,
+stale, unavailable and missing evidence separately; only fresh owner-confirmed positives
+outside reviewable tiers are flagged for review. Uncertain judgments stay outside the
+decided denominator. These owner-selected historical outcomes are neither a holdout nor
+an estimate of current model precision. The report reads existing rows only and exposes
+no additional listing content or identities. Its exact PostgreSQL query is exercised
+against synthetic in-memory tables, including timestamp-offset and six-hour-boundary cases.
+
 ## September 24, 2026 — conservative review after owner verdicts
 
 Deployment [#75](https://github.com/nictowey/Finder/actions/runs/36006972142) passed
