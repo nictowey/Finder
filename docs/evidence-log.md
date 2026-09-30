@@ -371,3 +371,28 @@ scans, an authenticated review inbox, and notifications for unverified possible 
 Implement that pilot without claiming exact identity, complete recall, or undervaluation.
 See `docs/private-watchlist.md` for scope, deployment and acceptance checks. The broader public
 launch and valuation gates remain unchanged.
+
+## September 30, 2026 — separate identity feedback from purchases (local, not deployed)
+
+A new additive owner-decision record separates identity (`mine`, `other`, `unsure`) from a
+purchase marker. Historical `bought` entries become purchase-only, with their original row
+retained as provenance. They no longer supply positive identity ground truth. Identity edits,
+explicit clears and re-saves retain the first available tier, timestamp and bounded prediction
+metadata; historical timestamps are identified as legacy records because the old API replaced
+that timestamp on edits. No seller text, photos or item specifics are copied into provenance.
+
+Both save routes update the decision, compatibility/suppression mirror and pending-alert
+cleanup atomically while holding the worker's watch lock. New clients may supply the displayed
+tier and evaluation timestamp; changed evidence returns a conflict instead of attributing a
+judgment to an unseen prediction. Old clients remain supported: `bought` records a purchase,
+and clearing a verdict clears identity while retaining the purchase marker. A PostgreSQL
+compatibility trigger is installed in the same transaction as migration 5, keeping old API
+writers synchronized during deployment and rollback. Backups restore canonical decisions
+before compatibility rows. Mandatory parent/seller deletion cascades erase both records.
+
+Synthetic SQLite migration and embedded PostgreSQL API/trigger tests cover all identity
+choices, independent purchase changes, old/new clients, saved-state reload, stale evidence,
+first-prediction retention and rollback. Embedded PostgreSQL does not validate multi-session
+locking; `check_watch_postgres.py` now includes a disposable-schema migration, restore and
+concurrent worker/save gate that must pass before release. No production labels, schema or
+notifications were changed. A push already in flight cannot be recalled by saving feedback.

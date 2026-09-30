@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Pool } from "pg";
+import { decisionInput, saveDecisionQuery } from "./decisions.js";
 import { inboxQuery } from "./inbox-query.js";
 import { readOperations } from "./operations.js";
 import webpush from "web-push";
@@ -12,7 +13,6 @@ class InputError extends Error {}
 // Keep in sync with MAX_WATCHES in src/finder/watch_store.py.
 export const MAX_WATCHES = 20;
 const CLUE_KINDS = ["keyword", "color", "catalog_number", "barcode", "label", "country", "numbered"];
-const VERDICTS = ["mine", "other", "unsure", "bought"];
 
 function reply(data: unknown, status = 200, type = "application/json"): Response {
   return new Response(type === "application/json" ? JSON.stringify(data) : String(data), {
@@ -150,7 +150,7 @@ export function createHandler(deps: Deps) {
       if (path === "/api/dashboard" && request.method === "GET") {
         const watches = (await deps.db.query("SELECT id,config,revision,status,last_started_at,last_success_at,next_scan_at,lease_until,summary,catalog,catalog_observed_at FROM finder_watches ORDER BY id")).rows;
         const tierCounts = (await deps.db.query("SELECT watch_id,data->>'status' AS tier,count(*)::int AS n FROM finder_inbox WHERE NOT dismissed GROUP BY watch_id,data->>'status'")).rows;
-        const watchVerdicts = (await deps.db.query("SELECT watch_id,tier,verdict,count(*)::int AS n FROM finder_verdicts GROUP BY watch_id,tier,verdict")).rows;
+        const watchVerdicts = (await deps.db.query("SELECT watch_id,tier,verdict,count(*)::int AS n FROM finder_decisions WHERE verdict IS NOT NULL GROUP BY watch_id,tier,verdict")).rows;
         const profiles = (await deps.db.query("SELECT watch_id,observed_at,data->'proposals' AS proposals,data->'vinyl_versions' AS vinyl_versions,data->'partial' AS partial FROM finder_watch_profiles")).rows;
         for (const watch of watches) {
           const profile = profiles.find(p => p.watch_id === watch.id);
@@ -189,30 +189,25 @@ export function createHandler(deps: Deps) {
           delete row.revision;
         }
         const ids = leads.map(row => row.marketplace_item_id);
-        const decided = ids.length ? (await deps.db.query("SELECT watch_id,marketplace,marketplace_item_id,verdict FROM finder_verdicts WHERE marketplace_item_id = ANY($1)", [ids])).rows : [];
-        for (const row of leads) row.verdict = decided.find(v => v.watch_id === row.watch_id && v.marketplace === row.marketplace && v.marketplace_item_id === row.marketplace_item_id)?.verdict ?? null;
-        const accuracy = (await deps.db.query("SELECT tier,verdict,count(*)::int AS n FROM finder_verdicts GROUP BY tier,verdict")).rows;
+        const decided = ids.length ? (await deps.db.query("SELECT watch_id,marketplace,marketplace_item_id,verdict,purchased,tier,decided_at,prediction FROM finder_decisions WHERE marketplace_item_id = ANY($1)", [ids])).rows : [];
+        for (const row of leads) {
+          const decision=decided.find(v => v.watch_id===row.watch_id && v.marketplace===row.marketplace && v.marketplace_item_id===row.marketplace_item_id);
+          row.verdict=decision?.verdict??null; row.purchased=decision?.purchased??false;
+          row.verdict_tier=decision?.tier??null; row.verdict_decided_at=decision?.decided_at??null;
+          row.verdict_provenance=decision?.prediction?.source??null;
+        }
+        const accuracy = (await deps.db.query("SELECT tier,verdict,count(*)::int AS n FROM finder_decisions WHERE verdict IS NOT NULL GROUP BY tier,verdict")).rows;
         const push = (await deps.db.query("SELECT data FROM finder_private_settings WHERE key='vapid'")).rows[0]?.data;
         const operations = await readOperations(deps.db, watches);
         return reply({ watches, leads, next_cursor: nextCursor, operations, accuracy, max_watches: MAX_WATCHES, push_key: push?.publicKey ?? null, email: owner, now: new Date().toISOString() });
       }
-      if (path === "/api/verdict" && request.method === "POST") {
-        const value = await body(request);
-        if (typeof value.watch_id !== "string" || value.marketplace !== "ebay" || typeof value.marketplace_item_id !== "string" ||
-          value.marketplace_item_id.length > 255 || (value.verdict !== null && !VERDICTS.includes(value.verdict))) return reply({ error: "Invalid verdict" }, 400);
-        const key = [value.watch_id, value.marketplace, value.marketplace_item_id];
-        if (value.verdict === null) {
-          await deps.db.query("DELETE FROM finder_verdicts WHERE watch_id=$1 AND marketplace=$2 AND marketplace_item_id=$3", key);
-          return reply({ ok: true });
-        }
-        // The tier is recorded once, when first judged, so accuracy compares like with like.
-        const saved = await deps.db.query(`INSERT INTO finder_verdicts(watch_id,marketplace,marketplace_item_id,verdict,tier,decided_at)
-          SELECT watch_id,marketplace,marketplace_item_id,$4,COALESCE(data->>'status','unknown'),$5 FROM finder_inbox
-          WHERE watch_id=$1 AND marketplace=$2 AND marketplace_item_id=$3
-          ON CONFLICT (watch_id,marketplace,marketplace_item_id) DO UPDATE SET verdict=EXCLUDED.verdict,decided_at=EXCLUDED.decided_at RETURNING verdict`,
-          [...key, value.verdict, new Date().toISOString()]);
-        if (saved.rows.length) await deps.db.query("DELETE FROM finder_outbox WHERE watch_id=$1 AND marketplace=$2 AND marketplace_item_id=$3 AND status='pending'", key);
-        return saved.rows.length ? reply({ ok: true }) : reply({ error: "Listing not found" }, 404);
+      if (["/api/verdict","/api/purchase"].includes(path) && request.method === "POST") {
+        const value=await body(request), args=decisionInput(value,path==="/api/purchase");
+        if(!args)return reply({error:"Invalid feedback"},400);
+        const saved=await deps.db.query(saveDecisionQuery,args);
+        if(saved.rows.length)return reply({ok:true,...saved.rows[0]});
+        const found=await deps.db.query("SELECT 1 FROM finder_inbox WHERE watch_id=$1 AND marketplace=$2 AND marketplace_item_id=$3",args.slice(0,3));
+        return found.rows.length?reply({error:"This listing changed. Refresh it before saving your judgment."},409):reply({error:"Listing not found"},404);
       }
       if (path === "/api/refresh-lead" && request.method === "POST") {
         const value=await body(request);

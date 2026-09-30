@@ -11,8 +11,8 @@ const prefix = `WITH finder_watches AS (
   SELECT * FROM jsonb_to_recordset($8::jsonb) AS x(marketplace text,marketplace_item_id text,data jsonb)
 ), finder_inbox AS (
   SELECT * FROM jsonb_to_recordset($9::jsonb) AS x(watch_id text,marketplace text,marketplace_item_id text,data jsonb,first_seen_at text,last_seen_at text,dismissed boolean)
-), finder_verdicts AS (
-  SELECT * FROM jsonb_to_recordset($10::jsonb) AS x(watch_id text,marketplace text,marketplace_item_id text,verdict text)
+), finder_decisions AS (
+  SELECT * FROM jsonb_to_recordset($10::jsonb) AS x(watch_id text,marketplace text,marketplace_item_id text,verdict text,purchased boolean)
 ) `;
 const config = {maximum_subtotal:"20.00",currency:"USD",country:"US",postal_code:"00000"};
 const listing = {current_price:"15.00",shipping_cost:"5.00",currency:"USD",shipping_currency:"USD",price_kind:"fixed_price",details_observed_at:"2026-01-02T12:00:00.000Z",source_metadata:{delivery_country:"US",delivery_postal_code:"00000"}};
