@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from finder.categories.vinyl import from_listing, from_variant, has_numbered_claim
 from finder.domain import Listing, Variant
-from finder.matching import _compact, _normalized, _palette
+from finder.matching import _compact, _normalized, _palette, _seller_color_claims
 
 ClueKind = Literal["keyword", "color", "catalog_number", "barcode", "label", "country", "numbered"]
 
@@ -78,13 +78,12 @@ class ListingText:
             for value in values
         ]
         # Artist and album words such as "Purple Rain" are not color claims.
-        remainder = f" {_normalized(listing.title)} "
-        for name in [target.title, *target.artists]:
-            name = _normalized(re.sub(r"\s+\(\d+\)$", "", name))
-            if name:
-                remainder = remainder.replace(f" {name} ", " ")
-        self.palette = _palette([*self.structured_colors, remainder])
-        self.structured_palette = _palette(self.structured_colors)
+        names = tuple(re.sub(r"\s+\(\d+\)$", "", name) for name in [target.title, *target.artists])
+        title_colors, title_denied = _seller_color_claims([listing.title], ignore=names)
+        structured_colors, structured_denied = _seller_color_claims(self.structured_colors)
+        self.structured_palette = _palette(structured_colors)
+        self.palette = self.structured_palette | _palette(title_colors)
+        self.denied_palette = structured_denied | title_denied
         self.numbered = has_numbered_claim([*seller.editions, listing.title])
         self.labels = [_normalized(value) for value in seller.labels]
         self.country = _normalized(seller.country or "")
@@ -95,6 +94,8 @@ def clue_found(clue: Clue, seen: ListingText, *, common_version: bool = False) -
         return seen.numbered
     if clue.kind == "color":
         wanted = _palette([clue.value])
+        if wanted & seen.denied_palette:
+            return False
         # A common-version color must be a structured seller claim: titles often mention
         # sleeve or label colors that say nothing about the disc.
         palette = seen.structured_palette if common_version else seen.palette
@@ -121,11 +122,19 @@ def apply_cheat_sheet(review: dict, listing: Listing, target: Variant, tells, an
     seen = ListingText(listing, target)
     found = [clue for clue in tells if clue_found(clue, seen)]
     missing = [clue for clue in tells if clue.required and clue not in found]
+    denied = [
+        clue
+        for clue in tells
+        if clue.required and clue.kind == "color" and _palette([clue.value]) & seen.denied_palette
+    ]
     common = [clue for clue in anti_tells if clue_found(clue, seen, common_version=True)]
     status = review["status"]
     clues, verify = list(review["clues"]), list(review["verify"])
     if status in ("possible_pressing", "family_review"):
-        if common:
+        if denied:
+            status = "conflicting"
+            verify.append("required_sign_conflict")
+        elif common:
             status = "conflicting"
             verify.append("common_version_sign")
         elif any(clue.required for clue in tells):

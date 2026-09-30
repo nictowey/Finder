@@ -86,6 +86,9 @@ Discogs behavior in the eBay adapter or marketplace behavior in catalog provider
   confirms from photos. Never label a listing an exact pressing, a bargain or a fair value.
 - Signs are read from seller text only; explicitly negated mentions ("not a reissue") and
   sleeve colors in titles do not count as common-version signs.
+- Explicitly denied target or required colors conflict; they cannot create likely or
+  unclear-price alerts. Keep positive clauses separate from negated alternatives, and
+  exclude artist, album, sleeve, cover and label color words from disc-color evidence.
 - Every required sign present with a successful catalog comparison and no unresolved
   competing pressing → likely yours; any common-version sign → likely another version;
   otherwise unclear. A generic album word such

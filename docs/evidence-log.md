@@ -3,6 +3,19 @@
 Dated operational and validation history, moved verbatim from `AGENTS.md` on
 September 24, 2026 when Finder became a personal pressing hunter. Newer entries go at the top.
 
+## September 30, 2026 — explicit seller-color denials
+
+Synthetic regressions reproduced false positive color evidence from phrases such as
+"not pink or green" in titles and item specifics. Seller-side parsing now separates
+positive claims and explicit denials, without changing catalog color palettes. A denied
+target or required color conflicts and cannot alert under either owner price. Positive
+alternatives, coordinated negative lists, album/artist names and non-disc color wording
+have separate regressions. Review and matching policy versions advance to v8 so stale
+classifications and notification eligibility are replaced when the change is deployed.
+
+This is an offline policy correction, not a measurement of real listing accuracy or recall.
+It has not been deployed by this work; owner-verdict validation remains necessary.
+
 ## September 24, 2026 — conservative review after owner verdicts
 
 Deployment [#75](https://github.com/nictowey/Finder/actions/runs/36006972142) passed

@@ -126,6 +126,71 @@ def test_cheat_sheet_promotes_required_signs_and_hides_common_versions(search_pa
     assert apply_cheat_sheet(review, row, purple, rain, [])["status"] == "family_review"
 
 
+@pytest.mark.parametrize(
+    ("title", "specifics"),
+    [
+        ("Example Artist Example Album NOT pink or green vinyl", {}),
+        ("Example Artist Example Album vinyl", {"Color": ["Not pink or green"]}),
+        ("Example Artist Example Album not the pink/green pressing", {}),
+        ("Example Artist Example Album vinyl", {"Color": ["Isn't pink and green"]}),
+        ("Example Artist Example Album neither pink nor green vinyl", {}),
+        ("Example Artist Example Album not pink or translucent green vinyl", {}),
+        (
+            "Example Artist Example Album NOT pink or green vinyl",
+            {"Color": ["Pink and Green"]},
+        ),
+    ],
+)
+def test_negated_colors_cannot_satisfy_required_signs_or_alert(
+    search_payload, target, title, specifics
+):
+    row = listing(search_payload, title=title, item_specifics=specifics)
+    watch = SavedWatch(
+        release_id=111,
+        maximum_subtotal=Decimal("100"),
+        gamble_max=Decimal("50"),
+        country="US",
+        postal_code="12345",
+        tells=[Clue(kind="color", value="Pink/Green", required=True)],
+    )
+    review = assess_review(watch, row, target, now=NOW, alternatives=[], search_incomplete=False)
+    assert review["status"] == "conflicting"
+    assert review["signs"] == []
+    assert review["missing_signs"] == ["color: Pink/Green"]
+    assert not review["notify"]
+
+
+def test_negated_album_color_words_do_not_become_required_signs(search_payload, target):
+    target = target.model_copy(update={"title": "Not Black But White"})
+    row = listing(search_payload, title="Example Artist Not Black But White vinyl")
+    review = apply_cheat_sheet(
+        {"status": "family_review", "clues": [], "verify": []},
+        row,
+        target,
+        [Clue(kind="color", value="White", required=True)],
+        [],
+    )
+    assert review["status"] == "family_review"
+    assert review["signs"] == []
+
+
+def test_negated_structured_color_does_not_trigger_common_version_sign(search_payload, target):
+    row = listing(
+        search_payload,
+        title="Example Artist Example Album pink green vinyl",
+        item_specifics={"Color": ["Pink and green, not black"]},
+    )
+    review = apply_cheat_sheet(
+        {"status": "family_review", "clues": [], "verify": []},
+        row,
+        target,
+        [Clue(kind="color", value="Pink/Green", required=True)],
+        [Clue(kind="color", value="Black")],
+    )
+    assert review["status"] == "possible_pressing"
+    assert review["common_signs"] == []
+
+
 def test_unclear_listings_alert_only_under_the_gamble_price(search_payload, target):
     watch = SavedWatch(
         release_id=111,

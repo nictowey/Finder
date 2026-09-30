@@ -15,7 +15,7 @@ from finder.domain import (
     Variant,
 )
 
-MATCH_POLICY_VERSION = "vinyl-decision-v7"
+MATCH_POLICY_VERSION = "vinyl-decision-v8"
 
 # Compare named colors across the whole record set. Discogs may describe the two
 # discs separately while a seller puts both colors in a single item specific.
@@ -26,12 +26,15 @@ _COLOR_WORDS = frozenset(
 _COLOR_ALIASES = {"grey": "gray", "transparent": "clear"}
 
 
-def _normalized(value: str) -> str:
+def _plain_text(value: str) -> str:
     # Sellers omit apostrophes and commonly spell A$AP as ASAP. Preserve word
     # boundaries while normalizing these two frequent catalog/title differences.
     value = value.replace("$", "s").replace("’", "'").replace("'", "")
-    value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode().lower()
-    return " ".join(re.findall(r"[a-z0-9]+", value))
+    return unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode().lower()
+
+
+def _normalized(value: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", _plain_text(value)))
 
 
 def _compact(value: str) -> str:
@@ -159,12 +162,85 @@ def _palette(values: list[str]) -> set[str]:
     return {color for word in words if (color := _COLOR_ALIASES.get(word, word)) in _COLOR_WORDS}
 
 
+_COLOR_TERM = "(?:" + "|".join(sorted(_COLOR_WORDS | _COLOR_ALIASES.keys())) + ")"
+_COLOR_CLAIM = rf"(?:(?:light|dark|opaque|translucent|solid|neon)\s+){{0,2}}{_COLOR_TERM}"
+_COLOR_SEQUENCE = rf"{_COLOR_CLAIM}(?:\s+(?:(?:and|or|nor)\s+)?{_COLOR_CLAIM})*"
+_COLOR_DENIAL = (
+    r"\b(?:not|no|non|never|without|isnt|arent|neither)\s+"
+    r"(?:(?:a|an|the|any|in|on|pressed|vinyl|record|disc)\s+){0,3}"
+)
+_NEGATED_COLORS = re.compile(rf"{_COLOR_DENIAL}{_COLOR_SEQUENCE}\b")
+_NEGATED_COLOR_LIST = re.compile(
+    rf"{_COLOR_DENIAL}{_COLOR_CLAIM}(?:\s*,\s*{_COLOR_CLAIM})+"
+    rf"\s*,?\s*(?:and|or|nor)\s+{_COLOR_CLAIM}\b"
+)
+_OBJECT_COLOR_SEQUENCE = rf"{_COLOR_CLAIM}(?:\s+(?:and|or|nor)\s+{_COLOR_CLAIM})*"
+_NON_DISC_COLORS = re.compile(
+    rf"\b{_OBJECT_COLOR_SEQUENCE}\s+(?:sleeves?|covers?|labels?|jackets?|artwork)\b"
+    rf"|\b(?:sleeves?|covers?|labels?|jackets?|artwork)\s+"
+    rf"(?:(?:is|are|in|colored|coloured)\s+)?{_OBJECT_COLOR_SEQUENCE}\b"
+)
+
+
+def _seller_color_claims(
+    values: list[str], *, ignore: tuple[str, ...] = ()
+) -> tuple[list[str], set[str]]:
+    """Separate positive and explicitly denied seller colors from catalog semantics.
+
+    Scope a denial to its coordinated colors, not a later positive clause. Normalize
+    each clause separately so punctuation and 'but' end the denial, except an explicit
+    coordinated negative list. Sleeve/cover/label colors are not disc claims. 'Not only
+    pink but green' is not a color denial.
+    """
+    claims = []
+    denied = set()
+    for value in values:
+        text = _plain_text(value)
+        # Remove album/artist names before negation parsing: a title like
+        # 'Not Black But White' must not leave behind a positive white claim.
+        for name in ignore:
+            words = _normalized(name).split()
+            if words:
+                phrase = r"[^a-z0-9]+".join(map(re.escape, words))
+                text = re.sub(rf"(?<![a-z0-9]){phrase}(?![a-z0-9])", " ", text)
+        clauses = re.split(r"[.;!?]|\bbut\b", text)
+        parts = []
+        for clause in clauses:
+            # Retain commas until an obvious 'not pink, green or blue' list is joined.
+            # 'Not black, pink vinyl' remains two independent clauses.
+            clause = " ".join(re.findall(r"[a-z0-9]+|,", clause))
+            clause = _NON_DISC_COLORS.sub(",", clause)
+            clause = _NEGATED_COLOR_LIST.sub(
+                lambda match: re.sub(r",\s*(?=(?:and|or|nor)\b)", " ", match.group()).replace(
+                    ",", " or "
+                ),
+                clause,
+            )
+            parts.extend(_normalized(part) for part in clause.split(","))
+        for part in parts:
+            for match in _NEGATED_COLORS.finditer(part):
+                denied.update(_palette([match.group()]))
+        claims.append(" ".join(_NEGATED_COLORS.sub(" ", part) for part in parts).strip())
+    return claims, denied
+
+
 def _color_evidence(listing_values: list[str], variant_values: list[str]) -> MatchEvidence | None:
     if not listing_values or not variant_values:
         return None
 
-    left, right = _palette(listing_values), _palette(variant_values)
-    if left and right and (len(left) > 1 or len(right) > 1):
+    claims, denied = _seller_color_claims(listing_values)
+    left, right = _palette(claims), _palette(variant_values)
+    if denied & right:
+        return MatchEvidence(
+            field="color",
+            listing_values=listing_values,
+            variant_values=variant_values,
+            matched=False,
+            weight=15,
+        )
+    if _palette(listing_values) and not left:
+        return None  # Only denied colors were named; absence is not a positive claim.
+    if left and right:
         # A seller may describe just one disc of a pair. Its partial claim is
         # missing evidence, whereas an additional different color is a conflict.
         if left < right:
@@ -176,7 +252,8 @@ def _color_evidence(listing_values: list[str], variant_values: list[str]) -> Mat
             matched=left == right,
             weight=15,
         )
-    return _similarity_evidence("color", listing_values, variant_values, 15, 0.72)
+    evidence = _similarity_evidence("color", claims, variant_values, 15, 0.72)
+    return evidence.model_copy(update={"listing_values": listing_values}) if evidence else None
 
 
 def score_variant(
