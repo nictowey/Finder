@@ -21,7 +21,7 @@ from finder.domain import (
     Variant,
 )
 
-MATCH_POLICY_VERSION = "vinyl-decision-v13"
+MATCH_POLICY_VERSION = "vinyl-decision-v14"
 
 # Compare named colors across the whole record set. Discogs may describe the two
 # discs separately while a seller puts both colors in a single item specific.
@@ -149,6 +149,35 @@ def _exact_evidence(
         variant_values=variant_values,
         matched=bool(left & right),
         weight=weight,
+    )
+
+
+def _gtin_key(value: str) -> str | None:
+    """Compare valid GTIN-12/13/14 representations without inventing digits."""
+    value = value.strip()
+    if not re.fullmatch(r"[0-9]{12,14}", value) or not value.strip("0"):
+        return None
+    total = sum(
+        int(digit) * (1 if index % 2 == 0 else 3) for index, digit in enumerate(value[::-1])
+    )
+    return value.zfill(14) if total % 10 == 0 else None
+
+
+def _equivalent_gtin_values(listing_values: list[str], variant_values: list[str]) -> bool:
+    target_keys = {_gtin_key(value) for value in variant_values} - {None}
+    # Only extend exact equality when every seller value is a supported, matching
+    # representation. A padded match must not hide another contradictory claim.
+    return bool(listing_values and target_keys) and all(
+        (key := _gtin_key(value)) is not None and key in target_keys for value in listing_values
+    )
+
+
+def _barcode_evidence(listing_values: list[str], variant_values: list[str]) -> MatchEvidence | None:
+    evidence = _exact_evidence("barcode", listing_values, variant_values, 55)
+    if evidence is None or evidence.matched:
+        return evidence
+    return evidence.model_copy(
+        update={"matched": _equivalent_gtin_values(listing_values, variant_values)}
     )
 
 
@@ -664,7 +693,7 @@ def score_variant(
     evidence = []
     listing_vinyl = from_listing(listing)
     variant_vinyl = from_variant(variant)
-    barcode = _exact_evidence("barcode", listing_vinyl.barcodes, variant_vinyl.barcodes, 55)
+    barcode = _barcode_evidence(listing_vinyl.barcodes, variant_vinyl.barcodes)
     catno = _exact_evidence(
         "catalog_number",
         listing_vinyl.catalog_numbers,
