@@ -18,6 +18,7 @@ from finder.matching import (
     _non_vinyl_listing,
     _normalized,
     _palette,
+    _selected_color_claims,
     score_variant,
 )
 
@@ -243,11 +244,9 @@ def review_target_listing(
     # Structured definite claims keep their existing precedence. Unresolved
     # choices and explicit denials, however, cannot be erased by another source.
     color_ambiguous = title_colors.ambiguous or structured_colors.ambiguous
-    selected_colors = structured_colors if seller.colors else title_colors
-    if structured_colors.ambiguous and not _palette(structured_colors.positive):
-        # An alternative-only field has no definite palette to take precedence.
-        # It must not conceal an independently incompatible title color.
-        selected_colors = title_colors
+    selected_colors = _selected_color_claims(
+        title_colors, structured_colors, has_structured=bool(seller.colors)
+    )
     if (title_colors.denied | structured_colors.denied) & _palette(catalog.colors):
         return TargetReview(status="conflicting", clues=clues, verify=["color_conflict"])
     seller_palette = _palette(selected_colors.positive)
@@ -285,6 +284,7 @@ def review_target_listing(
     # proving the specific numbered copy is genuine.
     possible = (
         not color_ambiguous
+        and not (seller_palette and not _palette(catalog.colors))
         and (color_match or identifier_match or (catalog_numbered and seller_numbered))
         and (not catalog_numbered or seller_numbered)
     )

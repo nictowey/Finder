@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
+import pytest
 
 from finder import cli
 from finder.adapters.discogs.client import DiscogsClient
@@ -11,7 +12,18 @@ from finder.adapters.ebay.normalize import normalize_listing
 from finder.persistence import SqlAlchemyRepository
 
 
-def test_cli_acceptance_scan_twice(tmp_path, monkeypatch, capsys, search_payload):
+@pytest.mark.parametrize(
+    "scan_time,expected",
+    [
+        (datetime(2026, 9, 11, tzinfo=UTC), 2),
+        (datetime(2026, 10, 1, 14, tzinfo=UTC), 1),
+        (datetime(2030, 1, 1, tzinfo=UTC), 1),
+    ],
+)
+def test_cli_acceptance_scan_twice(
+    tmp_path, monkeypatch, capsys, search_payload, freeze_cli_adapter, scan_time, expected
+):
+    freeze_cli_adapter(scan_time)
     config = tmp_path / "monitors.toml"
     config.write_text(
         '[[monitors]]\nid="rap-vinyl"\nname="Rap"\nmarketplace="ebay"\nquery="vinyl"\n'
@@ -42,8 +54,8 @@ def test_cli_acceptance_scan_twice(tmp_path, monkeypatch, capsys, search_payload
     first = json.loads(capsys.readouterr().out)
     assert cli.main(args) == 0
     second = json.loads(capsys.readouterr().out)
-    assert (first["new"], first["total_stored"]) == (2, 2)
-    assert (second["updated"], second["new"], second["total_stored"]) == (2, 0, 2)
+    assert (first["new"], first["total_stored"]) == (expected, expected)
+    assert (second["updated"], second["new"], second["total_stored"]) == (expected, 0, expected)
 
 
 def test_missing_credentials_is_actionable(tmp_path, monkeypatch, capsys):

@@ -21,7 +21,7 @@ from finder.domain import (
     Variant,
 )
 
-MATCH_POLICY_VERSION = "vinyl-decision-v12"
+MATCH_POLICY_VERSION = "vinyl-decision-v13"
 
 # Compare named colors across the whole record set. Discogs may describe the two
 # discs separately while a seller puts both colors in a single item specific.
@@ -193,6 +193,14 @@ _NON_DISC_OBJECTS = (
     r"pochettes?|couvertures?|jaquettes?|etiquettes?|sleeves?|covers?|labels?|jackets?|artwork"
 )
 _OBJECT_COLOR_SEQUENCE = rf"{_COLOR_CLAIM}(?:\s+{_COLOR_COORDINATOR}\s+{_COLOR_CLAIM})*"
+# Inspect modified packaging on seller text before punctuation is discarded.
+# Horizontal whitespace cannot join an independent "not clear" clause to a
+# subsequent "PVC sleeve" line. Keep object words for French context checks.
+_PACKAGING_MODIFIERS = r"(?:(?:inner|outer|paper|plastic|pvc|gatefold)[ \t]+){1,3}"
+_MODIFIED_OBJECT_COLORS = re.compile(
+    rf"(?P<colors>\b{_OBJECT_COLOR_SEQUENCE}\s+)(?P<modifiers>{_PACKAGING_MODIFIERS})"
+    rf"(?P<object>(?:{_NON_DISC_OBJECTS})\b)".replace(r"\s", "[ \t]")
+)
 _NON_DISC_COLORS = re.compile(
     rf"\b{_OBJECT_COLOR_SEQUENCE}\s+(?:{_NON_DISC_OBJECTS})\b"
     rf"|\b(?:{_NON_DISC_OBJECTS})\s+"
@@ -511,12 +519,26 @@ def _seller_color_details(
     """
     texts = []
     for value in values:
+        # Check the raw source: _plain_text itself drops some Unicode punctuation.
+        # Leave complex or multi-value inputs unchanged so modifier masking
+        # cannot join clauses or erase a cross-field choice.
+        modifier_safe = (
+            len(values) == 1 and re.fullmatch(r"[a-zA-Z0-9 \t,.;!?]*", value) is not None
+        )
         text = _plain_text(value)
         for name in ignore:
             words = _normalized(name).split()
             if words:
                 phrase = r"[^a-z0-9]+".join(map(re.escape, words))
                 text = re.sub(rf"(?<![a-z0-9]){phrase}(?![a-z0-9])", " ", text)
+        # Mask only the validated modifier words. The original non-disc parser
+        # then consumes the color/object pair exactly once, without letting the
+        # reverse-object branch consume a subsequent independent disc color.
+        if modifier_safe:
+            text = _MODIFIED_OBJECT_COLORS.sub(
+                lambda match: match["colors"] + " " * len(match["modifiers"]) + match["object"],
+                text,
+            )
         # The abbreviation's period does not make two independent color claims.
         texts.append(re.sub(r"\bvs\.(?=\s|[a-z])", "vs ", text))
     masked, ambiguous = _withhold_color_continuations("\n".join(texts), disc_context=disc_context)
@@ -589,6 +611,15 @@ def _listing_color_claims(
         _seller_color_details([listing.title], ignore=names),
         _seller_color_details(from_listing(listing).colors, disc_context=True),
     )
+
+
+def _selected_color_claims(
+    title: SellerColorClaims, structured: SellerColorClaims, *, has_structured: bool
+) -> SellerColorClaims:
+    """Preserve structured precedence unless a choice-only field has no palette."""
+    if not has_structured or (structured.ambiguous and not _palette(structured.positive)):
+        return title
+    return structured
 
 
 def _color_evidence(listing_values: list[str], variant_values: list[str]) -> MatchEvidence | None:
@@ -774,19 +805,34 @@ def decide_match(
 
     # Scope uncertainty to viable family candidates. Parsing against an unrelated
     # catalog title could mistake the real album/artist name for a seller choice.
-    color_ambiguous = any(
-        title.ambiguous or structured.ambiguous
+    has_structured_colors = bool(from_listing(listing).colors)
+    color_claims = [
+        (
+            by_id[candidate.catalog_variant_id],
+            *_listing_color_claims(listing, by_id[candidate.catalog_variant_id]),
+        )
         for candidate in (competing or family_candidates)
-        for title, structured in [
-            _listing_color_claims(listing, by_id[candidate.catalog_variant_id])
-        ]
+    ]
+    color_ambiguous = any(
+        title.ambiguous or structured.ambiguous for _, title, structured in color_claims
+    )
+    color_incomparable = any(
+        _palette(
+            _selected_color_claims(title, structured, has_structured=has_structured_colors).positive
+        )
+        and not _palette(from_variant(variant).colors)
+        for variant, title, structured in color_claims
     )
     if _non_vinyl_listing(listing):
         outcome = "rejected"
     elif len(families) > 1 or len(competing) > 1:
         outcome = "ambiguous"
     elif len(competing) == 1:
-        outcome = "family_only" if retrieval_incomplete or color_ambiguous else "probable_variant"
+        outcome = (
+            "family_only"
+            if retrieval_incomplete or color_ambiguous or color_incomparable
+            else "probable_variant"
+        )
     elif len(families) == 1:
         outcome = "family_only"
     elif any(
@@ -849,6 +895,8 @@ def decide_match(
     missing = []
     if color_ambiguous:
         missing.append("color_claim_ambiguous")
+    if color_incomparable:
+        missing.append("color_not_comparable")
     if not from_listing(listing).artists:
         missing.append("structured_artist")
     if not any(
