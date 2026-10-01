@@ -3,7 +3,7 @@ import webpush from 'web-push';
 import { pendingEvidenceChange } from '../functions/pending-evidence.mjs';
 
 // Kept in parity with finder.watch_worker.POLICY by the offline release gate.
-export const REVIEW_POLICY = 'private-target-review-v16';
+export const REVIEW_POLICY = 'private-target-review-v17';
 
 const heldEvidenceChange = `EXISTS (SELECT 1 FROM finder_inbox i JOIN listings l USING(marketplace,marketplace_item_id)
   WHERE i.watch_id=o.watch_id AND i.marketplace=o.marketplace AND i.marketplace_item_id=o.marketplace_item_id

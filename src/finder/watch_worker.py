@@ -8,7 +8,7 @@ from finder.categories.vinyl_clues import apply_cheat_sheet
 from finder.stage_timing import StageTimings
 from finder.watch_store import WatchStore
 
-POLICY = "private-target-review-v16"
+POLICY = "private-target-review-v17"
 
 
 def _compare(watch, listing, limit, reasons):
