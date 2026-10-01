@@ -7,6 +7,7 @@ from decimal import Decimal
 from finder.adapters.discogs.adapter import DiscogsCatalogProvider
 from finder.adapters.discogs.client import DiscogsClient
 from finder.categories.target_review import review_target_with_alternatives
+from finder.categories.vinyl import from_variant
 from finder.categories.vinyl_target import target_from_release
 from finder.config import load_discogs_settings
 from finder.domain import Listing, Variant
@@ -15,16 +16,11 @@ from finder.persistence import SqlAlchemyRepository
 
 
 def _barcodes(variant: Variant) -> list[str]:
-    return [
-        value
-        for name, values in variant.identifiers.items()
-        if "barcode" in name.lower()
-        for value in values
-    ]
+    return from_variant(variant).barcodes
 
 
 def _catalog_numbers(variant: Variant) -> list[str]:
-    return [str(label["catno"]) for label in variant.labels if label.get("catno")]
+    return from_variant(variant).catalog_numbers
 
 
 def _synthetic_listing(variant: Variant, observed_at: datetime) -> Listing:

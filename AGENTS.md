@@ -75,6 +75,8 @@ Discogs behavior in the eBay adapter or marketplace behavior in catalog provider
 - A strong candidate is not an asserted exact match.
 - `probable_variant` is provisional; never turn it into `exact_variant` before the labeled
   precision gate and representative catalog coverage are established.
+- Whole identifier values `None`, `N/A` (including `N / A`) and `Does not apply` mean
+  missing evidence, case-insensitively. Preserve real identifiers and original source fields.
 - Conflicting barcodes force rejection. Color and edition conflicts prevent strong status.
 - Shared identifiers may produce ambiguity and must not be resolved with arbitrary tie-breaking.
 - Active asking prices are not sold comparables or fair market value.
