@@ -7,10 +7,12 @@ on:
       - ".github/workflows/discogs-smoke.yml"
       - "src/finder/adapters/discogs/**"
       - "src/finder/categories/vinyl.py"
+      - "src/finder/categories/target_review.py"
       - "src/finder/matching.py"
       - "src/finder/cli.py"
       - "scripts/validate_live_matching.py"
       - "tests/test_discogs.py"
+      - "tests/test_target_review.py"
       - "pyproject.toml"
 
 permissions:

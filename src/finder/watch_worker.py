@@ -3,11 +3,11 @@
 import time
 from datetime import timedelta
 
-from finder.categories.target_review import review_target_with_alternatives
+from finder.categories.target_review import catalog_title_aliases, review_target_with_alternatives
 from finder.categories.vinyl_clues import apply_cheat_sheet
 from finder.watch_store import WatchStore
 
-POLICY = "private-target-review-v8"
+POLICY = "private-target-review-v9"
 
 
 def _compare(watch, listing, limit, reasons):
@@ -30,7 +30,14 @@ def assess_review(watch, listing, variant, *, now, alternatives=None, search_inc
     review = review_target_with_alternatives(
         listing, variant, alternatives, search_incomplete=search_incomplete
     ).model_dump()
-    review = apply_cheat_sheet(review, listing, variant, watch.tells, watch.anti_tells)
+    review = apply_cheat_sheet(
+        review,
+        listing,
+        variant,
+        watch.tells,
+        watch.anti_tells,
+        album_aliases=catalog_title_aliases(variant, alternatives or []),
+    )
     # A failed catalog check cannot establish that the seller's signs distinguish
     # this pressing. The owner's cheat sheet must not override either uncertainty.
     if review["status"] == "possible_pressing":

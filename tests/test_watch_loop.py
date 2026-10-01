@@ -33,6 +33,49 @@ def listing(search_payload, observed_at):
     )
 
 
+@pytest.mark.parametrize("album", ["Black Metal", "Not Black But White"])
+@pytest.mark.parametrize("spelling", ["2", "II"])
+@pytest.mark.parametrize("disc_color", ["", " black"])
+def test_catalog_title_spellings_cannot_supply_a_required_disc_color(
+    search_payload, discogs_release, observed_at, album, spelling, disc_color
+):
+    target = normalize_release(
+        {
+            **discogs_release,
+            "id": 101,
+            "master_id": 500,
+            "title": f"{album} 2",
+            "artists": [{"name": "Example Artist"}],
+            "formats": [{"name": "Vinyl", "text": "Black"}],
+            "identifiers": [{"type": "Barcode", "value": "0123456789012"}],
+            "labels": [],
+        },
+        observed_at,
+    )
+    other = target.model_copy(
+        update={
+            "catalog_variant_id": "102",
+            "title": f"{album} II",
+            "formats": [{"name": "Vinyl", "text": "Clear"}],
+            "identifiers": {"Barcode": ["9999999999999"]},
+        }
+    )
+    row = listing(search_payload, observed_at).model_copy(
+        update={
+            "title": f"Example Artist {album} {spelling}{disc_color} vinyl",
+            "item_specifics": {"Barcode": ["0123456789012"]},
+        }
+    )
+    watch = SavedWatch(release_id=101, tells=[Clue(kind="color", value="Black", required=True)])
+    review = assess_review(
+        watch, row, target, now=observed_at, alternatives=[other], search_incomplete=False
+    )
+    assert review["status"] == ("possible_pressing" if disc_color else "family_review")
+    assert review["notify"] is bool(disc_color)
+    assert review["signs"] == (["color: Black"] if disc_color else [])
+    assert review["missing_signs"] == ([] if disc_color else ["color: Black"])
+
+
 def test_repeated_scan_deduplicates_and_seller_deletion_cascades(
     repository, store, search_payload, observed_at
 ):
@@ -203,7 +246,7 @@ def test_ambiguous_and_unchecked_leads_stay_visible_without_alerts(
     assert ambiguous["status"] == "family_review" and not ambiguous["notify"]
     assert "other_pressings_not_ruled_out" in ambiguous["verify"]
     assert ambiguous["alternatives_not_ruled_out"] == 1
-    assert ambiguous["policy"] == "private-target-review-v8"
+    assert ambiguous["policy"] == "private-target-review-v9"
 
 
 def test_pilot_capacity(store):
