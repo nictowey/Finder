@@ -10,6 +10,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from finder.categories.vinyl import from_listing, from_variant, has_numbered_claim
+from finder.categories.vinyl_covers import conflicting_catalog_cover
 from finder.domain import Listing, Variant
 from finder.matching import (
     _artist_matches_catalog,
@@ -325,6 +326,14 @@ def review_target_with_alternatives(
         review = TargetReview(
             status="conflicting", clues=["artist_and_album"], verify=["competing_album_title_claim"]
         )
+    if review.status in ("possible_pressing", "family_review") and conflicting_catalog_cover(
+        listing, target, list(unique.values())
+    ):
+        review = TargetReview(
+            status="conflicting", clues=["artist_and_album"], verify=["catalog_cover_conflict"]
+        )
+    # Cover recognition only rules out an explicitly different target cover. It
+    # does not promote a title-only target name or invent missing sibling facts.
     # The sparse family check handles normalized artist/title spelling and also keeps
     # plausible candidates whose master grouping is absent or differs in the catalog.
     considered = [
