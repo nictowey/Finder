@@ -33,6 +33,7 @@ from finder.discovery_store import (
 )
 from finder.errors import CatalogError, ItemUnavailableError, RateLimitError, RequestRejectedError
 from finder.evidence import details_invalidated
+from finder.stage_timing import StageTimings
 from finder.watch_profile import load_profile, siblings_of
 from finder.watch_store import SavedWatch, WatchStore, watches
 
@@ -161,6 +162,13 @@ def detail_batch(queue, claim, now):
 
 
 def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: datetime.now(UTC)):
+    timings = StageTimings()
+    with timings.measure("setup"):
+        result = _run_chunk(repository, settings, discogs_settings, claim, now_fn, timings)
+    return {**result, **timings.report()}
+
+
+def _run_chunk(repository, settings, discogs_settings, claim, now_fn, timings):
     from finder.watch_worker import POLICY as REVIEW_POLICY
     from finder.watch_worker import assess_review, refresh_hours
 
@@ -181,7 +189,7 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
     failure = False
     diagnostic = {}
     try:
-        with DiscogsClient(discogs_settings) as catalog_client:
+        with timings.measure("catalog"), DiscogsClient(discogs_settings) as catalog_client:
             provider = DiscogsCatalogProvider(catalog_client)
             variant = provider.get_release(watch.release_id)
             profile = load_profile(repository.engine, claim["id"], provider, variant, now_fn())
@@ -241,7 +249,7 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
         configured = settings.model_copy(
             update={"delivery_country": watch.country, "delivery_postal_code": watch.postal_code}
         )
-        with EbayClient(configured) as client:
+        with timings.measure("search"), EbayClient(configured) as client:
             client.request_limit = ATTEMPT_LIMIT
             try:
                 # Actual app quota, not the published default. Shared atomic debits in
@@ -360,7 +368,9 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                 # failures are delayed, so one bad item cannot monopolize the queue.
                 # A price or cheat-sheet edit re-sorts known listings from stored details,
                 # with no eBay calls. Plausible ones are re-read soon so alerts stay fresh.
-                for item in queue.due(claim, now_fn(), limit=RESORT_LIMIT, pending=True):
+                for item in timings.call(
+                    "cached_queue", queue.due, claim, now_fn(), limit=RESORT_LIMIT, pending=True
+                ):
                     if item["reason"] != SETTINGS_CHANGED:
                         continue
                     if item["failures"] or (item.get("review_data") or {}).get(
@@ -370,7 +380,7 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                     if time.monotonic() >= deadline:
                         partial = "execution_budget"
                         break
-                    previous = repository.get("ebay", item["item_id"])
+                    previous = timings.call("cached_read", repository.get, "ebay", item["item_id"])
                     if (
                         previous is None
                         or details_invalidated(previous)
@@ -378,7 +388,9 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                         or previous.source_metadata.get("delivery_postal_code") != watch.postal_code
                     ):
                         continue  # Left pending; the detail loop reads it from eBay.
-                    review = assess_review(
+                    review = timings.call(
+                        "cached_review",
+                        assess_review,
                         watch,
                         previous,
                         variant,
@@ -391,7 +403,9 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                         "details_need_refresh" in review["verify"]
                     ):
                         hours = min(hours, 0.1)
-                    _, inserted = queue.disposition(
+                    _, inserted = timings.call(
+                        "cached_disposition",
+                        queue.disposition,
                         claim,
                         item,
                         now_fn(),
@@ -403,88 +417,92 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                         refresh_hours=hours,
                     )
                     added += inserted or 0
-                batch = detail_batch(queue, claim, now_fn())
+                batch = timings.call("detail_queue", detail_batch, queue, claim, now_fn())
                 adapter = EbayAdapter(client, now=now_fn)
                 for item in batch:
                     if time.monotonic() >= deadline:
                         partial = "execution_budget"
                         break
-                    try:
-                        previous = repository.get("ebay", item["item_id"])
-                        if (
-                            item["status"] == "pending"
-                            and not item["failures"]
-                            and not (item.get("review_data") or {}).get("evidence_invalidated_at")
-                            and item["kind"] != "existing_listing_updated"
-                            and previous
-                            and not details_invalidated(previous)
-                            and previous.details_observed_at
-                            and previous.details_observed_at >= now_fn() - timedelta(hours=1)
-                            and previous.source_metadata.get("delivery_country") == watch.country
-                            and previous.source_metadata.get("delivery_postal_code")
-                            == watch.postal_code
-                            and not any(
-                                f in previous.quality_flags
-                                for f in (
-                                    "details_unavailable",
-                                    "item_specifics_stale",
-                                    "details_not_requested",
+                    with timings.measure("detail"):
+                        try:
+                            previous = repository.get("ebay", item["item_id"])
+                            if (
+                                item["status"] == "pending"
+                                and not item["failures"]
+                                and not (item.get("review_data") or {}).get(
+                                    "evidence_invalidated_at"
                                 )
-                            )
-                        ):
-                            from finder.adapters.base import ListingObservation
+                                and item["kind"] != "existing_listing_updated"
+                                and previous
+                                and not details_invalidated(previous)
+                                and previous.details_observed_at
+                                and previous.details_observed_at >= now_fn() - timedelta(hours=1)
+                                and previous.source_metadata.get("delivery_country")
+                                == watch.country
+                                and previous.source_metadata.get("delivery_postal_code")
+                                == watch.postal_code
+                                and not any(
+                                    f in previous.quality_flags
+                                    for f in (
+                                        "details_unavailable",
+                                        "item_specifics_stale",
+                                        "details_not_requested",
+                                    )
+                                )
+                            ):
+                                from finder.adapters.base import ListingObservation
 
-                            observation = ListingObservation(listing=previous)
-                        else:
-                            observation = adapter.refresh_known(item["item_id"])
-                        if observation.listing:
-                            listing = observation.listing
-                            review = assess_review(
-                                watch,
-                                listing,
-                                variant,
-                                now=now_fn(),
-                                alternatives=alternatives.variants if alternatives else None,
-                                search_incomplete=alternatives.search_incomplete
-                                if alternatives
-                                else True,
-                            )
-                            status, inserted = queue.disposition(
-                                claim,
-                                item,
-                                now_fn(),
-                                status="evaluated",
-                                listing=listing,
-                                repository=repository,
-                                review=review,
-                                state=state,
-                                refresh_hours=refresh_hours(watch, listing, review, now_fn()),
-                            )
-                            added += inserted or 0
-                        else:
-                            unavailable = observation.skip_reason in (
-                                "item_unavailable",
-                                "listing_ended",
-                            )
+                                observation = ListingObservation(listing=previous)
+                            else:
+                                observation = adapter.refresh_known(item["item_id"])
+                            if observation.listing:
+                                listing = observation.listing
+                                review = assess_review(
+                                    watch,
+                                    listing,
+                                    variant,
+                                    now=now_fn(),
+                                    alternatives=alternatives.variants if alternatives else None,
+                                    search_incomplete=alternatives.search_incomplete
+                                    if alternatives
+                                    else True,
+                                )
+                                status, inserted = queue.disposition(
+                                    claim,
+                                    item,
+                                    now_fn(),
+                                    status="evaluated",
+                                    listing=listing,
+                                    repository=repository,
+                                    review=review,
+                                    state=state,
+                                    refresh_hours=refresh_hours(watch, listing, review, now_fn()),
+                                )
+                                added += inserted or 0
+                            else:
+                                unavailable = observation.skip_reason in (
+                                    "item_unavailable",
+                                    "listing_ended",
+                                )
+                                queue.disposition(
+                                    claim,
+                                    item,
+                                    now_fn(),
+                                    status="unavailable" if unavailable else "error",
+                                    reason=observation.skip_reason,
+                                    refresh_hours=24 if unavailable else 1,
+                                )
+                        except (RateLimitError, LostLease):
+                            raise
+                        except Exception:
                             queue.disposition(
                                 claim,
                                 item,
                                 now_fn(),
-                                status="unavailable" if unavailable else "error",
-                                reason=observation.skip_reason,
-                                refresh_hours=24 if unavailable else 1,
+                                status="error",
+                                reason="detail_failed",
+                                refresh_hours=min(24, 2 ** min(item["failures"], 4)),
                             )
-                    except (RateLimitError, LostLease):
-                        raise
-                    except Exception:
-                        queue.disposition(
-                            claim,
-                            item,
-                            now_fn(),
-                            status="error",
-                            reason="detail_failed",
-                            refresh_hours=min(24, 2 ** min(item["failures"], 4)),
-                        )
                 if next_task(state):
                     partial = partial or "chunk_budget"
             except (RateLimitError, ValueError) as exc:
@@ -504,48 +522,49 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                     "quota_requests",
                 ):
                     requests[field] = getattr(client, field, 0)
-        if partial:
-            for q in state["queries"]:
-                for lane in ("baseline", "incremental", "reconciliation"):
-                    if q.get(lane) and q[lane]["status"] in (
-                        "not_started",
-                        "in_progress",
-                        "partial_budget",
-                    ):
-                        q[lane]["status"] = "partial_budget"
-                        q[lane]["reason"] = partial
-        queue.checkpoint(claim, state, now_fn())
-        coverage = queue.coverage(claim, state)
-        coverage["partial_reason"] = partial
-        # Active work resumes at the next ten-minute catch-up, not the full monitor interval.
-        # Rate limit and provider failures back off; the shared guard still applies.
-        delay = (
-            max(30, poll_every)
-            if failure or partial == "quota_or_attempt_budget"
-            else 1
-            if next_task(state)
-            or coverage["pending"]
-            or queue.due(claim, now_fn(), limit=1, pending=False)
-            else poll_every
-        )
-        result = store.finish(
-            claim,
-            [],
-            catalog=variant,
-            summary={
-                "worker_finished": True,
-                "new_inbox_rows": added,
-                "coverage": coverage,
-                "discovery": requests,
-                "catalog_search_incomplete": alternatives.search_incomplete
-                if alternatives
-                else True,
-                "catalog_check_failed": alternatives is None,
-            },
-            success=not failure and partial != "quota_or_attempt_budget",
-            next_delay_minutes=delay,
-            now=now_fn(),
-        )
+        with timings.measure("finalize"):
+            if partial:
+                for q in state["queries"]:
+                    for lane in ("baseline", "incremental", "reconciliation"):
+                        if q.get(lane) and q[lane]["status"] in (
+                            "not_started",
+                            "in_progress",
+                            "partial_budget",
+                        ):
+                            q[lane]["status"] = "partial_budget"
+                            q[lane]["reason"] = partial
+            queue.checkpoint(claim, state, now_fn())
+            coverage = queue.coverage(claim, state)
+            coverage["partial_reason"] = partial
+            # Active work resumes at the next ten-minute catch-up, not the full monitor interval.
+            # Rate limit and provider failures back off; the shared guard still applies.
+            delay = (
+                max(30, poll_every)
+                if failure or partial == "quota_or_attempt_budget"
+                else 1
+                if next_task(state)
+                or coverage["pending"]
+                or queue.due(claim, now_fn(), limit=1, pending=False)
+                else poll_every
+            )
+            result = store.finish(
+                claim,
+                [],
+                catalog=variant,
+                summary={
+                    "worker_finished": True,
+                    "new_inbox_rows": added,
+                    "coverage": coverage,
+                    "discovery": requests,
+                    "catalog_search_incomplete": alternatives.search_incomplete
+                    if alternatives
+                    else True,
+                    "catalog_check_failed": alternatives is None,
+                },
+                success=not failure and partial != "quota_or_attempt_budget",
+                next_delay_minutes=delay,
+                now=now_fn(),
+            )
         return {
             "completed": int(
                 result is not None and not failure and partial != "quota_or_attempt_budget"
@@ -566,12 +585,13 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
     except LostLease:
         # Close the old attempt without touching the edited/reclaimed watch. Otherwise
         # normal cancellation would later look like a worker that died mid-scan.
-        store.finish(claim, [], success=False, now=now_fn())
+        timings.call("finalize", store.finish, claim, [], success=False, now=now_fn())
         return {"superseded": 1, "new_inbox_rows": added}
     except Exception as exc:
         diagnostic[f"chunk_failed_{type(exc).__name__}"] = 1
-        summary = {"error": "discovery_failed", "discovery": requests}
-        if state:
-            summary["coverage"] = queue.coverage(claim, state)
-        store.finish(claim, [], success=False, summary=summary, now=now_fn())
+        with timings.measure("finalize"):
+            summary = {"error": "discovery_failed", "discovery": requests}
+            if state:
+                summary["coverage"] = queue.coverage(claim, state)
+            store.finish(claim, [], success=False, summary=summary, now=now_fn())
         return {"failed": 1, "new_inbox_rows": added, **diagnostic}

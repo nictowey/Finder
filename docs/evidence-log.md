@@ -3,7 +3,32 @@
 Dated operational and validation history, moved verbatim from `AGENTS.md` on
 September 24, 2026 when Finder became a personal pressing hunter. Newer entries go at the top.
 
-## October 1, 2026 — missing identifier sentinels stay missing (local, not deployed)
+## October 1, 2026 — anonymous worker stage timing (local, not deployed)
+
+Scheduled worker reports now contain fixed-key integer millisecond totals and entered/
+normally-returned span counts for setup, catalog, search, cached queue/source reads,
+cached review, cached disposition, detail queue/work and finalization. Nested spans exclude
+child time; failed spans still contribute elapsed time. `perf_counter_ns` is independent
+of the chunk and injected run-budget clocks. No extra provider requests, storage writes,
+schema/configuration changes or matching, price, alert or policy changes are introduced.
+
+See [worker timing semantics](worker-timing.md) before interpreting the aggregates. These
+are wall-time observations, not proof of a production bottleneck. Stored snapshot counts
+summed across chunks are not unique newly completed work. Local deterministic regressions
+cover timing/aggregation, privacy, budget stops, lease loss and failure behavior; they do not
+measure production database latency or matching accuracy. Local aggregate gates passed:
+1,644 Python tests, 79 Node tests, Ruff lint/format, TypeScript and diff whitespace checks.
+Release-stage exact-head PostgreSQL and authenticated provider validation remain required.
+
+## October 1, 2026 — missing identifier sentinels stay missing (merged, catch-up verified)
+
+[PR #89](https://github.com/nictowey/Finder/pull/89) merged at 07:12:20 UTC as main commit
+`d730e6e786eb6edaac8d023fc6332b1d8e60cff4`. Live catch-up was verified at 07:52–07:53 UTC:
+every watch had a post-merge success and no pending work; saved judgments and their original
+prediction report were unchanged. The final [ordinary dispatch](https://github.com/nictowey/Finder/actions/runs/36832137640)
+and [scheduled run](https://github.com/nictowey/Finder/actions/runs/36832566195) passed on that
+commit. This verifies catch-up and preservation, not real-world precision or recall.
+
 
 Seller/catalog barcode and catalog-number extraction now discards only whole values
 `None`, `N/A` (including `N / A`) and `Does not apply`, case-insensitively with whitespace
@@ -24,12 +49,12 @@ source preservation, clues, query helpers and default/main/strict/gamble alert p
 local checks do not establish live precision or recall; authenticated Discogs smoke remains
 a release-stage gate.
 
-## October 1, 2026 — explicit seller color choices remain uncertain (merged, live catch-up pending)
+## October 1, 2026 — explicit seller color choices remain uncertain (merged, catch-up closed)
 
 [PR #88](https://github.com/nictowey/Finder/pull/88) merged at 06:47:06 UTC as main commit
 `44afc27c17cbc9e5778e32e099a1d65495c99b87`. Final-head PostgreSQL migration, restore and
 feedback-locking checks, authenticated Discogs validation, and sandbox checks passed.
-Live watch catch-up remains pending; these gates do not establish live matching accuracy.
+Live watch catch-up closed at 07:11 UTC; these gates do not establish live matching accuracy.
 
 Seller-only color extraction now retains a shared explicit-choice signal beside definite
 claims and denials. English `or`, `either`, `vs`/`versus`, and `and/or` choices withhold the
