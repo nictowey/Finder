@@ -17,6 +17,7 @@ from finder.adapters.ebay.target_search import EbaySearchTarget
 from finder.discovery_store import DiscoveryStore, LostLease, fence, work
 from finder.watch_store import SavedWatch, inbox, outbox
 from finder.watch_store import watches as watch_rows
+from finder.watch_worker import POLICY
 
 
 class BoundTransaction:
@@ -249,7 +250,7 @@ def check_evidence_invalidation(repo, store, queue, listing, now, *, on_phase):
             review={
                 "notify": True,
                 "status": "possible_pressing",
-                "policy": "private-target-review-v13",
+                "policy": POLICY,
             },
         )
     with repo.engine.begin() as conn:
@@ -301,7 +302,7 @@ def check_evidence_invalidation(repo, store, queue, listing, now, *, on_phase):
         review={
             "notify": True,
             "status": "possible_pressing",
-            "policy": "private-target-review-v13",
+            "policy": POLICY,
         },
     )
     with repo.engine.connect() as conn:

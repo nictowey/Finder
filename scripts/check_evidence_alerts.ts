@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Pool } from 'pg';
 import { deliver } from './send_watch_notifications.mjs';
 import { inboxQuery } from '../functions/inbox-query.js';
+import { checkNotificationPolicy } from './check_notification_policy.mjs';
 
 const pool=new Pool({connectionString:process.env.FINDER_DATABASE_URL});
 try {
@@ -14,6 +15,9 @@ try {
  const result=await deliver(db,async()=>{throw new Error('Synthetic evidence quarantine must not send');});
  assert.equal(result.accepted_events,0);assert.equal(result.status,'no_eligible_alerts');
  console.log('{"legacy_pending_alert_quarantine":"passed"}');
+ const notificationClient=await pool.connect();
+ try{await checkNotificationPolicy(notificationClient);}finally{notificationClient.release();}
+ console.log('{"notification_policy_safety_matrix":"passed"}');
  // A dedicated session models 30,000 work rows spread across 20 watch keys.
  // No persistent rows or actual listing data enter this query-plan check.
  const client=await pool.connect();try{
