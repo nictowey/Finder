@@ -16,6 +16,42 @@ async function app(initial=dashboardFixture(),fetcher?:(url:string,opts:any)=>Pr
  return {dom,w,doc:w.document,requests,saved,close:()=>dom.window.close(),click:(selector:string)=>(w.document.querySelector(selector) as HTMLButtonElement).click()};
 }
 
+test('an HTML gateway response during refresh keeps saved state and offers a readable retry',async()=>{
+ for(const status of [502,503]){
+  const data=dashboardFixture();data.leads[0].verdict='mine';let reads=0;
+  const a=await app(data,async()=>++reads===1?response(data):new Response('<html>synthetic gateway details</html>',{status}));
+  try{
+   const before=a.doc.querySelectorAll('.lead').length;a.click('#refresh');await tick();await tick();
+   assert.equal(a.doc.querySelectorAll('.lead').length,before);
+   assert.equal((a.w as any).testSavedState().leads[0].verdict,'mine');
+   assert.equal(a.doc.querySelector('#dashboard')?.hasAttribute('hidden'),false);
+   assert.equal((a.doc.querySelector('#refresh') as HTMLButtonElement).disabled,false);
+   assert.equal(a.doc.querySelector('#notice')?.textContent,'Finder returned an unreadable response. Please try Refresh.');
+   assert.ok(!a.doc.querySelector('#notice')?.textContent?.includes('synthetic gateway'));
+  }finally{a.close();}
+ }
+});
+
+test('a persisted save with an unreadable response reconciles without repeating the POST',async()=>{
+ const data=dashboardFixture();let writes=0;
+ const a=await app(data,async(url,options)=>{
+  if(url==='/api/verdict'){
+   writes++;data.leads[0].verdict=JSON.parse(options.body).verdict;
+   return new Response('<html>synthetic gateway details</html>',{status:503});
+  }
+  return response(data);
+ });
+ try{
+  a.click('[data-verdict="0|mine"]');await tick();await tick();await tick();
+  assert.equal(writes,1);assert.equal((a.w as any).testSavedState().leads[0].verdict,'mine');
+  assert.match(a.doc.querySelector('#notice')!.textContent!,/Couldn’t confirm the save/);
+  assert.equal((a.doc.querySelector('#refresh') as HTMLButtonElement).disabled,false);
+  a.click('[data-filter="judged"]');await tick();await tick();
+  assert.equal(a.doc.querySelector('[data-verdict="0|mine"]')?.getAttribute('aria-pressed'),'true');
+  assert.equal(writes,1);
+ }finally{a.close();}
+});
+
 test('review leads are first, with secondary views and accessible touch controls',async()=>{
  const a=await app();try{
  assert.equal(a.doc.querySelector('#reviewpanel')?.hasAttribute('hidden'),false);
