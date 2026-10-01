@@ -193,12 +193,16 @@ _NON_DISC_OBJECTS = (
     r"pochettes?|couvertures?|jaquettes?|etiquettes?|sleeves?|covers?|labels?|jackets?|artwork"
 )
 _OBJECT_COLOR_SEQUENCE = rf"{_COLOR_CLAIM}(?:\s+{_COLOR_COORDINATOR}\s+{_COLOR_CLAIM})*"
-# A bounded packaging-only modifier list keeps "clear PVC sleeve" from being
-# treated as a disc claim. Do not admit arbitrary words or disc nouns: "clear
-# vinyl in a PVC sleeve" still supplies the independent clear-vinyl evidence.
-_PACKAGING_MODIFIERS = r"(?:(?:inner|outer|paper|plastic|pvc|gatefold)\s+){0,3}"
+# Inspect modified packaging on seller text before punctuation is discarded.
+# Horizontal whitespace cannot join an independent "not clear" clause to a
+# subsequent "PVC sleeve" line. Keep object words for French context checks.
+_PACKAGING_MODIFIERS = r"(?:(?:inner|outer|paper|plastic|pvc|gatefold)[ \t]+){1,3}"
+_MODIFIED_OBJECT_COLORS = re.compile(
+    rf"(?P<colors>\b{_OBJECT_COLOR_SEQUENCE}\s+)(?P<modifiers>{_PACKAGING_MODIFIERS})"
+    rf"(?P<object>(?:{_NON_DISC_OBJECTS})\b)".replace(r"\s", "[ \t]")
+)
 _NON_DISC_COLORS = re.compile(
-    rf"\b{_OBJECT_COLOR_SEQUENCE}\s+{_PACKAGING_MODIFIERS}(?:{_NON_DISC_OBJECTS})\b"
+    rf"\b{_OBJECT_COLOR_SEQUENCE}\s+(?:{_NON_DISC_OBJECTS})\b"
     rf"|\b(?:{_NON_DISC_OBJECTS})\s+"
     rf"(?:(?:is|are|in|colored|coloured)\s+)?{_OBJECT_COLOR_SEQUENCE}\b"
 )
@@ -515,12 +519,26 @@ def _seller_color_details(
     """
     texts = []
     for value in values:
+        # Check the raw source: _plain_text itself drops some Unicode punctuation.
+        # Leave complex or multi-value inputs unchanged so modifier masking
+        # cannot join clauses or erase a cross-field choice.
+        modifier_safe = (
+            len(values) == 1 and re.fullmatch(r"[a-zA-Z0-9 \t,.;!?]*", value) is not None
+        )
         text = _plain_text(value)
         for name in ignore:
             words = _normalized(name).split()
             if words:
                 phrase = r"[^a-z0-9]+".join(map(re.escape, words))
                 text = re.sub(rf"(?<![a-z0-9]){phrase}(?![a-z0-9])", " ", text)
+        # Mask only the validated modifier words. The original non-disc parser
+        # then consumes the color/object pair exactly once, without letting the
+        # reverse-object branch consume a subsequent independent disc color.
+        if modifier_safe:
+            text = _MODIFIED_OBJECT_COLORS.sub(
+                lambda match: match["colors"] + " " * len(match["modifiers"]) + match["object"],
+                text,
+            )
         # The abbreviation's period does not make two independent color claims.
         texts.append(re.sub(r"\bvs\.(?=\s|[a-z])", "vs ", text))
     masked, ambiguous = _withhold_color_continuations("\n".join(texts), disc_context=disc_context)

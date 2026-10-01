@@ -204,3 +204,170 @@ def test_catalog_name_and_validated_alias_exclusion_stays_ahead_of_packaging():
 
     review = review_target_listing(row, target, album_aliases=("clear pvc sleeve ii",))
     assert review.status == "possible_pressing" and "seller_color_claim" in review.clues
+
+
+@pytest.mark.parametrize(
+    "boundary", ["\n", "\r\n", ": ", "; ", ". ", "! ", "? ", " - ", "/", " (", ", "]
+)
+@pytest.mark.parametrize("field", [None, "Color", "Record Color"])
+def test_independent_denial_before_packaging_boundary_stays_conflicting(boundary, field):
+    row = listing("not clear" + boundary + "PVC sleeve", field=field)
+    claims = _seller_color_details(["not clear" + boundary + "PVC sleeve"])
+    assert claims.denied == {"clear"}
+    result = assess(row, gamble_max=Decimal("25"), country="US", postal_code="00000")
+    assert result["status"] == "conflicting" and not result["notify"]
+    assert "color_conflict" in result["verify"]
+
+
+@pytest.mark.parametrize("boundary", ["\n", ": ", " (", " - "])
+@pytest.mark.parametrize("field", [None, "Color"])
+def test_independent_denial_cannot_be_erased_by_matching_disc_claim(boundary, field):
+    row = listing("clear vinyl; not clear" + boundary + "PVC sleeve", field=field)
+    result = assess(row, maximum_subtotal=Decimal("25"), country="US", postal_code="00000")
+    assert result["status"] == "conflicting" and not result["notify"]
+    assert "color_conflict" in result["verify"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["blue or white\npaper sleeve", "blue or white: paper sleeve", "blue or white (paper sleeve)"],
+)
+def test_packaging_boundary_cannot_collapse_a_disc_color_choice(text):
+    claims = _seller_color_details([text])
+    assert claims.ambiguous and not _palette(claims.positive)
+
+
+@pytest.mark.parametrize("packaging", PACKAGING)
+@pytest.mark.parametrize("field", [None, "Color"])
+@pytest.mark.parametrize(
+    "disc",
+    [
+        "blue vinyl",
+        "blue or white vinyl; blue vinyl",
+        "not blue vinyl",
+        "blue and white vinyl",
+        "vinyle bleu",
+        "vinyle bleu ou blanc",
+    ],
+)
+def test_packaging_before_disc_preserves_the_existing_single_consumption(packaging, field, disc):
+    # Removing only the allowed modifiers must behave like the already-supported
+    # plain color/object phrase, even when genuine disc evidence follows it.
+    words = packaging.split()
+    bare = words[0] + " " + words[-1]
+    actual = listing(packaging + " " + disc, field=field)
+    baseline = listing(bare + " " + disc, field=field)
+    for mode in ("review_leads", "strict"):
+        settings = dict(
+            alert_mode=mode, maximum_subtotal=Decimal("25"), country="US", postal_code="00000"
+        )
+        assert assess(actual, "Blue", **settings) == assess(baseline, "Blue", **settings)
+
+
+@pytest.mark.parametrize("field", [None, "Color"])
+def test_following_disc_choice_cannot_be_erased_to_enable_an_alert(field):
+    row = listing("clear PVC sleeve blue or white vinyl; blue vinyl", field=field)
+    for mode in ("review_leads", "strict"):
+        result = assess(
+            row,
+            "Blue",
+            alert_mode=mode,
+            maximum_subtotal=Decimal("25"),
+            country="US",
+            postal_code="00000",
+        )
+        assert result["status"] == "family_review" and not result["notify"]
+        assert "color_claim_ambiguous" in result["verify"]
+
+
+@pytest.mark.parametrize("boundary", ["\n", "\r\n", ": ", " (", " - ", "/", " & "])
+@pytest.mark.parametrize("field", [None, "Color"])
+def test_discarded_boundary_in_a_larger_denial_cannot_be_joined_by_modifier_masking(
+    boundary, field
+):
+    text = "not blue or" + boundary + "clear PVC sleeve"
+    claims = _seller_color_details([text])
+    assert claims.denied == {"blue", "clear"}
+    row = listing(text, field=field)
+    for color in ("Blue", "Clear"):
+        result = assess(row, color, gamble_max=Decimal("25"), country="US", postal_code="00000")
+        assert result["status"] == "conflicting" and not result["notify"]
+
+
+@pytest.mark.parametrize("boundary", ["\n", ": ", " (", " - ", "/"])
+@pytest.mark.parametrize("field", [None, "Color"])
+def test_discarded_boundary_in_a_choice_cannot_enable_main_price_alert(boundary, field):
+    row = listing("blue or" + boundary + "white paper sleeve; blue vinyl", field=field)
+    result = assess(row, "Blue", maximum_subtotal=Decimal("25"), country="US", postal_code="00000")
+    assert result["status"] == "family_review" and not result["notify"]
+    assert "color_claim_ambiguous" in result["verify"]
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        ":",
+        "\n",
+        "\r",
+        "(",
+        ")",
+        "[",
+        "]",
+        "/",
+        "-",
+        "—",
+        "–",
+        "\u2028",
+        "\u2029",
+        "\u00a0",
+        "\v",
+        "\f",
+        "&",
+        "'",
+        "$",
+        "é",
+    ],
+)
+@pytest.mark.parametrize("typed", [False, True])
+def test_complex_raw_values_use_the_unchanged_parser_path(boundary, typed, monkeypatch):
+    import re
+
+    import finder.matching as matching
+
+    text = "not blue or " + boundary + " clear PVC sleeve; blue vinyl"
+    actual = matching._seller_color_details([text], disc_context=typed)
+    # Disabling the sole new normalization yields the exact previous parser.
+    monkeypatch.setattr(matching, "_MODIFIED_OBJECT_COLORS", re.compile(r"(?!)"), raising=False)
+    baseline = matching._seller_color_details([text], disc_context=typed)
+    assert actual == baseline
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        ["blue", "or white paper sleeve", "blue vinyl"],
+        ["not blue", "or clear PVC sleeve"],
+        ["not blue or", "clear PVC sleeve"],
+        ["clear PVC sleeve", "not clear"],
+        ["clear PVC sleeve blue or white vinyl", "blue vinyl"],
+        ["clear PVC sleeve", "white paper inner sleeve"],
+    ],
+)
+@pytest.mark.parametrize("typed", [False, True])
+def test_multi_value_evidence_keeps_the_existing_cross_field_parser(values, typed, monkeypatch):
+    import re
+
+    import finder.matching as matching
+
+    actual = matching._seller_color_details(values, disc_context=typed)
+    monkeypatch.setattr(matching, "_MODIFIED_OBJECT_COLORS", re.compile(r"(?!)"), raising=False)
+    assert actual == matching._seller_color_details(values, disc_context=typed)
+
+
+def test_multi_value_structured_choice_cannot_be_promoted_by_definite_blue():
+    row = listing("blue vinyl").model_copy(
+        update={"item_specifics": {"Color": ["blue", "or white paper sleeve", "blue vinyl"]}}
+    )
+    result = assess(row, "Blue", maximum_subtotal=Decimal("25"), country="US", postal_code="00000")
+    assert result["status"] == "family_review" and not result["notify"]
+    assert "color_claim_ambiguous" in result["verify"]
