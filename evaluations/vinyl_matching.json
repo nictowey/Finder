@@ -17,6 +17,6 @@
   {"id":"die_lit","artist":"Playboi Carti","title":"Die Lit","year":2018,"scenario":"title_only","color":"Black","edition":"Unofficial Release"},
   {"id":"summertime_06","artist":"Vince Staples","title":"Summertime '06","year":2015,"scenario":"conflicting_barcode","color":"Black","edition":"Album"},
   {"id":"atrocity_exhibition","artist":"Danny Brown","title":"Atrocity Exhibition","year":2016,"scenario":"ambiguous_shared_barcode","color":"Pink","edition":"Limited Edition"},
-  {"id":"alfredo","artist":"Freddie Gibbs & The Alchemist","title":"Alfredo","year":2020,"scenario":"catalog_color","color":"Bone","edition":"Limited Edition"},
+  {"id":"alfredo","artist":"Freddie Gibbs & The Alchemist","title":"Alfredo","year":2020,"scenario":"catalog_color","color":"Bone","edition":"Limited Edition","expected_outcome":"ambiguous","expected_strong_count":2,"expected_color_evidence":false},
   {"id":"cheat_codes","artist":"Danger Mouse & Black Thought","title":"Cheat Codes","year":2022,"scenario":"conflicting_barcode","color":"Red","edition":"Limited Edition"}
 ]

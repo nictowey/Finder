@@ -93,7 +93,23 @@ def test_curated_vinyl_matching_expectations():
     for case in CASES:
         target, ranked, decision = _evaluation(case)
         strong = [candidate for candidate in ranked if candidate.status == "strong_candidate"]
-        if case["scenario"] in {"exact_barcode", "catalog_color", "edition"}:
+        if "expected_outcome" in case:
+            assert decision.outcome == case["expected_outcome"], case["id"]
+            assert len(strong) == case["expected_strong_count"], case["id"]
+            assert len(strong) == 2 and strong[0].score == strong[1].score, case["id"]
+            assert set(decision.candidate_ids) == {
+                f"eval-{case['id']}-target",
+                f"eval-{case['id']}-distractor",
+            }, case["id"]
+            assert (
+                any(
+                    evidence.field == "color"
+                    for candidate in ranked
+                    for evidence in candidate.evidence
+                )
+                is case["expected_color_evidence"]
+            ), case["id"]
+        elif case["scenario"] in {"exact_barcode", "catalog_color", "edition"}:
             assert ranked[0].catalog_variant_id == target.catalog_variant_id, case["id"]
             assert ranked[0].status == "strong_candidate", case["id"]
             assert len(strong) == 1, case["id"]

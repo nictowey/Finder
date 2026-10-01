@@ -3,6 +3,29 @@
 Dated operational and validation history, moved verbatim from `AGENTS.md` on
 September 24, 2026 when Finder became a personal pressing hunter. Newer entries go at the top.
 
+## October 1, 2026 — unknown catalog colors remain unresolved
+
+Synthetic regressions showed that fuzzy comparison of raw format text could incorrectly
+rule out competing pressings described only by weight, packaging, or a pattern. Identical
+non-color wording could also incorrectly supply positive color evidence. Color matching now
+requires comparable recognized palettes or an explicit denial of a known catalog color.
+Missing or unrecognized color descriptions remain unknown; they neither match nor conflict.
+This preserves alternatives whose disc colors the catalog does not establish.
+
+Twenty-seven synthetic regressions cover title and structured claims, unknown colors,
+existing real-color conflicts and denials, partial color pairs, same-color named variants,
+and unresolved alternatives after owner-required keyword checks. Eighteen failed before
+the correction, with nine negative controls passing. Matching policy advances to v9 and
+private review to v10 for bounded reassessment. Owner signs and identity judgments are
+unchanged. Different catalog format text is not assumed to prove mutually exclusive named
+variants. These tests do not establish live precision or recall.
+
+The existing synthetic Bone-color evaluation retains its original listing and catalog facts.
+Because that shade is outside the recognized palette and both candidates share the catalog
+number, it now explicitly requires ambiguity, both surviving candidates and no color evidence,
+rather than a preferred pressing chosen from unsupported string comparison. No color-name
+conversion was added to preserve the old expectation.
+
 ## October 1, 2026 — catalog-backed numbered album spellings
 
 Catalog review found a vinyl family recorded with both Arabic and Roman terminal title
