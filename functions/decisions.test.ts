@@ -18,6 +18,19 @@ async function setup(){const db=new PGlite();await db.exec(schema);for(const nam
 async function save(db:PGlite,value:object,purchase=false){return db.query(saveDecisionQuery,decisionInput({...key,...value},purchase)!);}
 async function row(db:PGlite){return (await db.query<any>('SELECT * FROM finder_decisions')).rows[0];}
 
+test('versioned invalidation rejects an old page without changing saved provenance',async()=>{
+ const db=await setup();try{
+  await save(db,{verdict:'other'});const before=await row(db);
+  await db.query('UPDATE finder_inbox SET data=$1,last_seen_at=$2', [{status:'family_review',notify:false,evidence_invalidated_at:'2026-09-30T12:01:00Z',evidence_invalidated_reason:'seller_changed'},'2026-09-30T12:01:00Z']);
+  const adapter={query:async(sql:string,args?:unknown[])=>sql.includes('owner_email')?{rows:[{data:{email:'owner@example.com'}}]}:db.query(sql,args)};
+  const handler=createHandler({db:adapter,origin:'https://finder.example',authURL:'https://auth.example',fetch:async()=>new Response(JSON.stringify({user:{email:'owner@example.com',emailVerified:true},session:{expiresAt:'2099-01-01T00:00:00Z'}}))});
+  const post=(stamp:string)=>handler(new Request('https://finder.example/api/verdict',{method:'POST',headers:{Origin:'https://finder.example','Content-Type':'application/json'},body:JSON.stringify({...key,verdict:'mine',observed_tier:'family_review',observed_evaluated_at:stamp})}));
+  assert.equal((await post('2026-09-30T12:00:00Z')).status,409);assert.deepEqual(await row(db),before);
+  assert.equal((await post('2026-09-30T12:01:00Z')).status,200);const after=await row(db);
+  assert.equal(after.verdict,'mine');assert.deepEqual(after.prediction,before.prediction);assert.equal(after.decided_at,before.decided_at);
+ }finally{await db.close();}
+});
+
 for(const verdict of ['mine','other','unsure'])test(`identity ${verdict} saves and rehydrates with immutable first prediction`,async()=>{
  const db=await setup();try{
   await db.exec("INSERT INTO finder_outbox VALUES('w','ebay','1','pending')");

@@ -18,6 +18,7 @@ export const inboxQuery = `SELECT i.watch_id,i.marketplace,i.marketplace_item_id
     AND l.data->>'shipping_currency'=w.config->>'currency'
     AND l.data->>'price_kind' IN ('fixed_price','current_bid')
     AND l.data->>'details_observed_at' >= $6
+    AND i.data->>'evidence_invalidated_at' IS NULL
     AND i.data->>'watch_revision'=w.revision::text
     AND l.data->'source_metadata'->>'delivery_country'=w.config->>'country'
     AND l.data->'source_metadata'->>'delivery_postal_code'=w.config->>'postal_code'

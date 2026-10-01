@@ -546,7 +546,10 @@ def test_settings_edits_reuse_unchanged_details_but_hydrate_changed_search_resul
             select(work.c.status).where(work.c.item_id == items[0]["itemId"])
         ).scalar_one()
         assert not conn.execute(
-            select(outbox).where(outbox.c.marketplace_item_id == items[0]["itemId"])
+            select(outbox).where(
+                outbox.c.marketplace_item_id == items[0]["itemId"],
+                outbox.c.status.in_(("pending", "sending")),
+            )
         ).first()
         if detail_result == "success":
             assert conn.execute(select(verdicts.c.verdict)).scalar_one() == "mine"

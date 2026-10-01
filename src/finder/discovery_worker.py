@@ -32,6 +32,7 @@ from finder.discovery_store import (
     progress,
 )
 from finder.errors import CatalogError, ItemUnavailableError, RateLimitError, RequestRejectedError
+from finder.evidence import details_invalidated
 from finder.watch_profile import load_profile, siblings_of
 from finder.watch_store import SavedWatch, WatchStore, watches
 
@@ -362,12 +363,17 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                 for item in queue.due(claim, now_fn(), limit=RESORT_LIMIT, pending=True):
                     if item["reason"] != SETTINGS_CHANGED:
                         continue
+                    if item["failures"] or (item.get("review_data") or {}).get(
+                        "evidence_invalidated_at"
+                    ):
+                        continue  # A known failed/changed observation requires real details.
                     if time.monotonic() >= deadline:
                         partial = "execution_budget"
                         break
                     previous = repository.get("ebay", item["item_id"])
                     if (
                         previous is None
+                        or details_invalidated(previous)
                         or previous.source_metadata.get("delivery_country") != watch.country
                         or previous.source_metadata.get("delivery_postal_code") != watch.postal_code
                     ):
@@ -407,8 +413,11 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                         previous = repository.get("ebay", item["item_id"])
                         if (
                             item["status"] == "pending"
+                            and not item["failures"]
+                            and not (item.get("review_data") or {}).get("evidence_invalidated_at")
                             and item["kind"] != "existing_listing_updated"
                             and previous
+                            and not details_invalidated(previous)
                             and previous.details_observed_at
                             and previous.details_observed_at >= now_fn() - timedelta(hours=1)
                             and previous.source_metadata.get("delivery_country") == watch.country

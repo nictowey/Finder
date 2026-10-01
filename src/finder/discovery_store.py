@@ -21,7 +21,14 @@ from sqlalchemy import (
 )
 
 from finder.adapters.ebay.discovery import PAGE_SIZE, RESULT_CEILING, iso, summary_fingerprint
-from finder.watch_store import WatchStore, inbox, outbox, schema, watches
+from finder.watch_store import (
+    WatchStore,
+    inbox,
+    invalidate_review_evidence,
+    outbox,
+    schema,
+    watches,
+)
 
 EPOCH = "1990-01-01T00:00:00.000Z"
 OVERLAP = timedelta(hours=24)
@@ -240,13 +247,22 @@ class DiscoveryStore:
             count = conn.execute(
                 select(func.count()).select_from(work).where(work.c.watch_id == claim["id"])
             ).scalar_one()
-            for raw in items:
+            # Shared listing locks must use the same order across overlapping pages.
+            for raw in sorted(items, key=lambda item: item["itemId"]):
                 key = (work.c.watch_id == claim["id"]) & (work.c.item_id == raw["itemId"])
                 old = conn.execute(select(work).where(key)).mappings().first()
                 fingerprint = summary_fingerprint(raw)
                 if old:
                     values = {"last_search_at": now.isoformat(), "fingerprint": fingerprint}
                     if old["fingerprint"] != fingerprint or old["status"] == "unavailable":
+                        invalidate_review_evidence(
+                            conn,
+                            "ebay",
+                            raw["itemId"],
+                            now,
+                            reason="seller_changed",
+                            fingerprint=fingerprint,
+                        )
                         values.update(
                             status="pending",
                             next_check_at=now.isoformat(),
@@ -289,10 +305,21 @@ class DiscoveryStore:
             return [
                 dict(row)
                 for row in conn.execute(
-                    select(work)
+                    select(work, inbox.c.data.label("review_data"))
+                    .outerjoin(
+                        inbox,
+                        (inbox.c.watch_id == work.c.watch_id)
+                        & (inbox.c.marketplace == "ebay")
+                        & (inbox.c.marketplace_item_id == work.c.item_id),
+                    )
                     .where(
                         work.c.watch_id == claim["id"],
-                        work.c.next_check_at <= now.isoformat(),
+                        (work.c.next_check_at <= now.isoformat())
+                        | (
+                            inbox.c.data["evidence_invalidated_at"].as_string().is_not(None)
+                            if not pending
+                            else False
+                        ),
                         work.c.status.in_(("pending", "error"))
                         if pending
                         else work.c.status == "evaluated",
@@ -393,6 +420,15 @@ class DiscoveryStore:
                         .values(data=updated_state)
                     )
             elif status in ("unavailable", "error", "suppressed"):
+                if status == "error":
+                    invalidate_review_evidence(
+                        conn,
+                        "ebay",
+                        item["item_id"],
+                        now,
+                        reason="refresh_failed",
+                        watch_id=claim["id"],
+                    )
                 previous = conn.execute(
                     select(inbox.c.data).where(
                         inbox.c.watch_id == claim["id"],
@@ -411,13 +447,14 @@ class DiscoveryStore:
                         )
                         .values(data=data)
                     )
-                conn.execute(
-                    delete(outbox).where(
-                        outbox.c.watch_id == claim["id"],
-                        outbox.c.marketplace_item_id == item["item_id"],
-                        outbox.c.status.in_(("pending", "sending")),
+                if status != "error":
+                    conn.execute(
+                        delete(outbox).where(
+                            outbox.c.watch_id == claim["id"],
+                            outbox.c.marketplace_item_id == item["item_id"],
+                            outbox.c.status.in_(("pending", "sending")),
+                        )
                     )
-                )
             if status == "suppressed":
                 # A tombstone rejection must also erase the newly rediscovered identity.
                 # Retain only an anonymous event count, never an item/seller association.

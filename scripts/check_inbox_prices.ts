@@ -38,6 +38,7 @@ try {
     {id:"revision",review:{watch_revision:0}},
     {id:"wrong-destination",listing:{source_metadata:{delivery_country:"US",delivery_postal_code:"99999"}}},
     {id:"failed-details",listing:{quality_flags:["details_unavailable"]}},
+    {id:"invalidated-review",review:{evidence_invalidated_at:stamp}},
     {id:"bad-number",listing:{current_price:"NaN"}},
   ];
   assert.deepEqual((await query(cases)).map(x=>x.marketplace_item_id).sort(),["auction","boundary","under"]);

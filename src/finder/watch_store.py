@@ -26,6 +26,8 @@ from sqlalchemy import (
 )
 
 from finder.categories.vinyl_clues import Clue
+from finder.evidence import INVALIDATED_AT, SUMMARY_FINGERPRINT
+from finder.evidence import evidence_time as _evidence_time
 from finder.persistence import listings
 
 # The Browse request budget, not storage, bounds this; cadence stretches as watches grow.
@@ -218,6 +220,101 @@ NEW_TABLES = [
     decisions,
     verdicts,
 ]
+
+
+def _invalidated_review(data, stamp, reason):
+    return {
+        **data,
+        "evidence_invalidated_at": stamp,
+        "evidence_invalidated_reason": reason,
+        "notify": False,
+        "subtotal": None,
+        "budget": "needs_refresh",
+        "alert_budget": "not_alerting",
+        "clues": [],
+        "signs": [],
+        "common_signs": [],
+        "missing_signs": [],
+        "verify": [
+            "seller_details_changed" if reason == "seller_changed" else "detail_refresh_failed"
+        ],
+    }
+
+
+def invalidate_review_evidence(
+    conn, marketplace, item_id, now, *, reason, watch_id=None, fingerprint=None
+):
+    """Serialize shared evidence changes without taking another watch's lease lock."""
+    listing_key = (listings.c.marketplace == marketplace) & (
+        listings.c.marketplace_item_id == item_id
+    )
+    stored_listing = conn.execute(
+        select(listings.c.data).where(listing_key).with_for_update()
+    ).scalar()
+    if stored_listing is None:
+        return
+    if watch_id is None:
+        metadata = stored_listing.get("source_metadata", {})
+        previous = _evidence_time(metadata.get(INVALIDATED_AT))
+        if previous and (
+            (fingerprint is not None and metadata.get(SUMMARY_FINGERPRINT) == fingerprint)
+            or now <= previous
+        ):
+            now = previous  # Another watch saw the same fact, or this response is older.
+        else:
+            metadata = {**metadata, INVALIDATED_AT: now.isoformat()}
+            if fingerprint is not None:
+                metadata[SUMMARY_FINGERPRINT] = fingerprint
+            else:
+                metadata.pop(SUMMARY_FINGERPRINT, None)
+            conn.execute(
+                update(listings)
+                .where(listing_key)
+                .values(data={**stored_listing, "source_metadata": metadata})
+            )
+    scope = (inbox.c.marketplace == marketplace) & (inbox.c.marketplace_item_id == item_id)
+    if watch_id is not None:
+        scope &= inbox.c.watch_id == watch_id
+    rows = (
+        conn.execute(select(inbox).where(scope).order_by(inbox.c.watch_id).with_for_update())
+        .mappings()
+        .all()
+    )
+    for row in rows:
+        prior = row["data"]
+        observed = _evidence_time(prior.get("details_observed_at"))
+        invalidated = _evidence_time(prior.get("evidence_invalidated_at"))
+        if observed and observed >= now or invalidated and invalidated >= now:
+            continue
+        key = scope & (inbox.c.watch_id == row["watch_id"])
+        data = _invalidated_review(prior, now.isoformat(), reason)
+        previous_review = _evidence_time(row["last_seen_at"])
+        review_version = (
+            max(now, previous_review + timedelta(microseconds=1)) if previous_review else now
+        )
+        conn.execute(
+            update(inbox).where(key).values(data=data, last_seen_at=review_version.isoformat())
+        )
+        event_key = (
+            (outbox.c.watch_id == row["watch_id"])
+            & (outbox.c.marketplace == marketplace)
+            & (outbox.c.marketplace_item_id == item_id)
+        )
+        pending = conn.execute(
+            select(outbox.c.id)
+            .where(event_key, outbox.c.status == "pending", outbox.c.attempts == 0)
+            .with_for_update()
+        ).first()
+        conn.execute(
+            update(outbox)
+            .where(event_key, outbox.c.status.in_(("pending", "sending")))
+            .values(status="expired")
+        )
+        if pending:
+            # Keep the same never-attempted event resumable. Attempted/in-flight sends
+            # may already have reached a device and must not be blindly rearmed.
+            data["evidence_pending_event_id"] = pending.id
+            conn.execute(update(inbox).where(key).values(data=data))
 
 
 def _widen_watch_slots(conn):
@@ -496,18 +593,24 @@ class WatchStore:
                 return None
             added = 0
             for listing, data in reviews:
-                data = {**data, "watch_revision": claim["revision"]}
+                data = {
+                    **data,
+                    "watch_revision": claim["revision"],
+                    "details_observed_at": listing.details_observed_at.isoformat()
+                    if listing.details_observed_at
+                    else None,
+                }
                 # Lock the listing against concurrent seller deletion. The FK prevents
                 # recreating evidence if the deletion already won the race.
-                listing_exists = conn.execute(
-                    select(listings.c.marketplace_item_id)
+                stored_listing = conn.execute(
+                    select(listings.c.data)
                     .where(
                         listings.c.marketplace == listing.marketplace,
                         listings.c.marketplace_item_id == listing.marketplace_item_id,
                     )
                     .with_for_update()
-                ).first()
-                if not listing_exists:
+                ).scalar()
+                if stored_listing is None:
                     continue
                 key = (
                     (inbox.c.watch_id == claim["id"])
@@ -515,6 +618,50 @@ class WatchStore:
                     & (inbox.c.marketplace_item_id == listing.marketplace_item_id)
                 )
                 old = conn.execute(select(inbox).where(key)).mappings().first()
+                prior_details = (
+                    _evidence_time(old["data"].get("details_observed_at")) if old else None
+                )
+                if (
+                    prior_details
+                    and listing.details_observed_at
+                    and prior_details > listing.details_observed_at
+                ):
+                    continue  # An older in-flight assessment cannot replace a newer one.
+                invalidated_raw = old["data"].get("evidence_invalidated_at") if old else None
+                invalidated_reason = (
+                    old["data"].get("evidence_invalidated_reason", "refresh_failed")
+                    if old
+                    else "seller_changed"
+                )
+                shared_boundary = _evidence_time(
+                    stored_listing.get("source_metadata", {}).get(INVALIDATED_AT)
+                )
+                invalidated = _evidence_time(invalidated_raw)
+                if shared_boundary and (not invalidated or shared_boundary > invalidated):
+                    invalidated, invalidated_raw, invalidated_reason = (
+                        shared_boundary,
+                        shared_boundary.isoformat(),
+                        "seller_changed",
+                    )
+                if invalidated_raw:
+                    if (
+                        not invalidated
+                        or not listing.details_observed_at
+                        or listing.details_observed_at < invalidated
+                        or any(
+                            flag in listing.quality_flags
+                            for flag in (
+                                "details_unavailable",
+                                "item_specifics_stale",
+                                "details_not_requested",
+                            )
+                        )
+                    ):
+                        data = _invalidated_review(
+                            data,
+                            invalidated_raw,
+                            invalidated_reason,
+                        )
                 already_judged = conn.execute(
                     select(verdicts.c.verdict).where(
                         verdicts.c.watch_id == claim["id"],
@@ -523,6 +670,26 @@ class WatchStore:
                     )
                 ).first()
                 eligible = success and data.get("notify", False) and not already_judged
+                resumed = False
+                suspended_id = old["data"].get("evidence_pending_event_id") if old else None
+                if suspended_id:
+                    if eligible and not old["dismissed"]:
+                        resumed = bool(
+                            conn.execute(
+                                update(outbox)
+                                .where(
+                                    outbox.c.id == suspended_id,
+                                    outbox.c.watch_id == claim["id"],
+                                    outbox.c.marketplace == listing.marketplace,
+                                    outbox.c.marketplace_item_id == listing.marketplace_item_id,
+                                    outbox.c.status == "expired",
+                                    outbox.c.attempts == 0,
+                                )
+                                .values(status="pending")
+                            ).rowcount
+                        )
+                    else:
+                        data["evidence_pending_event_id"] = suspended_id
                 values = dict(data=data, last_seen_at=stamp)
                 if old:
                     conn.execute(update(inbox).where(key).values(**values))
@@ -541,6 +708,7 @@ class WatchStore:
                     added += 1
                 if (
                     eligible
+                    and not resumed
                     and not (old and (old["alerted"] or old["dismissed"]))
                     and not data.get("digest_covered")
                 ):

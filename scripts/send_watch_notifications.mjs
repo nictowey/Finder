@@ -17,6 +17,7 @@ export async function deliver(db, send=webpush.sendNotification.bind(webpush)) {
     AND l.data->>'details_observed_at' >= $1
     AND (l.data->>'listing_ends_at' IS NULL OR l.data->>'listing_ends_at' > $3)
     AND w.enabled AND NOT i.dismissed AND i.last_seen_at >= $1 AND (i.data->>'notify')='true'
+    AND i.data->>'evidence_invalidated_at' IS NULL
     AND NOT EXISTS (SELECT 1 FROM finder_verdicts v WHERE v.watch_id=i.watch_id AND v.marketplace=i.marketplace AND v.marketplace_item_id=i.marketplace_item_id)
     AND (i.data->>'policy')=$2
     AND (i.data->>'watch_revision')=w.revision::text)`,[new Date(Date.now()-3600000).toISOString(),'private-target-review-v8',new Date().toISOString()]);

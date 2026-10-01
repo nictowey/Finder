@@ -3,6 +3,16 @@
 Dated operational and validation history, moved verbatim from `AGENTS.md` on
 September 24, 2026 when Finder became a personal pressing hunter. Newer entries go at the top.
 
+## October 1, 2026 — known-invalid listing evidence
+
+Offline tests reproduced a changed seller summary followed by deferred or failed detail
+hydration leaving the old price and pressing clues apparently current, with an old pending
+alert still eligible. Shared monotonic evidence invalidation now blocks that stale assessment
+across watches and newly created reviews. A failed read is retryable rather than unavailable;
+freshness warnings and price filtering no longer rely on age alone. Successful current
+evidence can resume the same never-attempted event without replaying attempted delivery.
+See [evidence freshness](evidence-freshness.md) for the locking, recovery and test boundaries.
+
 ## October 1, 2026 — retryable barcode discovery failures
 
 Offline recovery tests reproduced a missed listing after a temporary barcode-search outage:
