@@ -64,7 +64,7 @@ def _keyword_variants(value: str) -> tuple[str, ...]:
 class ListingText:
     """Seller claims prepared once per listing."""
 
-    def __init__(self, listing: Listing, target: Variant):
+    def __init__(self, listing: Listing, target: Variant, *, album_aliases: tuple[str, ...] = ()):
         seller = from_listing(listing)
         self.fingerprint = seller
         values = [value for specific in listing.item_specifics.values() for value in specific]
@@ -78,7 +78,10 @@ class ListingText:
             for value in values
         ]
         # Artist and album words such as "Purple Rain" are not color claims.
-        names = tuple(re.sub(r"\s+\(\d+\)$", "", name) for name in [target.title, *target.artists])
+        names = tuple(
+            re.sub(r"\s+\(\d+\)$", "", name)
+            for name in [target.title, *album_aliases, *target.artists]
+        )
         title_colors, title_denied = _seller_color_claims([listing.title], ignore=names)
         structured_colors, structured_denied = _seller_color_claims(self.structured_colors)
         self.structured_palette = _palette(structured_colors)
@@ -114,12 +117,14 @@ def clue_found(clue: Clue, seen: ListingText, *, common_version: bool = False) -
     return any(_phrase_found(seen.text, term) for term in _keyword_variants(clue.value))
 
 
-def apply_cheat_sheet(review: dict, listing: Listing, target: Variant, tells, anti_tells) -> dict:
+def apply_cheat_sheet(
+    review: dict, listing: Listing, target: Variant, tells, anti_tells, *, album_aliases=()
+) -> dict:
     """Refine a family review with the owner's signs. Returns a new review dict."""
     tells, anti_tells = list(tells or []), list(anti_tells or [])
     if not tells and not anti_tells:
         return review
-    seen = ListingText(listing, target)
+    seen = ListingText(listing, target, album_aliases=album_aliases)
     found = [clue for clue in tells if clue_found(clue, seen)]
     missing = [clue for clue in tells if clue.required and clue not in found]
     denied = [

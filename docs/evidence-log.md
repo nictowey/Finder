@@ -19,6 +19,12 @@ reassessed through the existing bounded worker. The Discogs smoke workflow now i
 target-review module and its tests in its trigger paths. No live precision or recall claim
 follows from these synthetic tests.
 
+Independent pre-merge review caught a second-stage issue: a color word in a validated alias
+title could satisfy or contradict an owner-required disc-color sign. The cheat-sheet stage
+now ignores the same catalog-backed album spellings before extracting positive and denied
+colors. End-to-end tests retain real disc-color claims while preventing album words alone
+from producing a likely tier or an alert.
+
 ## October 1, 2026 — known-invalid listing evidence
 
 Offline tests reproduced a changed seller summary followed by deferred or failed detail

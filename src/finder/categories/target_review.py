@@ -62,7 +62,7 @@ ROMAN_TITLE_NUMBERS = {
 }
 
 
-def _catalog_title_aliases(target: Variant, family: list[Variant]) -> tuple[str, ...]:
+def catalog_title_aliases(target: Variant, family: list[Variant]) -> tuple[str, ...]:
     """Use a sibling's recorded spelling, never a guessed seller-title conversion."""
 
     def parts(title):
@@ -94,6 +94,7 @@ def _catalog_title_aliases(target: Variant, family: list[Variant]) -> tuple[str,
                 _normalized(row.title)
                 for row in family
                 if row.catalog_source == target.catalog_source
+                and row.catalog_variant_id != target.catalog_variant_id
                 and row.catalog_product_id == master
                 and row.catalog_product_id != row.catalog_variant_id
                 and artists(row) == names
@@ -299,7 +300,7 @@ def review_target_with_alternatives(
         and any(str(fmt.get("name", "")).casefold() == "vinyl" for fmt in row.formats)
     }
     family = [target, *unique.values()]
-    aliases = _catalog_title_aliases(target, family)
+    aliases = catalog_title_aliases(target, family)
     review = review_target_listing(listing, target, album_aliases=aliases)
     if review.status in ("possible_pressing", "family_review") and any(
         _more_specific_album_claim(listing, target, row, aliases) for row in unique.values()
@@ -310,7 +311,7 @@ def review_target_with_alternatives(
     # The sparse family check handles normalized artist/title spelling and also keeps
     # plausible candidates whose master grouping is absent or differs in the catalog.
     considered = [
-        review_target_listing(listing, row, album_aliases=_catalog_title_aliases(row, family))
+        review_target_listing(listing, row, album_aliases=catalog_title_aliases(row, family))
         for row in unique.values()
     ]
     unresolved = sum(row.status in ("possible_pressing", "family_review") for row in considered)
