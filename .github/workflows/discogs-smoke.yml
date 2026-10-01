@@ -11,8 +11,7 @@ on:
       - "src/finder/matching.py"
       - "src/finder/cli.py"
       - "scripts/validate_live_matching.py"
-      - "tests/test_discogs.py"
-      - "tests/test_target_review.py"
+      - "tests/**"
       - "pyproject.toml"
 
 permissions:
