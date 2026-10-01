@@ -10,7 +10,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from finder.categories.vinyl import from_listing, from_variant, has_numbered_claim
+from finder.categories.vinyl import (
+    from_listing,
+    from_variant,
+    has_numbered_claim,
+    is_missing_identifier,
+)
 from finder.domain import Listing, Variant
 from finder.matching import _compact, _listing_color_claims, _normalized, _palette
 
@@ -84,6 +89,9 @@ class ListingText:
 
 
 def clue_found(clue: Clue, seen: ListingText, *, common_version: bool = False) -> bool:
+    # Saved owner clues and cached suggestions can predate extraction normalization.
+    if clue.kind in ("catalog_number", "barcode") and is_missing_identifier(clue.value):
+        return False
     if clue.kind == "numbered":
         return seen.numbered
     if clue.kind == "color":

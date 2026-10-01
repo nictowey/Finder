@@ -43,6 +43,19 @@ def _specifics(listing: Listing, *names: str) -> list[str]:
     )
 
 
+def is_missing_identifier(value: str) -> bool:
+    """Recognize whole missing-value sentinels without compacting real IDs like NA."""
+    normalized = " ".join(value.split()).casefold()
+    return (
+        normalized in {"none", "does not apply"}
+        or re.fullmatch(r"n\s*/\s*a", normalized) is not None
+    )
+
+
+def _usable_identifiers(values: Iterable[str]) -> list[str]:
+    return _unique(value for value in values if not is_missing_identifier(value))
+
+
 def catalog_number_claims(listing: Listing) -> list[list[str]]:
     """Preserve independent seller fields while allowing multiple numbers per field."""
     wanted = {_key(name) for name in CATALOG_NUMBER_FIELDS}
@@ -50,7 +63,7 @@ def catalog_number_claims(listing: Listing) -> list[list[str]]:
         claim
         for name, values in listing.item_specifics.items()
         if _key(name) in wanted
-        if (claim := _unique(values))
+        if (claim := _usable_identifiers(values))
     ]
 
 
@@ -120,8 +133,8 @@ def from_listing(listing: Listing) -> VinylFingerprint:
         title=listing.title,
         release_years=list(dict.fromkeys(years)),
         labels=_specifics(listing, "Record Label", "Label"),
-        catalog_numbers=_specifics(listing, *CATALOG_NUMBER_FIELDS),
-        barcodes=_specifics(listing, "UPC", "EAN", "Barcode"),
+        catalog_numbers=_usable_identifiers(_specifics(listing, *CATALOG_NUMBER_FIELDS)),
+        barcodes=_usable_identifiers(_specifics(listing, "UPC", "EAN", "Barcode")),
         colors=_specifics(listing, *COLOR_FIELDS),
         editions=_specifics(listing, "Edition", "Features"),
         country=next(iter(_specifics(listing, "Country", "Country/Region of Manufacture")), None),
@@ -163,10 +176,10 @@ def from_variant(variant: Variant) -> VinylFingerprint:
         labels=_unique(
             str(label["name"]) for label in variant.labels if isinstance(label.get("name"), str)
         ),
-        catalog_numbers=_unique(
+        catalog_numbers=_usable_identifiers(
             str(label["catno"]) for label in variant.labels if label.get("catno")
         ),
-        barcodes=_identifier_values(variant, "barcode"),
+        barcodes=_usable_identifiers(_identifier_values(variant, "barcode")),
         colors=_unique(format_text),
         editions=_unique(
             value

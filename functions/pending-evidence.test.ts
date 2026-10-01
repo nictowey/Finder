@@ -19,7 +19,7 @@ test('legacy shared changes hold events without attempts or expiry, and newer sa
    INSERT INTO finder_watches VALUES('a',true,1),('b',true,1);
    INSERT INTO finder_outbox VALUES('event-a','a','ebay','item','pending',0),('event-b','b','ebay','item','pending',0);`);
   const old=new Date(Date.now()-7200000).toISOString(),boundary=new Date(Date.now()-20000).toISOString(),fresh=new Date(Date.now()-10000).toISOString(),later=new Date().toISOString();
-  const review={status:'possible_pressing',policy:'private-target-review-v12',watch_revision:1,notify:true,details_observed_at:old};
+  const review={status:'possible_pressing',policy:'private-target-review-v13',watch_revision:1,notify:true,details_observed_at:old};
   await db.query("INSERT INTO listings VALUES('ebay','item',$1)",[{details_observed_at:old}]);
   for(const watch of ['a','b'])await db.query("INSERT INTO finder_inbox VALUES($1,'ebay','item',$2,$3,false)",[watch,review,old]);
   // A different watch can know the changed identity before it ever hydrates it.

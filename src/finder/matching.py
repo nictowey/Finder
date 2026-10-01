@@ -21,7 +21,7 @@ from finder.domain import (
     Variant,
 )
 
-MATCH_POLICY_VERSION = "vinyl-decision-v11"
+MATCH_POLICY_VERSION = "vinyl-decision-v12"
 
 # Compare named colors across the whole record set. Discogs may describe the two
 # discs separately while a seller puts both colors in a single item specific.

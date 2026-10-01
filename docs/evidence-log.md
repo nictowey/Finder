@@ -3,7 +3,33 @@
 Dated operational and validation history, moved verbatim from `AGENTS.md` on
 September 24, 2026 when Finder became a personal pressing hunter. Newer entries go at the top.
 
-## October 1, 2026 — explicit seller color choices remain uncertain (local, not deployed)
+## October 1, 2026 — missing identifier sentinels stay missing (local, not deployed)
+
+Seller/catalog barcode and catalog-number extraction now discards only whole values
+`None`, `N/A` (including `N / A`) and `Does not apply`, case-insensitively with whitespace
+normalization. Empty per-field catalog-number claim groups are dropped. Real identifiers,
+including `NA`, short numeric numbers, prefixes such as `NONE-001`, and multiple labels or
+values retain their existing comparison semantics. Raw source models are unchanged.
+
+Typed catalog-number/barcode clues use the same guard, so old owner clues or cached
+suggestions cannot turn title substrings such as `Nonesuch` into pressing evidence or an
+anti-tell conflict. Owner settings and non-identifier clues are untouched. Fresh suggestions
+and catalog searches inherit normalized extraction; live-validation helpers now use it too.
+No broader GTIN validation, new sentinel vocabulary or provider request is introduced.
+
+Matching policy `vinyl-decision-v12` and review/notification policy `private-target-review-v13`
+use the existing bounded reassessment path without rewriting original judgment provenance.
+Synthetic regressions cover scoring, review, missing-data alternatives, genuine conflicts,
+source preservation, clues, query helpers and default/main/strict/gamble alert paths. These
+local checks do not establish live precision or recall; authenticated Discogs smoke remains
+a release-stage gate.
+
+## October 1, 2026 — explicit seller color choices remain uncertain (merged, live catch-up pending)
+
+[PR #88](https://github.com/nictowey/Finder/pull/88) merged at 06:47:06 UTC as main commit
+`44afc27c17cbc9e5778e32e099a1d65495c99b87`. Final-head PostgreSQL migration, restore and
+feedback-locking checks, authenticated Discogs validation, and sandbox checks passed.
+Live watch catch-up remains pending; these gates do not establish live matching accuracy.
 
 Seller-only color extraction now retains a shared explicit-choice signal beside definite
 claims and denials. English `or`, `either`, `vs`/`versus`, and `and/or` choices withhold the
