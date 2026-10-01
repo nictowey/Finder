@@ -15,7 +15,7 @@ from finder.domain import (
     Variant,
 )
 
-MATCH_POLICY_VERSION = "vinyl-decision-v8"
+MATCH_POLICY_VERSION = "vinyl-decision-v9"
 
 # Compare named colors across the whole record set. Discogs may describe the two
 # discs separately while a seller puts both colors in a single item specific.
@@ -260,8 +260,10 @@ def _color_evidence(listing_values: list[str], variant_values: list[str]) -> Mat
             matched=left == right,
             weight=15,
         )
-    evidence = _similarity_evidence("color", claims, variant_values, 15, 0.72)
-    return evidence.model_copy(update={"listing_values": listing_values}) if evidence else None
+    # Discogs format text also contains weights, packaging and unnamed patterns.
+    # Without comparable palettes, neither a similar phrase nor different wording
+    # establishes a color match or conflict. Keep those pressings unresolved.
+    return None
 
 
 def score_variant(
