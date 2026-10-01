@@ -7,7 +7,7 @@ from finder.categories.target_review import catalog_title_aliases, review_target
 from finder.categories.vinyl_clues import apply_cheat_sheet
 from finder.watch_store import WatchStore
 
-POLICY = "private-target-review-v11"
+POLICY = "private-target-review-v12"
 
 
 def _compare(watch, listing, limit, reasons):

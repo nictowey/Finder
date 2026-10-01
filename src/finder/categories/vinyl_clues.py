@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from finder.categories.vinyl import from_listing, from_variant, has_numbered_claim
 from finder.domain import Listing, Variant
-from finder.matching import _compact, _normalized, _palette, _seller_color_claims
+from finder.matching import _compact, _listing_color_claims, _normalized, _palette
 
 ClueKind = Literal["keyword", "color", "catalog_number", "barcode", "label", "country", "numbered"]
 
@@ -42,7 +42,6 @@ EDITION_TERMS = {
     "mono": ("mono",),
 }
 NEGATION = re.compile(r"\b(?:not|no|non|never|without|isnt)\s+(?:\w+\s+){0,2}$")
-COLOR_FIELDS = {"color", "record color", "vinyl color", "colour", "vinyl colour"}
 
 
 def _phrase_found(text: str, phrase: str) -> bool:
@@ -71,22 +70,14 @@ class ListingText:
         self.text = _normalized(" ".join([listing.title, *values]))
         self.compact = _compact(" ".join([listing.title, *seller.catalog_numbers]))
         self.digits = re.sub(r"\D", " ", " ".join([listing.title, *seller.barcodes]))
-        self.structured_colors = [
-            value
-            for name, values in listing.item_specifics.items()
-            if _normalized(name) in COLOR_FIELDS
-            for value in values
-        ]
-        # Artist and album words such as "Purple Rain" are not color claims.
-        names = tuple(
-            re.sub(r"\s+\(\d+\)$", "", name)
-            for name in [target.title, *album_aliases, *target.artists]
+        self.structured_colors = seller.colors
+        title_colors, structured_colors = _listing_color_claims(
+            listing, target, album_aliases=album_aliases
         )
-        title_colors, title_denied = _seller_color_claims([listing.title], ignore=names)
-        structured_colors, structured_denied = _seller_color_claims(self.structured_colors)
-        self.structured_palette = _palette(structured_colors)
-        self.palette = self.structured_palette | _palette(title_colors)
-        self.denied_palette = structured_denied | title_denied
+        self.structured_palette = _palette(structured_colors.positive)
+        self.palette = self.structured_palette | _palette(title_colors.positive)
+        self.denied_palette = structured_colors.denied | title_colors.denied
+        self.color_claim_ambiguous = title_colors.ambiguous or structured_colors.ambiguous
         self.numbered = has_numbered_claim([*seller.editions, listing.title])
         self.labels = [_normalized(value) for value in seller.labels]
         self.country = _normalized(seller.country or "")
@@ -143,7 +134,13 @@ def apply_cheat_sheet(
             status = "conflicting"
             verify.append("common_version_sign")
         elif any(clue.required for clue in tells):
-            status = "family_review" if missing else "possible_pressing"
+            status = (
+                "family_review" if missing or seen.color_claim_ambiguous else "possible_pressing"
+            )
+        if seen.color_claim_ambiguous and status == "possible_pressing":
+            status = "family_review"
+        if seen.color_claim_ambiguous and "color_claim_ambiguous" not in verify:
+            verify.append("color_claim_ambiguous")
     if found:
         clues.append("cheat_sheet_sign")
     if missing:

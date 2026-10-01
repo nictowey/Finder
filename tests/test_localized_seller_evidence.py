@@ -388,10 +388,10 @@ def test_incomplete_french_lists_preserve_explicit_denials_and_block_gamble_aler
     assert review.get("signs", []) == []
 
 
-def test_mixed_language_comma_alternative_does_not_add_a_french_palette():
+def test_mixed_language_comma_alternative_cannot_supply_either_branch():
     text = "vinyle bleu, or white"
     claims, denied = _seller_color_claims([text])
-    assert _palette(claims) == {"white"} and denied == set()
+    assert _palette(claims) == denied == set()
     target = variant("Blue/White")
     watch = SavedWatch(release_id=1, tells=[Clue(kind="color", value="Blue/White", required=True)])
     review = assess_review(
@@ -643,19 +643,26 @@ def test_unsupported_french_disc_phrases_preserve_existing_english_evidence(text
 @pytest.mark.parametrize("separator", ["; ", ". ", "!\n", "\n", ".\n"])
 @pytest.mark.parametrize("uncertain", ["ou blanc", "vinyle blanc ou gris", "vinyle blanc et rouge"])
 @pytest.mark.parametrize("reverse", [False, True])
-def test_incomplete_positive_sentences_withhold_the_whole_french_palette(
+def test_independent_french_choice_preserves_definite_claim_but_continuation_abstains(
     separator, uncertain, reverse
 ):
     first, second = (uncertain, "vinyle bleu") if reverse else ("vinyle bleu", uncertain)
     text = first + separator + second
     claims, denied = _seller_color_claims([text])
-    assert _palette(claims) == denied == set()
+    # An explicit new vinyle clause is its own unresolved choice. A bare 'ou blanc'
+    # continues the earlier color, and unsupported non-choice grammar still abstains.
+    independent_choice = uncertain == "vinyle blanc ou gris"
+    assert _palette(claims) == ({"blue"} if independent_choice else set())
+    assert denied == set()
     watch = SavedWatch(release_id=1, tells=[Clue(kind="color", value="Blue", required=True)])
     review = assess_review(
         watch, listing(text), variant(), now=NOW, alternatives=[], search_incomplete=False
     )
     assert review["status"] == "family_review" and not review["notify"]
-    assert review["signs"] == [] and review["missing_signs"] == ["color: Blue"]
+    assert review["signs"] == (["color: Blue"] if independent_choice else [])
+    assert review["missing_signs"] == ([] if independent_choice else ["color: Blue"])
+    if independent_choice:
+        assert "color_claim_ambiguous" in review["verify"]
 
 
 @pytest.mark.parametrize(
