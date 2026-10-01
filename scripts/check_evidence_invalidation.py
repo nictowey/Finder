@@ -24,7 +24,8 @@ class BoundTransaction:
             yield self.connection
 
 
-def check_evidence_invalidation(repo, store, queue, listing, now):
+def check_evidence_invalidation(repo, store, queue, listing, now, *, on_phase):
+    on_phase("seed_shared_reviews")
     refs = [
         {
             "itemId": f"v1|{910001 + i}|0",
@@ -106,11 +107,18 @@ def check_evidence_invalidation(repo, store, queue, listing, now):
                 a = executor.submit(checkpoint, "first", first, watches[0], changed)
                 b = None
                 try:
-                    assert first_locked.wait(5)
+                    on_phase("first_listing_lock")
+                    if not first_locked.wait(5):
+                        a.result(timeout=1)
+                        raise AssertionError("First checkpoint did not reach its shared lock")
                     b = executor.submit(
                         checkpoint, "second", second, watches[1], list(reversed(changed))
                     )
-                    assert second_requested.wait(5)
+                    on_phase("second_listing_lock")
+                    if not second_requested.wait(5):
+                        b.result(timeout=1)
+                        raise AssertionError("Second checkpoint did not request its shared lock")
+                    on_phase("shared_listing_blocking")
                     deadline = monotonic() + 5
                     while not observer.execute(
                         text("SELECT :holder = ANY(pg_blocking_pids(:waiter))"),
@@ -123,6 +131,7 @@ def check_evidence_invalidation(repo, store, queue, listing, now):
                 a.result(timeout=10)
                 if b:
                     b.result(timeout=10)
+    on_phase("assert_shared_invalidation")
     watch_ids = [watch[0]["id"] for watch in watches]
     with repo.engine.connect() as conn:
         rows = (
@@ -142,6 +151,7 @@ def check_evidence_invalidation(repo, store, queue, listing, now):
             select(outbox.c.id).where(outbox.c.watch_id == watch_ids[0])
         ).scalar_one()
     claim, state, items = watches[0]
+    on_phase("reject_stale_feedback")
     with repo.engine.begin() as conn:
         # A page opened before invalidation cannot save against the unchanged tier.
         stale_save = conn.execute(
@@ -158,6 +168,7 @@ def check_evidence_invalidation(repo, store, queue, listing, now):
         ).all()
         assert stale_save == []
     fresh_at = now + timedelta(minutes=2)
+    on_phase("resume_same_unattempted_event")
     fresh = listing.model_copy(
         update={
             "marketplace_item_id": refs[0]["itemId"],
