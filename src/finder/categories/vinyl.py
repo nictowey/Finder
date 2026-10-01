@@ -8,6 +8,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from finder.domain import Listing, Variant
 
+CATALOG_NUMBER_FIELDS = (
+    "Catalog Number",
+    "Catalogue Number",
+    "Cat No",
+    "Numéro de catalogue",
+    "Katalognummer",
+    "Codice catalogo",
+)
+
 
 def _key(value: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", value.lower()))
@@ -30,6 +39,17 @@ def _specifics(listing: Listing, *names: str) -> list[str]:
         if _key(name) in wanted
         for value in values
     )
+
+
+def catalog_number_claims(listing: Listing) -> list[list[str]]:
+    """Preserve independent seller fields while allowing multiple numbers per field."""
+    wanted = {_key(name) for name in CATALOG_NUMBER_FIELDS}
+    return [
+        claim
+        for name, values in listing.item_specifics.items()
+        if _key(name) in wanted
+        if (claim := _unique(values))
+    ]
 
 
 def _identifier_values(variant: Variant, text: str) -> list[str]:
@@ -94,16 +114,16 @@ def from_listing(listing: Listing) -> VinylFingerprint:
         if match:
             years.append(int(match.group()))
     return VinylFingerprint(
-        artists=_specifics(listing, "Artist"),
+        artists=_specifics(listing, "Artist", "Artiste", "Künstler", "Interpret", "Artista"),
         title=listing.title,
         release_years=list(dict.fromkeys(years)),
         labels=_specifics(listing, "Record Label", "Label"),
-        catalog_numbers=_specifics(listing, "Catalog Number", "Catalogue Number", "Cat No"),
+        catalog_numbers=_specifics(listing, *CATALOG_NUMBER_FIELDS),
         barcodes=_specifics(listing, "UPC", "EAN", "Barcode"),
         colors=_specifics(listing, "Color", "Record Color", "Vinyl Color"),
         editions=_specifics(listing, "Edition", "Features"),
         country=next(iter(_specifics(listing, "Country", "Country/Region of Manufacture")), None),
-        format_descriptions=_specifics(listing, "Format"),
+        format_descriptions=_specifics(listing, "Format", "Formato"),
         record_sizes=_specifics(listing, "Record Size", "Size"),
         speeds=_specifics(listing, "Speed"),
         matrix_runouts=_specifics(listing, "Matrix / Runout", "Matrix Number", "Runout"),

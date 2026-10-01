@@ -34,6 +34,13 @@ class TargetReview(BaseModel):
 # These words are commonly seller adjectives as well as record titles. A bare
 # occurrence in a long listing title cannot establish the album identity.
 WEAK_ALBUM_TITLES = {"rare"}
+RELEASE_TITLE_FIELDS = {
+    "release title",
+    "album title",
+    "titre de la version",
+    "musiktitel",
+    "titolo della pubblicazione",
+}
 RELEASE_TITLE_SUFFIXES = {
     "album",
     "vinyl",
@@ -152,7 +159,7 @@ def _more_specific_album_claim(
     structured = (
         value
         for key, values in listing.item_specifics.items()
-        if _normalized(key) in {"release title", "album title"}
+        if _normalized(key) in RELEASE_TITLE_FIELDS
         for value in values
     )
     if any(_normalized(value) == other_title for value in structured):
@@ -187,14 +194,16 @@ def review_target_listing(
     release_titles = [
         value
         for key, values in listing.item_specifics.items()
-        if _normalized(key) in {"release title", "album title", "album"}
+        if _normalized(key) in RELEASE_TITLE_FIELDS | {"album"}
         for value in values
         if value.strip()
     ]
-    structured_album = any(
-        _release_title_matches(value, claimed_album, artist_names)
+    structured_album = bool(release_titles) and all(
+        any(
+            _release_title_matches(value, claimed_album, artist_names)
+            for claimed_album in album_titles
+        )
         for value in release_titles
-        for claimed_album in album_titles
     )
     family = bool(
         album
@@ -248,6 +257,8 @@ def review_target_listing(
         clues.append("seller_color_claim")
     elif seller_palette < _palette(catalog.colors) and seller_palette:
         verify.append("color_pair_incomplete")
+    elif seller_palette:
+        verify.append("color_not_comparable")
     else:
         verify.append("color_not_claimed")
 
