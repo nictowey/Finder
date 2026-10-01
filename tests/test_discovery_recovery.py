@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from finder import discovery_worker as worker
 from finder.adapters.discogs.adapter import AlternativeRetrieval
@@ -28,6 +28,8 @@ NOW = datetime(2026, 9, 24, 12, tzinfo=UTC)
         "timeout",
         "invalid_total",
         "invalid_page",
+        "legacy_outage",
+        "legacy_rejection",
     ],
 )
 def test_barcode_only_listing_is_discovered_after_temporary_outage(
@@ -92,6 +94,8 @@ def test_barcode_only_listing_is_discovered_after_temporary_outage(
             barcode = "gtin" in request.url.params
             if barcode:
                 barcode_reads.append(available)
+                if available and failure == "legacy_rejection":
+                    return httpx.Response(400)
                 if not available:
                     if failure == "transport":
                         raise httpx.ReadTimeout("synthetic outage", request=request)
@@ -130,12 +134,31 @@ def test_barcode_only_listing_is_discovered_after_temporary_outage(
     assert state["queries"][0]["incremental"]["frontier"][0]["offset"] == 0
     assert state["queries"][0]["watermark"] is None
     assert datetime.fromisoformat(retry_at) == NOW + timedelta(minutes=30)
+    if failure.startswith("legacy_"):
+        # Before this release, one outage was permanently recorded as unsupported.
+        state.pop("barcode_recovery_version", None)
+        for lane in ("baseline", "incremental"):
+            state["queries"][0][lane].update(
+                status="partial_provider_limit", reason="barcode_search_unavailable"
+            )
+        with repository.engine.begin() as conn:
+            conn.execute(update(progress).values(data=state))
     available = True
     later = NOW + timedelta(hours=1)
     claim = store.claim(now=later)
     result = worker.run_chunk(repository, settings, None, claim, now_fn=lambda: later)
     assert any(barcode_reads), "A transient outage must not disable future barcode discovery"
     assert result["failed"] == 0
+    if failure.startswith("legacy_"):
+        assert result["legacy_barcode_lanes_reopened"] == 2
+    if failure == "legacy_rejection":
+        assert not details
+        before = len(barcode_reads)
+        later += timedelta(hours=1)
+        claim = store.claim(now=later)
+        worker.run_chunk(repository, settings, None, claim, now_fn=lambda: later)
+        assert len(barcode_reads) == before  # No repeated probes of confirmed rejection.
+        return
     assert len(details) == 1
     with repository.engine.connect() as conn:
         assert conn.execute(select(inbox.c.marketplace_item_id)).scalar_one() == item["itemId"]
@@ -144,3 +167,35 @@ def test_barcode_only_listing_is_discovered_after_temporary_outage(
         state["queries"][0][lane]["status"] == "search_exhausted"
         for lane in ("baseline", "incremental")
     )
+
+
+def test_legacy_recovery_preserves_healthy_lanes_and_existing_cursor():
+    from copy import deepcopy
+
+    from finder.adapters.ebay.target_search import EbaySearchTarget
+    from finder.discovery_store import start_state
+
+    target = EbaySearchTarget(
+        id="test", catalog_variant_id=111, queries=["gtin:0123456789012", "Album"]
+    )
+    state = start_state(target, 1, NOW)
+    state["initial_digest_sent"] = True
+    lane = state["queries"][0]["baseline"]
+    lane.update(status="partial_provider_limit", reason="barcode_search_unavailable")
+    lane["frontier"][0]["offset"] = 200
+    capped = deepcopy(state["queries"][0]["incremental"])
+    capped.update(status="partial_provider_limit", reason="provider_offset_ceiling")
+    state["queries"][0]["reconciliation"] = deepcopy(capped)
+    keywords = deepcopy(state["queries"][1])
+    untouched = deepcopy(state["queries"][0]["incremental"])
+    frontier = deepcopy(lane["frontier"])
+    assert worker.recover_barcode_lanes(state, target.queries) == 1
+    assert lane["frontier"] == frontier
+    assert state["queries"][1] == keywords
+    assert state["queries"][0]["incremental"] == untouched
+    assert state["queries"][0]["reconciliation"] == capped
+    assert state["initial_digest_sent"] is True
+    assert state["queries"][0]["watermark"] is None
+    lane.update(status="partial_provider_limit", reason="barcode_search_unavailable")
+    assert worker.recover_barcode_lanes(state, target.queries) == 0
+    assert lane["status"] == "partial_provider_limit"

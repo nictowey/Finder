@@ -46,6 +46,7 @@ RESORT_LIMIT = 300
 # The rest of the 5,000-call quota covers details, reconciliation and retries.
 POLL_BUDGET = 2000
 MIN_POLL_MINUTES = 10
+BARCODE_RECOVERY_VERSION = 1
 _quota_cache = {}
 
 
@@ -81,6 +82,31 @@ def watch_queries(target_queries, variant, watch):
         if query.strip() and query.casefold() not in {q.casefold() for q in unique}:
             unique.append(query.strip())
     return unique[:MAX_QUERIES]
+
+
+def recover_barcode_lanes(state, queries):
+    """Re-probe ambiguous legacy failures once, without resetting search progress.
+
+    Older workers stored the same reason for outages and unsupported queries. A
+    version marker bounds recovery; newly confirmed rejections remain disabled.
+    """
+    if state.get("barcode_recovery_version", 0) >= BARCODE_RECOVERY_VERSION:
+        return 0
+    recovered = 0
+    for query, saved in zip(queries, state["queries"], strict=True):
+        if not query.startswith("gtin:"):
+            continue
+        for name in ("baseline", "incremental", "reconciliation"):
+            lane = saved.get(name)
+            if (
+                lane
+                and lane["status"] == "partial_provider_limit"
+                and lane.get("reason") == "barcode_search_unavailable"
+            ):
+                lane.update(status="interrupted", reason="legacy_barcode_recheck")
+                recovered += 1
+    state["barcode_recovery_version"] = BARCODE_RECOVERY_VERSION
+    return recovered
 
 
 def prepare_passes(state, now, reconciliation_hours, poll_every=30):
@@ -182,6 +208,9 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
             update={"queries": watch_queries(target.queries, variant, watch)}
         )
         state = queue.load(claim, target, now_fn())
+        recovered = recover_barcode_lanes(state, target.queries)
+        if recovered:
+            diagnostic["legacy_barcode_lanes_reopened"] = recovered
 
         def catalog_content(value):
             data = value.model_dump(mode="json")

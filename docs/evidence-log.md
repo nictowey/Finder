@@ -16,9 +16,13 @@ subtype of the existing request error; a request timeout is not a definitive rej
 
 Synthetic two-run regressions verify recovery finds an item absent from keyword results,
 hydrates it once and preserves the cursor/watermark until a successful retry. Existing query
-bounds, request budgets, saved labels and live search state are unchanged. This prevents
-future accidental disabling; it does not reset already-disabled lanes or establish live
-marketplace recall.
+bounds, request budgets and saved labels are unchanged. A versioned recovery reopens only
+legacy barcode lanes carrying the ambiguous `barcode_search_unavailable` reason, at their
+existing window/cursor. It probes those lanes once through the normal worker budgets; a
+confirmed rejection is not repeatedly retried. Healthy lanes, keyword queries, true provider
+result ceilings and the initial digest marker are preserved. Upgrade-state regressions cover
+both a recovered provider and a genuine rejection. This does not establish live marketplace
+recall.
 
 ## September 30, 2026 — cancelled worker attempt accounting
 
