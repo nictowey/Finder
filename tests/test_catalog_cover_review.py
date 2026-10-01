@@ -263,3 +263,81 @@ def test_ordinary_named_record_offer_remains_a_catalog_cover_conflict(suffix):
     )
     assert review.status == "conflicting"
     assert "catalog_cover_conflict" in review.verify
+
+
+@pytest.mark.parametrize(
+    "name,suffix,specifics",
+    [
+        ("Group", "Universal Music Group vinyl LP", {}),
+        ("Group", "Group Records vinyl LP", {}),
+        ("Group", "record label Group vinyl LP", {}),
+        ("Group", "music by Group vinyl LP", {}),
+        ("Group", "Group band vinyl LP", {}),
+        (
+            "North River",
+            "North River Holdings vinyl LP",
+            {"Record Label": ["North River Holdings"]},
+        ),
+        ("North River", "publisher North River vinyl LP", {}),
+        ("North River", "North River Publishing vinyl LP", {}),
+        ("Group", "Universal Music Group vinyl LP Group cover photograph", {}),
+        ("Group", "Universal Music Group vinyl LP Group signed insert", {}),
+    ],
+)
+def test_credit_roles_are_not_claims_of_a_different_cover(name, suffix, specifics):
+    review = review_target_with_alternatives(
+        row(suffix, specifics), target(), [target(name, "2")], search_incomplete=False
+    )
+    assert review.status == "family_review"
+    assert "catalog_cover_conflict" not in review.verify
+
+
+@pytest.mark.parametrize(
+    "suffix,specifics",
+    [
+        ("Group cover vinyl LP", {}),
+        ("Group artwork vinyl LP", {}),
+        ("Group vinyl LP", {}),
+        ("Group cover vinyl LP Universal Music Group", {}),
+        ("Group cover vinyl LP", {"Record Label": ["Group"]}),
+        ("Group cover music vinyl LP", {}),
+    ],
+)
+def test_independent_cover_claim_survives_a_separate_credit(suffix, specifics):
+    review = review_target_with_alternatives(
+        row(suffix, specifics), target(), [target("Group", "2")], search_incomplete=False
+    )
+    assert review.status == "conflicting"
+    assert "catalog_cover_conflict" in review.verify
+
+
+def test_credit_guard_does_not_turn_an_existing_multiple_cover_abstention_into_rejection():
+    review = review_target_with_alternatives(
+        row("River Scene cover vinyl LP Universal Music Group"),
+        target(),
+        [target("River Scene", "2"), target("Group", "3")],
+        search_incomplete=False,
+    )
+    assert review.status == "family_review"
+
+
+def test_credit_context_is_preserved_when_the_album_itself_contains_a_role_word():
+    review = review_target_with_alternatives(
+        row().model_copy(update={"title": "Example Artist Music Universal Music Group vinyl LP"}),
+        target(title="Music"),
+        [target("Group", "2", title="Music")],
+        search_incomplete=False,
+    )
+    assert review.status == "family_review"
+    assert "catalog_cover_conflict" not in review.verify
+
+
+def test_a_credit_phrase_cannot_be_assembled_across_structured_values():
+    review = review_target_with_alternatives(
+        row("North River Holdings vinyl LP", {"Record Label": ["North", "River Holdings"]}),
+        target(),
+        [target("North River", "2")],
+        search_incomplete=False,
+    )
+    assert review.status == "conflicting"
+    assert "catalog_cover_conflict" in review.verify

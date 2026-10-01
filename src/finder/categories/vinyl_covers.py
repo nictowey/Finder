@@ -35,6 +35,12 @@ ACCESSORIES = frozenset(
     "insert inserts poster posters sticker stickers print prints photo photos photograph "
     "photographs sleeve sleeves jacket jackets only replacement".split()
 )
+COVER_CONTEXT = frozenset({"cover", "artwork", "edition", "variant", "version"})
+CREDIT_BEFORE = frozenset({"music", "label", "publisher", "artist", "band", "by"})
+CREDIT_AFTER = frozenset(
+    "music records recordings label publisher publishing entertainment distribution "
+    "company corporation incorporated artist band".split()
+)
 
 
 def cover_name(variant: Variant) -> str | None:
@@ -123,6 +129,39 @@ def _near_target(text: str, name: str) -> bool:
     return False
 
 
+def _has_noncredit_claim(title: str, name: str, role_phrases: set[str]) -> bool:
+    """Require a cover mention outside an explicit label/company/artist role."""
+    for mention in re.finditer(r"(?<![a-z0-9])" + re.escape(name) + r"(?![a-z0-9])", title):
+        before = title[: mention.start()]
+        preceding = before.split()
+        following = title[mention.end() :].split()
+        if (preceding and preceding[-1] in CREDIT_BEFORE) or (
+            following and following[0] in CREDIT_AFTER
+        ):
+            continue
+        explicit_cover = bool(following and following[0] in COVER_CONTEXT)
+        if not explicit_cover and any(
+            role.start() <= mention.start() and mention.end() <= role.end()
+            for phrase in role_phrases
+            for role in re.finditer(r"(?<![a-z0-9])" + re.escape(phrase) + r"(?![a-z0-9])", title)
+        ):
+            continue
+        # A second accessory mention cannot rescue a credited name. Read original
+        # title context: masking an album called Music must not erase Music Group.
+        if re.search(r"\bphotographs? of (?:the )?$", before):
+            continue
+        if explicit_cover:
+            following = following[1:]
+        if following[:2] == ["sold", "separately"]:
+            continue
+        if following and following[0] == "signed":
+            following = following[1:]
+        if following and following[0] in ACCESSORIES:
+            continue
+        return True
+    return False
+
+
 def conflicting_catalog_cover(
     listing: Listing, target: Variant, alternatives: list[Variant]
 ) -> str | None:
@@ -192,7 +231,7 @@ def conflicting_catalog_cover(
             if re.search(r"\bphotographs? of (?:the )?$", preceding):
                 return None
             following = masked[mention.end() :].split()
-            if following and following[0] in {"cover", "artwork", "edition", "variant", "version"}:
+            if following and following[0] in COVER_CONTEXT:
                 following = following[1:]
             if following[:2] == ["sold", "separately"]:
                 return None
@@ -201,5 +240,10 @@ def conflicting_catalog_cover(
             if following and following[0] in ACCESSORIES:
                 continue
             matched.add(name)
-    # Multiple named covers, including overlapping names, are unresolved offers.
-    return next(iter(matched)) if len(matched) == 1 else None
+    # Preserve the original ambiguity gate before applying the role guard. Removing
+    # a credit must never turn multiple named covers into a new rejection.
+    if len(matched) != 1:
+        return None
+    name = next(iter(matched))
+    roles = {_normalized(value) for value in [*seller.labels, *seller.artists]} - {""}
+    return name if _has_noncredit_claim(title, name, roles) else None
