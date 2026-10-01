@@ -21,6 +21,7 @@ from sqlalchemy import (
 )
 
 from finder.adapters.ebay.discovery import PAGE_SIZE, RESULT_CEILING, iso, summary_fingerprint
+from finder.evidence import evidence_time
 from finder.watch_store import (
     WatchStore,
     inbox,
@@ -348,8 +349,25 @@ class DiscoveryStore:
         with self.engine.begin() as conn:
             fence(conn, claim, now)
             key = (work.c.watch_id == claim["id"]) & (work.c.item_id == item["item_id"])
-            if not conn.execute(select(work.c.item_id).where(key)).first():
+            current = conn.execute(select(work).where(key)).mappings().first()
+            if not current:
                 return "suppressed", 0
+            # Recover pre-upgrade pending changes within the normal detail budget.
+            # Persist the shared boundary before hydration removes this work marker.
+            if (
+                current["status"] == "pending"
+                and current["kind"] == "existing_listing_updated"
+                and current["reason"] is None
+                and (changed_at := evidence_time(current["last_search_at"]))
+            ):
+                invalidate_review_evidence(
+                    conn,
+                    "ebay",
+                    current["item_id"],
+                    changed_at,
+                    reason="seller_changed",
+                    fingerprint=current["fingerprint"],
+                )
             if listing is not None:
                 saved = repository.upsert(listing, connection=conn, record_observation=False)
                 if saved == "suppressed":

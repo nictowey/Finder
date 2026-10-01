@@ -27,12 +27,12 @@ test("verified owner can retrieve dashboard",async()=>{
   assert.equal(response.status,200);
   assert.deepEqual((await response.json()).leads,[]);
 });
-test('known invalidation withholds recent seller evidence while preserving saved judgment',async()=>{
+for(const legacy of [false,true])test(`known ${legacy?'pending change':'invalidation'} withholds recent seller evidence while preserving saved judgment`,async()=>{
  const fresh=new Date().toISOString();
  const db={query:async(q:string)=>{
   if(q.includes('owner_email'))return {rows:[{data:{email:'owner@example.com'}}]};
-  if(q.includes('FROM finder_inbox i JOIN listings'))return {rows:[{watch_id:'w',marketplace:'ebay',marketplace_item_id:'synthetic',first_seen_at:fresh,last_seen_at:fresh,revision:1,dismissed:false,
-   data:{status:'possible_pressing',watch_revision:1,subtotal:'25',budget:'within_ceiling',notify:false,evidence_invalidated_at:fresh,evidence_invalidated_reason:'seller_changed'},
+  if(q.includes('FROM finder_inbox i JOIN listings'))return {rows:[{watch_id:'w',marketplace:'ebay',marketplace_item_id:'synthetic',first_seen_at:fresh,last_seen_at:fresh,revision:1,dismissed:false,pending_evidence_change:legacy,
+   data:{status:'possible_pressing',watch_revision:1,subtotal:'25',budget:'within_ceiling',notify:legacy,...(legacy?{}:{evidence_invalidated_at:fresh,evidence_invalidated_reason:'seller_changed'})},
    listing:{title:'Old synthetic green copy',listing_url:'https://www.ebay.com/itm/1',details_observed_at:fresh,current_price:'20',shipping_cost:'5',primary_image:'https://i.ebayimg.com/old.jpg',item_specifics:{Color:['Green']}}}]};
   if(q.includes('FROM finder_decisions WHERE marketplace_item_id'))return {rows:[{watch_id:'w',marketplace:'ebay',marketplace_item_id:'synthetic',verdict:'mine',purchased:false,tier:'family_review',decided_at:fresh}]};
   return {rows:[]};

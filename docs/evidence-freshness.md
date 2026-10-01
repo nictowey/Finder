@@ -29,6 +29,18 @@ active price ceiling or notification eligibility check. All-prices, no-ceiling a
 history views keep the reference discoverable. A failed read remains distinct from a confirmed
 unavailable result.
 
+Pre-upgrade pending work with a known seller change is quarantined by the same shared
+predicate in dashboard and notification reads. It uses the stored change time, or the
+established boundary for the same fingerprint, so a duplicate summary does not hide newer
+evidence. Pending events stay unattempted until normal detail processing records their
+causal suspension; they are not silently expired by the read guard. Each normal disposition
+persists the shared boundary before removing that legacy work marker. This needs no bulk
+recovery transaction or extra provider calls. Historical generic error rows without a known
+change keep their existing suppressed-alert state and normal retry/age behavior; they are
+not all rewritten immediately on upgrade.
+Identity saves against unresolved legacy changes return the existing stale-evidence response
+until rechecked. Purchase and explicit clearing retain their existing independent behavior.
+
 Invalidation expires pending notification events. Only a pending event with zero attempts is
 recorded as suspended in review metadata. A later fresh, eligible, unjudged and undismissed
 assessment can resume that exact existing event with zero attempts. It creates no replacement

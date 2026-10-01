@@ -183,7 +183,7 @@ export function createHandler(deps: Deps) {
         // display window or imply that a fresh summary freshened detail evidence.
         for (const row of leads) {
           const l = row.listing;
-          row.evidence_invalidated_reason = row.data.evidence_invalidated_at ? (row.data.evidence_invalidated_reason==='seller_changed'?'seller_changed':'refresh_failed') : null;
+          row.evidence_invalidated_reason = row.pending_evidence_change ? 'seller_changed' : row.data.evidence_invalidated_at ? (row.data.evidence_invalidated_reason==='seller_changed'?'seller_changed':'refresh_failed') : null;
           row.evidence_stale = !!row.evidence_invalidated_reason || !l.details_observed_at || Date.parse(l.details_observed_at)<cutoff || row.data.watch_revision!==row.revision;
           row.listing = row.evidence_stale ? {title:row.evidence_invalidated_reason?"Listing needs a fresh check · awaiting details":"Previously discovered listing · awaiting fresh details",listing_url:l.listing_url,item_specifics:{}} :
             { title:l.title,listing_url:l.listing_url,condition:l.condition,condition_id:l.condition_id,

@@ -6,9 +6,10 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import delete, select, update
 
+from finder.adapters.ebay.discovery import summary_fingerprint
 from finder.adapters.ebay.normalize import normalize_listing
 from finder.adapters.ebay.target_search import EbaySearchTarget
-from finder.discovery_store import DiscoveryStore
+from finder.discovery_store import DiscoveryStore, work
 from finder.watch_store import (
     SavedWatch,
     WatchStore,
@@ -21,6 +22,55 @@ from finder.watch_store import (
 )
 
 NOW = datetime(2026, 9, 24, 12, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("outcome", ["evaluated", "error"])
+def test_legacy_pending_change_recovers_shared_boundary_before_its_marker_disappears(
+    known_review, outcome
+):
+    repo, queue, raw, listing, review, add = known_review
+    a, state, item = add(111)
+    b, _, _ = add(222)
+    changed_at, fresh_at = NOW + timedelta(minutes=1), NOW + timedelta(minutes=2)
+    changed = {**raw, "title": "Synthetic changed copy"}
+    with repo.engine.begin() as conn:
+        events = {row.watch_id: row.id for row in conn.execute(select(outbox))}
+        # This is the durable state left by the pre-upgrade checkpoint: work
+        # changed, but no shared or per-review invalidation marker exists yet.
+        conn.execute(
+            update(work)
+            .where(work.c.watch_id == a["id"])
+            .values(
+                status="pending",
+                kind="existing_listing_updated",
+                reason=None,
+                fingerprint=summary_fingerprint(changed),
+                last_search_at=changed_at.isoformat(),
+            )
+        )
+    fresh = listing.model_copy(
+        update={"details_observed_at": fresh_at, "last_observed_at": fresh_at}
+    )
+    queue.disposition(
+        a,
+        item,
+        fresh_at,
+        status=outcome,
+        listing=fresh if outcome == "evaluated" else None,
+        repository=repo,
+        review=review if outcome == "evaluated" else None,
+        state=state,
+        reason="detail_failed" if outcome == "error" else None,
+    )
+    with repo.engine.connect() as conn:
+        rows = {row.watch_id: row for row in conn.execute(select(inbox))}
+        after = {row.watch_id: row for row in conn.execute(select(outbox))}
+    assert rows[b["id"]].data["evidence_invalidated_at"] == changed_at.isoformat()
+    assert not rows[b["id"]].data["notify"]
+    assert after[b["id"]].status == "expired"
+    for watch_id in events:
+        assert after[watch_id].id == events[watch_id] and after[watch_id].attempts == 0
+    assert after[a["id"]].status == ("pending" if outcome == "evaluated" else "expired")
 
 
 @pytest.fixture

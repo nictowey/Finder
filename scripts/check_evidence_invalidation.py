@@ -1,5 +1,7 @@
 """Exercise evidence row locks in the caller's disposable PostgreSQL schema."""
 
+import os
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import timedelta
@@ -10,8 +12,9 @@ from unittest.mock import patch
 from sqlalchemy import event as sql_event
 from sqlalchemy import select, text, update
 
+from finder.adapters.ebay.discovery import summary_fingerprint
 from finder.adapters.ebay.target_search import EbaySearchTarget
-from finder.discovery_store import DiscoveryStore, LostLease, fence
+from finder.discovery_store import DiscoveryStore, LostLease, fence, work
 from finder.watch_store import SavedWatch, inbox, outbox
 from finder.watch_store import watches as watch_rows
 
@@ -216,6 +219,101 @@ def check_evidence_invalidation(repo, store, queue, listing, now, *, on_phase):
             )
         ).scalar_one()
         assert other.get("evidence_invalidated_at") == changed_at.isoformat()
+
+    on_phase("legacy_pending_event_quarantine_and_recovery")
+    legacy_raw = {**refs[0], "itemId": "v1|910003|0"}
+    legacy_items = []
+    for claim, state, _ in watches:
+        queue.checkpoint(claim, state, now, items=[legacy_raw])
+        item = next(
+            row
+            for row in queue.due(claim, now, limit=10, pending=True)
+            if row["item_id"] == legacy_raw["itemId"]
+        )
+        legacy_items.append(item)
+        copy = listing.model_copy(
+            update={
+                "marketplace_item_id": legacy_raw["itemId"],
+                "details_observed_at": now,
+                "last_observed_at": now,
+                "listing_ends_at": None,
+            }
+        )
+        queue.disposition(
+            claim,
+            item,
+            now,
+            status="evaluated",
+            listing=copy,
+            repository=repo,
+            review={
+                "notify": True,
+                "status": "possible_pressing",
+                "policy": "private-target-review-v8",
+            },
+        )
+    with repo.engine.begin() as conn:
+        legacy_events = {
+            row.watch_id: row.id
+            for row in conn.execute(
+                select(outbox).where(outbox.c.marketplace_item_id == legacy_raw["itemId"])
+            )
+        }
+        conn.execute(
+            update(work)
+            .where(work.c.watch_id == watch_ids[0], work.c.item_id == legacy_raw["itemId"])
+            .values(
+                status="pending",
+                kind="existing_listing_updated",
+                reason=None,
+                last_search_at=changed_at.isoformat(),
+                fingerprint=summary_fingerprint({**legacy_raw, "title": "Synthetic changed copy"}),
+            )
+        )
+    subprocess.run(
+        ["node", "--import", "tsx", "scripts/check_evidence_alerts.ts"],
+        check=True,
+        env={
+            **os.environ,
+            "FINDER_DATABASE_URL": repo.engine.url.set(drivername="postgresql").render_as_string(
+                hide_password=False
+            ),
+        },
+    )
+    with repo.engine.connect() as conn:
+        held = (
+            conn.execute(select(outbox).where(outbox.c.id.in_(legacy_events.values())))
+            .mappings()
+            .all()
+        )
+        assert len(held) == 2 and all(
+            row["status"] == "pending" and row["attempts"] == 0 for row in held
+        )
+    queue.disposition(
+        watches[0][0],
+        legacy_items[0],
+        fresh_at,
+        status="evaluated",
+        listing=copy.model_copy(
+            update={"details_observed_at": fresh_at, "last_observed_at": fresh_at}
+        ),
+        repository=repo,
+        review={
+            "notify": True,
+            "status": "possible_pressing",
+            "policy": "private-target-review-v8",
+        },
+    )
+    with repo.engine.connect() as conn:
+        recovered = {
+            row.watch_id: row
+            for row in conn.execute(select(outbox).where(outbox.c.id.in_(legacy_events.values())))
+        }
+        assert (
+            recovered[watch_ids[0]].status == "pending"
+            and recovered[watch_ids[1]].status == "expired"
+        )
+        assert all(row.attempts == 0 for row in recovered.values())
 
     # Compatible FK locks must not weaken the owner's ability to supersede a worker.
     for index, (claim, state, _) in enumerate(watches):
