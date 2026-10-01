@@ -27,7 +27,7 @@ export async function deliver(db, send=webpush.sendNotification.bind(webpush)) {
     AND i.data->>'evidence_invalidated_at' IS NULL
     AND NOT EXISTS (SELECT 1 FROM finder_verdicts v WHERE v.watch_id=i.watch_id AND v.marketplace=i.marketplace AND v.marketplace_item_id=i.marketplace_item_id)
     AND (i.data->>'policy')=$2
-    AND (i.data->>'watch_revision')=w.revision::text)`,[new Date(Date.now()-3600000).toISOString(),'private-target-review-v11',new Date().toISOString()]);
+    AND (i.data->>'watch_revision')=w.revision::text)`,[new Date(Date.now()-3600000).toISOString(),'private-target-review-v12',new Date().toISOString()]);
   await db.query("UPDATE finder_outbox SET status='failed' WHERE attempts>=3 AND status IN ('pending','sending')");
   if(!key || !subscriptions.length) return report({status:!key?'not_configured':'no_devices',accepted_events:0,devices:subscriptions.length});
   const pending=(await db.query(`UPDATE finder_outbox o SET status='sending',attempts=attempts+1 WHERE status IN ('pending','sending') AND attempts<3 AND NOT ${heldEvidenceChange} RETURNING id`)).rows;

@@ -89,8 +89,11 @@ Discogs behavior in the eBay adapter or marketplace behavior in catalog provider
 - Explicitly denied target or required colors conflict; they cannot create likely or
   unclear-price alerts. Keep positive clauses separate from negated alternatives, and
   exclude artist, album, sleeve, cover and label color words from disc-color evidence.
-- Every required sign present with a successful catalog comparison and no unresolved
-  competing pressing → likely yours; any common-version sign → likely another version;
+- Explicit positive disc-color choices (such as "blue or white") remain unclear. Alternative
+  branches cannot satisfy color signs; independent definite evidence or identifiers cannot
+  erase an unresolved choice. Denials and definite conflicts still take precedence.
+- Every required sign present with a successful catalog comparison, no unresolved color
+  choice and no unresolved competing pressing → likely yours; any common-version sign → likely another version;
   otherwise unclear. A generic album word such
   as “Rare” needs an explicit title claim; a conflicting structured release title rejects it.
 - An owner identity verdict or purchase marker removes that item from the unjudged queue

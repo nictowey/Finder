@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from finder.domain import Listing, Variant
 
+COLOR_FIELDS = ("Color", "Record Color", "Vinyl Color", "Colour", "Vinyl Colour")
+
 CATALOG_NUMBER_FIELDS = (
     "Catalog Number",
     "Catalogue Number",
@@ -120,7 +122,7 @@ def from_listing(listing: Listing) -> VinylFingerprint:
         labels=_specifics(listing, "Record Label", "Label"),
         catalog_numbers=_specifics(listing, *CATALOG_NUMBER_FIELDS),
         barcodes=_specifics(listing, "UPC", "EAN", "Barcode"),
-        colors=_specifics(listing, "Color", "Record Color", "Vinyl Color"),
+        colors=_specifics(listing, *COLOR_FIELDS),
         editions=_specifics(listing, "Edition", "Features"),
         country=next(iter(_specifics(listing, "Country", "Country/Region of Manufacture")), None),
         format_descriptions=_specifics(listing, "Format", "Formato"),

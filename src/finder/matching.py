@@ -2,6 +2,7 @@
 
 import re
 import unicodedata
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 
@@ -20,7 +21,7 @@ from finder.domain import (
     Variant,
 )
 
-MATCH_POLICY_VERSION = "vinyl-decision-v10"
+MATCH_POLICY_VERSION = "vinyl-decision-v11"
 
 # Compare named colors across the whole record set. Discogs may describe the two
 # discs separately while a seller puts both colors in a single item specific.
@@ -177,22 +178,69 @@ def _palette(values: list[str]) -> set[str]:
 
 _COLOR_TERM = "(?:" + "|".join(sorted(_COLOR_WORDS | _COLOR_ALIASES.keys())) + ")"
 _COLOR_CLAIM = rf"(?:(?:light|dark|opaque|translucent|solid|neon)\s+){{0,2}}{_COLOR_TERM}"
-_COLOR_SEQUENCE = rf"{_COLOR_CLAIM}(?:\s+(?:(?:and|or|nor)\s+)?{_COLOR_CLAIM})*"
+_COLOR_COORDINATOR = r"(?:and\s+or|and|or|nor|ou)"
+_COLOR_SEQUENCE = rf"{_COLOR_CLAIM}(?:\s+(?:{_COLOR_COORDINATOR}\s+)?{_COLOR_CLAIM})*"
 _COLOR_DENIAL = (
     r"\b(?:not|no|non|never|without|isnt|arent|neither)\s+"
     r"(?:(?:a|an|the|any|in|on|pressed|vinyl|record|disc)\s+){0,3}"
 )
 _NEGATED_COLORS = re.compile(rf"{_COLOR_DENIAL}{_COLOR_SEQUENCE}\b")
 _NEGATED_COLOR_LIST = re.compile(
-    rf"{_COLOR_DENIAL}{_COLOR_CLAIM}(?:\s*,\s*{_COLOR_CLAIM})+"
-    rf"\s*,?\s*(?:and|or|nor)\s+{_COLOR_CLAIM}\b"
+    rf"{_COLOR_DENIAL}{_COLOR_CLAIM}(?:\s*,\s*{_COLOR_CLAIM})*"
+    rf"\s*,?\s*{_COLOR_COORDINATOR}\s+{_COLOR_CLAIM}\b"
 )
-_OBJECT_COLOR_SEQUENCE = rf"{_COLOR_CLAIM}(?:\s+(?:and|or|nor)\s+{_COLOR_CLAIM})*"
+_NON_DISC_OBJECTS = (
+    r"pochettes?|couvertures?|jaquettes?|etiquettes?|sleeves?|covers?|labels?|jackets?|artwork"
+)
+_OBJECT_COLOR_SEQUENCE = rf"{_COLOR_CLAIM}(?:\s+{_COLOR_COORDINATOR}\s+{_COLOR_CLAIM})*"
 _NON_DISC_COLORS = re.compile(
-    rf"\b{_OBJECT_COLOR_SEQUENCE}\s+(?:sleeves?|covers?|labels?|jackets?|artwork)\b"
-    rf"|\b(?:sleeves?|covers?|labels?|jackets?|artwork)\s+"
+    rf"\b{_OBJECT_COLOR_SEQUENCE}\s+(?:{_NON_DISC_OBJECTS})\b"
+    rf"|\b(?:{_NON_DISC_OBJECTS})\s+"
     rf"(?:(?:is|are|in|colored|coloured)\s+)?{_OBJECT_COLOR_SEQUENCE}\b"
 )
+
+
+def _english_color_parts(text: str) -> list[str]:
+    """Keep coordinated negative lists intact while separating independent claims."""
+    text = " ".join(re.findall(r"[a-z0-9]+|,", text))
+    text = _NON_DISC_COLORS.sub(",", text)
+    text = _NEGATED_COLOR_LIST.sub(
+        lambda match: re.sub(rf",\s*(?={_COLOR_COORDINATOR}\b)", " ", match.group()).replace(
+            ",", " or "
+        ),
+        text,
+    )
+    return [_normalized(part) for part in text.split(",")]
+
+
+# Commas and bare slash/AND pairs are definite unless the coordinated group
+# contains an explicit choice. Keep the whole run together: "blue, white or red"
+# cannot leak Blue as a separate positive claim.
+_COLOR_BRANCH = rf"{_COLOR_CLAIM}(?:\s+(?:vinyl|records?|discs?|lps?|pressings?|editions?)){{0,2}}"
+_COLOR_JOIN = r"(?:\s+(?:and\s+or|and|or|nor|vs|versus)\s+|\s*,\s*(?:(?:and|or|nor)\s+)?|\s+)"
+_COLOR_GROUP = re.compile(
+    rf"(?<![a-z0-9])(?:either\s+)?{_COLOR_BRANCH}(?:{_COLOR_JOIN}{_COLOR_BRANCH})+(?![a-z0-9])"
+)
+_COLOR_CHOICE = re.compile(r"\b(?:or|vs|versus)\b")
+# Keep incomplete branches after 'either' uncertain, including an unknown first
+# shade or disc index. Positional 'either side/way' is not a color choice.
+_EITHER_CHOICE = r"\beither\s+(?!(?:side|way)\b)(?:[a-z0-9]+\s+){0,5}"
+
+
+@dataclass(frozen=True)
+class SellerColorClaims:
+    """Derived seller evidence only; source listing/catalog values stay unchanged."""
+
+    positive: list[str]
+    denied: set[str]
+    ambiguous: bool = False
+
+
+def _has_color_choice(text: str) -> bool:
+    return bool(
+        _COLOR_CHOICE.search(text)
+        or re.search(rf"{_EITHER_CHOICE}{_COLOR_CLAIM}\b", _normalized(text))
+    )
 
 
 # These observed French seller words are deliberately not catalog/color aliases.
@@ -205,18 +253,151 @@ _FRENCH_DENIAL = (
     r"(?:(?:nest|ne sont|isnt)\s+)?(?:pas|non|sans|ni|aucun|not|no|without)"
     r"(?:\s+(?:de|du|des|un|le|a|the))?"
 )
-_FRENCH_DISC_CLAIM = re.compile(
+_FRENCH_DISC_PREFIX = (
     rf"\b(?P<before>{_FRENCH_DENIAL}\s+)?vinyles?\s+"
     rf"(?:(?:est|sont|de couleur)\s+)?(?P<after>{_FRENCH_DENIAL}\s+)?"
-    rf"(?P<colors>{_FRENCH_SEQUENCE})\b"
+)
+_FRENCH_DISC_CLAIM = re.compile(rf"{_FRENCH_DISC_PREFIX}(?P<colors>{_FRENCH_SEQUENCE})\b")
+_FRENCH_DISC_LIST = re.compile(
+    rf"{_FRENCH_DISC_PREFIX}(?P<colors>{_FRENCH_COLOR}(?:\s*,\s*{_FRENCH_COLOR})*"
+    rf"\s*,?\s*(?:et|ou|ni|and|or|nor)\s+{_FRENCH_COLOR})\b"
 )
 _FRENCH_DENIED_TAIL = re.compile(rf"\s*{_FRENCH_DENIAL}\s+(?P<colors>{_FRENCH_SEQUENCE})\s*")
-_FRENCH_NON_DISC = (
-    r"pochettes?|couvertures?|jaquettes?|etiquettes?|sleeves?|covers?|labels?|jackets?|artwork"
+_FRENCH_NON_DISC = _NON_DISC_OBJECTS
+
+_VINYLE_COLOR_CONTEXT = re.compile(
+    rf"\bvinyles?\s+(?:(?:est|sont|de couleur)\s+)?(?:{_COLOR_CLAIM}|{_FRENCH_COLOR})\b"
 )
 
 
-def _french_disc_color_claims(text: str) -> tuple[set[str], set[str]]:
+def _without_french_negative_lists(text: str) -> tuple[str, set[str]]:
+    """Retain explicit known-color denials without swallowing a new vinyle clause."""
+    denied = set()
+
+    def exclude(match):
+        prefix = re.split(r"[.!;,\n]|\b(?:mais|but)\b", text[: match.start()])[-1]
+        if (
+            not (match["before"] or match["after"])
+            or re.search(rf"\b(?:{_FRENCH_NON_DISC})\b", prefix)
+            or re.match(rf"\s+(?:{_FRENCH_NON_DISC})\b", text[match.end() :])
+        ):
+            return match.group()
+        denied.update(
+            _FRENCH_DISC_COLORS[word]
+            for word in re.findall(rf"\b{_FRENCH_COLOR}\b", match["colors"])
+        )
+        return " " * len(match.group())
+
+    return _FRENCH_DISC_LIST.sub(exclude, text), denied
+
+
+def _has_french_color_choice(text: str) -> bool:
+    return bool(
+        re.search(r"\b(?:ou|or|vs|versus)\b", text)
+        or re.search(rf"{_EITHER_CHOICE}{_FRENCH_COLOR}\b", _normalized(text))
+    )
+
+
+def _positive_choice_text(text: str) -> str:
+    """Remove recognized denials/objects before inspecting localized choice scope."""
+    text, _ = _without_french_negative_lists(text)
+    text = _FRENCH_DISC_CLAIM.sub(
+        lambda match: (
+            " "
+            if match["before"]
+            or match["after"]
+            or re.match(rf"\s+(?:{_FRENCH_NON_DISC})\b", text[match.end() :])
+            else match.group()
+        ),
+        text,
+    )
+    text = _FRENCH_DENIED_TAIL.sub(" ", text)
+    return ",".join(
+        re.split(rf"\b(?:{_FRENCH_NON_DISC})\b", _NEGATED_COLORS.sub(" ", part))[0]
+        for part in _english_color_parts(text)
+    )
+
+
+def _self_contained_color_choice(text: str, *, disc_context: bool = False) -> bool:
+    """A new choice clause is independent; a bare 'ou blanc' continues an earlier one."""
+    text = _positive_choice_text(text)
+    if re.match(r"^[,\s]*(?:or|ou|vs|versus|and or|et ou)\b", text):
+        return False
+    return bool(
+        (_palette([text]) and _has_color_choice(text))
+        or (
+            (disc_context or re.search(r"\bvinyles?\b", text))
+            and (_palette([text]) or re.search(rf"\b{_FRENCH_COLOR}\b", text))
+            and _has_french_color_choice(text)
+        )
+    )
+
+
+def _withhold_color_continuations(text: str, *, disc_context: bool) -> tuple[str, bool]:
+    """Withhold only a continuation and its nearest linked positive color clause.
+
+    A typed color field supplies disc context for 'blue; ou white'. Elsewhere,
+    'ou' needs an explicit vinyle phrase. English choice markers retain their
+    existing implicit color context. Prefer a comma-linked context over another
+    semicolon/sentence group, then the nearest preceding context (or next when
+    none precedes it). Masked text keeps its offsets and original values intact.
+    """
+    # Preserve offsets while removing full negative lists before comma splitting.
+    # Otherwise a middle denied color can masquerade as a new positive context.
+    scope = re.sub(r"[^a-z0-9,.;!?\n]", " ", text)
+    scope, _ = _without_french_negative_lists(scope)
+    for pattern in (_NON_DISC_COLORS, _NEGATED_COLOR_LIST, _NEGATED_COLORS):
+        scope = pattern.sub(lambda match: " " * len(match.group()), scope)
+    clauses = list(re.finditer(r"[^.;!?,\n]+", text))
+    contexts, localized_contexts = set(), set()
+    continuations = []
+    groups = []
+    group, previous_end = 0, 0
+    for index, clause in enumerate(clauses):
+        group += len(re.findall(r"[.;!?\n]", text[previous_end : clause.start()]))
+        groups.append(group)
+        previous_end = clause.end()
+        positive = _positive_choice_text(scope[clause.start() : clause.end()])
+        english_color = bool(_palette([positive]))
+        known_color = english_color or re.search(rf"\b{_FRENCH_COLOR}\b", positive)
+        marker = re.match(r"^[,\s]*(ou|or|vs|versus)\b", positive)
+        if known_color and marker:
+            continuations.append((index, marker[1]))
+            continue
+        explicit_disc = any(
+            not re.search(rf"\b{_FRENCH_DENIAL}\s*$", positive[: context.start()])
+            for context in _VINYLE_COLOR_CONTEXT.finditer(positive)
+        )
+        if english_color or explicit_disc or (disc_context and known_color):
+            contexts.add(index)
+        if explicit_disc or (disc_context and known_color):
+            localized_contexts.add(index)
+    withheld = set()
+    for index, marker in continuations:
+        eligible = localized_contexts if marker == "ou" else contexts
+        same_group = {other for other in eligible if groups[other] == groups[index]}
+        eligible = same_group or eligible
+        preceding = [other for other in eligible if other < index]
+        following = [other for other in eligible if other > index]
+        if preceding or following:
+            linked = max(preceding) if preceding else min(following)
+            withheld.update((index, linked))
+    spans = {(clauses[index].start(), clauses[index].end()) for index in withheld}
+    return (
+        re.sub(
+            r"[^.;!?,\n]+",
+            lambda match: (
+                " " * len(match.group()) if (match.start(), match.end()) in spans else match.group()
+            ),
+            text,
+        ),
+        bool(withheld),
+    )
+
+
+def _french_disc_color_claims(
+    text: str, *, disc_context: bool = False
+) -> tuple[set[str], set[str], bool]:
     """Parse a bounded seller-only vocabulary after removing catalog names.
 
     A following negative color clause inherits explicit disc context, while an
@@ -224,20 +405,34 @@ def _french_disc_color_claims(text: str) -> tuple[set[str], set[str]]:
     alternatives into a multi-disc palette. This is not general French parsing.
     """
     positive, denied = set(), set()
+    ambiguous = False
+    positive_disc_seen = orphan_choice = False
     if "?" in text:
-        return positive, denied
+        # Questions still abstain, but a question mark must not erase an explicit choice.
+        _, _, ambiguous = _french_disc_color_claims(
+            text.replace("?", ";"), disc_context=disc_context
+        )
+        return positive, denied, ambiguous
 
     def colors(value):
         return {_FRENCH_DISC_COLORS[word] for word in re.findall(rf"\b{_FRENCH_COLOR}\b", value)}
 
+    text, list_denied = _without_french_negative_lists(text)
+    denied.update(list_denied)
     uncertain_scope = bool(re.search(r"\b(?:not only|pas seulement)\b", text))
     # A second disc whose color is outside this vocabulary makes a positive
     # palette incomplete even across punctuation. Vinyl packaging is not a disc.
     for clause in re.split(r"[.!;,:()\n]|\b(?:mais|but|plus)\b", text):
         for noun in re.finditer(r"\bvinyles?\b", clause):
             packaging = re.search(rf"\b(?:{_FRENCH_NON_DISC})\b", clause[: noun.start()])
-            if not packaging and not _FRENCH_DISC_CLAIM.match(clause, noun.start()):
+            if (
+                not packaging
+                and not _FRENCH_DISC_CLAIM.match(clause, noun.start())
+                and not _VINYLE_COLOR_CONTEXT.match(clause, noun.start())
+                and not _self_contained_color_choice(clause, disc_context=disc_context)
+            ):
                 uncertain_scope = True
+    field_context = disc_context
     for sentence in re.split(r"[.!;\n]", text):
         disc_context = False
         incomplete = False
@@ -249,12 +444,17 @@ def _french_disc_color_claims(text: str) -> tuple[set[str], set[str]]:
             if tail:
                 sentence_denied.update(colors(tail["colors"]))
                 continue
-            # Commas do not end an alternative: 'vinyle bleu, ou blanc' cannot
-            # supply blue. A clearly negative tail above is not an alternative.
-            whole_claim = _FRENCH_DISC_CLAIM.fullmatch(part.strip())
-            explicit_denial = whole_claim and (whole_claim["before"] or whole_claim["after"])
-            if re.search(r"\b(?:ou|or|vs|versus)\b", part) and not explicit_denial:
+            # Commas do not end a choice. Filter non-disc and negative wording
+            # before deciding whether it introduces positive uncertainty.
+            disc_part = _positive_choice_text(part)
+            if _has_french_color_choice(disc_part):
                 incomplete = True
+                has_localized_color = bool(re.search(rf"\b{_FRENCH_COLOR}\b", disc_part))
+                explicit_disc = bool(re.search(r"\bvinyles?\b", disc_part))
+                if has_localized_color or (explicit_disc and _palette([disc_part])):
+                    orphan_choice = True
+                    if disc_context or explicit_disc:
+                        ambiguous = True
             if disc_context and re.fullmatch(rf"\s*{_FRENCH_SEQUENCE}\s*", part):
                 incomplete = True  # An unsupported comma-separated positive list.
             for match in _FRENCH_DISC_CLAIM.finditer(part):
@@ -264,6 +464,7 @@ def _french_disc_color_claims(text: str) -> tuple[set[str], set[str]]:
                 ):
                     continue
                 negative = bool(match["before"] or match["after"])
+                positive_disc_seen = positive_disc_seen or not negative
                 continuation = re.match(r"\s*(?:et|ni|and|nor)\s+(vinyles?\b.*)", suffix)
                 supported_continuation = continuation and _FRENCH_DISC_CLAIM.match(continuation[1])
                 # Establish disc context before abstaining on an incomplete
@@ -283,67 +484,120 @@ def _french_disc_color_claims(text: str) -> tuple[set[str], set[str]]:
                 ):
                     continue
                 (sentence_denied if negative else sentence_positive).update(colors(match["colors"]))
-        uncertain_scope = uncertain_scope or incomplete
+        if incomplete and _self_contained_color_choice(sentence, disc_context=field_context):
+            # A self-contained alternative does not erase a definite French claim
+            # in another sentence. Its own branch colors remain entirely withheld.
+            sentence_positive.clear()
+        else:
+            uncertain_scope = uncertain_scope or incomplete
         positive.update(sentence_positive)
         denied.update(sentence_denied)
-    return (set() if uncertain_scope else positive), denied
+    return (
+        set() if uncertain_scope else positive,
+        denied,
+        ambiguous or (positive_disc_seen and orphan_choice),
+    )
 
 
-def _seller_color_claims(
-    values: list[str], *, ignore: tuple[str, ...] = ()
-) -> tuple[list[str], set[str]]:
-    """Separate positive and explicitly denied seller colors from catalog semantics.
+def _seller_color_details(
+    values: list[str], *, ignore: tuple[str, ...] = (), disc_context: bool = False
+) -> SellerColorClaims:
+    """Separate definite claims, denials and positive choices from catalog semantics.
 
-    Scope a denial to its coordinated colors, not a later positive clause. Normalize
-    each clause separately so punctuation and 'but' end the denial, except an explicit
-    coordinated negative list. Sleeve/cover/label colors are not disc claims. 'Not only
-    pink but green' is not a color denial.
+    Names and non-disc objects are excluded before linking explicit alternatives.
+    Preserve original denials, then parse positive clauses after withholding only
+    linked choice branches. A structured color field supplies bounded disc context;
+    it does not translate bare French words into new positive color claims.
     """
-    claims = []
-    denied = set()
+    texts = []
     for value in values:
         text = _plain_text(value)
-        # Remove album/artist names before negation parsing: a title like
-        # 'Not Black But White' must not leave behind a positive white claim.
         for name in ignore:
             words = _normalized(name).split()
             if words:
                 phrase = r"[^a-z0-9]+".join(map(re.escape, words))
                 text = re.sub(rf"(?<![a-z0-9]){phrase}(?![a-z0-9])", " ", text)
-        french_colors, french_denied = _french_disc_color_claims(text)
-        denied.update(french_denied)
-        clauses = re.split(r"[.;!?]|\bbut\b", text)
-        parts = []
-        for clause in clauses:
-            # Retain commas until an obvious 'not pink, green or blue' list is joined.
-            # 'Not black, pink vinyl' remains two independent clauses.
-            clause = " ".join(re.findall(r"[a-z0-9]+|,", clause))
-            clause = _NON_DISC_COLORS.sub(",", clause)
-            clause = _NEGATED_COLOR_LIST.sub(
-                lambda match: re.sub(r",\s*(?=(?:and|or|nor)\b)", " ", match.group()).replace(
-                    ",", " or "
-                ),
-                clause,
-            )
-            parts.extend(_normalized(part) for part in clause.split(","))
-        for part in parts:
-            for match in _NEGATED_COLORS.finditer(part):
-                denied.update(_palette([match.group()]))
-        claims.append(
-            " ".join(
-                [*(_NEGATED_COLORS.sub(" ", part) for part in parts), *sorted(french_colors)]
-            ).strip()
+        # The abbreviation's period does not make two independent color claims.
+        texts.append(re.sub(r"\bvs\.(?=\s|[a-z])", "vs ", text))
+    masked, ambiguous = _withhold_color_continuations("\n".join(texts), disc_context=disc_context)
+    claims, denied = [], set()
+    offset = 0
+    for text in texts:
+        positive_text = masked[offset : offset + len(text)]
+        offset += len(text) + 1
+        french_colors, french_denied, french_ambiguous = _french_disc_color_claims(
+            text, disc_context=disc_context
         )
-    return claims, denied
+        denied.update(french_denied)
+        # Unsupported wording in a withheld branch cannot erase a genuinely
+        # independent French claim. Original denials above always remain available.
+        if positive_text != text:
+            french_colors, _, _ = _french_disc_color_claims(
+                positive_text, disc_context=disc_context
+            )
+        scoped = _positive_choice_text(text)
+        if (
+            disc_context
+            and (_palette([scoped]) or re.search(rf"\b{_FRENCH_COLOR}\b", scoped))
+            and _has_french_color_choice(scoped)
+        ):
+            french_ambiguous = True
+        ambiguous = ambiguous or french_ambiguous
+        for clause in re.split(r"[.;!?]|\bbut\b", text):
+            for part in _english_color_parts(clause):
+                for match in _NEGATED_COLORS.finditer(part):
+                    denied.update(_palette([match.group()]))
+        positives = []
+        for clause in re.split(r"[.;!?]|\bbut\b", positive_text):
+            parts = _english_color_parts(clause)
+            positive = ",".join(_NEGATED_COLORS.sub(",", part) for part in parts)
+            if _palette([positive]) and (
+                _has_color_choice(positive) or (french_ambiguous and re.search(r"\bou\b", positive))
+            ):
+                ambiguous = True
+                positive = _COLOR_GROUP.sub(
+                    lambda match: "," if _has_color_choice(match.group()) else match.group(),
+                    positive,
+                )
+                # An unknown/mixed-language branch cannot leave its known branch
+                # as a definite claim. Avoid interpreting arbitrary choice wording.
+                if _has_color_choice(positive) or (
+                    french_ambiguous and re.search(r"\bou\b", positive)
+                ):
+                    positive = ""
+            positives.append(positive)
+        claims.append(" ".join([*positives, *sorted(french_colors)]).strip())
+    return SellerColorClaims(claims, denied, ambiguous)
+
+
+def _seller_color_claims(
+    values: list[str], *, ignore: tuple[str, ...] = ()
+) -> tuple[list[str], set[str]]:
+    """Compatibility projection for callers needing only definite colors/denials."""
+    result = _seller_color_details(values, ignore=ignore)
+    return result.positive, result.denied
+
+
+def _listing_color_claims(
+    listing: Listing, target: Variant, *, album_aliases: tuple[str, ...] = ()
+) -> tuple[SellerColorClaims, SellerColorClaims]:
+    """Return title and structured claims with shared source/name boundaries."""
+    names = tuple(
+        re.sub(r"\s+\(\d+\)$", "", name) for name in (target.title, *album_aliases, *target.artists)
+    )
+    return (
+        _seller_color_details([listing.title], ignore=names),
+        _seller_color_details(from_listing(listing).colors, disc_context=True),
+    )
 
 
 def _color_evidence(listing_values: list[str], variant_values: list[str]) -> MatchEvidence | None:
     if not listing_values or not variant_values:
         return None
 
-    claims, denied = _seller_color_claims(listing_values)
-    left, right = _palette(claims), _palette(variant_values)
-    if denied & right:
+    claims = _seller_color_details(listing_values, disc_context=True)
+    left, right = _palette(claims.positive), _palette(variant_values)
+    if claims.denied & right:
         return MatchEvidence(
             field="color",
             listing_values=listing_values,
@@ -351,6 +605,8 @@ def _color_evidence(listing_values: list[str], variant_values: list[str]) -> Mat
             matched=False,
             weight=15,
         )
+    if claims.ambiguous and not (right and left - right):
+        return None  # A choice is missing evidence, never agreement or contradiction.
     if _palette(listing_values) and not left:
         return None  # Only denied colors were named; absence is not a positive claim.
     if left and right:
@@ -516,12 +772,21 @@ def decide_match(
             if candidate.status == "strong_candidate" and identifier and not conflict:
                 competing.append(candidate)
 
+    # Scope uncertainty to viable family candidates. Parsing against an unrelated
+    # catalog title could mistake the real album/artist name for a seller choice.
+    color_ambiguous = any(
+        title.ambiguous or structured.ambiguous
+        for candidate in (competing or family_candidates)
+        for title, structured in [
+            _listing_color_claims(listing, by_id[candidate.catalog_variant_id])
+        ]
+    )
     if _non_vinyl_listing(listing):
         outcome = "rejected"
     elif len(families) > 1 or len(competing) > 1:
         outcome = "ambiguous"
     elif len(competing) == 1:
-        outcome = "family_only" if retrieval_incomplete else "probable_variant"
+        outcome = "family_only" if retrieval_incomplete or color_ambiguous else "probable_variant"
     elif len(families) == 1:
         outcome = "family_only"
     elif any(
@@ -582,6 +847,8 @@ def decide_match(
                     evidence.append(record)
 
     missing = []
+    if color_ambiguous:
+        missing.append("color_claim_ambiguous")
     if not from_listing(listing).artists:
         missing.append("structured_artist")
     if not any(

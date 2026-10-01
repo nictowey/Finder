@@ -3,6 +3,59 @@
 Dated operational and validation history, moved verbatim from `AGENTS.md` on
 September 24, 2026 when Finder became a personal pressing hunter. Newer entries go at the top.
 
+## October 1, 2026 — explicit seller color choices remain uncertain (local, not deployed)
+
+Seller-only color extraction now retains a shared explicit-choice signal beside definite
+claims and denials. English `or`, `either`, `vs`/`versus`, and `and/or` choices withhold the
+whole coordinated alternative rather than treating its branches as a combined palette.
+Incomplete or unknown branches abstain conservatively. Bare slash/AND pairs and separately
+stated disc colors remain supported. Catalog color semantics and stored seller fields are unchanged.
+
+The signal spans title and recognized structured color sources (`Color`, `Record Color`,
+`Vinyl Color`, `Colour`, `Vinyl Colour`). Artist, album and validated title-alias exclusions
+remain in place; arbitrary item specifics are not searched for color choices. Relevant
+French and mixed-language choices carry the same signal. A recognized color field supplies
+disc context for English-color `ou` choices even without a literal `vinyle` phrase. This does
+not translate bare French colors into positive claims. A bare `vinyle` or other unsupported
+localized grammar alone does not block matching identifiers. The earlier
+`vinyle bleu, or white` regression is intentionally strengthened: neither offered alternative
+is definite, including its English branch. Separately stated definite English or French
+claims and explicit denials remain available. A self-contained French choice no longer
+erases a definite French color in another sentence: retaining that color is necessary to
+preserve real conflicts and prevent an inappropriate gamble alert. A continuation such as
+`vinyle bleu; ou blanc`, or unsupported non-choice grammar, still withholds the partial
+French palette. Split mixed continuations such as `vinyle blue; ou white` also withhold
+both linked branches, including when their order is reversed. Each continuation links to the
+same comma group before crossing a semicolon or sentence boundary, then to the nearest
+eligible preceding clause (or the following clause when none precedes it). Other supported
+French or English disc claims are retained. Negative coordination recognizes the same
+supported `ou` and `and/or` operators, including explicit comma lists, so every color in a
+denied group remains denied. Explicit `vinyle` negative comma lists also retain all named
+colors from the existing four-word French vocabulary; a new positive `vinyle` clause still
+ends that negative group. Original denials are collected before
+those branches are masked, and French positives are then parsed from the branch-masked text.
+This prevents the removed group's wording from erasing an independent, conflicting color. The prior regression for independent choice sentences is updated accordingly.
+
+An ambiguous-only structured field cannot mask a definite incompatible title color;
+genuinely definite structured palettes keep their comparison priority. Target review and
+required-sign checks cannot upgrade a relevant unresolved choice to likely.
+Generic matching retains viable candidates and identifier evidence but prevents a single
+candidate from becoming probable solely because alternative colors were removed. Unrelated
+catalog candidates cannot introduce this gate for a valid family. Ambiguity is reported as
+`color_claim_ambiguous`, not a fabricated color conflict or a misleading claim that the
+seller provided no color wording. Real denials and independently
+incompatible colors retain precedence, and the owner's configured gamble-price path still
+permits an eligible unclear alert with existing freshness, destination and strict-mode gates.
+
+Matching policy `vinyl-decision-v11` and review/notification policy `private-target-review-v12`
+use the existing bounded reassessment mechanism. No schema, provider requests, owner labels,
+purchase markers or original judgment predictions are rewritten. Failure-first synthetic
+regressions reproduced 251 failures with 30 controls passing on the prior policy; subsequent
+coverage also checks localized scope and owner-decision provenance. These local tests do not
+establish live precision or recall. The grammar is deliberately bounded: unsupported choice
+wording can remain unrecognized, and conservative unknown-branch fallback may withhold other
+colors in the same loosely punctuated clause.
+
 ## October 1, 2026 — bounded localized seller evidence
 
 The vinyl extractor recognizes explicit catalog-number keys `Numéro de catalogue`,
