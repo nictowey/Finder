@@ -90,7 +90,8 @@ def fence(conn, claim, now):
             watches.c.lease_until > now.isoformat(),
             watches.c.enabled.is_(True),
         )
-        .with_for_update()
+        # Fence concurrent owner edits without blocking other watches' FK references.
+        .with_for_update(key_share=True)
     ).first()
     if not row:
         raise LostLease("Worker no longer owns this watch")

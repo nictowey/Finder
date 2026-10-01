@@ -576,7 +576,8 @@ class WatchStore:
                         watches.c.enabled.is_(True),
                         watches.c.lease_until > stamp,
                     )
-                    .with_for_update()
+                    # Identity keys stay fixed; other watches may reference this parent.
+                    .with_for_update(key_share=True)
                 )
                 .mappings()
                 .first()

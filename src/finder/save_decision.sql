@@ -3,7 +3,7 @@
 CREATE OR REPLACE FUNCTION finder_save_decision(text,text,text,text,text,boolean,text,text,text)
 RETURNS SETOF finder_decisions LANGUAGE plpgsql VOLATILE AS $$
 BEGIN
-  PERFORM id FROM finder_watches WHERE id=$1 FOR UPDATE;
+  PERFORM id FROM finder_watches WHERE id=$1 FOR NO KEY UPDATE;
   RETURN QUERY
 WITH target AS MATERIALIZED (
   SELECT i.* FROM finder_inbox i

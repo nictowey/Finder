@@ -16,7 +16,10 @@ Invalidation advances the review update token, so an already-open page must refr
 saving a judgment. It does not freshen provider timestamps or rewrite prior owner provenance.
 
 Known changes lock shared listings in stable item order, then their reviews and queued events.
-They do not acquire another watch's lease lock. Invalidated evaluated rows become due for
+Parent watch fences use `FOR NO KEY UPDATE`: owner edits, lease changes and feedback still
+serialize, while foreign-key references from another watch's review can coexist. The isolated
+PostgreSQL test checks both the shared-row wait and owner-edit exclusion. They do not acquire
+another watch's lease lock. Invalidated evaluated rows become due for
 reassessment; failed requests retain retry backoff. Cached settings re-sorts and snapshot reuse
 cannot turn known-invalid details into a fresh assessment.
 
@@ -37,6 +40,8 @@ old in-flight completion, cache resets, owner feedback, price/UI projection, and
 same-event recovery. The existing isolated PostgreSQL rehearsal checks reversed overlapping
 pages with actual blocking-PID evidence. No provider requests or production data are used in
 these tests. Seller deletion continues to cascade the listing, reviews and event references.
+The isolated entrypoint propagates a failed rehearsal as a failing process exit; its own
+failure/success regressions prevent a failed database check from appearing green in CI.
 
 Prefer a forward fix, or roll back only the presentation while retaining the worker and
 notification invalidation guards. A full revert to older code ignores retained watermarks and

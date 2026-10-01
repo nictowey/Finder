@@ -23,7 +23,7 @@ try {
  try {
   const workerPID=(await worker.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
   const feedbackPID=(await feedback.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
-  await worker.query('BEGIN');await worker.query('SELECT id FROM finder_watches WHERE id=$1 FOR UPDATE',[key.watch_id]);
+  await worker.query('BEGIN');await worker.query('SELECT id FROM finder_watches WHERE id=$1 FOR NO KEY UPDATE',[key.watch_id]);
   saving=feedback.query(saveDecisionQuery,decisionInput({...key,verdict:'mine'},false)!);
   void saving.catch(()=>{}); // Preserve the rejection for await while observing the lock.
   const deadline=Date.now()+5000;let blocked=false;

@@ -8,11 +8,12 @@ from time import monotonic, sleep
 from unittest.mock import patch
 
 from sqlalchemy import event as sql_event
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 
 from finder.adapters.ebay.target_search import EbaySearchTarget
-from finder.discovery_store import DiscoveryStore
+from finder.discovery_store import DiscoveryStore, LostLease, fence
 from finder.watch_store import SavedWatch, inbox, outbox
+from finder.watch_store import watches as watch_rows
 
 
 class BoundTransaction:
@@ -215,3 +216,54 @@ def check_evidence_invalidation(repo, store, queue, listing, now, *, on_phase):
             )
         ).scalar_one()
         assert other.get("evidence_invalidated_at") == changed_at.isoformat()
+
+    # Compatible FK locks must not weaken the owner's ability to supersede a worker.
+    for index, (claim, state, _) in enumerate(watches):
+        on_phase("owner_edit_waits_for_" + ("fence" if index == 0 else "finish"))
+        with (
+            repo.engine.connect() as worker,
+            repo.engine.connect() as editor,
+            repo.engine.connect() as observer,
+        ):
+            worker_pid = worker.execute(text("SELECT pg_backend_pid()")).scalar_one()
+            editor_pid = editor.execute(text("SELECT pg_backend_pid()")).scalar_one()
+            worker.commit()
+            editor.commit()
+
+            def edit_watch(watch_id=claim["id"]):
+                with editor.begin():
+                    editor.execute(
+                        update(watch_rows)
+                        .where(watch_rows.c.id == watch_id)
+                        .values(
+                            revision=watch_rows.c.revision + 1,
+                            lease_token=None,
+                            lease_until=None,
+                        )
+                    )
+
+            transaction = worker.begin()
+            if index == 0:
+                fence(worker, claim, fresh_at)
+            else:
+                store.finish(claim, [], now=fresh_at, connection=worker, checkpoint=True)
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                editing = executor.submit(edit_watch)
+                try:
+                    deadline = monotonic() + 5
+                    while not observer.execute(
+                        text("SELECT :holder = ANY(pg_blocking_pids(:waiter))"),
+                        {"holder": worker_pid, "waiter": editor_pid},
+                    ).scalar_one():
+                        assert monotonic() < deadline
+                        sleep(0.02)
+                finally:
+                    transaction.rollback()
+                editing.result(timeout=10)
+        try:
+            queue.checkpoint(claim, state, fresh_at, items=changed)
+        except LostLease:
+            pass
+        else:
+            raise AssertionError("Superseded worker passed its lease fence")
+        assert store.finish(claim, [], now=fresh_at, checkpoint=True) is None
