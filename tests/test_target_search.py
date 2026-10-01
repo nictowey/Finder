@@ -363,8 +363,16 @@ def test_target_plan_cli_needs_no_credentials(monkeypatch, capsys):
 
 
 def test_arbitrary_vinyl_release_plan_scan_and_private_listing_review(
-    tmp_path, monkeypatch, capsys, discogs_release, search_payload, detail_payload
+    tmp_path,
+    monkeypatch,
+    capsys,
+    discogs_release,
+    search_payload,
+    detail_payload,
+    freeze_cli_adapter,
+    observed_at,
 ):
+    freeze_cli_adapter(observed_at)
     release = {
         **discogs_release,
         "id": 1234,
@@ -487,7 +495,10 @@ def test_release_target_rejects_non_vinyl_and_saved_query_override(
     assert "requires --release" in capsys.readouterr().err
 
 
-def test_scan_target_cli_reports_bounded_coverage(tmp_path, monkeypatch, capsys, search_payload):
+def test_scan_target_cli_reports_bounded_coverage(
+    tmp_path, monkeypatch, capsys, search_payload, freeze_cli_adapter, observed_at
+):
+    freeze_cli_adapter(observed_at)
     monkeypatch.setenv("EBAY_ENVIRONMENT", "sandbox")
     monkeypatch.setenv("EBAY_SANDBOX_CLIENT_ID", "fake-client")
     monkeypatch.setenv("EBAY_SANDBOX_CLIENT_SECRET", "fake-secret")
@@ -531,8 +542,9 @@ def test_scan_target_cli_reports_bounded_coverage(tmp_path, monkeypatch, capsys,
 
 
 def test_probe_reports_current_run_not_an_earlier_stored_listing(
-    tmp_path, monkeypatch, capsys, search_payload
+    tmp_path, monkeypatch, capsys, search_payload, freeze_cli_adapter, observed_at
 ):
+    freeze_cli_adapter(observed_at)
     monkeypatch.setenv("EBAY_ENVIRONMENT", "sandbox")
     monkeypatch.setenv("EBAY_SANDBOX_CLIENT_ID", "fake-client")
     monkeypatch.setenv("EBAY_SANDBOX_CLIENT_SECRET", "fake-secret")

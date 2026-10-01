@@ -67,3 +67,17 @@ def repository(tmp_path):
     repo = SqlAlchemyListingRepository.from_url(f"sqlite:///{tmp_path / 'test.db'}")
     yield repo
     repo.close()
+
+
+@pytest.fixture
+def freeze_cli_adapter(monkeypatch):
+    """Pin CLI discovery to fixture time without changing production expiry rules."""
+    from finder import cli
+    from finder.adapters.ebay.adapter import EbayAdapter
+
+    def freeze(observed_at):
+        monkeypatch.setattr(
+            cli, "EbayAdapter", lambda client: EbayAdapter(client, now=lambda: observed_at)
+        )
+
+    return freeze
