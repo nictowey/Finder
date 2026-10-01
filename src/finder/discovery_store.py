@@ -21,7 +21,15 @@ from sqlalchemy import (
 )
 
 from finder.adapters.ebay.discovery import PAGE_SIZE, RESULT_CEILING, iso, summary_fingerprint
-from finder.watch_store import WatchStore, inbox, outbox, schema, watches
+from finder.evidence import evidence_time
+from finder.watch_store import (
+    WatchStore,
+    inbox,
+    invalidate_review_evidence,
+    outbox,
+    schema,
+    watches,
+)
 
 EPOCH = "1990-01-01T00:00:00.000Z"
 OVERLAP = timedelta(hours=24)
@@ -83,7 +91,8 @@ def fence(conn, claim, now):
             watches.c.lease_until > now.isoformat(),
             watches.c.enabled.is_(True),
         )
-        .with_for_update()
+        # Fence concurrent owner edits without blocking other watches' FK references.
+        .with_for_update(key_share=True)
     ).first()
     if not row:
         raise LostLease("Worker no longer owns this watch")
@@ -240,13 +249,22 @@ class DiscoveryStore:
             count = conn.execute(
                 select(func.count()).select_from(work).where(work.c.watch_id == claim["id"])
             ).scalar_one()
-            for raw in items:
+            # Shared listing locks must use the same order across overlapping pages.
+            for raw in sorted(items, key=lambda item: item["itemId"]):
                 key = (work.c.watch_id == claim["id"]) & (work.c.item_id == raw["itemId"])
                 old = conn.execute(select(work).where(key)).mappings().first()
                 fingerprint = summary_fingerprint(raw)
                 if old:
                     values = {"last_search_at": now.isoformat(), "fingerprint": fingerprint}
                     if old["fingerprint"] != fingerprint or old["status"] == "unavailable":
+                        invalidate_review_evidence(
+                            conn,
+                            "ebay",
+                            raw["itemId"],
+                            now,
+                            reason="seller_changed",
+                            fingerprint=fingerprint,
+                        )
                         values.update(
                             status="pending",
                             next_check_at=now.isoformat(),
@@ -289,10 +307,21 @@ class DiscoveryStore:
             return [
                 dict(row)
                 for row in conn.execute(
-                    select(work)
+                    select(work, inbox.c.data.label("review_data"))
+                    .outerjoin(
+                        inbox,
+                        (inbox.c.watch_id == work.c.watch_id)
+                        & (inbox.c.marketplace == "ebay")
+                        & (inbox.c.marketplace_item_id == work.c.item_id),
+                    )
                     .where(
                         work.c.watch_id == claim["id"],
-                        work.c.next_check_at <= now.isoformat(),
+                        (work.c.next_check_at <= now.isoformat())
+                        | (
+                            inbox.c.data["evidence_invalidated_at"].as_string().is_not(None)
+                            if not pending
+                            else False
+                        ),
                         work.c.status.in_(("pending", "error"))
                         if pending
                         else work.c.status == "evaluated",
@@ -320,8 +349,25 @@ class DiscoveryStore:
         with self.engine.begin() as conn:
             fence(conn, claim, now)
             key = (work.c.watch_id == claim["id"]) & (work.c.item_id == item["item_id"])
-            if not conn.execute(select(work.c.item_id).where(key)).first():
+            current = conn.execute(select(work).where(key)).mappings().first()
+            if not current:
                 return "suppressed", 0
+            # Recover pre-upgrade pending changes within the normal detail budget.
+            # Persist the shared boundary before hydration removes this work marker.
+            if (
+                current["status"] == "pending"
+                and current["kind"] == "existing_listing_updated"
+                and current["reason"] is None
+                and (changed_at := evidence_time(current["last_search_at"]))
+            ):
+                invalidate_review_evidence(
+                    conn,
+                    "ebay",
+                    current["item_id"],
+                    changed_at,
+                    reason="seller_changed",
+                    fingerprint=current["fingerprint"],
+                )
             if listing is not None:
                 saved = repository.upsert(listing, connection=conn, record_observation=False)
                 if saved == "suppressed":
@@ -393,6 +439,15 @@ class DiscoveryStore:
                         .values(data=updated_state)
                     )
             elif status in ("unavailable", "error", "suppressed"):
+                if status == "error":
+                    invalidate_review_evidence(
+                        conn,
+                        "ebay",
+                        item["item_id"],
+                        now,
+                        reason="refresh_failed",
+                        watch_id=claim["id"],
+                    )
                 previous = conn.execute(
                     select(inbox.c.data).where(
                         inbox.c.watch_id == claim["id"],
@@ -411,13 +466,14 @@ class DiscoveryStore:
                         )
                         .values(data=data)
                     )
-                conn.execute(
-                    delete(outbox).where(
-                        outbox.c.watch_id == claim["id"],
-                        outbox.c.marketplace_item_id == item["item_id"],
-                        outbox.c.status.in_(("pending", "sending")),
+                if status != "error":
+                    conn.execute(
+                        delete(outbox).where(
+                            outbox.c.watch_id == claim["id"],
+                            outbox.c.marketplace_item_id == item["item_id"],
+                            outbox.c.status.in_(("pending", "sending")),
+                        )
                     )
-                )
             if status == "suppressed":
                 # A tombstone rejection must also erase the newly rediscovered identity.
                 # Retain only an anonymous event count, never an item/seller association.

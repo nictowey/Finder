@@ -284,6 +284,16 @@ def main():
                     outbox.c.watch_id == purchase_claim["id"], outbox.c.status == "pending"
                 )
             ).scalars().all() == [second_item["item_id"]]
+        phase = "shared_evidence_invalidation_and_same_event_recovery"
+        from check_evidence_invalidation import check_evidence_invalidation
+
+        def evidence_phase(value):
+            nonlocal phase
+            phase = "evidence_" + value
+
+        check_evidence_invalidation(
+            repo, store, queue, listing, discovery_time, on_phase=evidence_phase
+        )
         repo.delete_ebay_seller(listing.seller_id)
         phase = "assert_deletion"
         with repo.engine.connect() as conn:

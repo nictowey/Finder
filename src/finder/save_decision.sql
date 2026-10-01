@@ -3,11 +3,20 @@
 CREATE OR REPLACE FUNCTION finder_save_decision(text,text,text,text,text,boolean,text,text,text)
 RETURNS SETOF finder_decisions LANGUAGE plpgsql VOLATILE AS $$
 BEGIN
-  PERFORM id FROM finder_watches WHERE id=$1 FOR UPDATE;
+  PERFORM id FROM finder_watches WHERE id=$1 FOR NO KEY UPDATE;
   RETURN QUERY
 WITH target AS MATERIALIZED (
-  SELECT i.* FROM finder_inbox i
+  SELECT i.* FROM finder_inbox i LEFT JOIN listings l USING(marketplace,marketplace_item_id)
   WHERE i.watch_id=$1 AND i.marketplace=$2 AND i.marketplace_item_id=$3
+    AND ($4='purchase' OR $5::text IS NULL OR i.data->>'evidence_invalidated_at' IS NOT NULL OR NOT EXISTS (
+      SELECT 1 FROM finder_discovery_work d
+      WHERE COALESCE(d.marketplace,'ebay')=i.marketplace AND d.item_id=i.marketplace_item_id
+        AND d.status='pending' AND d.kind='existing_listing_updated' AND d.reason IS NULL
+        AND CASE WHEN d.fingerprint=l.data->'source_metadata'->>'finder_summary_fingerprint'
+          THEN COALESCE(l.data->'source_metadata'->>'finder_details_invalidated_at',d.last_search_at)::timestamptz
+          ELSE GREATEST(d.last_search_at::timestamptz,COALESCE((l.data->'source_metadata'->>'finder_details_invalidated_at')::timestamptz,'-infinity'::timestamptz)) END
+          > COALESCE((i.data->>'details_observed_at')::timestamptz,'-infinity'::timestamptz)
+    ))
   FOR UPDATE OF i
 ), saved AS (
   INSERT INTO finder_decisions(watch_id,marketplace,marketplace_item_id,verdict,purchased,tier,decided_at,updated_at,prediction)

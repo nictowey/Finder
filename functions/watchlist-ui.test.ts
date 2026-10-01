@@ -66,6 +66,20 @@ test('review leads are first, with secondary views and accessible touch controls
  assert.ok(a.doc.querySelector('a[href="https://www.discogs.com"]'));
  }finally{a.close();}
 });
+test('invalidated evidence gives a fresh-check warning without a current Likely or price assurance',async()=>{
+ for(const reason of ['seller_changed','refresh_failed']){
+  const data:any=dashboardFixture();data.leads=[data.leads[0]];const row=data.leads[0];row.evidence_stale=true;row.evidence_invalidated_reason=reason;
+  row.listing={title:'Listing evidence needs a fresh check',listing_url:'https://www.ebay.com/itm/1',item_specifics:{}};
+  row.data={status:'possible_pressing',budget:'needs_refresh',notify:false,verify:[reason==='seller_changed'?'seller_details_changed':'detail_refresh_failed']};
+  row.verdict='mine';row.verdict_tier='family_review';
+  const a=await app(data);try{
+   a.click('[data-filter="judged"]');await tick();assert.match(a.doc.querySelector('.lead .badge')!.textContent!,/Needs fresh check/);
+   assert.match(a.doc.querySelector('.price')!.textContent!,/Total unknown/);assert.ok(a.doc.querySelector('[data-recheck]'));
+   assert.match(a.doc.querySelector('.photo-empty')!.textContent!,reason==='seller_changed'?/seller.*details changed/i:/detail check failed/i);
+   assert.equal(a.doc.querySelector('[data-verdict="0|mine"]')?.getAttribute('aria-pressed'),'true');
+  }finally{a.close();}
+ }
+});
 
 test('all identity choices save and rehydrate independently from purchase',async()=>{
  for(const verdict of ['mine','other','unsure']){

@@ -1,5 +1,10 @@
 import { Pool } from 'pg';
 import webpush from 'web-push';
+import { pendingEvidenceChange } from '../functions/pending-evidence.mjs';
+
+const heldEvidenceChange = `EXISTS (SELECT 1 FROM finder_inbox i JOIN listings l USING(marketplace,marketplace_item_id)
+  WHERE i.watch_id=o.watch_id AND i.marketplace=o.marketplace AND i.marketplace_item_id=o.marketplace_item_id
+  AND ${pendingEvidenceChange})`;
 
 export async function deliver(db, send=webpush.sendNotification.bind(webpush)) {
   const report = async value => {
@@ -10,19 +15,22 @@ export async function deliver(db, send=webpush.sendNotification.bind(webpush)) {
   const key=(await db.query("SELECT data FROM finder_private_settings WHERE key='vapid'")).rows[0]?.data;
   const subscriptions=(await db.query('SELECT id,data FROM finder_push_subscriptions')).rows;
   // Expiration and final-attempt crash recovery also run when no device is enrolled.
-  await db.query(`UPDATE finder_outbox o SET status='expired' WHERE status IN ('pending','sending') AND NOT EXISTS (
+  // Hold legacy known-change events unattempted until normal recovery records the
+  // same-event suspension. Expiring them here would lose that causal reference.
+  await db.query(`UPDATE finder_outbox o SET status='expired' WHERE status IN ('pending','sending') AND NOT ${heldEvidenceChange} AND NOT EXISTS (
     SELECT 1 FROM finder_inbox i JOIN finder_watches w ON w.id=i.watch_id
     JOIN listings l ON l.marketplace=i.marketplace AND l.marketplace_item_id=i.marketplace_item_id
     WHERE i.watch_id=o.watch_id AND i.marketplace=o.marketplace AND i.marketplace_item_id=o.marketplace_item_id
     AND l.data->>'details_observed_at' >= $1
     AND (l.data->>'listing_ends_at' IS NULL OR l.data->>'listing_ends_at' > $3)
     AND w.enabled AND NOT i.dismissed AND i.last_seen_at >= $1 AND (i.data->>'notify')='true'
+    AND i.data->>'evidence_invalidated_at' IS NULL
     AND NOT EXISTS (SELECT 1 FROM finder_verdicts v WHERE v.watch_id=i.watch_id AND v.marketplace=i.marketplace AND v.marketplace_item_id=i.marketplace_item_id)
     AND (i.data->>'policy')=$2
     AND (i.data->>'watch_revision')=w.revision::text)`,[new Date(Date.now()-3600000).toISOString(),'private-target-review-v8',new Date().toISOString()]);
   await db.query("UPDATE finder_outbox SET status='failed' WHERE attempts>=3 AND status IN ('pending','sending')");
   if(!key || !subscriptions.length) return report({status:!key?'not_configured':'no_devices',accepted_events:0,devices:subscriptions.length});
-  const pending=(await db.query("UPDATE finder_outbox SET status='sending',attempts=attempts+1 WHERE status IN ('pending','sending') AND attempts<3 RETURNING id")).rows;
+  const pending=(await db.query(`UPDATE finder_outbox o SET status='sending',attempts=attempts+1 WHERE status IN ('pending','sending') AND attempts<3 AND NOT ${heldEvidenceChange} RETURNING id`)).rows;
   if(!pending.length) return report({status:'no_eligible_alerts',accepted_events:0,devices:subscriptions.length});
   let accepted=0,failed=0,invalid=0;
   for(const subscription of subscriptions){

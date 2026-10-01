@@ -9,6 +9,7 @@ async function fixture(){
  const db=new PGlite();
  await db.exec(`CREATE TABLE finder_watches(id text PRIMARY KEY,config json,revision int,status text,last_started_at text,last_success_at text,next_scan_at text,lease_until text,summary json,catalog json,catalog_observed_at text);
  CREATE TABLE listings(marketplace text,marketplace_item_id text,data json,PRIMARY KEY(marketplace,marketplace_item_id));
+ CREATE TABLE finder_discovery_work(marketplace text,listing_id text,item_id text,status text,kind text,reason text,last_search_at text,fingerprint text);
  CREATE TABLE finder_inbox(watch_id text REFERENCES finder_watches,marketplace text,marketplace_item_id text,data json,first_seen_at text,last_seen_at text,dismissed boolean,PRIMARY KEY(watch_id,marketplace,marketplace_item_id),FOREIGN KEY(marketplace,marketplace_item_id) REFERENCES listings);
  CREATE TABLE finder_decisions(watch_id text,marketplace text,marketplace_item_id text,verdict text,purchased boolean,tier text,decided_at text,prediction json,PRIMARY KEY(watch_id,marketplace,marketplace_item_id),FOREIGN KEY(watch_id,marketplace,marketplace_item_id) REFERENCES finder_inbox);
  INSERT INTO finder_watches(id,config,revision) VALUES('w','{"maximum_subtotal":"1","currency":"USD"}',1);`);

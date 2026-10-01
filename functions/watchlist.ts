@@ -183,14 +183,15 @@ export function createHandler(deps: Deps) {
         // display window or imply that a fresh summary freshened detail evidence.
         for (const row of leads) {
           const l = row.listing;
-          row.evidence_stale = !l.details_observed_at || Date.parse(l.details_observed_at)<cutoff || row.data.watch_revision!==row.revision;
-          row.listing = row.evidence_stale ? {title:"Previously discovered listing · awaiting fresh details",listing_url:l.listing_url,item_specifics:{}} :
+          row.evidence_invalidated_reason = row.pending_evidence_change ? 'seller_changed' : row.data.evidence_invalidated_at ? (row.data.evidence_invalidated_reason==='seller_changed'?'seller_changed':'refresh_failed') : null;
+          row.evidence_stale = !!row.evidence_invalidated_reason || !l.details_observed_at || Date.parse(l.details_observed_at)<cutoff || row.data.watch_revision!==row.revision;
+          row.listing = row.evidence_stale ? {title:row.evidence_invalidated_reason?"Listing needs a fresh check · awaiting details":"Previously discovered listing · awaiting fresh details",listing_url:l.listing_url,item_specifics:{}} :
             { title:l.title,listing_url:l.listing_url,condition:l.condition,condition_id:l.condition_id,
               images:[l.primary_image,...(Array.isArray(l.additional_images)?l.additional_images:[])].filter(validImage).slice(0,12),
               current_price:l.current_price,shipping_cost:l.shipping_cost,currency:l.currency,
               price_kind:l.price_kind,listing_ends_at:l.listing_ends_at,item_specifics:l.item_specifics,
               details_observed_at:l.details_observed_at,last_observed_at:l.last_observed_at };
-          if(row.evidence_stale) row.data={status:row.data.status,availability:row.data.availability,clues:[],verify:["reference_only_current_availability_unverified"],budget:"needs_refresh",notify:false};
+          if(row.evidence_stale) row.data={status:row.data.status,availability:row.data.availability,clues:[],verify:[row.evidence_invalidated_reason?(row.evidence_invalidated_reason==='seller_changed'?'seller_details_changed':'detail_refresh_failed'):"reference_only_current_availability_unverified"],budget:"needs_refresh",notify:false};
           delete row.revision;
         }
         const ids = leads.map(row => row.marketplace_item_id);

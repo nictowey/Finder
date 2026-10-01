@@ -29,8 +29,8 @@ def main():
     validate_fixture_url(os.environ.get("FINDER_DATABASE_URL", ""))
     from check_watch_postgres import main as rehearse
 
-    rehearse()
+    return rehearse()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

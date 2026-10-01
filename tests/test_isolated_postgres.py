@@ -1,6 +1,7 @@
 """The PR PostgreSQL entrypoint must reject nonfixture targets before connecting."""
 
 import importlib.util
+import runpy
 from pathlib import Path
 
 import pytest
@@ -56,3 +57,15 @@ def test_entrypoint_never_invokes_rehearsal_for_remote_target(monkeypatch):
     monkeypatch.setenv("FINDER_DATABASE_URL", FIXTURE)
     module.main()
     assert calls == [1]
+
+
+@pytest.mark.parametrize("result", [0, 1])
+def test_command_exit_preserves_rehearsal_result(monkeypatch, result):
+    import sys
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("FINDER_DATABASE_URL", FIXTURE)
+    monkeypatch.setitem(sys.modules, "check_watch_postgres", SimpleNamespace(main=lambda: result))
+    with pytest.raises(SystemExit) as error:
+        runpy.run_path(str(Path(module.__file__)), run_name="__main__")
+    assert error.value.code == result

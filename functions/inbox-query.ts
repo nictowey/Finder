@@ -1,9 +1,11 @@
 // Apply each watch's current ceiling before keyset pagination. Auctions compare the
 // current bid. Discovery and notification eligibility remain independent of this view.
-export const inboxQuery = `SELECT i.watch_id,i.marketplace,i.marketplace_item_id,i.data,i.first_seen_at,i.last_seen_at,i.dismissed,l.data AS listing,w.revision
+import { pendingEvidenceChange } from './pending-evidence.mjs';
+export const inboxQuery = `SELECT i.watch_id,i.marketplace,i.marketplace_item_id,i.data,i.first_seen_at,i.last_seen_at,i.dismissed,l.data AS listing,w.revision,evidence.pending AS pending_evidence_change
   FROM finder_inbox i JOIN listings l USING(marketplace,marketplace_item_id)
   JOIN finder_watches w ON w.id=i.watch_id
   LEFT JOIN finder_decisions v ON v.watch_id=i.watch_id AND v.marketplace=i.marketplace AND v.marketplace_item_id=i.marketplace_item_id
+  CROSS JOIN LATERAL (SELECT ${pendingEvidenceChange} AS pending) evidence
   WHERE ($1='dismissed' AND i.dismissed OR $1='judged' AND (v.verdict IS NOT NULL OR v.purchased)
     OR $1='unavailable' AND NOT i.dismissed AND i.data->>'availability'='unavailable_on_recheck'
     OR $1 NOT IN ('dismissed','unavailable') AND NOT i.dismissed AND i.data->>'availability' IS DISTINCT FROM 'unavailable_on_recheck'
@@ -18,6 +20,8 @@ export const inboxQuery = `SELECT i.watch_id,i.marketplace,i.marketplace_item_id
     AND l.data->>'shipping_currency'=w.config->>'currency'
     AND l.data->>'price_kind' IN ('fixed_price','current_bid')
     AND l.data->>'details_observed_at' >= $6
+    AND i.data->>'evidence_invalidated_at' IS NULL
+    AND NOT evidence.pending
     AND i.data->>'watch_revision'=w.revision::text
     AND l.data->'source_metadata'->>'delivery_country'=w.config->>'country'
     AND l.data->'source_metadata'->>'delivery_postal_code'=w.config->>'postal_code'

@@ -6,6 +6,8 @@ import { PGlite } from '@electric-sql/pglite';
 import { createHandler } from './watchlist.js';
 import { decisionInput,saveDecisionQuery } from './decisions.js';
 const schema=`CREATE TABLE finder_watches(id text PRIMARY KEY);
+CREATE TABLE listings(marketplace text,marketplace_item_id text,data json);
+CREATE TABLE finder_discovery_work(marketplace text,item_id text,status text,kind text,reason text,last_search_at text,fingerprint text);
 CREATE TABLE finder_inbox(watch_id text REFERENCES finder_watches ON DELETE CASCADE,marketplace text,marketplace_item_id text,data json,last_seen_at text,PRIMARY KEY(watch_id,marketplace,marketplace_item_id));
 CREATE TABLE finder_verdicts(watch_id text,marketplace text,marketplace_item_id text,verdict text,tier text,decided_at text,PRIMARY KEY(watch_id,marketplace,marketplace_item_id),FOREIGN KEY(watch_id,marketplace,marketplace_item_id) REFERENCES finder_inbox ON DELETE CASCADE);
 CREATE TABLE finder_decisions(watch_id text,marketplace text,marketplace_item_id text,verdict text,purchased boolean NOT NULL,tier text,decided_at text,updated_at text NOT NULL,prediction json,legacy json,PRIMARY KEY(watch_id,marketplace,marketplace_item_id),FOREIGN KEY(watch_id,marketplace,marketplace_item_id) REFERENCES finder_inbox ON DELETE CASCADE);
@@ -17,6 +19,41 @@ const key={watch_id:'w',marketplace:'ebay',marketplace_item_id:'1'};
 async function setup(){const db=new PGlite();await db.exec(schema);for(const name of ['decision_bridge.sql','save_decision.sql'])await db.exec(readFileSync(new URL('../src/finder/'+name,import.meta.url),'utf8'));return db;}
 async function save(db:PGlite,value:object,purchase=false){return db.query(saveDecisionQuery,decisionInput({...key,...value},purchase)!);}
 async function row(db:PGlite){return (await db.query<any>('SELECT * FROM finder_decisions')).rows[0];}
+
+test('legacy pending identity changes reject stale saves while purchase, clear and newer same-fact reviews retain provenance',async()=>{
+ const db=await setup();try{
+  await db.exec(`INSERT INTO listings VALUES('ebay','1','{}');
+   UPDATE finder_inbox SET data='{"status":"family_review","details_observed_at":"2026-09-30T12:00:00Z"}';`);
+  await save(db,{verdict:'other'});const before=await row(db);
+  await db.exec("INSERT INTO finder_discovery_work VALUES(NULL,'1','pending','existing_listing_updated',NULL,'2026-09-30T12:01:00+00:00','H1')");
+  const adapter={query:async(sql:string,args?:unknown[])=>sql.includes('owner_email')?{rows:[{data:{email:'owner@example.com'}}]}:db.query(sql,args)};
+  const handler=createHandler({db:adapter,origin:'https://finder.example',authURL:'https://auth.example',fetch:async()=>new Response(JSON.stringify({user:{email:'owner@example.com',emailVerified:true},session:{expiresAt:'2099-01-01T00:00:00Z'}}))});
+  const response=await handler(new Request('https://finder.example/api/verdict',{method:'POST',headers:{Origin:'https://finder.example','Content-Type':'application/json'},body:JSON.stringify({...key,verdict:'mine',observed_tier:'family_review',observed_evaluated_at:'2026-09-30T12:00:00Z'})}));
+  assert.equal(response.status,409);assert.deepEqual(await row(db),before);
+  assert.equal((await save(db,{verdict:'mine'})).rows.length,0);assert.deepEqual(await row(db),before);
+  await save(db,{purchased:true},true);await save(db,{verdict:null});
+  const cleared=await row(db);assert.equal(cleared.verdict,null);assert.equal(cleared.purchased,true);assert.deepEqual(cleared.prediction,before.prediction);
+  await db.query('UPDATE listings SET data=$1',[{source_metadata:{finder_details_invalidated_at:'2026-09-30T12:01:00Z',finder_summary_fingerprint:'H1'}}]);
+  await db.query('UPDATE finder_inbox SET data=$1,last_seen_at=$2',[{status:'family_review',details_observed_at:'2026-09-30T12:02:00Z'},'2026-09-30T12:02:00Z']);
+  await db.exec("UPDATE finder_discovery_work SET last_search_at='2026-09-30T12:03:00Z'");
+  await save(db,{verdict:'mine'});const after=await row(db);
+  assert.equal(after.verdict,'mine');assert.equal(after.purchased,true);assert.equal(after.decided_at,before.decided_at);assert.deepEqual(after.prediction,before.prediction);
+ }finally{await db.close();}
+});
+
+test('versioned invalidation rejects an old page without changing saved provenance',async()=>{
+ const db=await setup();try{
+  await save(db,{verdict:'other'});const before=await row(db);
+  await db.query('UPDATE finder_inbox SET data=$1,last_seen_at=$2', [{status:'family_review',notify:false,evidence_invalidated_at:'2026-09-30T12:01:00Z',evidence_invalidated_reason:'seller_changed'},'2026-09-30T12:01:00Z']);
+  await db.exec("INSERT INTO finder_discovery_work VALUES(NULL,'1','pending','existing_listing_updated',NULL,'2026-09-30T12:01:00Z','H1')");
+  const adapter={query:async(sql:string,args?:unknown[])=>sql.includes('owner_email')?{rows:[{data:{email:'owner@example.com'}}]}:db.query(sql,args)};
+  const handler=createHandler({db:adapter,origin:'https://finder.example',authURL:'https://auth.example',fetch:async()=>new Response(JSON.stringify({user:{email:'owner@example.com',emailVerified:true},session:{expiresAt:'2099-01-01T00:00:00Z'}}))});
+  const post=(stamp:string)=>handler(new Request('https://finder.example/api/verdict',{method:'POST',headers:{Origin:'https://finder.example','Content-Type':'application/json'},body:JSON.stringify({...key,verdict:'mine',observed_tier:'family_review',observed_evaluated_at:stamp})}));
+  assert.equal((await post('2026-09-30T12:00:00Z')).status,409);assert.deepEqual(await row(db),before);
+  assert.equal((await post('2026-09-30T12:01:00Z')).status,200);const after=await row(db);
+  assert.equal(after.verdict,'mine');assert.deepEqual(after.prediction,before.prediction);assert.equal(after.decided_at,before.decided_at);
+ }finally{await db.close();}
+});
 
 for(const verdict of ['mine','other','unsure'])test(`identity ${verdict} saves and rehydrates with immutable first prediction`,async()=>{
  const db=await setup();try{

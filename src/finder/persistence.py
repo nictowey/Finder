@@ -192,6 +192,11 @@ class SqlAlchemyListingRepository:
                             )
                         )
                         return "new"
+                    # Local knowledge of a seller change outlives provider snapshots,
+                    # including an older request that completes after invalidation.
+                    from finder.evidence import preserve_watermark
+
+                    preserve_watermark(data, row["data"])
                     # Older concurrent observations never overwrite newer data.
                     if last < row["last_observed_at"]:
                         return "updated"
