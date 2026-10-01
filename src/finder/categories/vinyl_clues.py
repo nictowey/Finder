@@ -79,6 +79,9 @@ class ListingText:
         self.fingerprint = seller
         values = [value for specific in listing.item_specifics.values() for value in specific]
         self.text = _normalized(" ".join([listing.title, *values]))
+        # A phrase or negator must not cross the title or an item-specific value.
+        # Retain joined text for compatibility; typed matching remains separate.
+        self.source_texts = tuple(_normalized(value) for value in [listing.title, *values])
         self.compact = _compact(" ".join([listing.title, *seller.catalog_numbers]))
         self.digits = re.sub(r"\D", " ", " ".join([listing.title, *seller.barcodes]))
         self.structured_colors = seller.colors
@@ -121,10 +124,17 @@ def clue_found(clue: Clue, seen: ListingText, *, common_version: bool = False) -
         return len(value) >= 8 and value in seen.digits.replace(" ", "")
     if clue.kind == "label":
         value = _normalized(clue.value)
-        return bool(value) and (value in seen.labels or _phrase_found(seen.text, clue.value))
+        return bool(value) and (
+            value in seen.labels
+            or any(_phrase_found(text, clue.value) for text in seen.source_texts)
+        )
     if clue.kind == "country":
         return bool(seen.country) and seen.country == _normalized(clue.value)
-    return any(_phrase_found(seen.text, term) for term in _keyword_variants(clue.value))
+    return any(
+        _phrase_found(text, term)
+        for text in seen.source_texts
+        for term in _keyword_variants(clue.value)
+    )
 
 
 def apply_cheat_sheet(
