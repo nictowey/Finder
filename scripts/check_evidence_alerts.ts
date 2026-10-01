@@ -14,7 +14,7 @@ try {
  const result=await deliver(db,async()=>{throw new Error('Synthetic evidence quarantine must not send');});
  assert.equal(result.accepted_events,0);assert.equal(result.status,'no_eligible_alerts');
  console.log('{"legacy_pending_alert_quarantine":"passed"}');
- // A dedicated session's temporary tables model the per-watch reference cap.
+ // A dedicated session models 30,000 work rows spread across 20 watch keys.
  // No persistent rows or actual listing data enter this query-plan check.
  const client=await pool.connect();try{
   await client.query(`CREATE TEMP TABLE finder_watches(id text,config json,revision int);
