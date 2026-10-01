@@ -17,6 +17,7 @@ from finder.errors import (
     ItemUnavailableError,
     RateLimitError,
     RequestError,
+    RequestRejectedError,
     ResponseError,
 )
 
@@ -209,7 +210,14 @@ class EbayClient:
             if response.status_code in (404, 410):
                 raise ItemUnavailableError("eBay item or endpoint is no longer available.")
             if not response.is_success:
-                raise RequestError(f"eBay rejected the request (HTTP {response.status_code}).")
+                # Only explicit request-validation failures are definitive rejections.
+                # Timeouts/conflicts and unfamiliar responses may recover on a later run.
+                error = (
+                    RequestRejectedError
+                    if response.status_code in (400, 405, 406, 415, 422)
+                    else RequestError
+                )
+                raise error(f"eBay rejected the request (HTTP {response.status_code}).")
             payload = self._json(response)
             if payload.get("errors"):
                 raise ResponseError("eBay returned API errors in a successful HTTP response.")

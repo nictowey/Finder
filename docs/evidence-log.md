@@ -3,6 +3,23 @@
 Dated operational and validation history, moved verbatim from `AGENTS.md` on
 September 24, 2026 when Finder became a personal pressing hunter. Newer entries go at the top.
 
+## October 1, 2026 — retryable barcode discovery failures
+
+Offline recovery tests reproduced a missed listing after a temporary barcode-search outage:
+the worker marked the query's durable search lanes unsupported, so it never tried that
+identifier again after the provider recovered. Transport failures, exhausted server retries,
+invalid JSON/pages and authentication failures now retain the existing interrupted cursor and
+backoff behavior used for keyword searches. Explicit HTTP request-validation rejection,
+unavailable endpoints, invalid query syntax and barcode results without listing dates still
+disable the optional lane without stopping the other queries. HTTP rejection remains a
+subtype of the existing request error; a request timeout is not a definitive rejection.
+
+Synthetic two-run regressions verify recovery finds an item absent from keyword results,
+hydrates it once and preserves the cursor/watermark until a successful retry. Existing query
+bounds, request budgets, saved labels and live search state are unchanged. This prevents
+future accidental disabling; it does not reset already-disabled lanes or establish live
+marketplace recall.
+
 ## September 30, 2026 — cancelled worker attempt accounting
 
 An offline lease audit reproduced a false interruption warning: an owner edit revoked a

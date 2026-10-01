@@ -568,8 +568,9 @@ def test_settings_edits_reuse_unchanged_details_but_hydrate_changed_search_resul
 
 
 @pytest.mark.parametrize("barcode", [True, False])
+@pytest.mark.parametrize("failure", ["malformed", "rejected"])
 def test_a_failing_barcode_search_is_switched_off_without_failing_the_watch(
-    repository, settings, discogs_release, monkeypatch, barcode
+    repository, settings, discogs_release, monkeypatch, barcode, failure
 ):
     from contextlib import nullcontext
 
@@ -620,6 +621,8 @@ def test_a_failing_barcode_search_is_switched_off_without_failing_the_watch(
         if "analytics" in request.url.path:
             return httpx.Response(200, json=quota)
         failing = ("gtin" in request.url.params) == barcode
+        if failing and failure == "rejected":
+            return httpx.Response(400)
         items = [outside] if failing else []
         return httpx.Response(200, json={"total": len(items), "itemSummaries": items})
 
@@ -629,7 +632,8 @@ def test_a_failing_barcode_search_is_switched_off_without_failing_the_watch(
     claim = store.claim(now=NOW)
     result = worker.run_chunk(repository, settings, None, claim, now_fn=lambda: NOW)
     kind = "barcode" if barcode else "keywords"
-    assert result[f"search_failed_{kind}_SearchError_missing_start_date"] == 1
+    error = "SearchError_missing_start_date" if failure == "malformed" else "RequestRejectedError"
+    assert result[f"search_failed_{kind}_{error}"] == 1
     with repository.engine.connect() as conn:
         state = conn.execute(select(progress.c.data)).scalar()
     if barcode:

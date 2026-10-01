@@ -4,7 +4,13 @@ import httpx
 import pytest
 
 from finder.adapters.ebay.client import EbayClient
-from finder.errors import AuthenticationError, RateLimitError, RequestError, ResponseError
+from finder.errors import (
+    AuthenticationError,
+    RateLimitError,
+    RequestError,
+    RequestRejectedError,
+    ResponseError,
+)
 
 
 def test_oauth_cache_and_refresh_on_401(settings):
@@ -70,7 +76,7 @@ def test_oauth_auth_failure_has_no_response_secret(settings, status):
         (403, AuthenticationError),
         (429, RateLimitError),
         (500, RequestError),
-        (400, RequestError),
+        (400, RequestRejectedError),
     ],
 )
 def test_browse_failures(settings, status, error):

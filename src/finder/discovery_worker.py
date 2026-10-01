@@ -17,7 +17,7 @@ from finder.adapters.discogs.adapter import AlternativeRetrieval, DiscogsCatalog
 from finder.adapters.discogs.client import DiscogsClient
 from finder.adapters.ebay.adapter import EbayAdapter
 from finder.adapters.ebay.client import EbayClient
-from finder.adapters.ebay.discovery import iso, search_page
+from finder.adapters.ebay.discovery import SearchError, iso, search_page
 from finder.adapters.ebay.quota import summarize_browse_quota
 from finder.categories.vinyl_target import target_from_release
 from finder.discovery_store import (
@@ -31,7 +31,7 @@ from finder.discovery_store import (
     new_pass,
     progress,
 )
-from finder.errors import CatalogError, RateLimitError
+from finder.errors import CatalogError, ItemUnavailableError, RateLimitError, RequestRejectedError
 from finder.watch_profile import load_profile, siblings_of
 from finder.watch_store import SavedWatch, WatchStore, watches
 
@@ -298,10 +298,18 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                             f"search_failed_{'barcode' if barcode else 'keywords'}_"
                             f"{type(exc).__name__}" + (f"_{code}" if code else "")
                         ] = 1
-                        if barcode:
+                        if barcode and (
+                            isinstance(
+                                exc, (RequestRejectedError, ItemUnavailableError, ValueError)
+                            )
+                            or isinstance(exc, SearchError)
+                            and code == "missing_start_date"
+                        ):
                             # The barcode search is an optional extra. If eBay rejects it or
                             # it cannot honor the date window, stop using it for this pass
-                            # rather than failing the whole watch on every scan.
+                            # rather than failing the whole watch on every scan. Temporary
+                            # transport, service, JSON or authentication failures must leave
+                            # the cursor retryable, just like a keyword query.
                             state["queries"][i][lane]["status"] = "partial_provider_limit"
                             state["queries"][i][lane]["reason"] = "barcode_search_unavailable"
                             state["round_robin"] = rotation
