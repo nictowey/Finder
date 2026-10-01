@@ -5,6 +5,7 @@ from datetime import timedelta
 
 from finder.categories.target_review import catalog_title_aliases, review_target_with_alternatives
 from finder.categories.vinyl_clues import apply_cheat_sheet
+from finder.stage_timing import StageTimings
 from finder.watch_store import WatchStore
 
 POLICY = "private-target-review-v13"
@@ -154,6 +155,7 @@ def run_due_watches(
 
     store = WatchStore(repository.engine)
     report = {
+        **StageTimings().report(),
         "attempted": 0,
         "completed": 0,
         "failed": 0,

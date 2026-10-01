@@ -699,10 +699,14 @@ def test_worker_records_lost_lease_without_changing_newer_watch_state(
     marketplace = Mock(side_effect=AssertionError("Lost worker must stop before eBay"))
     monkeypatch.setattr(worker, "EbayClient", marketplace)
 
-    assert run_chunk(repo, settings, discogs_settings, claim, now_fn=lambda: clock[0]) == {
+    result = run_chunk(repo, settings, discogs_settings, claim, now_fn=lambda: clock[0])
+    assert {key: value for key, value in result.items() if not key.startswith("timing_")} == {
         "superseded": 1,
         "new_inbox_rows": 0,
     }
+    assert result["timing_catalog_calls"] == result["timing_catalog_completed"] == 1
+    assert result["timing_finalize_calls"] == result["timing_finalize_completed"] == 1
+    assert result["timing_search_calls"] == result["timing_cached_read_calls"] == 0
     marketplace.assert_not_called()
     with repo.engine.connect() as conn:
         assert [dict(row) for row in conn.execute(select(watches)).mappings()] == expected_watch
