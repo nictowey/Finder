@@ -3,7 +3,35 @@
 Dated operational and validation history, moved verbatim from `AGENTS.md` on
 September 24, 2026 when Finder became a personal pressing hunter. Newer entries go at the top.
 
-## October 1, 2026 — skip unused observation-history lookup (local, not deployed)
+## October 1, 2026 — exclude bounded packaging-color modifiers (local, not deployed)
+
+Synthetic regressions reproduced a gap in the existing packaging exclusion: a bare
+"clear sleeve" supplied no disc-color evidence, but "clear PVC sleeve" could support
+Likely and "white paper inner sleeve" could falsely reject a different-colored target.
+There is no claim about the prevalence of these phrases in the owner's live listings.
+
+The existing color-before-object exclusion now permits up to three words from the bounded
+packaging-only set `inner`, `outer`, `paper`, `plastic`, `pvc`, and `gatefold`. It does not
+skip arbitrary words, cross clause punctuation, or consume disc nouns. Genuine disc claims,
+denials, explicit choices, artist/album exclusions, independent clues and owner price/strict
+rules remain covered. Source values and the separate structured-color precedence policy
+are unchanged. Matching becomes `vinyl-decision-v13` and private review becomes
+`private-target-review-v14` so retained evidence is reassessed through normal bounded work.
+No provider requests, schema changes, paid services, or owner-judgment edits are introduced.
+
+Local gates passed: 1,772 Python tests (71 new; 61 fail against the unchanged baseline),
+79 Node tests, Ruff lint/format, TypeScript and diff checks. An additional 3,312 synthetic
+packaging-versus-unmodified equivalence checks passed. Independent review and exact-head
+PostgreSQL, Discogs and authenticated eBay release gates remain pending.
+
+## October 1, 2026 — skip unused observation-history lookup (merged, production verified)
+
+[PR #91](https://github.com/nictowey/Finder/pull/91) merged at 10:46:40 UTC as main
+`216f02bd92ad527b06ae66facbc96fe1fabde9a7`. Exact-head PostgreSQL migration/restore/locking
+and eBay sandbox gates passed. The [ordinary production run](https://github.com/nictowey/Finder/actions/runs/36852083886)
+completed with eight successful chunks, 56 cached reviews, zero failures or pending work.
+Live health was checked at 11:04–11:05 UTC. These are different workloads and latencies
+from the earlier timing run; they do not support a percentage speedup claim.
 
 Snapshot-only listing upserts now skip constructing and querying the observation-history
 key when `record_observation=False`, as used by cached discovery dispositions. Default
@@ -21,8 +49,8 @@ The existing isolated PostgreSQL gate also checks that cached dispositions retai
 and listing-row locks without touching history. No provider calls, schema/settings changes,
 matching changes or policy bump are introduced: matching remains `vinyl-decision-v12` and
 private review remains `private-target-review-v13`. Local gates passed: 1,701 Python tests,
-79 Node tests, Ruff lint/format, TypeScript and diff whitespace checks. Exact-head real
-PostgreSQL and authenticated eBay sandbox validation are pending release-stage checks.
+79 Node tests, Ruff lint/format, TypeScript and diff whitespace checks. The release-stage
+PostgreSQL and authenticated eBay sandbox gates subsequently passed as recorded above.
 
 ## October 1, 2026 — anonymous worker stage timing (merged, production verified)
 

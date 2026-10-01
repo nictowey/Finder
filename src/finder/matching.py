@@ -21,7 +21,7 @@ from finder.domain import (
     Variant,
 )
 
-MATCH_POLICY_VERSION = "vinyl-decision-v12"
+MATCH_POLICY_VERSION = "vinyl-decision-v13"
 
 # Compare named colors across the whole record set. Discogs may describe the two
 # discs separately while a seller puts both colors in a single item specific.
@@ -193,8 +193,12 @@ _NON_DISC_OBJECTS = (
     r"pochettes?|couvertures?|jaquettes?|etiquettes?|sleeves?|covers?|labels?|jackets?|artwork"
 )
 _OBJECT_COLOR_SEQUENCE = rf"{_COLOR_CLAIM}(?:\s+{_COLOR_COORDINATOR}\s+{_COLOR_CLAIM})*"
+# A bounded packaging-only modifier list keeps "clear PVC sleeve" from being
+# treated as a disc claim. Do not admit arbitrary words or disc nouns: "clear
+# vinyl in a PVC sleeve" still supplies the independent clear-vinyl evidence.
+_PACKAGING_MODIFIERS = r"(?:(?:inner|outer|paper|plastic|pvc|gatefold)\s+){0,3}"
 _NON_DISC_COLORS = re.compile(
-    rf"\b{_OBJECT_COLOR_SEQUENCE}\s+(?:{_NON_DISC_OBJECTS})\b"
+    rf"\b{_OBJECT_COLOR_SEQUENCE}\s+{_PACKAGING_MODIFIERS}(?:{_NON_DISC_OBJECTS})\b"
     rf"|\b(?:{_NON_DISC_OBJECTS})\s+"
     rf"(?:(?:is|are|in|colored|coloured)\s+)?{_OBJECT_COLOR_SEQUENCE}\b"
 )
