@@ -3,7 +3,35 @@
 Dated operational and validation history, moved verbatim from `AGENTS.md` on
 September 24, 2026 when Finder became a personal pressing hunter. Newer entries go at the top.
 
-## October 1, 2026 — anonymous worker stage timing (local, not deployed)
+## October 1, 2026 — skip unused observation-history lookup (local, not deployed)
+
+Snapshot-only listing upserts now skip constructing and querying the observation-history
+key when `record_observation=False`, as used by cached discovery dispositions. Default
+recording still queries each timestamp and appends missing observations before the listing-row
+lock, leaving existing history untouched. Seller advisory locks and tombstones, listing-row
+locks, snapshot writes and timestamp/watermark rules, retained-SQL retries, and caller-owned
+review/feedback/outbox transactions are unchanged. No no-op snapshot optimization is included.
+
+Synthetic retained-row traces, with history both present and absent, have 14 SQL statements
+instead of the baseline 15, including the unchanged source read and snapshot update. This is
+one redundant query removed, not a measured production speedup. Regression coverage includes
+recording modes, owned/caller transactions, insert/equal/older/newer observations, deletion,
+SQL and application failures, retries, cached review/feedback suppression and atomic rollback.
+The existing isolated PostgreSQL gate also checks that cached dispositions retain advisory
+and listing-row locks without touching history. No provider calls, schema/settings changes,
+matching changes or policy bump are introduced: matching remains `vinyl-decision-v12` and
+private review remains `private-target-review-v13`. Local gates passed: 1,701 Python tests,
+79 Node tests, Ruff lint/format, TypeScript and diff whitespace checks. Exact-head real
+PostgreSQL and authenticated eBay sandbox validation are pending release-stage checks.
+
+## October 1, 2026 — anonymous worker stage timing (merged, production verified)
+
+[PR #90](https://github.com/nictowey/Finder/pull/90) merged at 08:02:11 UTC as main commit
+`ed6346245a6ac04d50a8c52b331210b671b04d60`. The [ordinary production run](https://github.com/nictowey/Finder/actions/runs/36834142221)
+and [follow-up run](https://github.com/nictowey/Finder/actions/runs/36835133846) passed, and the
+live dashboard and health were verified at 08:12–08:14 UTC. A later [production timing run](https://github.com/nictowey/Finder/actions/runs/36847937919)
+provided the baseline for investigating cached-disposition database work; it does not establish
+the benefit of any subsequent change.
 
 Scheduled worker reports now contain fixed-key integer millisecond totals and entered/
 normally-returned span counts for setup, catalog, search, cached queue/source reads,
@@ -18,7 +46,10 @@ summed across chunks are not unique newly completed work. Local deterministic re
 cover timing/aggregation, privacy, budget stops, lease loss and failure behavior; they do not
 measure production database latency or matching accuracy. Local aggregate gates passed:
 1,644 Python tests, 79 Node tests, Ruff lint/format, TypeScript and diff whitespace checks.
-Release-stage exact-head PostgreSQL and authenticated provider validation remain required.
+PR #90's [exact-head real PostgreSQL checks](https://github.com/nictowey/Finder/actions/runs/36833606238)
+and [authenticated eBay sandbox validation](https://github.com/nictowey/Finder/actions/runs/36833592844)
+passed before merge. The Discogs smoke workflow was not triggered by its path filters because
+catalog/matching behavior was unchanged; the ordinary production run exercised catalog access.
 
 ## October 1, 2026 — missing identifier sentinels stay missing (merged, catch-up verified)
 
