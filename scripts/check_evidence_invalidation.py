@@ -249,7 +249,7 @@ def check_evidence_invalidation(repo, store, queue, listing, now, *, on_phase):
             review={
                 "notify": True,
                 "status": "possible_pressing",
-                "policy": "private-target-review-v10",
+                "policy": "private-target-review-v11",
             },
         )
     with repo.engine.begin() as conn:
@@ -301,7 +301,7 @@ def check_evidence_invalidation(repo, store, queue, listing, now, *, on_phase):
         review={
             "notify": True,
             "status": "possible_pressing",
-            "policy": "private-target-review-v10",
+            "policy": "private-target-review-v11",
         },
     )
     with repo.engine.connect() as conn:

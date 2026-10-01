@@ -96,7 +96,7 @@ def known_review(repository, search_payload):
     )
     review = {
         "notify": True,
-        "policy": "private-target-review-v10",
+        "policy": "private-target-review-v11",
         "status": "possible_pressing",
         "subtotal": "25",
         "budget": "within_ceiling",

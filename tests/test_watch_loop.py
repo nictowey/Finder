@@ -246,7 +246,7 @@ def test_ambiguous_and_unchecked_leads_stay_visible_without_alerts(
     assert ambiguous["status"] == "family_review" and not ambiguous["notify"]
     assert "other_pressings_not_ruled_out" in ambiguous["verify"]
     assert ambiguous["alternatives_not_ruled_out"] == 1
-    assert ambiguous["policy"] == "private-target-review-v10"
+    assert ambiguous["policy"] == "private-target-review-v11"
 
 
 def test_pilot_capacity(store):

@@ -3,6 +3,32 @@
 Dated operational and validation history, moved verbatim from `AGENTS.md` on
 September 24, 2026 when Finder became a personal pressing hunter. Newer entries go at the top.
 
+## October 1, 2026 — bounded localized seller evidence
+
+The vinyl extractor recognizes explicit catalog-number keys `Numéro de catalogue`,
+`Katalognummer` and `Codice catalogo`, plus observed French, German and Italian artist and
+release-title keys. The observed Italian `Formato` key also retains explicit non-vinyl
+medium conflicts; unknown format values are not translated. Original item specifics stay intact.
+Numeric catalog values remain catalog numbers; neither digit sequences nor geographical title words become barcode or country claims.
+Localized identity contradictions take the same path as their English counterparts. Each
+recognized title must agree with a validated album spelling; each catalog-number field must
+share a target number, while multiple numbers within one field remain supported. A matching
+field cannot hide a contradictory field. Shared catalog numbers still leave competitors unresolved.
+
+A small seller-only parser recognizes `vinyle(s)` disc claims using `bleu`, `blanc`, `gris` or
+`jaune`. It separates supported negations, rejects ambiguous alternatives and incomplete lists,
+and excludes catalog artist/album names and packaging contexts. This is not general language
+translation. The catalog color vocabulary is unchanged: yellow does not prove a named shade
+such as Mustard, or a country-specific pressing. A recognized seller color with no comparable
+catalog palette remains unclear and reports that the color needs comparison rather than
+claiming the seller omitted it.
+
+Matching policy `vinyl-decision-v10` and review policy `private-target-review-v11` distinguish
+these assessments; the notification runtime uses the same review version. Synthetic regressions
+cover typed identifiers, conflicting localized identities, disc-color scope, ambiguity, alert
+gating and preservation of owner labels and their original prediction provenance. No owner
+feedback, production data, catalog notes, schema, provider calls or paid services were changed.
+
 ## October 1, 2026 — unknown catalog colors remain unresolved
 
 Synthetic regressions showed that fuzzy comparison of raw format text could incorrectly
