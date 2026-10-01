@@ -7,6 +7,7 @@ from threading import Event, local
 from time import monotonic, sleep
 from unittest.mock import patch
 
+from sqlalchemy import event as sql_event
 from sqlalchemy import select, text
 
 from finder.adapters.ebay.target_search import EbaySearchTarget
@@ -67,6 +68,7 @@ def check_evidence_invalidation(repo, store, queue, listing, now, *, on_phase):
                 state=state,
             )
         watches.append((claim, state, items))
+    assert len({watch[0]["id"] for watch in watches}) == 2
     changed_at = now + timedelta(minutes=1)
     changed = [{**ref, "title": "Synthetic red copy"} for ref in refs]
     first_locked, second_requested, release_first = Event(), Event(), Event()
@@ -92,8 +94,18 @@ def check_evidence_invalidation(repo, store, queue, listing, now, *, on_phase):
     ):
         first_pid = first.execute(text("SELECT pg_backend_pid()")).scalar_one()
         second_pid = second.execute(text("SELECT pg_backend_pid()")).scalar_one()
+        assert first_pid != second_pid
         first.commit()
         second.commit()
+        second_stage = {"value": "start"}
+
+        @sql_event.listens_for(second, "before_cursor_execute")
+        def record_stage(connection, cursor, statement, parameters, execution_context, many):
+            # Fixed table names only; never expose SQL or bound listing values.
+            for table in ("finder_watches", "finder_discovery_work", "finder_discovery"):
+                if table in statement:
+                    second_stage["value"] = table
+                    break
 
         def checkpoint(role, connection, watch, items):
             context.role, context.index = role, 0
@@ -116,6 +128,7 @@ def check_evidence_invalidation(repo, store, queue, listing, now, *, on_phase):
                     )
                     on_phase("second_listing_lock")
                     if not second_requested.wait(5):
+                        on_phase("second_waiting_" + second_stage["value"])
                         b.result(timeout=1)
                         raise AssertionError("Second checkpoint did not request its shared lock")
                     on_phase("shared_listing_blocking")
