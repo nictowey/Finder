@@ -19,6 +19,8 @@ from finder.categories.vinyl import (
 from finder.domain import Listing, Variant
 from finder.matching import (
     _compact,
+    _equivalent_gtin_values,
+    _gtin_key,
     _listing_color_claims,
     _normalized,
     _palette,
@@ -120,6 +122,8 @@ def clue_found(clue: Clue, seen: ListingText, *, common_version: bool = False) -
         value = _compact(clue.value)
         return len(value) >= 4 and value in seen.compact
     if clue.kind == "barcode":
+        if _equivalent_gtin_values(seen.fingerprint.barcodes, [clue.value]):
+            return True
         value = re.sub(r"\D", "", clue.value)
         return len(value) >= 8 and value in seen.digits.replace(" ", "")
     if clue.kind == "label":
@@ -217,9 +221,7 @@ def _facts(variant: Variant) -> dict[str, set[str]]:
         "catalog_number": {
             value for value in fingerprint.catalog_numbers if len(_compact(value)) >= 4
         },
-        "barcode": {
-            digits for value in fingerprint.barcodes if len(digits := re.sub(r"\D", "", value)) >= 8
-        },
+        "barcode": {value for value in fingerprint.barcodes if len(re.sub(r"\D", "", value)) >= 8},
         "label": set(fingerprint.labels),
         "country": {fingerprint.country} if fingerprint.country else set(),
         "keyword": _edition_terms(variant),
@@ -233,6 +235,14 @@ def _shared(kind: str, value: str, facts: dict[str, set[str]]) -> bool:
         return any(wanted <= _palette([other]) for other in facts["color"])
     if kind in ("catalog_number", "label", "country"):
         return _compact(value) in {_compact(other) for other in facts[kind]}
+    if kind == "barcode":
+        if (key := _gtin_key(value)) is not None and any(
+            _gtin_key(other) == key for other in facts[kind]
+        ):
+            return True
+        # Keep historical literal-digit comparison, but validate original values
+        # above before extending equality across different GTIN representations.
+        return re.sub(r"\D", "", value) in {re.sub(r"\D", "", other) for other in facts[kind]}
     return value in facts[kind]
 
 

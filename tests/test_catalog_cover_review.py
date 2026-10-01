@@ -189,6 +189,77 @@ def test_full_structured_target_palette_is_independent_support_and_is_not_discar
     )
 
 
+def colored_cover(name, id, color):
+    return target(
+        name,
+        id,
+        formats=[
+            {"name": "Vinyl", "text": color},
+            {"name": "All Media", "text": f"{name} Alternative Cover"},
+        ],
+    )
+
+
+@pytest.mark.parametrize("color", ["White", "Blue/Green"])
+def test_palette_shared_with_claimed_cover_does_not_cancel_cover_conflict(color):
+    variant = colored_cover("Northern Lights", "1", color)
+    other = colored_cover("River Scene", "2", color)
+    listing = row(specifics={"Color": [color]})
+    review = review_target_with_alternatives(listing, variant, [other], search_incomplete=False)
+    assert review.status == "conflicting"
+    assert "catalog_cover_conflict" in review.verify
+    watch = SavedWatch(release_id=1, gamble_max=Decimal("25"))
+    result = assess_review(watch, listing, variant, now=NOW, alternatives=[other])
+    assert result["status"] == "conflicting" and not result["notify"]
+
+
+@pytest.mark.parametrize("other_color", ["", "Blue", "White/Blue"])
+def test_matching_target_palette_still_abstains_when_claimed_cover_palette_differs_or_missing(
+    other_color,
+):
+    variant = colored_cover("Northern Lights", "1", "White")
+    other = colored_cover("River Scene", "2", other_color)
+    assert conflicting_catalog_cover(row(specifics={"Color": ["White"]}), variant, [other]) is None
+
+
+def test_shared_palette_must_belong_to_the_actual_claimed_cover():
+    variant = colored_cover("Northern Lights", "1", "White")
+    others = [
+        colored_cover("River Scene", "2", "Blue"),
+        colored_cover("Moon Scene", "3", "White"),
+    ]
+    assert conflicting_catalog_cover(row(specifics={"Color": ["White"]}), variant, others) is None
+
+
+@pytest.mark.parametrize("field", ["Barcode", "Catalog Number"])
+def test_shared_palette_never_overrides_exact_target_identifier(field):
+    variant = colored_cover("Northern Lights", "1", "White").model_copy(
+        update=(
+            {"identifiers": {"Barcode": ["00012345678905"]}}
+            if field == "Barcode"
+            else {"labels": [{"name": "Example Label", "catno": "00012345678905"}]}
+        )
+    )
+    other = colored_cover("River Scene", "2", "White")
+    listing = row(specifics={"Color": ["White"], field: ["00012345678905"]})
+    assert conflicting_catalog_cover(listing, variant, [other]) is None
+
+
+def test_shared_palette_never_promotes_matching_cover_or_rejects_an_ambiguous_offer():
+    variant = colored_cover("Northern Lights", "1", "White")
+    other = colored_cover("River Scene", "2", "White")
+    for suffix in [
+        "Northern Lights vinyl LP",
+        "Northern Lights and River Scene vinyl LP",
+        "River Scene cover sold separately vinyl LP",
+    ]:
+        review = review_target_with_alternatives(
+            row(suffix, {"Color": ["White"]}), variant, [other], search_incomplete=False
+        )
+        assert review.status == "family_review"
+        assert "catalog_cover_conflict" not in review.verify
+
+
 def test_same_cover_different_release_is_not_a_cover_conflict():
     assert (
         conflicting_catalog_cover(row("Northern Lights vinyl"), target(), [target(id="2")]) is None

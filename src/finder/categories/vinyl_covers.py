@@ -9,7 +9,13 @@ from difflib import SequenceMatcher
 
 from finder.categories.vinyl import from_listing, from_variant
 from finder.domain import Listing, Variant
-from finder.matching import _artist_matches_catalog, _compact, _normalized, _palette
+from finder.matching import (
+    _artist_matches_catalog,
+    _barcode_evidence,
+    _compact,
+    _normalized,
+    _palette,
+)
 
 MARKER = r"(?:alternative|alternate) (?:cover|artwork)"
 UNSAFE = frozenset(
@@ -205,17 +211,11 @@ def conflicting_catalog_cover(
     # Exact target identifiers are contradictory support, so retain review rather
     # than rejecting on cover wording. Identifiers never prove physical identity.
     catalog = from_variant(target)
-    matching_barcode = {_compact(x) for x in seller.barcodes} & {
-        _compact(x) for x in catalog.barcodes
-    }
+    barcode = _barcode_evidence(seller.barcodes, catalog.barcodes)
     matching_catalog = {_compact(x) for x in seller.catalog_numbers} & {
         _compact(x) for x in catalog.catalog_numbers
     }
-    if matching_barcode or matching_catalog:
-        return None
-    # A full claimed target palette is another independent reason to abstain.
-    wanted = _palette(catalog.colors)
-    if wanted and _palette(seller.colors) == wanted:
+    if (barcode is not None and barcode.matched) or matching_catalog:
         return None
     matched = set()
     for name in catalog_names:
@@ -245,5 +245,17 @@ def conflicting_catalog_cover(
     if len(matched) != 1:
         return None
     name = next(iter(matched))
+    # A matching target palette is contradictory support only when the catalog
+    # does not also associate that palette with the claimed different cover.
+    # Missing sibling colors cannot establish that the palette is shared.
+    wanted = _palette(catalog.colors)
+    if wanted and _palette(seller.colors) == wanted:
+        if not any(
+            _compatible(target, other)
+            and cover_name(other) == name
+            and _palette(from_variant(other).colors) == wanted
+            for other in alternatives
+        ):
+            return None
     roles = {_normalized(value) for value in [*seller.labels, *seller.artists]} - {""}
     return name if _has_noncredit_claim(title, name, roles) else None
