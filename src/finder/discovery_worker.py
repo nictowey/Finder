@@ -17,7 +17,7 @@ from finder.adapters.discogs.adapter import AlternativeRetrieval, DiscogsCatalog
 from finder.adapters.discogs.client import DiscogsClient
 from finder.adapters.ebay.adapter import EbayAdapter
 from finder.adapters.ebay.client import EbayClient
-from finder.adapters.ebay.discovery import iso, search_page
+from finder.adapters.ebay.discovery import SearchError, iso, search_page
 from finder.adapters.ebay.quota import summarize_browse_quota
 from finder.categories.vinyl_target import target_from_release
 from finder.discovery_store import (
@@ -31,7 +31,7 @@ from finder.discovery_store import (
     new_pass,
     progress,
 )
-from finder.errors import CatalogError, RateLimitError
+from finder.errors import CatalogError, ItemUnavailableError, RateLimitError, RequestRejectedError
 from finder.watch_profile import load_profile, siblings_of
 from finder.watch_store import SavedWatch, WatchStore, watches
 
@@ -46,6 +46,7 @@ RESORT_LIMIT = 300
 # The rest of the 5,000-call quota covers details, reconciliation and retries.
 POLL_BUDGET = 2000
 MIN_POLL_MINUTES = 10
+BARCODE_RECOVERY_VERSION = 1
 _quota_cache = {}
 
 
@@ -81,6 +82,31 @@ def watch_queries(target_queries, variant, watch):
         if query.strip() and query.casefold() not in {q.casefold() for q in unique}:
             unique.append(query.strip())
     return unique[:MAX_QUERIES]
+
+
+def recover_barcode_lanes(state, queries):
+    """Re-probe ambiguous legacy failures once, without resetting search progress.
+
+    Older workers stored the same reason for outages and unsupported queries. A
+    version marker bounds recovery; newly confirmed rejections remain disabled.
+    """
+    if state.get("barcode_recovery_version", 0) >= BARCODE_RECOVERY_VERSION:
+        return 0
+    recovered = 0
+    for query, saved in zip(queries, state["queries"], strict=True):
+        if not query.startswith("gtin:"):
+            continue
+        for name in ("baseline", "incremental", "reconciliation"):
+            lane = saved.get(name)
+            if (
+                lane
+                and lane["status"] == "partial_provider_limit"
+                and lane.get("reason") == "barcode_search_unavailable"
+            ):
+                lane.update(status="interrupted", reason="legacy_barcode_recheck")
+                recovered += 1
+    state["barcode_recovery_version"] = BARCODE_RECOVERY_VERSION
+    return recovered
 
 
 def prepare_passes(state, now, reconciliation_hours, poll_every=30):
@@ -182,6 +208,9 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
             update={"queries": watch_queries(target.queries, variant, watch)}
         )
         state = queue.load(claim, target, now_fn())
+        recovered = recover_barcode_lanes(state, target.queries)
+        if recovered:
+            diagnostic["legacy_barcode_lanes_reopened"] = recovered
 
         def catalog_content(value):
             data = value.model_dump(mode="json")
@@ -298,10 +327,18 @@ def run_chunk(repository, settings, discogs_settings, claim, *, now_fn=lambda: d
                             f"search_failed_{'barcode' if barcode else 'keywords'}_"
                             f"{type(exc).__name__}" + (f"_{code}" if code else "")
                         ] = 1
-                        if barcode:
+                        if barcode and (
+                            isinstance(
+                                exc, (RequestRejectedError, ItemUnavailableError, ValueError)
+                            )
+                            or isinstance(exc, SearchError)
+                            and code == "missing_start_date"
+                        ):
                             # The barcode search is an optional extra. If eBay rejects it or
                             # it cannot honor the date window, stop using it for this pass
-                            # rather than failing the whole watch on every scan.
+                            # rather than failing the whole watch on every scan. Temporary
+                            # transport, service, JSON or authentication failures must leave
+                            # the cursor retryable, just like a keyword query.
                             state["queries"][i][lane]["status"] = "partial_provider_limit"
                             state["queries"][i][lane]["reason"] = "barcode_search_unavailable"
                             state["round_robin"] = rotation

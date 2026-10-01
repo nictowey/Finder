@@ -25,6 +25,10 @@ class RequestError(MarketplaceError):
     pass
 
 
+class RequestRejectedError(RequestError):
+    """A non-retryable HTTP rejection, distinct from a temporary transport failure."""
+
+
 class ResponseError(MarketplaceError):
     pass
 
