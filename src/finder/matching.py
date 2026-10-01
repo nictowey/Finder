@@ -613,6 +613,15 @@ def _listing_color_claims(
     )
 
 
+def _selected_color_claims(
+    title: SellerColorClaims, structured: SellerColorClaims, *, has_structured: bool
+) -> SellerColorClaims:
+    """Preserve structured precedence unless a choice-only field has no palette."""
+    if not has_structured or (structured.ambiguous and not _palette(structured.positive)):
+        return title
+    return structured
+
+
 def _color_evidence(listing_values: list[str], variant_values: list[str]) -> MatchEvidence | None:
     if not listing_values or not variant_values:
         return None
@@ -796,19 +805,34 @@ def decide_match(
 
     # Scope uncertainty to viable family candidates. Parsing against an unrelated
     # catalog title could mistake the real album/artist name for a seller choice.
-    color_ambiguous = any(
-        title.ambiguous or structured.ambiguous
+    has_structured_colors = bool(from_listing(listing).colors)
+    color_claims = [
+        (
+            by_id[candidate.catalog_variant_id],
+            *_listing_color_claims(listing, by_id[candidate.catalog_variant_id]),
+        )
         for candidate in (competing or family_candidates)
-        for title, structured in [
-            _listing_color_claims(listing, by_id[candidate.catalog_variant_id])
-        ]
+    ]
+    color_ambiguous = any(
+        title.ambiguous or structured.ambiguous for _, title, structured in color_claims
+    )
+    color_incomparable = any(
+        _palette(
+            _selected_color_claims(title, structured, has_structured=has_structured_colors).positive
+        )
+        and not _palette(from_variant(variant).colors)
+        for variant, title, structured in color_claims
     )
     if _non_vinyl_listing(listing):
         outcome = "rejected"
     elif len(families) > 1 or len(competing) > 1:
         outcome = "ambiguous"
     elif len(competing) == 1:
-        outcome = "family_only" if retrieval_incomplete or color_ambiguous else "probable_variant"
+        outcome = (
+            "family_only"
+            if retrieval_incomplete or color_ambiguous or color_incomparable
+            else "probable_variant"
+        )
     elif len(families) == 1:
         outcome = "family_only"
     elif any(
@@ -871,6 +895,8 @@ def decide_match(
     missing = []
     if color_ambiguous:
         missing.append("color_claim_ambiguous")
+    if color_incomparable:
+        missing.append("color_not_comparable")
     if not from_listing(listing).artists:
         missing.append("structured_artist")
     if not any(

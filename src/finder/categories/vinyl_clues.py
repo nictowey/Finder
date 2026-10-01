@@ -17,7 +17,13 @@ from finder.categories.vinyl import (
     is_missing_identifier,
 )
 from finder.domain import Listing, Variant
-from finder.matching import _compact, _listing_color_claims, _normalized, _palette
+from finder.matching import (
+    _compact,
+    _listing_color_claims,
+    _normalized,
+    _palette,
+    _selected_color_claims,
+)
 
 ClueKind = Literal["keyword", "color", "catalog_number", "barcode", "label", "country", "numbered"]
 
@@ -78,6 +84,11 @@ class ListingText:
         self.structured_colors = seller.colors
         title_colors, structured_colors = _listing_color_claims(
             listing, target, album_aliases=album_aliases
+        )
+        self.comparison_palette = _palette(
+            _selected_color_claims(
+                title_colors, structured_colors, has_structured=bool(seller.colors)
+            ).positive
         )
         self.structured_palette = _palette(structured_colors.positive)
         self.palette = self.structured_palette | _palette(title_colors.positive)
@@ -149,6 +160,21 @@ def apply_cheat_sheet(
             status = "family_review"
         if seen.color_claim_ambiguous and "color_claim_ambiguous" not in verify:
             verify.append("color_claim_ambiguous")
+        # Barcode/keyword hints cannot check an unsupported catalog color. The
+        # owner's fully matched required color tells can supply that knowledge,
+        # but must cover the whole selected seller palette, not just one color.
+        owner_palette = {
+            color
+            for clue in found
+            if clue.required and clue.kind == "color"
+            for color in _palette([clue.value])
+        }
+        if (
+            "color_not_comparable" in verify
+            and status == "possible_pressing"
+            and not (seen.comparison_palette and seen.comparison_palette <= owner_palette)
+        ):
+            status = "family_review"
     if found:
         clues.append("cheat_sheet_sign")
     if missing:
