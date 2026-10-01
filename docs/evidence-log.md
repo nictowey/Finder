@@ -3,6 +3,22 @@
 Dated operational and validation history, moved verbatim from `AGENTS.md` on
 September 24, 2026 when Finder became a personal pressing hunter. Newer entries go at the top.
 
+## October 1, 2026 — catalog-backed numbered album spellings
+
+Catalog review found a vinyl family recorded with both Arabic and Roman terminal title
+numbers. A synthetic seller claim using the sibling's spelling was rejected as an unrelated
+album. Target review now accepts a recorded II–X / 2–10 spelling pair only when the normalized
+title stem, known catalog master, artist set and vinyl format agree. Missing catalog support
+does not authorize a conversion. Discovery queries and pressing clues are unchanged.
+
+The same title-family spellings apply to competing pressings, preserving sparse-competitor
+uncertainty. Regressions retain artist, barcode, color and structured-title conflicts, distinct
+volume numbers and more-specific catalog titles. This is family evidence, not proof of an
+exact pressing. The private review policy advances to v9 so saved classifications are
+reassessed through the existing bounded worker. The Discogs smoke workflow now includes the
+target-review module and its tests in its trigger paths. No live precision or recall claim
+follows from these synthetic tests.
+
 ## October 1, 2026 — known-invalid listing evidence
 
 Offline tests reproduced a changed seller summary followed by deferred or failed detail

@@ -8,6 +8,121 @@ from finder.categories.target_review import review_target_listing, review_target
 
 
 @pytest.fixture
+def numeral_family(discogs_release, observed_at):
+    target = normalize_release(
+        {
+            **discogs_release,
+            "id": 101,
+            "master_id": 500,
+            "title": "Example Album 2",
+            "artists": [{"name": "Example Artist"}],
+            "formats": [{"name": "Vinyl", "text": "Clear", "descriptions": ["LP"]}],
+            "identifiers": [],
+            "labels": [],
+        },
+        observed_at,
+    )
+    alias = target.model_copy(update={"catalog_variant_id": "102", "title": "Example Album II"})
+    return target, alias
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_catalog_sibling_can_establish_a_terminal_numeral_title_alias(
+    search_payload, observed_at, numeral_family, reverse
+):
+    target, alias = numeral_family
+    if reverse:
+        target, alias = alias, target
+    listing = _listing(
+        search_payload,
+        observed_at,
+        f"Example Artist {alias.title} vinyl",
+        (("Release Title", alias.title),),
+    )
+    assert review_target_listing(listing, target).status == "unrelated"
+    row = review_target_with_alternatives(listing, target, [alias], search_incomplete=False)
+    assert row.status == "family_review"
+    assert row.alternatives_not_ruled_out == 1
+    assert "artist_and_album" in row.clues
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"catalog_product_id": "999"},
+        {"catalog_source": "other"},
+        {"artists": ["Other Artist"]},
+        {"artists": []},
+        {"formats": [{"name": "CD"}]},
+        {"title": "Example Album III"},
+        {"title": "Example Album II Live"},
+        {"title": "Example II Album"},
+    ],
+)
+def test_title_alias_requires_matching_catalog_master_artist_and_full_title(
+    search_payload, observed_at, numeral_family, change
+):
+    target, alias = numeral_family
+    listing = _listing(search_payload, observed_at, "Example Artist Example Album II vinyl")
+    row = review_target_with_alternatives(listing, target, [alias.model_copy(update=change)])
+    assert row.status == "unrelated"
+
+
+def test_release_without_known_master_does_not_invent_title_alias(
+    search_payload, observed_at, numeral_family
+):
+    target, alias = numeral_family
+    target = target.model_copy(update={"catalog_product_id": target.catalog_variant_id})
+    alias = alias.model_copy(update={"catalog_product_id": target.catalog_product_id})
+    listing = _listing(search_payload, observed_at, "Example Artist Example Album II vinyl")
+    assert review_target_with_alternatives(listing, target, [alias]).status == "unrelated"
+
+
+@pytest.mark.parametrize(
+    "specifics, reason",
+    [
+        ((("Color", "Blue"),), "color_conflict"),
+        ((("Release Title", "Example Album 3"),), "release_title_conflict"),
+        ((("Artist", "Other Artist"),), "artist_conflict"),
+        ((("Barcode", "9999999999999"),), "barcode"),
+    ],
+)
+def test_catalog_title_alias_does_not_erase_seller_contradictions(
+    search_payload, observed_at, numeral_family, specifics, reason
+):
+    target, alias = numeral_family
+    target = target.model_copy(update={"identifiers": {"Barcode": ["0123456789012"]}})
+    listing = _listing(
+        search_payload, observed_at, "Example Artist Example Album II vinyl", specifics
+    )
+    row = review_target_with_alternatives(listing, target, [alias])
+    assert row.status == "conflicting" and reason in row.verify
+
+
+def test_title_alias_preserves_sparse_competitor_uncertainty(
+    search_payload, observed_at, numeral_family
+):
+    target, alias = numeral_family
+    alias = alias.model_copy(update={"formats": [{"name": "Vinyl"}]})
+    listing = _listing(search_payload, observed_at, "Example Artist Example Album II clear vinyl")
+    row = review_target_with_alternatives(listing, target, [alias], search_incomplete=False)
+    assert row.status == "family_review" and row.alternatives_not_ruled_out == 1
+    assert "shared_pressing_evidence" in row.verify
+
+
+def test_title_alias_does_not_hide_a_more_specific_catalog_album(
+    search_payload, observed_at, numeral_family
+):
+    target, alias = numeral_family
+    deluxe = alias.model_copy(
+        update={"catalog_variant_id": "103", "title": alias.title + " Deluxe"}
+    )
+    listing = _listing(search_payload, observed_at, "Example Artist Example Album II Deluxe vinyl")
+    row = review_target_with_alternatives(listing, target, [alias, deluxe])
+    assert row.status == "conflicting" and "competing_album_title_claim" in row.verify
+
+
+@pytest.fixture
 def release(discogs_release, observed_at):
     return normalize_release(
         {
