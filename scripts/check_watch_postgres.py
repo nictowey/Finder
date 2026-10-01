@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
-from sqlalchemy import create_engine, delete, insert, select, text
+from sqlalchemy import create_engine, delete, event, insert, select, text
 from sqlalchemy.engine import make_url
 
 from finder.adapters.ebay.normalize import normalize_listing
@@ -161,15 +161,36 @@ def main():
             ],
         )
         item = queue.due(discovery_claim, discovery_time, limit=1, pending=True)[0]
-        queue.disposition(
-            discovery_claim,
-            item,
-            discovery_time,
-            status="evaluated",
-            listing=listing,
-            repository=repo,
-            review={"notify": True},
-            state=state,
+        history_before = repo.get_observations(listing.marketplace, listing.marketplace_item_id)
+        statements = []
+
+        def trace_disposition(conn, cursor, statement, parameters, context, executemany):
+            # SQL placeholders only, never parameters; this remains in the disposable schema.
+            statements.append(statement)
+
+        event.listen(repo.engine, "before_cursor_execute", trace_disposition)
+        try:
+            queue.disposition(
+                discovery_claim,
+                item,
+                discovery_time,
+                status="evaluated",
+                listing=listing,
+                repository=repo,
+                review={"notify": True},
+                state=state,
+            )
+        finally:
+            event.remove(repo.engine, "before_cursor_execute", trace_disposition)
+        assert not any("listing_observations" in statement for statement in statements)
+        assert sum("pg_advisory_xact_lock" in statement for statement in statements) == 1
+        assert any(
+            statement.startswith("SELECT listings.marketplace,") and "FOR UPDATE" in statement
+            for statement in statements
+        )
+        assert (
+            repo.get_observations(listing.marketplace, listing.marketplace_item_id)
+            == history_before
         )
         # Real row-level serialization: three contenders cannot spend the two calls
         # above the reserve. No network or actual quota is involved in this rehearsal.

@@ -150,29 +150,30 @@ class SqlAlchemyListingRepository:
                             )
                         ).first():
                             return "suppressed"
-                    observation_key = (
-                        (listing_observations.c.marketplace == listing.marketplace)
-                        & (
-                            listing_observations.c.marketplace_item_id
-                            == listing.marketplace_item_id
-                        )
-                        & (
-                            listing_observations.c.observed_at
-                            == listing.last_observed_at.isoformat()
-                        )
-                    )
-                    observation_exists = conn.execute(
-                        select(listing_observations.c.observed_at).where(observation_key)
-                    ).first()
-                    if observation_exists is None and record_observation:
-                        conn.execute(
-                            listing_observations.insert().values(
-                                marketplace=listing.marketplace,
-                                marketplace_item_id=listing.marketplace_item_id,
-                                observed_at=listing.last_observed_at.isoformat(),
-                                data=listing.model_dump(mode="json"),
+                    if record_observation:
+                        observation_key = (
+                            (listing_observations.c.marketplace == listing.marketplace)
+                            & (
+                                listing_observations.c.marketplace_item_id
+                                == listing.marketplace_item_id
+                            )
+                            & (
+                                listing_observations.c.observed_at
+                                == listing.last_observed_at.isoformat()
                             )
                         )
+                        observation_exists = conn.execute(
+                            select(listing_observations.c.observed_at).where(observation_key)
+                        ).first()
+                        if observation_exists is None:
+                            conn.execute(
+                                listing_observations.insert().values(
+                                    marketplace=listing.marketplace,
+                                    marketplace_item_id=listing.marketplace_item_id,
+                                    observed_at=listing.last_observed_at.isoformat(),
+                                    data=listing.model_dump(mode="json"),
+                                )
+                            )
                     row = (
                         conn.execute(select(listings).where(key).with_for_update())
                         .mappings()
