@@ -9,6 +9,7 @@ const client = await pool.connect();
 const origin = 'https://finder.example';
 const emit = (value: object) => process.stdout.write(JSON.stringify(value) + '\n');
 let held = false;
+let input: ReturnType<typeof createInterface> | undefined;
 try {
   const schema = (await client.query('SELECT current_schema() AS name')).rows[0].name;
   assert.match(schema, /^finder_check_[a-f0-9]{32}$/);
@@ -29,7 +30,9 @@ try {
       }));
     },
   });
-  for await (const line of createInterface({ input: process.stdin })) {
+  // Attach the reader only after setup; earlier lines must stay buffered in stdin.
+  input = createInterface({ input: process.stdin });
+  for await (const line of input) {
     const command = JSON.parse(line);
     if (command.action === 'close') break;
     if (command.action === 'commit' || command.action === 'rollback') {
@@ -68,7 +71,19 @@ try {
   emit({ phase: 'failed', error_type: error instanceof Error ? error.name : 'UnknownError' });
   process.exitCode = 1;
 } finally {
-  if (held) await client.query('ROLLBACK');
-  client.release();
-  await pool.end();
+  // Release every owned resource even if rollback or another cleanup step fails.
+  // Report cleanup failures and retain a failing exit status without hiding a
+  // previously emitted protocol failure.
+  for (const release of [
+    () => input?.close(),
+    async () => { if (held) await client.query('ROLLBACK'); },
+    () => client.release(),
+    () => pool.end(),
+  ]) {
+    try { await release(); }
+    catch (error) {
+      emit({ phase: 'cleanup_failed', error_type: error instanceof Error ? error.name : 'UnknownError' });
+      process.exitCode = 1;
+    }
+  }
 }

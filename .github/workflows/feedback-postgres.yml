@@ -56,7 +56,7 @@ jobs:
       - name: Exercise owner endpoint and provider worker integration
         env:
           FINDER_REQUIRE_REFRESH_INTEGRATION: '1'
-        run: python -m pytest -q tests/test_manual_refresh.py
+        run: python -m pytest -q tests/test_manual_refresh.py tests/test_manual_refresh_shutdown.py
       - name: Validate isolated target guard
         run: python -m pytest -q tests/test_isolated_postgres.py
       - name: Rehearse migration, restore, feedback and concurrent worker locking

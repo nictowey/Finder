@@ -89,16 +89,40 @@ class RefreshEndpoint:
         self.send(action="commit" if commit else "rollback")
         self.receive("released")
 
-    def close(self):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, error_type, error, traceback):
         try:
-            self.send(action="close")
-            assert self.process.wait(timeout=5) == 0
-        finally:
+            self.close()
+        except Exception as cleanup_error:
+            if error is None:
+                raise
+            # Do not replace the gate's assertion/database failure with cleanup.
+            error.add_note(f"Refresh endpoint cleanup also failed: {type(cleanup_error).__name__}")
+        return False
+
+    def close(self, *, timeout=5):
+        try:
             if self.process.poll() is None:
-                self.process.terminate()
-                self.process.wait(timeout=5)
-            self.process.stdin.close()
-            self.process.stdout.close()
+                self.send(action="close")
+            # communicate sends EOF before waiting and drains any final protocol output.
+            # A readline loop can finish yet keep Node alive while its stdin stays open.
+            self.process.communicate(timeout=timeout)
+            if self.process.returncode:
+                raise subprocess.CalledProcessError(self.process.returncode, self.process.args)
+        finally:
+            try:
+                if self.process.poll() is None:
+                    self.process.terminate()
+                    try:
+                        self.process.communicate(timeout=timeout)
+                    except subprocess.TimeoutExpired:
+                        self.process.kill()
+                        self.process.communicate(timeout=timeout)
+            finally:
+                self.process.stdin.close()
+                self.process.stdout.close()
 
 
 def _row(engine, claim, item_id):
@@ -201,8 +225,7 @@ def check_manual_refresh(repo, store, queue, listing, now, *, on_phase):
     def due(at):
         return {item["item_id"] for item in queue.due(claim, at, limit=10, pending=True)}
 
-    endpoint = RefreshEndpoint(repo.engine)
-    try:
+    with RefreshEndpoint(repo.engine) as endpoint:
         on_phase("unknown_reference_is_404")
         before = row(ids[0])
         with repo.engine.connect() as conn:
@@ -429,6 +452,4 @@ def check_manual_refresh(repo, store, queue, listing, now, *, on_phase):
             assert conn.execute(select(progress).where(progress.c.watch_id == watch_id)).first()
             assert conn.execute(select(watches).where(watches.c.id == watch_id)).first()
         endpoint.request(claim, ids[2], status=404)
-    finally:
-        endpoint.close()
     print('{"manual_refresh_postgres_endpoint_locking_legacy_upgrade_deletion":"passed"}')
