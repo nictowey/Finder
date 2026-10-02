@@ -13,7 +13,7 @@ async function app(initial=dashboardFixture(),fetcher?:(url:string,opts:any)=>Pr
  const w=dom.window;w.matchMedia=(()=>({matches:false})) as any;w.HTMLElement.prototype.scrollIntoView=()=>{};w.setInterval=(()=>0) as any;
  w.fetch=(async(url:any,opts:any={})=>{const body=opts.body?JSON.parse(opts.body):null;requests.push({url:String(url),body});if(fetcher)return fetcher(String(url),opts);if(String(url).startsWith('/api/dashboard'))return response(saved);const row=saved.leads.find(r=>r.marketplace_item_id===body?.marketplace_item_id);if(row){if(String(url)==='/api/verdict'){row.verdict=body.verdict;row.verdict_tier ||= row.data.status;row.verdict_decided_at ||= new Date().toISOString();row.verdict_provenance ||= 'recorded_prediction';}if(String(url)==='/api/purchase')row.purchased=body.purchased;return response({ok:true,verdict:row.verdict,purchased:row.purchased,verdict_tier:row.verdict_tier,verdict_decided_at:row.verdict_decided_at,verdict_provenance:row.verdict_provenance});}return response({ok:true});}) as any;
  w.eval(javascript+';window.testSavedState=()=>JSON.parse(JSON.stringify(state));');await tick();await tick();
- return {dom,w,doc:w.document,requests,saved,close:()=>dom.window.close(),click:(selector:string)=>(w.document.querySelector(selector) as HTMLButtonElement).click()};
+ return {dom,w,doc:w.document,requests,saved,close:()=>dom.window.close(),click:(selector:string)=>(w.document.querySelector(selector) as HTMLButtonElement).click(),change:(selector:string,value:string)=>{const el=w.document.querySelector(selector) as HTMLSelectElement;el.value=value;el.dispatchEvent(new w.Event('change',{bubbles:true}));}};
 }
 
 test('an HTML gateway response during refresh keeps saved state and offers a readable retry',async()=>{
@@ -255,4 +255,177 @@ test('fresh-check notices respect paused watches and avoid promising the next wo
    assert.equal(a.doc.querySelector('#notice')?.textContent,paused?error:'Fresh check queued. Finder will retrieve current evidence when the watch can run.');
   }finally{a.close();}
  }
+});
+
+test('newest remains the default and opting in renders only supplied, escaped ordering clues',async()=>{
+ const data=dashboardFixture();data.leads[0].pressing_clues=['Recorded numbering <img src=x onerror=alert(1)>'];
+ data.leads[1].listing.title='Signed numbered target-color rare pressing';data.leads[1].pressing_clues=[];
+ const a=await app(data);
+ try{
+  assert.equal(new URL(a.requests[0].url,'https://finder.example').searchParams.get('order'),'newest');
+  assert.equal((a.doc.querySelector('#order') as HTMLSelectElement).value,'newest');
+  assert.equal((a.doc.querySelector('#order-filter') as HTMLElement).hidden,false);
+  assert.equal((a.doc.querySelector('#order-note') as HTMLElement).hidden,true);
+  assert.ok(!a.doc.querySelector('#leads')!.textContent!.includes('Ordering clues'));
+  assert.equal(a.doc.querySelector('#pagestatus')!.textContent,'Newest results');
+  a.change('#order','pressing_clues');await tick();
+  assert.match(a.requests.at(-1)!.url,/order=pressing_clues/);
+  assert.equal((a.doc.querySelector('#order-note') as HTMLElement).hidden,false);
+  assert.match(a.doc.querySelector('#order-note')!.textContent!,/changes order, not Finder’s identity assessment/);
+  assert.match(a.doc.querySelector('#order-note')!.textContent!,/All other leads stay in the list/);
+  assert.match(a.doc.querySelector('#order-note')!.textContent!,/checked within the last hour/);
+  assert.match(a.doc.querySelector('#order-note')!.textContent!,/Each group is newest first/);
+  const clues=Array.from(a.doc.querySelectorAll('.evidence-row')).filter(el=>el.querySelector('strong')?.textContent==='Ordering clues');
+  assert.equal(clues.length,3);assert.equal(clues[0].querySelector('p')!.textContent,data.leads[0].pressing_clues[0]);
+  assert.match(clues[1].textContent!,/No supporting ordering clues/);assert.equal(clues[1].querySelector('.evidence-icon')!.textContent,'↕');assert.ok(stylesheet.includes('.ordering-clues .evidence-icon{color:var(--muted)}'));assert.equal(a.doc.querySelector('img[src="x"]'),null);
+  assert.equal(a.doc.querySelector('#pagestatus')!.textContent,'First results');
+  a.change('#order','newest');await tick();assert.ok(!a.doc.querySelector('#leads')!.textContent!.includes('Ordering clues'));
+ }finally{a.close();}
+});
+
+test('provided clue ordering pages through every row and keeps newest cursors compatible',async()=>{
+ const data=dashboardFixture(),source=data.leads[1];
+ data.leads=Array.from({length:52},(_,i)=>({...structuredClone(source),marketplace_item_id:'sample-'+String(i).padStart(3,'0'),pressing_clues:i===0?['Recorded numbering clue']:[]}));
+ const a=await app(data,async url=>response(fixtureDashboard(data,url)));
+ const ids=()=>Array.from(a.doc.querySelectorAll('.lead')).map(el=>JSON.parse((el as HTMLElement).dataset.key!)[2]);
+ try{
+  assert.equal(ids()[0],'sample-051');a.click('#nextpage');await tick();assert.equal(ids().length,2);
+  assert.equal(a.doc.querySelector('#pagestatus')!.textContent,'Older results');
+  const newestCursor=new URL(a.requests.at(-1)!.url,'https://finder.example').searchParams.get('cursor')!;
+  assert.ok(Array.isArray(JSON.parse(newestCursor)));
+  a.change('#order','pressing_clues');await tick();assert.ok(!a.requests.at(-1)!.url.includes('cursor='));
+  const first=ids();assert.equal(first[0],'sample-000');assert.equal(first.length,50);
+  assert.equal(a.doc.querySelector('#pagestatus')!.textContent,'First results');
+  a.click('#nextpage');await tick();const second=ids();assert.equal(second.length,2);
+  assert.equal(a.doc.querySelector('#pagestatus')!.textContent,'More results');
+  assert.equal(new Set([...first,...second]).size,52);assert.equal((a.doc.querySelector('#nextpage') as HTMLButtonElement).disabled,true);
+  a.click('#firstpage');await tick();assert.equal(ids()[0],'sample-000');assert.ok(!a.requests.at(-1)!.url.includes('cursor='));
+ }finally{a.close();}
+});
+
+test('price, order, saved judgment and filter changes reset cursors and unsupported filters reset the order',async()=>{
+ const data=dashboardFixture();data.next_cursor='synthetic-page-cursor' as any;data.leads[0].verdict='mine';
+ const a=await app(data);
+ const firstPage=()=>assert.ok(!a.requests.at(-1)!.url.includes('cursor='));
+ try{
+  a.change('#order','pressing_clues');await tick();a.click('#nextpage');await tick();assert.match(a.requests.at(-1)!.url,/cursor=/);
+  a.change('#prices','all');await tick();firstPage();assert.match(a.requests.at(-1)!.url,/prices=all.*order=pressing_clues/);
+  a.click('#nextpage');await tick();a.click('[data-filter="judged"]');await tick();firstPage();
+  assert.equal((a.doc.querySelector('#order-filter') as HTMLElement).hidden,false);assert.equal((a.doc.querySelector('#order') as HTMLSelectElement).value,'pressing_clues');
+  a.click('#nextpage');await tick();a.click('[data-judgment="mine"]');await tick();firstPage();
+  a.click('#nextpage');await tick();a.click('#purchased-filter');await tick();firstPage();assert.match(a.requests.at(-1)!.url,/judgment=mine&purchased=yes&order=pressing_clues/);
+  a.click('[data-filter="review"]');await tick();firstPage();assert.match(a.requests.at(-1)!.url,/judgment=all&purchased=all&order=pressing_clues/);
+  for(const filter of ['possible_pressing','family_review','conflicting','unrelated','unavailable','dismissed']){
+   a.click('[data-filter="'+filter+'"]');await tick();firstPage();assert.match(a.requests.at(-1)!.url,/order=newest/);
+   assert.equal((a.doc.querySelector('#order-filter') as HTMLElement).hidden,true);assert.equal((a.doc.querySelector('#order-note') as HTMLElement).hidden,true);
+   a.click('[data-filter="review"]');await tick();assert.equal((a.doc.querySelector('#order') as HTMLSelectElement).value,'newest');
+   a.change('#order','pressing_clues');await tick();
+  }
+  a.click('#nextpage');await tick();a.change('#order','newest');await tick();firstPage();
+ }finally{a.close();}
+});
+
+test('a late clue-order response or order-change conflict cannot replace a newer order',async()=>{
+ for(const conflict of [false,true]){
+  const data=dashboardFixture(),slow=deferred<Response>();data.next_cursor='synthetic-page-cursor' as any;
+  const a=await app(data,async url=>url.includes('order=pressing_clues')&&(!conflict||url.includes('cursor='))?slow.promise:response(data));
+  try{
+   a.change('#order','pressing_clues');if(conflict){await tick();a.click('#nextpage');}
+   assert.equal((a.doc.querySelector('#nextpage') as HTMLButtonElement).disabled,true);
+   a.click('#nextpage');a.change('#order','newest');await tick();const count=a.requests.length;
+   const old=structuredClone(data);old.leads[0].listing.title='Obsolete clue-order response';
+   slow.resolve(conflict?response({error:'The review order changed. Start again from the first page.',code:'inbox_order_changed'},409):response(old));await tick();await tick();
+   assert.equal(a.requests.length,count);assert.equal((a.doc.querySelector('#order') as HTMLSelectElement).value,'newest');
+   assert.ok(!a.doc.querySelector('#leads')!.textContent!.includes('Obsolete clue-order response'));
+   assert.equal(a.doc.querySelector('#pagestatus')!.textContent,'Newest results');assert.equal(a.doc.querySelector('#notice')!.textContent,'');
+   assert.equal((a.doc.querySelector('#nextpage') as HTMLButtonElement).disabled,false);
+  }finally{a.close();}
+ }
+});
+
+test('a pending verdict keeps its row locked while order changes wait and reload the latest selection',async()=>{
+ const data=dashboardFixture(),save=deferred<Response>(),oldPage=deferred<Response>();data.next_cursor='synthetic-page-cursor' as any;
+ const a=await app(data,async(url,opts)=>{
+  if(url.startsWith('/api/dashboard'))return url.includes('cursor=')?oldPage.promise:response(data);
+  return save.promise;
+ });
+ try{
+  a.click('#nextpage');a.click('[data-verdict="0|mine"]');a.change('#order','pressing_clues');a.change('#prices','all');a.change('#order','newest');a.change('#order','pressing_clues');
+  const count=a.requests.length;a.click('#nextpage');a.click('[data-verdict="0|other"]');a.click('[data-purchase="0"]');
+  assert.equal(a.requests.length,count);assert.equal(a.requests.filter(r=>r.url==='/api/verdict').length,1);
+  assert.equal((a.doc.querySelector('[data-verdict="0|mine"]') as HTMLButtonElement).disabled,true);
+  assert.equal((a.doc.querySelector('#nextpage') as HTMLButtonElement).disabled,true);
+  data.leads[0].verdict='mine';save.resolve(response({ok:true,...data.leads[0]}));await tick();await tick();
+  assert.match(a.requests.at(-1)!.url,/prices=all.*order=pressing_clues/);assert.ok(!a.requests.at(-1)!.url.includes('cursor='));
+  oldPage.resolve(response(dashboardFixture()));await tick();
+  assert.equal((a.w as any).testSavedState().leads[0].verdict,'mine');assert.equal((a.doc.querySelector('#order') as HTMLSelectElement).value,'pressing_clues');
+  assert.equal(a.doc.querySelector('#pagestatus')!.textContent,'First results');assert.equal((a.doc.querySelector('#refresh') as HTMLButtonElement).disabled,false);
+ }finally{a.close();}
+});
+
+test('a changed clue-order page restarts once with the selected filters and locks repeated page clicks',async()=>{
+ const data=dashboardFixture(),restart=deferred<Response>();data.next_cursor='synthetic-page-cursor' as any;data.leads[0].verdict='mine';data.leads[0].purchased=true;
+ let resetPending=false;
+ const a=await app(data,async url=>{
+  if(url.includes('cursor=')){resetPending=true;return response({error:'The review order changed. Start again from the first page.',code:'inbox_order_changed'},409);}
+  return resetPending?restart.promise:response(data);
+ });
+ try{
+  a.click('[data-filter="judged"]');await tick();a.click('[data-judgment="mine"]');await tick();a.click('#purchased-filter');await tick();a.change('#order','pressing_clues');await tick();
+  a.click('#nextpage');a.click('#nextpage');await tick();const count=a.requests.length;
+  a.click('#nextpage');a.click('#firstpage');assert.equal(a.requests.length,count);
+  const retry=new URL(a.requests.at(-1)!.url,'https://finder.example').searchParams;
+  assert.equal(retry.get('filter'),'judged');assert.equal(retry.get('judgment'),'mine');assert.equal(retry.get('purchased'),'yes');assert.equal(retry.get('order'),'pressing_clues');assert.equal(retry.has('cursor'),false);
+  assert.match(a.doc.querySelector('#notice')!.textContent!,/review order changed.*Restarted from the first page/);
+  restart.resolve(response(data));await tick();await tick();
+  assert.equal(a.doc.querySelector('#pagestatus')!.textContent,'First results');assert.equal((a.doc.querySelector('#firstpage') as HTMLButtonElement).disabled,true);
+  assert.equal((a.doc.querySelector('#nextpage') as HTMLButtonElement).disabled,false);
+  assert.equal(a.requests.filter(r=>r.url.includes('cursor=')).length,1);
+ }finally{a.close();}
+});
+
+test('a first-page conflict after automatic restart stops safely without looping or changing the order',async()=>{
+ const data=dashboardFixture();data.next_cursor='synthetic-page-cursor' as any;let changed=false;
+ const error={error:'The review order changed. Start again from the first page.',code:'inbox_order_changed'};
+ const a=await app(data,async url=>{if(url.includes('cursor='))changed=true;return changed?response(error,409):response(data);});
+ try{
+  a.change('#order','pressing_clues');await tick();const before=a.requests.length;a.click('#nextpage');await tick();await tick();await tick();
+  assert.equal(a.requests.length,before+2);assert.equal((a.doc.querySelector('#order') as HTMLSelectElement).value,'pressing_clues');
+  assert.equal(a.doc.querySelector('#notice')!.textContent,error.error);assert.equal((a.doc.querySelector('#refresh') as HTMLButtonElement).disabled,false);
+  assert.equal((a.doc.querySelector('#nextpage') as HTMLButtonElement).disabled,true);
+  a.click('#nextpage');await tick();assert.equal(a.requests.length,before+2);
+ }finally{a.close();}
+});
+
+test('browser Back and Forward between views retain the selected review order and page',async()=>{
+ const data=dashboardFixture();data.next_cursor='synthetic-page-cursor' as any;
+ const a=await app(data);
+ const traverse=async(direction:'back'|'forward')=>{const changed=new Promise<void>(resolve=>a.w.addEventListener('hashchange',()=>resolve(),{once:true}));a.w.history[direction]();await changed;await tick();};
+ try{
+  a.change('#order','pressing_clues');await tick();a.click('#nextpage');await tick();
+  a.w.location.hash='#watches';await tick();await tick();a.w.location.hash='#health';await tick();await tick();
+  await traverse('back');assert.equal((a.doc.querySelector('#watchespanel') as HTMLElement).hidden,false);
+  await traverse('back');assert.equal((a.doc.querySelector('#reviewpanel') as HTMLElement).hidden,false);
+  assert.equal((a.doc.querySelector('#order') as HTMLSelectElement).value,'pressing_clues');assert.equal(a.doc.querySelector('#pagestatus')!.textContent,'More results');
+  await traverse('forward');assert.equal((a.doc.querySelector('#watchespanel') as HTMLElement).hidden,false);
+  await traverse('back');assert.equal((a.doc.querySelector('#reviewpanel') as HTMLElement).hidden,false);
+  assert.equal(a.doc.querySelector('#pagestatus')!.textContent,'More results');
+ }finally{a.close();}
+});
+
+
+test('fixture clue order is binary and uses marketplace to resolve cursor ties',()=>{
+ const data=dashboardFixture(),source=data.leads[1];
+ data.leads=[
+  {...structuredClone(source),marketplace_item_id:'sample-001',pressing_clues:['Recorded numbering clue','Recorded catalog number clue']},
+  {...structuredClone(source),marketplace_item_id:'sample-002',pressing_clues:['Recorded numbering clue']},
+  {...structuredClone(source),marketplace_item_id:'sample-003',pressing_clues:[]}
+ ];
+ const first=fixtureDashboard(data,'/api/dashboard?order=pressing_clues');
+ assert.deepEqual(first.leads.map(r=>r.marketplace_item_id),['sample-002','sample-001','sample-003']);
+ data.leads=Array.from({length:51},(_,i)=>({...structuredClone(source),marketplace:'synthetic-market-'+String(i).padStart(3,'0'),marketplace_item_id:'sample-shared-id',pressing_clues:['Recorded numbering clue']}));
+ const page=fixtureDashboard(data,'/api/dashboard?order=pressing_clues'),tail=page.leads.at(-1)!;
+ assert.equal(page.leads.length,50);assert.equal(JSON.parse(page.next_cursor!).after[3],tail.marketplace);
+ const next=fixtureDashboard(data,'/api/dashboard?order=pressing_clues&cursor='+encodeURIComponent(page.next_cursor!));
+ assert.equal(next.leads.length,1);assert.equal(new Set([...page.leads,...next.leads].map(r=>r.marketplace)).size,51);
 });
