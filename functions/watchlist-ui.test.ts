@@ -242,3 +242,17 @@ test('purchase-only save and identity clear keep all saved counters separate aft
  failReads=false;a.click('[data-filter="judged"]');await tick();a.click('[data-verdict="0|mine"]');await tick();await tick();failReads=true;a.click('[data-clear="0"]');await tick();await tick();counters=(a.w as any).testSavedState().decision_totals;assert.equal(counters.judged,0);assert.equal(counters.mine,0);assert.equal(counters.purchase_only,1);assert.equal((a.w as any).testSavedState().judged_counts.all,1);assert.equal(counters.dismissed_judged,0);
  }finally{a.close();}
 });
+
+test('fresh-check notices respect paused watches and avoid promising the next worker',async()=>{
+ for(const paused of [false,true]){
+  const data=dashboardFixture();data.watches[1].config.enabled=!paused;
+  const error='This watch is paused. Resume it before requesting a fresh check.';
+  const a=await app(data,async url=>url.startsWith('/api/dashboard')?response(data):response(paused?{error}:{ok:true},paused?409:200));
+  try{
+   a.click('[data-recheck]');await tick();await tick();
+   assert.equal(a.requests.filter(r=>r.url==='/api/refresh-lead').length,1);
+   assert.equal(a.requests.some(r=>r.url.startsWith('/api/watches')),false);
+   assert.equal(a.doc.querySelector('#notice')?.textContent,paused?error:'Fresh check queued. Finder will retrieve current evidence when the watch can run.');
+  }finally{a.close();}
+ }
+});

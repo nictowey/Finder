@@ -855,3 +855,26 @@ def test_due_refreshes_use_spare_pending_capacity_without_starving_either_lane()
     assert len(quiet) == len(set(quiet)) == 16
     assert len([x for x in quiet if x[0] == "old"]) == 14
     assert len(detail_batch(Queue(0), {}, NOW)) == 16
+
+
+def test_manual_refresh_upgrade_preserves_legacy_rows_and_is_repeatable(setup):
+    from sqlalchemy import delete, text
+
+    from finder.watch_store import migrations
+
+    repo, _, claim, queue, state = setup
+    queue.checkpoint(claim, state, NOW, items=[raw(1)])
+    old_columns = [c for c in work.c if c.name not in ("refresh_token", "refresh_after")]
+    with repo.engine.begin() as conn:
+        before = dict(conn.execute(select(*old_columns)).mappings().one())
+        conn.execute(text("ALTER TABLE finder_discovery_work DROP COLUMN refresh_token"))
+        conn.execute(text("ALTER TABLE finder_discovery_work DROP COLUMN refresh_after"))
+        conn.execute(delete(migrations).where(migrations.c.version == 6))
+    migrate(repo.engine)
+    migrate(repo.engine)
+    with repo.engine.connect() as conn:
+        assert dict(conn.execute(select(*old_columns)).mappings().one()) == before
+        assert conn.execute(select(work.c.refresh_token, work.c.refresh_after)).one() == (
+            None,
+            None,
+        )

@@ -20,6 +20,7 @@ from sqlalchemy import (
     Table,
     delete,
     insert,
+    inspect,
     select,
     text,
     update,
@@ -356,6 +357,14 @@ def migrate(engine):
             conn.execute(insert(migrations).values(version=2))
         if not conn.execute(select(migrations).where(migrations.c.version == 3)).first():
             conn.execute(insert(migrations).values(version=3))
+        if not conn.execute(select(migrations).where(migrations.c.version == 6)).first():
+            columns = {column["name"] for column in inspect(conn).get_columns(work.name)}
+            for name, size in (("refresh_token", 36), ("refresh_after", 40)):
+                if name not in columns:
+                    conn.execute(
+                        text(f"ALTER TABLE finder_discovery_work ADD COLUMN {name} VARCHAR({size})")
+                    )
+            conn.execute(insert(migrations).values(version=6))
         _widen_watch_slots(conn)
         if not conn.execute(select(migrations).where(migrations.c.version == 4)).first():
             conn.execute(insert(migrations).values(version=4))

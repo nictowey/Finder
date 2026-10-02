@@ -222,9 +222,26 @@ export function createHandler(deps: Deps) {
       if (path === "/api/refresh-lead" && request.method === "POST") {
         const value=await body(request);
         if(typeof value.watch_id!=="string" || typeof value.item_id!=="string" || value.item_id.length>255) return reply({error:"Invalid reference"},400);
-        await deps.db.query("UPDATE finder_discovery_work SET status='pending',next_check_at=$3 WHERE watch_id=$1 AND item_id=$2",[value.watch_id,value.item_id,new Date().toISOString()]);
-        await deps.db.query("UPDATE finder_watches SET next_scan_at=$2 WHERE id=$1 AND lease_token IS NULL",[value.watch_id,new Date().toISOString()]);
-        return reply({ok:true});
+        // Serialize with the worker's watch fence before touching its work row. The
+        // durable token survives old workers that still overwrite legacy queue fields.
+        const result=await deps.db.query(`WITH locked AS MATERIALIZED (
+          SELECT id,enabled FROM finder_watches WHERE id=$1 FOR NO KEY UPDATE
+        ), queued AS (
+          UPDATE finder_discovery_work d SET refresh_token=$4,
+            refresh_after=GREATEST($3,CASE WHEN d.refresh_token IS NOT NULL THEN d.refresh_after
+              WHEN d.status='error' THEN d.next_check_at ELSE $3 END),
+            status='pending',next_check_at=GREATEST($3,CASE WHEN d.refresh_token IS NOT NULL THEN d.refresh_after
+              WHEN d.status='error' THEN d.next_check_at ELSE $3 END)
+          FROM locked WHERE d.watch_id=locked.id AND d.item_id=$2 AND locked.enabled RETURNING d.watch_id
+        ), scheduled AS (
+          UPDATE finder_watches SET next_scan_at=$3 WHERE id IN (SELECT watch_id FROM queued) RETURNING id
+        ) SELECT CASE WHEN EXISTS(SELECT 1 FROM scheduled) THEN 'queued'
+          WHEN EXISTS(SELECT 1 FROM locked WHERE NOT enabled)
+            AND EXISTS(SELECT 1 FROM finder_discovery_work WHERE watch_id=$1 AND item_id=$2)
+            THEN 'paused' ELSE 'missing' END AS result`,[value.watch_id,value.item_id,new Date().toISOString(),randomUUID()]);
+        if(result.rows[0]?.result==='queued')return reply({ok:true});
+        if(result.rows[0]?.result==='paused')return reply({error:"This watch is paused. Resume it before requesting a fresh check."},409);
+        return reply({error:"Listing not found"},404);
       }
       if (path === "/api/watches" && request.method === "POST") {
         const watch = validateWatch(await body(request));
