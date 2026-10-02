@@ -13,6 +13,7 @@ from sqlalchemy import (
     Integer,
     String,
     Table,
+    case,
     delete,
     func,
     insert,
@@ -57,6 +58,9 @@ work = Table(
     Column("next_check_at", String(40), nullable=False),
     Column("status", String(32), nullable=False),
     Column("reason", String(64)),
+    # Owner intent is independent of cached re-sorts and legacy worker completions.
+    Column("refresh_token", String(36)),
+    Column("refresh_after", String(40)),
     Column("kind", String(32), nullable=False),
     Column("failures", Integer, nullable=False, default=0),
     # Null while identity-only work awaits details. Once hydrated, seller deletion
@@ -303,6 +307,23 @@ class DiscoveryStore:
             )
 
     def due(self, claim, now, *, limit, pending):
+        requested = work.c.refresh_token.is_not(None)
+        ordinary_due = (work.c.next_check_at <= now.isoformat()) | (
+            inbox.c.data["evidence_invalidated_at"].as_string().is_not(None)
+            if not pending
+            else False
+        )
+        ordinary = (
+            ~requested
+            & ordinary_due
+            & (work.c.status.in_(("pending", "error")) if pending else work.c.status == "evaluated")
+        )
+        eligible = (
+            ordinary | (requested & (work.c.refresh_after <= now.isoformat()))
+            if pending
+            else ordinary
+        )
+        effective_due = case((requested, work.c.refresh_after), else_=work.c.next_check_at)
         with self.engine.connect() as conn:
             return [
                 dict(row)
@@ -314,19 +335,8 @@ class DiscoveryStore:
                         & (inbox.c.marketplace == "ebay")
                         & (inbox.c.marketplace_item_id == work.c.item_id),
                     )
-                    .where(
-                        work.c.watch_id == claim["id"],
-                        (work.c.next_check_at <= now.isoformat())
-                        | (
-                            inbox.c.data["evidence_invalidated_at"].as_string().is_not(None)
-                            if not pending
-                            else False
-                        ),
-                        work.c.status.in_(("pending", "error"))
-                        if pending
-                        else work.c.status == "evaluated",
-                    )
-                    .order_by(work.c.next_check_at, work.c.first_seen_at, work.c.item_id)
+                    .where(work.c.watch_id == claim["id"], eligible)
+                    .order_by(effective_due, work.c.first_seen_at, work.c.item_id)
                     .limit(limit)
                 ).mappings()
             ]
@@ -344,6 +354,7 @@ class DiscoveryStore:
         refresh_hours=4,
         review=None,
         state=None,
+        hydrated=False,
     ):
         updated_state = None
         with self.engine.begin() as conn:
@@ -379,6 +390,14 @@ class DiscoveryStore:
                 "next_check_at": (now + timedelta(hours=refresh_hours)).isoformat(),
                 "failures": item["failures"] + 1 if status == "error" else 0,
             }
+            # The endpoint takes the same watch fence before changing the token. An
+            # older item snapshot (including a legacy worker) cannot acknowledge or
+            # postpone a newer request. Only an actual provider read can satisfy it.
+            if current["refresh_token"] and current["refresh_token"] == item.get("refresh_token"):
+                if hydrated and (status == "unavailable" or status == "evaluated" and listing):
+                    values.update(refresh_token=None, refresh_after=None)
+                elif status == "error":
+                    values["refresh_after"] = values["next_check_at"]
             if listing:
                 values.update(
                     marketplace=listing.marketplace, listing_id=listing.marketplace_item_id
@@ -501,11 +520,14 @@ class DiscoveryStore:
 
     def coverage(self, claim, state):
         with self.engine.connect() as conn:
+            effective_status = case(
+                (work.c.refresh_token.is_not(None), "pending"), else_=work.c.status
+            )
             counts = dict(
                 conn.execute(
-                    select(work.c.status, func.count())
+                    select(effective_status, func.count())
                     .where(work.c.watch_id == claim["id"])
-                    .group_by(work.c.status)
+                    .group_by(effective_status)
                 ).all()
             )
         pending = counts.get("pending", 0) + counts.get("error", 0)

@@ -315,6 +315,13 @@ def main():
         check_evidence_invalidation(
             repo, store, queue, listing, discovery_time, on_phase=evidence_phase
         )
+        from check_manual_refresh import check_manual_refresh
+
+        def refresh_phase(value):
+            nonlocal phase
+            phase = "manual_refresh_" + value
+
+        check_manual_refresh(repo, store, queue, listing, discovery_time, on_phase=refresh_phase)
         repo.delete_ebay_seller(listing.seller_id)
         phase = "assert_deletion"
         with repo.engine.connect() as conn:

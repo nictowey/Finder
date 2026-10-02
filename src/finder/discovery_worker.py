@@ -371,7 +371,7 @@ def _run_chunk(repository, settings, discogs_settings, claim, now_fn, timings):
                 for item in timings.call(
                     "cached_queue", queue.due, claim, now_fn(), limit=RESORT_LIMIT, pending=True
                 ):
-                    if item["reason"] != SETTINGS_CHANGED:
+                    if item.get("refresh_token") or item["reason"] != SETTINGS_CHANGED:
                         continue
                     if item["failures"] or (item.get("review_data") or {}).get(
                         "evidence_invalidated_at"
@@ -426,8 +426,10 @@ def _run_chunk(repository, settings, discogs_settings, claim, now_fn, timings):
                     with timings.measure("detail"):
                         try:
                             previous = repository.get("ebay", item["item_id"])
+                            hydrated = False
                             if (
-                                item["status"] == "pending"
+                                not item.get("refresh_token")
+                                and item["status"] == "pending"
                                 and not item["failures"]
                                 and not (item.get("review_data") or {}).get(
                                     "evidence_invalidated_at"
@@ -455,6 +457,7 @@ def _run_chunk(repository, settings, discogs_settings, claim, now_fn, timings):
                                 observation = ListingObservation(listing=previous)
                             else:
                                 observation = adapter.refresh_known(item["item_id"])
+                                hydrated = True
                             if observation.listing:
                                 listing = observation.listing
                                 review = assess_review(
@@ -477,6 +480,7 @@ def _run_chunk(repository, settings, discogs_settings, claim, now_fn, timings):
                                     review=review,
                                     state=state,
                                     refresh_hours=refresh_hours(watch, listing, review, now_fn()),
+                                    hydrated=hydrated,
                                 )
                                 added += inserted or 0
                             else:
@@ -491,6 +495,7 @@ def _run_chunk(repository, settings, discogs_settings, claim, now_fn, timings):
                                     status="unavailable" if unavailable else "error",
                                     reason=observation.skip_reason,
                                     refresh_hours=24 if unavailable else 1,
+                                    hydrated=hydrated,
                                 )
                         except (RateLimitError, LostLease):
                             raise
