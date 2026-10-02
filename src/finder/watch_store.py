@@ -19,6 +19,7 @@ from sqlalchemy import (
     String,
     Table,
     delete,
+    func,
     insert,
     inspect,
     select,
@@ -29,6 +30,7 @@ from sqlalchemy import (
 from finder.categories.vinyl_clues import Clue
 from finder.evidence import INVALIDATED_AT, SUMMARY_FINGERPRINT
 from finder.evidence import evidence_time as _evidence_time
+from finder.json_projection import json_field_projection
 from finder.persistence import listings
 
 # The Browse request budget, not storage, bounds this; cadence stretches as watches grow.
@@ -577,7 +579,7 @@ class WatchStore:
         with nullcontext(connection) if connection is not None else self.engine.begin() as conn:
             row = (
                 conn.execute(
-                    select(watches)
+                    select(watches.c.id if checkpoint else watches.c.summary)
                     .where(
                         watches.c.id == claim["id"],
                         watches.c.lease_token == claim["lease_token"],
@@ -612,15 +614,43 @@ class WatchStore:
                 }
                 # Lock the listing against concurrent seller deletion. The FK prevents
                 # recreating evidence if the deletion already won the race.
-                stored_listing = conn.execute(
-                    select(listings.c.data)
-                    .where(
-                        listings.c.marketplace == listing.marketplace,
-                        listings.c.marketplace_item_id == listing.marketplace_item_id,
+                shared_marker, exceptional_document = json_field_projection(
+                    listings.c.data, ("source_metadata", INVALIDATED_AT), conn.dialect.name
+                )
+                document_type = (
+                    func.json_typeof(listings.c.data)
+                    if conn.dialect.name == "postgresql"
+                    else func.json_type(listings.c.data)
+                )
+                if conn.dialect.name == "postgresql":
+                    safe_metadata, _ = json_field_projection(
+                        listings.c.data, ("source_metadata",), conn.dialect.name
                     )
-                    .with_for_update()
-                ).scalar()
-                if stored_listing is None:
+                    metadata_type = func.json_typeof(safe_metadata)
+                else:
+                    # JSON_TYPE's path form distinguishes a missing key from
+                    # explicit JSON null without decoding its contents.
+                    metadata_type = func.json_type(listings.c.data, "$.source_metadata")
+                stored_listing = (
+                    conn.execute(
+                        select(
+                            shared_marker.label("shared_boundary"),
+                            exceptional_document.label("listing_document"),
+                            document_type.label("document_type"),
+                            metadata_type.label("metadata_type"),
+                        )
+                        .where(
+                            listings.c.marketplace == listing.marketplace,
+                            listings.c.marketplace_item_id == listing.marketplace_item_id,
+                        )
+                        .with_for_update()
+                    )
+                    .mappings()
+                    .first()
+                )
+                # Keep the lock even for whole SQL/JSON null snapshots, which the
+                # previous full-document read also skipped after acquiring it.
+                if stored_listing is None or stored_listing["document_type"] in (None, "null"):
                     continue
                 key = (
                     (inbox.c.watch_id == claim["id"])
@@ -643,8 +673,15 @@ class WatchStore:
                     if old
                     else "seller_changed"
                 )
+                exceptional = stored_listing["listing_document"]
+                if exceptional is None and stored_listing["metadata_type"] not in (None, "object"):
+                    # The original nested .get failed closed on explicit null,
+                    # arrays, and scalars; only a missing metadata key defaults to {}.
+                    raise AttributeError("Stored source_metadata must be a JSON object")
                 shared_boundary = _evidence_time(
-                    stored_listing.get("source_metadata", {}).get(INVALIDATED_AT)
+                    exceptional.get("source_metadata", {}).get(INVALIDATED_AT)
+                    if exceptional is not None
+                    else stored_listing["shared_boundary"]
                 )
                 invalidated = _evidence_time(invalidated_raw)
                 if shared_boundary and (not invalidated or shared_boundary > invalidated):

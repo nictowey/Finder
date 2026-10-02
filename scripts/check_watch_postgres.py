@@ -360,6 +360,10 @@ def main():
                 .all()
             )
         assert len(checks) == 1 and f"slot <= {MAX_WATCHES}" in checks[0]
+        phase = "worker_scalar_projections"
+        from check_worker_projections import check_worker_projections
+
+        check_worker_projections(repo, now, listing)
         print(
             '{"postgres_migration_lease_dedup_deletion":"passed","synthetic_backup_restore_upgrade":"passed","discovery_shared_budget":"passed"}'
         )
