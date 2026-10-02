@@ -11,7 +11,7 @@ from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 
 from finder.adapters.discogs.adapter import AlternativeRetrieval, DiscogsCatalogProvider
 from finder.adapters.discogs.client import DiscogsClient
@@ -33,6 +33,7 @@ from finder.discovery_store import (
 )
 from finder.errors import CatalogError, ItemUnavailableError, RateLimitError, RequestRejectedError
 from finder.evidence import details_invalidated
+from finder.json_projection import json_field_projection
 from finder.stage_timing import StageTimings
 from finder.watch_profile import load_profile, siblings_of
 from finder.watch_store import SavedWatch, WatchStore, watches
@@ -55,15 +56,25 @@ _quota_cache = {}
 def poll_minutes(engine):
     """New-listing cadence: every 10 minutes for a few watches, stretching as they grow."""
     with engine.connect() as conn:
+        saved_queries, document = json_field_projection(
+            progress.c.data, ("queries",), conn.dialect.name
+        )
+        json_type = func.json_typeof if conn.dialect.name == "postgresql" else func.json_type
+        is_array = json_type(saved_queries) == "array"
         rows = conn.execute(
-            select(progress.c.data)
+            select(
+                case((is_array, func.json_array_length(saved_queries))).label("query_count"),
+                case((is_array, None), else_=saved_queries).label("other_queries"),
+                document.label("progress_document"),
+            )
             .select_from(watches.outerjoin(progress, progress.c.watch_id == watches.c.id))
             .where(watches.c.enabled.is_(True))
-        ).scalars()
-        queries = sum(
-            len(data["queries"]) if isinstance(data, dict) and data.get("queries") else 3
-            for data in rows
         )
+        queries = 0
+        for count, other, fallback in rows:
+            if fallback is not None:
+                other = fallback.get("queries") if isinstance(fallback, dict) else None
+            queries += (count or 3) if count is not None else len(other) if other else 3
     return max(MIN_POLL_MINUTES, math.ceil(1440 * queries / POLL_BUDGET))
 
 
@@ -549,7 +560,7 @@ def _run_chunk(repository, settings, discogs_settings, claim, now_fn, timings):
                 else 1
                 if next_task(state)
                 or coverage["pending"]
-                or queue.due(claim, now_fn(), limit=1, pending=False)
+                or queue.has_due(claim, now_fn(), pending=False)
                 else poll_every
             )
             result = store.finish(

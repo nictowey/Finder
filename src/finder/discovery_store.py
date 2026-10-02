@@ -23,6 +23,7 @@ from sqlalchemy import (
 
 from finder.adapters.ebay.discovery import PAGE_SIZE, RESULT_CEILING, iso, summary_fingerprint
 from finder.evidence import evidence_time
+from finder.json_projection import json_field_projection
 from finder.watch_store import (
     WatchStore,
     inbox,
@@ -236,13 +237,20 @@ class DiscoveryStore:
     def checkpoint(self, claim, state, now, *, items=(), kind="existing_inventory"):
         with self.engine.begin() as conn:
             fence(conn, claim, now)
-            prior = (
-                conn.execute(
-                    select(progress.c.data).where(progress.c.watch_id == claim["id"])
-                ).scalar()
-                or {}
+            signature, document = json_field_projection(
+                progress.c.data, ("evaluation_signature",), conn.dialect.name
             )
-            if state.get("evaluation_signature") != prior.get("evaluation_signature"):
+            prior = conn.execute(
+                select(signature, document).where(progress.c.watch_id == claim["id"])
+            ).first()
+            prior_signature = (
+                (prior[1] or {}).get("evaluation_signature")
+                if prior and prior[1] is not None
+                else prior[0]
+                if prior
+                else None
+            )
+            if state.get("evaluation_signature") != prior_signature:
                 conn.execute(
                     update(work)
                     .where(work.c.watch_id == claim["id"], work.c.status == "evaluated")
@@ -306,7 +314,7 @@ class DiscoveryStore:
                 update(progress).where(progress.c.watch_id == claim["id"]).values(data=state)
             )
 
-    def due(self, claim, now, *, limit, pending):
+    def _due_query(self, claim, now, *, pending):
         requested = work.c.refresh_token.is_not(None)
         ordinary_due = (work.c.next_check_at <= now.isoformat()) | (
             inbox.c.data["evidence_invalidated_at"].as_string().is_not(None)
@@ -324,22 +332,58 @@ class DiscoveryStore:
             else ordinary
         )
         effective_due = case((requested, work.c.refresh_after), else_=work.c.next_check_at)
+        return (
+            select(work)
+            .outerjoin(
+                inbox,
+                (inbox.c.watch_id == work.c.watch_id)
+                & (inbox.c.marketplace == "ebay")
+                & (inbox.c.marketplace_item_id == work.c.item_id),
+            )
+            .where(work.c.watch_id == claim["id"], eligible)
+            .order_by(effective_due, work.c.first_seen_at, work.c.item_id)
+        )
+
+    def due(self, claim, now, *, limit, pending):
         with self.engine.connect() as conn:
-            return [
-                dict(row)
-                for row in conn.execute(
-                    select(work, inbox.c.data.label("review_data"))
-                    .outerjoin(
-                        inbox,
-                        (inbox.c.watch_id == work.c.watch_id)
-                        & (inbox.c.marketplace == "ebay")
-                        & (inbox.c.marketplace_item_id == work.c.item_id),
-                    )
-                    .where(work.c.watch_id == claim["id"], eligible)
-                    .order_by(effective_due, work.c.first_seen_at, work.c.item_id)
-                    .limit(limit)
-                ).mappings()
-            ]
+            marker, document = json_field_projection(
+                inbox.c.data, ("evidence_invalidated_at",), conn.dialect.name
+            )
+            rows = conn.execute(
+                self._due_query(claim, now, pending=pending)
+                .add_columns(
+                    marker.label("evidence_invalidated_at"), document.label("review_document")
+                )
+                .limit(limit)
+            ).mappings()
+            result = []
+            for row in rows:
+                item = dict(row)
+                fallback = item.pop("review_document")
+                marker = item.pop("evidence_invalidated_at")
+                # Keep the worker's original short-circuit access to review_data.
+                # Exceptional malformed roots must not fail before that access.
+                item["review_data"] = (
+                    fallback
+                    if fallback is not None
+                    else {"evidence_invalidated_at": marker}
+                    if marker is not None
+                    else None
+                )
+                result.append(item)
+            return result
+
+    def has_due(self, claim, now, *, pending):
+        """Use the same eligibility rules when final scheduling only needs existence."""
+        with self.engine.connect() as conn:
+            return conn.execute(
+                select(
+                    self._due_query(claim, now, pending=pending)
+                    .with_only_columns(1)
+                    .order_by(None)
+                    .exists()
+                )
+            ).scalar_one()
 
     def disposition(
         self,
