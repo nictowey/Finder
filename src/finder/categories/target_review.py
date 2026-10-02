@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 
 from finder.categories.vinyl import from_listing, from_variant, has_numbered_claim
 from finder.categories.vinyl_covers import conflicting_catalog_cover
+from finder.categories.vinyl_package import missing_catalog_signed_insert
 from finder.domain import Listing, Variant
 from finder.matching import (
     _artist_matches_catalog,
@@ -226,6 +227,13 @@ def review_target_listing(
         return TargetReview(status="unrelated", clues=[], verify=["album_title_not_established"])
     if not family:
         return TargetReview(status="unrelated", clues=[], verify=["album_family_unconfirmed"])
+
+    if missing_catalog_signed_insert(listing, variant):
+        return TargetReview(
+            status="conflicting",
+            clues=["artist_and_album"],
+            verify=["catalog_signed_insert_missing"],
+        )
 
     candidate = score_variant(listing, variant)
     fields = {evidence.field: evidence for evidence in candidate.evidence}

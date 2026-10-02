@@ -91,6 +91,9 @@ Discogs behavior in the eBay adapter or marketplace behavior in catalog provider
 - Explicitly denied target or required colors conflict; they cannot create likely or
   unclear-price alerts. Keep positive clauses separate from negated alternatives, and
   exclude artist, album, sleeve, cover and label color words from disc-color evidence.
+- An explicit unambiguous seller-title denial of a catalog-required signed insert conflicts
+  with that target package and blocks alerts, including unclear-price alerts. Missing mention,
+  shipping signatures, unsigned records/sleeves and ambiguous claims are not package denials.
 - Explicit positive disc-color choices (such as "blue or white") remain unclear. Alternative
   branches cannot satisfy color signs; independent definite evidence or identifiers cannot
   erase an unresolved choice. Denials and definite conflicts still take precedence.
