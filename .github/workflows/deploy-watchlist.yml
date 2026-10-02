@@ -8,6 +8,9 @@ on:
       - 'functions/watchlist.ts'
       - 'functions/watchlist-ui.ts'
       - 'functions/inbox-query.ts'
+      - 'functions/operations.ts'
+      - 'functions/operations-query.ts'
+      - 'scripts/run_watchlist.py'
   workflow_dispatch:
 
 permissions:
@@ -21,6 +24,20 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: finder_ci
+          POSTGRES_PASSWORD: finder_ci_ephemeral
+          POSTGRES_DB: finder_ci
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -U finder_ci -d finder_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     environment: production
     env:
       FINDER_TRIGGER_SOURCE: deployment
@@ -59,9 +76,16 @@ jobs:
           npm test
           npm run typecheck
       - name: Verify isolated PostgreSQL migration and deletion
-        run: python scripts/check_watch_postgres.py
-      - name: Migrate, seed and run first scan
-        run: python scripts/run_watchlist.py --seed
+        env:
+          # Rehearse on this job's disposable service, never the production host.
+          FINDER_DATABASE_URL: postgresql://finder_ci:finder_ci_ephemeral@127.0.0.1:${{ job.services.postgres.ports[5432] }}/finder_ci
+        run: python scripts/check_isolated_postgres.py
+      - name: Verify bounded Monitoring history on isolated PostgreSQL
+        env:
+          FINDER_OPERATIONS_FIXTURE_URL: postgresql://finder_ci:finder_ci_ephemeral@127.0.0.1:${{ job.services.postgres.ports[5432] }}/finder_ci
+        run: node --import tsx scripts/check_operations.ts
+      - name: Migrate production schema without scanning
+        run: python scripts/run_watchlist.py --migrate-only
       - name: Configure private authentication
         run: node scripts/configure_watchlist.mjs
       - name: Deploy dashboard

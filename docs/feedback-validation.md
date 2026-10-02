@@ -30,3 +30,10 @@ for this multi-session result. Before merging or deploying the combined UI/feedb
 verify this workflow succeeded on its exact reviewed PR revision. A workflow added locally,
 a queued run or a green unrelated job is not a passed release gate. No production migration
 or deployment is authorized by this test workflow.
+
+The deployment workflow repeats this rehearsal on its own disposable local PostgreSQL service,
+using the same loopback-only target guard. Its separate `run_watchlist.py --migrate-only` step
+then applies actual production migrations before the API is deployed. Rehearsal reads and
+synthetic backup/restore therefore do not use the production database connection. That migration
+step does not seed watches or perform provider scans; explicit `--seed` bootstrap remains
+available for a fresh project.

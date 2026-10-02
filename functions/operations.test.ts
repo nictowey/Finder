@@ -28,3 +28,44 @@ test('paused watches do not manufacture an outage',()=>{
  const r=summarizeOperations([{...watch,config:{enabled:false},last_success_at:null}],[],[],'2026-09-23T10:00:00Z',null,0,null,now);
  assert.equal(r.status,'collecting_evidence');assert.equal(r.trigger_stale,false);
 });
+
+test('lightweight health retains live status and notifications without reading either ledger',async()=>{
+ const {readOperationsHealth}=await import('./operations.js');
+ const queries:string[]=[];
+ const db={query:async(sql:string)=>{
+  queries.push(sql);
+  if(sql.includes('finder_private_settings'))return {rows:[
+   {key:'operations_since',data:{at:'2026-09-23T10:00:00Z'}},
+   {key:'scan_trigger_health',data:{at:'2026-09-23T11:00:00Z'}},
+   {key:'notification_health',data:{status:'delivered',at:'2026-09-23T11:59:00Z'}},
+  ]};
+  assert.equal(sql,'SELECT COUNT(*) AS count FROM finder_push_subscriptions');
+  return {rows:[{count:'2'}]};
+ }};
+ const r=await readOperationsHealth(db,[{...watch,status:'scanning',lease_until:'2026-09-23T11:59:00Z'}],now);
+ assert.equal(r.status,'attention_needed');assert.equal(r.current[0].lease_expired,true);
+ assert.equal(r.trigger_stale,true);assert.equal(r.notifications.registered_devices,2);
+ assert.deepEqual(r.notifications.last_delivery,{status:'delivered',at:'2026-09-23T11:59:00Z'});
+ assert.equal(queries.length,2);
+ assert.equal(Object.hasOwn(r,'counts'),false);assert.equal(Object.hasOwn(r,'recent'),false);
+});
+
+test('real PostgreSQL gate refuses production or ambiguous targets before connecting',async()=>{
+ const {validateOperationsFixtureURL}=await import('../scripts/operations-fixture-target.js');
+ validateOperationsFixtureURL('postgresql://finder_ci:finder_ci_ephemeral@127.0.0.1:5432/finder_ci');
+ for(const url of ['', 'postgresql://user:secret@production.example/db',
+  'postgresql://finder_ci:finder_ci_ephemeral@localhost:5432/finder_ci',
+  'postgresql://finder_ci:finder_ci_ephemeral@127.0.0.1/finder_ci',
+  'postgresql://finder_ci:finder_ci_ephemeral@127.0.0.1:5432/production',
+  'postgresql://finder_ci:finder_ci_ephemeral@127.0.0.1:5432/finder_ci?host=production.example',
+  'postgresql://finder_ci:finder_ci_ephemeral@127.0.0.1:5432/finder_ci#fragment'])
+  assert.throws(()=>validateOperationsFixtureURL(url),{message:'Operations gate requires the isolated loopback CI fixture'});
+});
+
+test('Node pg JSON and numeric parsers retain the transport types used by history assembly',async()=>{
+ const {types}=await import('pg');
+ const json='{"sum":42,"fallback":[0.1,1e400,9007199254740992.1],"counts":{"completed":10001},"metrics":"{\\"ignored\\":\\"\\\\u0000\\"}"}';
+ assert.deepEqual(types.getTypeParser(114,'text')(json),JSON.parse(json));
+ assert.equal(types.getTypeParser(20,'text')('10001'),'10001');
+ assert.equal(types.getTypeParser(1700,'text')('1234.000000'),'1234.000000');
+});

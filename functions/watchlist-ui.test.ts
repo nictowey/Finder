@@ -7,14 +7,173 @@ import {dashboardFixture,fixtureDashboard} from './watchlist-ui-fixture.js';
 const tick=()=>new Promise<void>(resolve=>setImmediate(resolve));
 const response=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status});
 function deferred<T>(){let resolve!:(value:T)=>void;const promise=new Promise<T>(r=>{resolve=r;});return {promise,resolve};}
-async function app(initial=dashboardFixture(),fetcher?:(url:string,opts:any)=>Promise<Response>){
- const dom=new JSDOM(html,{url:'https://finder.example/',runScripts:'outside-only',pretendToBeVisual:true});
+async function app(initial=dashboardFixture(),fetcher?:(url:string,opts:any)=>Promise<Response>,hash=''){
+ const dom=new JSDOM(html,{url:'https://finder.example/'+hash,runScripts:'outside-only',pretendToBeVisual:true});
  const requests:{url:string;body:any}[]=[];const saved=structuredClone(initial);
- const w=dom.window;w.matchMedia=(()=>({matches:false})) as any;w.HTMLElement.prototype.scrollIntoView=()=>{};w.setInterval=(()=>0) as any;
+ const intervals:(()=>void)[]=[];
+ const w=dom.window;w.matchMedia=(()=>({matches:false})) as any;w.HTMLElement.prototype.scrollIntoView=()=>{};w.setInterval=((fn:()=>void)=>{intervals.push(fn);return intervals.length;}) as any;
  w.fetch=(async(url:any,opts:any={})=>{const body=opts.body?JSON.parse(opts.body):null;requests.push({url:String(url),body});if(fetcher)return fetcher(String(url),opts);if(String(url).startsWith('/api/dashboard'))return response(saved);const row=saved.leads.find(r=>r.marketplace_item_id===body?.marketplace_item_id);if(row){if(String(url)==='/api/verdict'){row.verdict=body.verdict;row.verdict_tier ||= row.data.status;row.verdict_decided_at ||= new Date().toISOString();row.verdict_provenance ||= 'recorded_prediction';}if(String(url)==='/api/purchase')row.purchased=body.purchased;return response({ok:true,verdict:row.verdict,purchased:row.purchased,verdict_tier:row.verdict_tier,verdict_decided_at:row.verdict_decided_at,verdict_provenance:row.verdict_provenance});}return response({ok:true});}) as any;
  w.eval(javascript+';window.testSavedState=()=>JSON.parse(JSON.stringify(state));');await tick();await tick();
- return {dom,w,doc:w.document,requests,saved,close:()=>dom.window.close(),click:(selector:string)=>(w.document.querySelector(selector) as HTMLButtonElement).click(),change:(selector:string,value:string)=>{const el=w.document.querySelector(selector) as HTMLSelectElement;el.value=value;el.dispatchEvent(new w.Event('change',{bubbles:true}));}};
+ return {dom,w,doc:w.document,requests,saved,minute:()=>intervals.forEach(fn=>fn()),close:()=>dom.window.close(),click:(selector:string)=>(w.document.querySelector(selector) as HTMLButtonElement).click(),change:(selector:string,value:string)=>{const el=w.document.querySelector(selector) as HTMLSelectElement;el.value=value;el.dispatchEvent(new w.Event('change',{bubbles:true}));}};
 }
+
+function healthOnly(data:ReturnType<typeof dashboardFixture>){
+ const {counts,max_start_delay_minutes,browse_requests,dispatches,recent,...health}=data.operations;
+ return {...data,operations:health} as ReturnType<typeof dashboardFixture>;
+}
+const navigate=async(a:Awaited<ReturnType<typeof app>>,hash:string)=>{a.w.history.pushState({},'',hash);a.w.dispatchEvent(new a.w.HashChangeEvent('hashchange'));await tick();};
+
+test('Monitoring history is lazy, keeps lightweight warnings, and refreshes only while visible',async()=>{
+ const data=dashboardFixture();data.operations.trigger_stale=true;
+ const a=await app(healthOnly(data),async url=>response(url==='/api/operations'?data.operations:healthOnly(data)));
+ try{
+  assert.equal(a.requests.filter(r=>r.url==='/api/operations').length,0);
+  assert.equal(a.doc.querySelector('#healthdot')!.classList.contains('attention'),true);
+  a.minute();await tick();assert.equal(a.requests.filter(r=>r.url==='/api/operations').length,0);
+  await navigate(a,'#health');assert.equal(a.requests.filter(r=>r.url==='/api/operations').length,1);
+  assert.match(a.doc.querySelector('#operations')!.textContent!,/240 completed/);
+  const dashboards=a.requests.filter(r=>r.url.startsWith('/api/dashboard')).length;
+  a.minute();await tick();assert.equal(a.requests.filter(r=>r.url==='/api/operations').length,2);
+  assert.equal(a.requests.filter(r=>r.url.startsWith('/api/dashboard')).length,dashboards);
+  await navigate(a,'#watches');a.minute();await tick();assert.equal(a.requests.filter(r=>r.url==='/api/operations').length,2);
+  await navigate(a,'#health');assert.equal(a.requests.filter(r=>r.url==='/api/operations').length,3);
+  a.click('#refresh-operations');await tick();assert.equal(a.requests.filter(r=>r.url==='/api/operations').length,4);
+ }finally{a.close();}
+});
+
+test('Monitoring deep links load once and unavailable history never appears healthy',async()=>{
+ const data=dashboardFixture(),first=deferred<Response>();let reads=0;
+ const a=await app(healthOnly(data),async url=>url==='/api/operations'?(++reads===1?first.promise:response(data.operations)):response(healthOnly(data)),'#health');
+ try{
+  assert.equal(reads,1);assert.match(a.doc.querySelector('#operations')!.textContent!,/Loading monitoring history/);
+  assert.doesNotMatch(a.doc.querySelector('#operations')!.textContent!,/Collecting reliability|0 completed/);
+  a.minute();await tick();assert.equal(reads,1);
+  first.resolve(response({error:'Synthetic outage'},503));await tick();await tick();
+  assert.match(a.doc.querySelector('#operations')!.textContent!,/Monitoring history unavailable/);
+  assert.doesNotMatch(a.doc.querySelector('#operations')!.textContent!,/Collecting reliability|completed/);
+  assert.equal((a.doc.querySelector('#dashboard') as HTMLElement).hidden,false);
+  assert.equal((a.doc.querySelector('#refresh-operations') as HTMLButtonElement).disabled,false);
+  assert.equal(a.doc.querySelector('#healthdot')!.classList.contains('attention'),true);
+  a.click('#refresh-operations');await tick();assert.equal(reads,2);assert.match(a.doc.querySelector('#operations')!.textContent!,/240 completed/);
+  assert.equal(a.doc.querySelector('#healthdot')!.classList.contains('attention'),false);
+ }finally{a.close();}
+});
+
+test('Monitoring navigation and retry discard obsolete history responses',async()=>{
+ const data=dashboardFixture(),old=deferred<Response>(),fresh=deferred<Response>();let reads=0;const signals:AbortSignal[]=[];
+ const a=await app(healthOnly(data),async(url,opts)=>{if(url==='/api/operations'){signals.push(opts.signal);return ++reads===1?old.promise:fresh.promise;}return response(healthOnly(data));});
+ try{
+  await navigate(a,'#health');await navigate(a,'#review');assert.equal(signals[0].aborted,true);
+  await navigate(a,'#health');assert.equal(reads,2);
+  fresh.resolve(response({...data.operations,counts:{...data.operations.counts,completed:999}}));await tick();
+  old.resolve(response({...data.operations,counts:{...data.operations.counts,completed:111}}));await tick();
+  assert.match(a.doc.querySelector('#operations')!.textContent!,/999 completed/);assert.doesNotMatch(a.doc.querySelector('#operations')!.textContent!,/111 completed/);
+ }finally{a.close();}
+});
+
+test('Monitoring refresh failures withhold old healthy history and back-forward retries',async()=>{
+ const data=dashboardFixture();let reads=0;
+ const a=await app(healthOnly(data),async url=>response(url==='/api/operations'?(++reads===2?{error:'Outage'}:data.operations):healthOnly(data),url==='/api/operations'&&reads===2?500:200));
+ try{
+  await navigate(a,'#health');assert.match(a.doc.querySelector('#operations')!.textContent!,/240 completed/);
+  a.click('#refresh-operations');await tick();assert.doesNotMatch(a.doc.querySelector('#operations')!.textContent!,/240 completed|Collecting reliability/);
+  await navigate(a,'#watches');a.w.history.back();await new Promise(resolve=>a.w.setTimeout(resolve,30));await tick();
+  assert.equal(a.w.location.hash,'#health');assert.equal(reads,3);assert.match(a.doc.querySelector('#operations')!.textContent!,/240 completed/);
+  a.w.history.forward();await new Promise(resolve=>a.w.setTimeout(resolve,30));await tick();a.minute();await tick();assert.equal(reads,3);
+ }finally{a.close();}
+});
+
+test('hidden Monitoring stops history refresh and authenticates again before showing history',async()=>{
+ const data=dashboardFixture();let reads=0;
+ const a=await app(healthOnly(data),async url=>response(url==='/api/operations'?(++reads===2?{error:'Sign in'}:data.operations):healthOnly(data),url==='/api/operations'&&reads===2?401:200),'#health');
+ try{
+  Object.defineProperty(a.doc,'hidden',{value:true,configurable:true});a.doc.dispatchEvent(new a.w.Event('visibilitychange'));a.minute();await tick();assert.equal(reads,1);
+  Object.defineProperty(a.doc,'hidden',{value:false,configurable:true});a.doc.dispatchEvent(new a.w.Event('visibilitychange'));await tick();assert.equal(reads,2);
+  assert.equal((a.doc.querySelector('#dashboard') as HTMLElement).hidden,true);assert.equal((a.doc.querySelector('#signin') as HTMLElement).hidden,false);
+  assert.doesNotMatch(a.doc.querySelector('#operations')!.textContent!,/240 completed/);
+ }finally{a.close();}
+});
+
+test('a dashboard refresh started before Monitoring cannot overwrite its newer warning',async()=>{
+ const data=dashboardFixture(),old=deferred<Response>();let dashboards=0;
+ const a=await app(healthOnly(data),async url=>url==='/api/operations'?response({...data.operations,status:'attention_needed',trigger_stale:true}):++dashboards===2?old.promise:response(healthOnly(data)));
+ try{
+  a.click('#refresh');await navigate(a,'#health');assert.equal(a.doc.querySelector('#healthdot')!.classList.contains('attention'),true);
+  old.resolve(response(healthOnly(data)));await tick();
+  assert.equal(a.doc.querySelector('#healthdot')!.classList.contains('attention'),true);
+  assert.match(a.doc.querySelector('#operations')!.textContent!,/Monitoring needs attention/);
+ }finally{a.close();}
+});
+
+test('a late dashboard cannot restore private history after Monitoring requires sign-in',async()=>{
+ const data=dashboardFixture(),old=deferred<Response>();let dashboards=0;
+ const a=await app(healthOnly(data),async url=>url==='/api/operations'?response({error:'Sign in'},401):++dashboards===2?old.promise:response(healthOnly(data)));
+ try{
+  a.click('#refresh');await navigate(a,'#health');old.resolve(response(healthOnly(data)));await tick();
+  assert.equal((a.doc.querySelector('#dashboard') as HTMLElement).hidden,true);
+  assert.equal((a.doc.querySelector('#signin') as HTMLElement).hidden,false);
+  assert.equal((a.doc.querySelector('#refresh') as HTMLButtonElement).disabled,false);
+ }finally{a.close();}
+});
+
+function captureDecision(a:Awaited<ReturnType<typeof app>>){
+ a.w.eval('const originalSaveDecision=saveDecision;saveDecision=(...args)=>{const promise=originalSaveDecision(...args);window.testLastDecision=promise.then(()=>null,error=>error);return promise;};');
+}
+async function signIn(a:Awaited<ReturnType<typeof app>>){
+ (a.doc.querySelector('#email') as HTMLInputElement).value='owner@example.com';
+ a.doc.querySelector('#login')!.dispatchEvent(new a.w.Event('submit',{bubbles:true,cancelable:true}));await tick();
+ (a.doc.querySelector('#code') as HTMLInputElement).value='123456';
+ a.doc.querySelector('#login')!.dispatchEvent(new a.w.Event('submit',{bubbles:true,cancelable:true}));await tick();await tick();
+}
+for(const saved of [true,false])test(`a ${saved?'successful':'failed'} decision completing after Monitoring expiry stays signed out and recovers on login`,async()=>{
+ const data=dashboardFixture(),pending=deferred<Response>();let signedIn=false,logins=0;
+ const a=await app(healthOnly(data),async url=>url==='/api/verdict'?pending.promise:url==='/api/operations'?(logins===1?(signedIn=false,response({error:'Sign in'},401)):response(data.operations)):url==='/auth/verify-code'?(signedIn=true,logins++,response({ok:true})):url.startsWith('/auth/')?response({ok:true}):response(signedIn?healthOnly(data):{error:'Sign in'},signedIn?200:401));
+ try{
+  await signIn(a);assert.equal(logins,1);
+  captureDecision(a);a.click('[data-verdict="0|mine"]');const completion=(a.w as any).testLastDecision;
+  (a.doc.querySelector('#code') as HTMLInputElement).value='654321';
+  await navigate(a,'#health');assert.equal((a.doc.querySelector('#signin') as HTMLElement).hidden,false);
+  assert.equal((a.doc.querySelector('#email') as HTMLInputElement).readOnly,false);
+  assert.equal((a.doc.querySelector('#codefield') as HTMLElement).hidden,true);
+  assert.equal((a.doc.querySelector('#code') as HTMLInputElement).required,false);
+  assert.equal((a.doc.querySelector('#code') as HTMLInputElement).value,'');
+  assert.equal(a.doc.querySelector('#loginbutton')!.textContent,'Send sign-in code');
+  const reads=a.requests.filter(r=>r.url.startsWith('/api/dashboard')).length;
+  if(saved){data.leads[0].verdict='mine';data.leads[0].verdict_tier='possible_pressing';}
+  pending.resolve(response(saved?{ok:true,...data.leads[0]}:{error:'Save failed'},saved?200:500));
+  assert.equal(await completion,null);await tick();
+  assert.equal((a.doc.querySelector('#dashboard') as HTMLElement).hidden,true);
+  assert.equal(a.requests.filter(r=>r.url.startsWith('/api/dashboard')).length,reads);
+  assert.doesNotMatch(a.doc.querySelector('#notice')!.textContent!,saved?/Couldn’t confirm/:/Saved:/);
+  await signIn(a);assert.equal((a.doc.querySelector('#dashboard') as HTMLElement).hidden,false);
+  assert.deepEqual(a.requests.filter(r=>r.url.startsWith('/auth/')).map(r=>r.url),['/auth/send-code','/auth/verify-code','/auth/send-code','/auth/verify-code']);
+  assert.equal((a.w as any).testSavedState().leads[0].verdict,saved?'mine':null);
+  await navigate(a,'#review');if(saved){a.click('[data-filter="judged"]');await tick();}
+  assert.equal((a.doc.querySelector('[data-verdict="0|other"]') as HTMLButtonElement).disabled,false);
+ }finally{a.close();}
+});
+
+for(const saved of [true,false])test(`an old ${saved?'successful':'failed'} decision cannot mutate a new login or release its newer save`,async()=>{
+ const data=dashboardFixture(),old=deferred<Response>(),current=deferred<Response>();let signedIn=false,writes=0;
+ const a=await app(healthOnly(data),async url=>url==='/api/verdict'?(++writes===1?old.promise:current.promise):url==='/api/operations'?response(signedIn?data.operations:{error:'Sign in'},signedIn?200:401):url==='/auth/verify-code'?(signedIn=true,response({ok:true})):url.startsWith('/auth/')?response({ok:true}):response(healthOnly(data)));
+ try{
+  captureDecision(a);a.click('[data-verdict="0|mine"]');const oldCompletion=(a.w as any).testLastDecision;
+  await navigate(a,'#health');data.leads[0].verdict='other';data.leads[0].verdict_tier='possible_pressing';
+  await signIn(a);assert.equal((a.doc.querySelector('#dashboard') as HTMLElement).hidden,false);
+  await navigate(a,'#review');a.click('[data-filter="judged"]');await tick();
+  a.click('[data-verdict="0|unsure"]');const currentCompletion=(a.w as any).testLastDecision;assert.equal(writes,2);
+  const reads=a.requests.filter(r=>r.url.startsWith('/api/dashboard')).length;
+  old.resolve(response(saved?{ok:true,...data.leads[0],verdict:'mine'}:{error:'Old save failed'},saved?200:500));
+  assert.equal(await oldCompletion,null);await tick();
+  assert.equal((a.w as any).testSavedState().leads[0].verdict,'other');
+  assert.equal((a.doc.querySelector('[data-verdict="0|mine"]') as HTMLButtonElement).disabled,true);
+  assert.equal(a.doc.querySelector('.judgment')!.getAttribute('aria-busy'),'true');
+  assert.equal(a.requests.filter(r=>r.url.startsWith('/api/dashboard')).length,reads);
+  data.leads[0].verdict='unsure';current.resolve(response({ok:true,...data.leads[0]}));assert.equal(await currentCompletion,null);await tick();
+  assert.equal(a.doc.querySelector('[data-verdict="0|unsure"]')!.getAttribute('aria-pressed'),'true');
+  assert.equal((a.doc.querySelector('[data-verdict="0|mine"]') as HTMLButtonElement).disabled,false);
+ }finally{a.close();}
+});
 
 test('an HTML gateway response during refresh keeps saved state and offers a readable retry',async()=>{
  for(const status of [502,503]){

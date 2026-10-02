@@ -32,6 +32,13 @@ clues. Deleting a watch deletes its history. Requests interrupted before counter
 and other workflows are not fully accounted for by the scan-counter sum. Use shared quota
 readings as well. Elapsed days and successful scan counts do not pass the pilot gate.
 
+Ordinary dashboard requests load current watch health, trigger heartbeat and notification
+status without reading scan or dispatch history. Opening **Monitoring** loads the 14-day
+history through the same owner-authenticated API. **Refresh monitoring** retries a failed
+load; history also refreshes each minute while Monitoring is visible. Leaving the view or
+hiding the page cancels an in-flight history request, and returning loads it again. Loading
+or failed requests withhold old history totals instead of presenting them as current.
+
 The owner chose `review_leads` alerts on September 23. Under policy v4, incomplete catalog search
 or a compatible alternative remains visible and may notify as an **unverified review lead**.
 `strict` mode holds those alerts. Failed comparison lookups, conflicts, stale evidence and
@@ -55,9 +62,12 @@ tests or an expressly authorized operator rollback only.
 1. Keep the existing Production secrets and `FINDER_OWNER_EMAIL` encrypted GitHub
    **production environment** secret. Only that address can access the dashboard after email
    verification. It is never written into repository files or Actions output.
-2. Run **Deploy private watchlist** from `main`. It checks all offline tests, exercises an
-   isolated PostgreSQL schema, applies additive migration 1, seeds the existing secret-backed
-   target if absent, scans, configures managed Neon Auth, and deploys the new Function.
+2. Run **Deploy private watchlist** from `main`. It checks all offline tests, rehearses migrations
+   and restore against a disposable local PostgreSQL service, applies the current additive
+   migrations to production without scanning, configures managed Neon Auth, and deploys the
+   Function. Scheduled monitoring keeps its existing cadence. For a new project's optional
+   secret-backed bootstrap, run `python scripts/run_watchlist.py --seed` explicitly; this seeds
+   absent targets and performs a bounded due-watch scan. A regular deployment does neither.
 3. Open the dashboard, sign in with the email code, add up to three watches, and enable browser
    notifications on the desired device. Notification permission requires a user gesture.
 4. **Private watchlist scans** runs at minutes 17 and 47. GitHub scheduling may delay or skip
