@@ -11,6 +11,7 @@ export function dashboardFixture() {
     watch_id: watchId, marketplace: 'ebay', marketplace_item_id: id, first_seen_at: now, last_seen_at: now,
     dismissed: false, verdict: null as string | null, purchased: false, verdict_tier: null as string | null, verdict_decided_at: null as string | null, verdict_provenance: null as string | null,
     evidence_stale: false,
+    pressing_clues: tier==='possible_pressing'?['Matching identifier claim','Comparable vinyl color claim']:[] as string[],
     data: { status: tier, clues: ['artist_and_album','seller_color_claim'], signs: tier==='possible_pressing'?['Moss green vinyl','Catalog number matches']:[], missing_signs: [] as string[], common_signs: [] as string[], verify: tier==='possible_pressing'?['verify_photos_condition_and_checkout_total']:['numbered_copy_unconfirmed','pressing_identifier_absent'], alternatives_checked:4, alternatives_not_ruled_out:tier==='possible_pressing'?0:2, availability:undefined as string|undefined, subtotal:price, currency:'USD', budget:price?'within_ceiling':'needs_refresh', discovery_kind:'new_to_finder' },
     listing: { title, listing_url: 'https://www.ebay.com/itm/000000000000', details_observed_at: now, price_kind: 'fixed_price', condition:'Used · check media and sleeve', images:['https://i.ebayimg.com/finder-synthetic/'+id+'-1.svg','https://i.ebayimg.com/finder-synthetic/'+id+'-2.svg'], item_specifics:{'Record label':['Example Records'],'Format':['Vinyl, LP']} }
   });
@@ -30,6 +31,7 @@ export function dashboardFixture() {
 export function fixtureDashboard(data: ReturnType<typeof dashboardFixture>, path: string) {
   const result=structuredClone(data),params=new URL(path,'https://finder.example').searchParams;
   const filter=params.get('filter')||'review',judgment=params.get('judgment')||'all',purchase=params.get('purchased')||'all';
+  const clueOrder=params.get('order')==='pressing_clues'&&['review','judged'].includes(filter);
   const saved=data.leads.filter(r=>r.verdict||r.purchased);
   const count=(verdict:string)=>saved.filter(r=>r.verdict===verdict).length;
   const decision_totals={judged:saved.filter(r=>r.verdict).length,mine:count('mine'),other:count('other'),unsure:count('unsure'),purchased:saved.filter(r=>r.purchased).length,purchase_only:saved.filter(r=>r.purchased&&!r.verdict).length,dismissed_judged:saved.filter(r=>r.dismissed&&r.verdict).length};
@@ -44,9 +46,15 @@ export function fixtureDashboard(data: ReturnType<typeof dashboardFixture>, path
   }
   let rows=data.leads.filter(r=>filter==='judged'?(r.verdict||r.purchased)&&(judgment==='all'||r.verdict===judgment)&&(purchase==='all'||r.purchased):filter==='dismissed'?r.dismissed:filter==='unavailable'?!r.dismissed&&r.data.availability==='unavailable_on_recheck':!r.dismissed&&r.data.availability!=='unavailable_on_recheck'&&(filter==='review'?!r.verdict&&!r.purchased&&['possible_pressing','family_review'].includes(r.data.status):r.data.status===filter));
   const filtered_total=filter==='judged'?rows.length:null;
-  const key=(r:typeof rows[number])=>[r.first_seen_at,r.watch_id,r.marketplace_item_id].join('|');
-  rows.sort((a,b)=>key(b).localeCompare(key(a)));
-  const cursor=params.get('cursor');if(cursor){const [at,watch,id]=JSON.parse(cursor);rows=rows.filter(r=>key(r)<[at,watch,id].join('|'));}
+  const key=(r:typeof rows[number])=>[r.first_seen_at,r.watch_id,...(clueOrder?[r.marketplace]:[]),r.marketplace_item_id].join('|');
+  // Fixture ordering consumes the provided supporting reasons, never seller text.
+  const rank=(r:typeof rows[number])=>Number(r.pressing_clues.length>0);
+  rows.sort((a,b)=>(clueOrder?rank(b)-rank(a):0)||key(b).localeCompare(key(a)));
+  const cursor=params.get('cursor');if(cursor){
+    const parsed=JSON.parse(cursor);
+    if(clueOrder){const [score,at,watch,marketplace,id]=parsed.after;rows=rows.filter(r=>rank(r)<score||rank(r)===score&&key(r)<[at,watch,marketplace,id].join('|'));}
+    else{const [at,watch,id]=parsed;rows=rows.filter(r=>key(r)<[at,watch,id].join('|'));}
+  }
   const page=rows.slice(0,50),tail=page.at(-1);
-  return {...result,leads:structuredClone(page),decision_totals,judged_counts,filtered_total,next_cursor:rows.length>50&&tail?JSON.stringify([tail.first_seen_at,tail.watch_id,tail.marketplace_item_id]):null,now:new Date().toISOString()};
+  return {...result,leads:structuredClone(page),decision_totals,judged_counts,filtered_total,next_cursor:rows.length>50&&tail?JSON.stringify(clueOrder?{order:'pressing_clues',after:[rank(tail),tail.first_seen_at,tail.watch_id,tail.marketplace,tail.marketplace_item_id]}:[tail.first_seen_at,tail.watch_id,tail.marketplace_item_id]):null,now:new Date().toISOString()};
 }

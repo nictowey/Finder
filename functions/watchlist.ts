@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { decisionInput, saveDecisionQuery } from "./decisions.js";
 import { decisionSummaryQuery } from "./decision-summary.js";
-import { inboxQuery } from "./inbox-query.js";
+import { inboxQuery, pressingCluesInboxQuery } from "./inbox-query.js";
 import { readOperations } from "./operations.js";
 import webpush from "web-push";
 import { html, javascript, serviceWorker, stylesheet } from "./watchlist-ui.js";
@@ -159,26 +159,45 @@ export function createHandler(deps: Deps) {
           watch.inbox_counts = Object.fromEntries(tierCounts.filter(row => row.watch_id === watch.id).map(row => [row.tier, Number(row.n)]));
           watch.verdict_counts = watchVerdicts.filter(row => row.watch_id === watch.id).map(({ tier, verdict, n }) => ({ tier, verdict, n: Number(n) }));
         }
-        const cutoff = Date.now() - 6 * 3600_000;
+        const now = Date.now(), cutoff = now - 6 * 3600_000;
         for (const watch of watches) if (Date.parse(watch.catalog_observed_at ?? "") < cutoff || !watch.catalog_observed_at) watch.catalog = null;
         const filter = url.searchParams.get("filter") || "review";
         if (!["review","judged","possible_pressing","family_review","conflicting","unrelated","unavailable","dismissed"].includes(filter)) return reply({error:"Invalid inbox filter"},400);
-        let cursor: string[] | null = null;
-        if (url.searchParams.has("cursor")) {
-          try { cursor = JSON.parse(url.searchParams.get("cursor")!); } catch { return reply({error:"Invalid cursor"},400); }
-          if (!Array.isArray(cursor) || cursor.length !== 3 || cursor.some(v=>typeof v!=="string" || v.length>255)) return reply({error:"Invalid cursor"},400);
-        }
+        const order = url.searchParams.get("order") || "newest";
+        if (!["newest","pressing_clues"].includes(order)) return reply({error:"Invalid inbox order"},400);
+        if (order==='pressing_clues' && !['review','judged'].includes(filter)) return reply({error:"Pressing clues order requires To review or Judged"},400);
         const priceScope = url.searchParams.get("prices") || "watch";
         if (!["watch", "all"].includes(priceScope)) return reply({error:"Invalid price filter"},400);
         const judgment = url.searchParams.get("judgment") || "all";
         const purchased = url.searchParams.get("purchased") || "all";
         if (!["all","mine","other","unsure"].includes(judgment) || !["all","yes"].includes(purchased)) return reply({error:"Invalid judgment filter"},400);
         if (filter!=="judged" && (judgment!=="all" || purchased!=="all")) return reply({error:"Judgment filters require the Judged view"},400);
-        const leads = (await deps.db.query(inboxQuery, [filter,...(cursor || [null,null,null]),priceScope,new Date(cutoff).toISOString(),judgment,purchased])).rows;
+        let cursor: string[] | null = null, orderCursor: string[] | null = null;
+        if (url.searchParams.has("cursor")) {
+          let value: unknown;
+          try { value = JSON.parse(url.searchParams.get("cursor")!); } catch { return reply({error:"Invalid cursor"},400); }
+          if (!Array.isArray(value) || value.some(v=>typeof v!=="string" || v.length>255)) return reply({error:"Invalid cursor"},400);
+          if (order==='newest') {
+            if (value.length!==3) return reply({error:"Cursor does not match this inbox order"},400);
+            cursor=value;
+          } else {
+            if (value.length!==11 || ![order,filter,priceScope,judgment,purchased].every((v,i)=>value[i]===v)
+              || !['0','1'].includes(value[5]) || !/^[a-f0-9]{32}$/.test(value[10])) return reply({error:"Cursor does not match this inbox order or filters"},400);
+            orderCursor=value;cursor=[value[6],value[7],value[9]];
+          }
+        }
+        const args: unknown[] = [filter,...(cursor || [null,null,null]),priceScope,new Date(cutoff).toISOString(),judgment,purchased];
+        if (order==='pressing_clues') args.push(new Date(now-3600_000).toISOString(),new Date(now).toISOString(),orderCursor?.[5]??null,orderCursor?.[8]??null);
+        let leads = (await deps.db.query(order==='pressing_clues'?pressingCluesInboxQuery:inboxQuery,args)).rows;
+        const generation=leads[0]?.order_generation;
+        if (orderCursor && orderCursor[10]!==generation) return reply({error:"The review order changed. Start again from the first page.",code:"inbox_order_changed"},409);
+        if (order==='pressing_clues') leads=leads.filter(row=>row.watch_id!==null);
         const more = leads.length > 50;
         if (more) leads.pop();
         const tail = leads.at(-1);
-        const nextCursor = more && tail ? JSON.stringify([tail.first_seen_at,tail.watch_id,tail.marketplace_item_id]) : null;
+        const nextCursor = more && tail ? JSON.stringify(order==='pressing_clues'
+          ? [order,filter,priceScope,judgment,purchased,String(tail.pressing_rank),tail.first_seen_at,tail.watch_id,tail.marketplace,tail.marketplace_item_id,generation]
+          : [tail.first_seen_at,tail.watch_id,tail.marketplace_item_id]) : null;
         // Keep old references discoverable; never extend the six-hour provider content
         // display window or imply that a fresh summary freshened detail evidence.
         for (const row of leads) {
@@ -191,8 +210,9 @@ export function createHandler(deps: Deps) {
               current_price:l.current_price,shipping_cost:l.shipping_cost,currency:l.currency,
               price_kind:l.price_kind,listing_ends_at:l.listing_ends_at,item_specifics:l.item_specifics,
               details_observed_at:l.details_observed_at,last_observed_at:l.last_observed_at };
-          if(row.evidence_stale) row.data={status:row.data.status,availability:row.data.availability,clues:[],verify:[row.evidence_invalidated_reason?(row.evidence_invalidated_reason==='seller_changed'?'seller_details_changed':'detail_refresh_failed'):"reference_only_current_availability_unverified"],budget:"needs_refresh",notify:false};
+          if(row.evidence_stale) { row.pressing_clues=[];row.data={status:row.data.status,availability:row.data.availability,clues:[],verify:[row.evidence_invalidated_reason?(row.evidence_invalidated_reason==='seller_changed'?'seller_details_changed':'detail_refresh_failed'):"reference_only_current_availability_unverified"],budget:"needs_refresh",notify:false}; }
           delete row.revision;
+          delete row.pressing_rank;delete row.order_generation;
         }
         const ids = leads.map(row => row.marketplace_item_id);
         const decided = ids.length ? (await deps.db.query("SELECT watch_id,marketplace,marketplace_item_id,verdict,purchased,tier,decided_at,prediction FROM finder_decisions WHERE marketplace_item_id = ANY($1)", [ids])).rows : [];
