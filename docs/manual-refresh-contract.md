@@ -36,7 +36,7 @@ version; this is a bounded scheduling delay, not acknowledgement of the request.
    job (`feedback-postgres`). Its endpoint/worker, row-lock, migration and restore gates
    are required before deployment. PGlite and SQLite tests do not prove PostgreSQL races.
 2. Apply additive migration 6 before deploying the new API or worker. The existing
-   deployment workflow migrates in `run_watchlist.py --seed` before deploying the dashboard.
+   deployment workflow migrates in `run_watchlist.py --migrate-only` before deploying the dashboard.
    Do not expose the new endpoint against a schema without both nullable columns.
 3. Drain old running and queued worker jobs during the controlled rollout for prompt
    pickup. The token survives old-worker overlap, but an old worker does not fulfill it.

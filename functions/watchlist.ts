@@ -3,7 +3,7 @@ import { Pool } from "pg";
 import { decisionInput, saveDecisionQuery } from "./decisions.js";
 import { decisionSummaryQuery } from "./decision-summary.js";
 import { inboxQuery, pressingCluesInboxQuery } from "./inbox-query.js";
-import { readOperations } from "./operations.js";
+import { readOperations, readOperationsHealth } from "./operations.js";
 import webpush from "web-push";
 import { html, javascript, serviceWorker, stylesheet } from "./watchlist-ui.js";
 
@@ -148,6 +148,10 @@ export function createHandler(deps: Deps) {
         for (const cookie of result.headers.getSetCookie()) response.headers.append("Set-Cookie", cookie.replace(/;\s*Domain=[^;]+/gi, ""));
         return response;
       }
+      if (path === "/api/operations" && request.method === "GET") {
+        const watches = (await deps.db.query("SELECT id,config->'enabled' AS enabled,status,last_success_at,next_scan_at,lease_until FROM finder_watches ORDER BY id")).rows;
+        return reply(await readOperations(deps.db, watches.map(w => ({ ...w, config: { enabled: w.enabled } }))));
+      }
       if (path === "/api/dashboard" && request.method === "GET") {
         const watches = (await deps.db.query("SELECT id,config,revision,status,last_started_at,last_success_at,next_scan_at,lease_until,summary,catalog,catalog_observed_at FROM finder_watches ORDER BY id")).rows;
         const tierCounts = (await deps.db.query("SELECT watch_id,data->>'status' AS tier,count(*)::int AS n FROM finder_inbox WHERE NOT dismissed GROUP BY watch_id,data->>'status'")).rows;
@@ -228,7 +232,7 @@ export function createHandler(deps: Deps) {
         const judged_counts = counts(["all","mine","other","unsure","purchased"]);
         const decision_totals = counts(["judged","mine","other","unsure","purchased","purchase_only","dismissed_judged"]);
         const push = (await deps.db.query("SELECT data FROM finder_private_settings WHERE key='vapid'")).rows[0]?.data;
-        const operations = await readOperations(deps.db, watches);
+        const operations = await readOperationsHealth(deps.db, watches);
         return reply({ watches, leads, next_cursor: nextCursor, operations, accuracy, judged_counts, decision_totals, filtered_total: filter==='judged'?Number(summary.filtered_total||0):null, max_watches: MAX_WATCHES, push_key: push?.publicKey ?? null, email: owner, now: new Date().toISOString() });
       }
       if (["/api/verdict","/api/purchase"].includes(path) && request.method === "POST") {

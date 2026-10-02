@@ -16,6 +16,9 @@ from finder.watch_worker import run_due_watches
 def main():
     logging.disable(logging.CRITICAL)
     try:
+        migration_only = "--migrate-only" in sys.argv
+        if migration_only and "--seed" in sys.argv:
+            raise ValueError("Migration-only deployment cannot bootstrap watches")
         settings = load_settings()
         url = settings.database_url.get_secret_value()
         if settings.ebay_environment != "production" or make_url(url).get_backend_name() not in (
@@ -26,28 +29,33 @@ def main():
         repo = SqlAlchemyRepository.from_url(url)
         try:
             migrate(repo.engine)
-            # Optional secret-backed bootstrap. Never commit real catalog identities.
-            if "--seed" in sys.argv:
-                store = WatchStore(repo.engine)
-                for index, value in enumerate(
-                    os.environ.get("FINDER_SEED_RELEASES", "").split(",")
-                ):
-                    if value.strip().isdigit():
-                        store.add(SavedWatch(release_id=int(value)), watch_id=f"seed-{index + 1}")
-            report = run_due_watches(
-                repo,
-                settings,
-                load_discogs_settings(),
-                context={
-                    "run_id": os.environ.get("GITHUB_RUN_ID"),
-                    "source": os.environ.get("FINDER_TRIGGER_SOURCE", "local"),
-                    "dispatch_id": os.environ.get("FINDER_DISPATCH_ID"),
-                },
-            )
+            if migration_only:
+                report = {"status": "migrated"}
+            else:
+                # Explicit bootstrap only. Never commit real catalog identities.
+                if "--seed" in sys.argv:
+                    store = WatchStore(repo.engine)
+                    for index, value in enumerate(
+                        os.environ.get("FINDER_SEED_RELEASES", "").split(",")
+                    ):
+                        if value.strip().isdigit():
+                            store.add(
+                                SavedWatch(release_id=int(value)), watch_id=f"seed-{index + 1}"
+                            )
+                report = run_due_watches(
+                    repo,
+                    settings,
+                    load_discogs_settings(),
+                    context={
+                        "run_id": os.environ.get("GITHUB_RUN_ID"),
+                        "source": os.environ.get("FINDER_TRIGGER_SOURCE", "local"),
+                        "dispatch_id": os.environ.get("FINDER_DISPATCH_ID"),
+                    },
+                )
         finally:
             repo.close()
         print(json.dumps(report))
-        return 1 if report["failed"] or report["quota_paused"] else 0
+        return 0 if migration_only else int(bool(report["failed"] or report["quota_paused"]))
     except Exception:
         print('{"status":"failed","reason":"worker_unavailable"}')
         return 1

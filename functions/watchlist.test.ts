@@ -27,6 +27,44 @@ test("verified owner can retrieve dashboard",async()=>{
   assert.equal(response.status,200);
   assert.deepEqual((await response.json()).leads,[]);
 });
+test('dashboard requests never read operations ledgers or manufacture zero history counts',async()=>{
+ const {handler,queries}=setup(true);
+ for(const path of ['/api/dashboard','/api/dashboard?filter=family_review','/api/dashboard?cursor='+encodeURIComponent(JSON.stringify(['2026-10-01','watch','item']))]){
+  const result=await handler(new Request(origin+path));assert.equal(result.status,200);
+  const data=await result.json();assert.equal(data.operations.counts,undefined);assert.equal(data.operations.recent,undefined);
+ }
+ assert.equal(queries.some(q=>/FROM finder_(?:scan|dispatch)_attempts/.test(q)),false);
+});
+test('operations history requires the same verified owner and fails closed before private reads',async()=>{
+ for(const authenticated of [false,true]){
+  const {handler,queries}=setup(authenticated);const result=await handler(new Request(origin+'/api/operations'));
+  assert.equal(result.status,authenticated?200:401);assert.equal(result.headers.get('Cache-Control'),'no-store');
+  assert.equal(queries.some(q=>q.includes('FROM finder_scan_attempts')),authenticated);
+  assert.equal(queries.some(q=>q.includes('FROM finder_dispatch_attempts')),authenticated);
+  if(authenticated){const data=await result.json();assert.equal(data.counts.completed,0);assert.deepEqual(data.recent,[]);assert.equal(data.history_truncated,false);}
+ }
+ const {handler,queries}=setup(false,false);assert.equal((await handler(new Request(origin+'/api/operations'))).status,503);
+ assert.equal(queries.some(q=>q.includes('FROM finder_watches')),false);
+});
+test('operations history reads bounded metadata without the inbox or provider evidence',async()=>{
+ const {handler,queries}=setup(true);assert.equal((await handler(new Request(origin+'/api/operations'))).status,200);
+ const watches=queries.find(q=>q.includes('FROM finder_watches'))!;
+ assert.ok(watches);assert.doesNotMatch(watches,/\b(?:catalog|summary|revision)\b/);
+ assert.equal(queries.some(q=>q.includes('FROM finder_inbox')||q.includes('FROM finder_decisions')),false);
+ const ledgers=queries.filter(q=>/FROM finder_(?:scan|dispatch)_attempts/.test(q));assert.ok(ledgers.length);
+ for(const table of ['finder_scan_attempts','finder_dispatch_attempts']){
+  const query=ledgers.find(q=>q.includes('FROM '+table))!;assert.ok(query);assert.match(query,/started_at >= \$1/);assert.match(query,/LIMIT 10001/);
+ }
+});
+test('operations history retains enabled-watch warnings without exposing watch settings',async()=>{
+ const now=new Date().toISOString(),old=new Date(Date.now()-2*3600_000).toISOString();
+ const db={query:async(q:string)=>({rows:q.includes('owner_email')?[{data:{email:'owner@example.com'}}]:q.includes('FROM finder_watches')?
+  [{id:'enabled',enabled:true,status:'failed',last_success_at:old,next_scan_at:old},{id:'paused',enabled:false,status:'failed',last_success_at:old,next_scan_at:old}]:
+  q.includes('SELECT key,data')?[{key:'operations_since',data:{at:old}},{key:'scan_trigger_health',data:{at:now}}]:[]})};
+ const result=await (await createHandler({db,origin,authURL:'https://auth.example',fetch:owner})(new Request(origin+'/api/operations'))).json();
+ assert.equal(result.status,'attention_needed');assert.deepEqual(result.current.map((w:any)=>w.id),['enabled']);
+ assert.equal(result.current[0].config,undefined);assert.equal(result.current[0].enabled,undefined);
+});
 for(const legacy of [false,true])test(`known ${legacy?'pending change':'invalidation'} withholds recent seller evidence while preserving saved judgment`,async()=>{
  const fresh=new Date().toISOString();
  const db={query:async(q:string)=>{

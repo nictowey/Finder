@@ -64,3 +64,7 @@ jobs:
           # Synthetic credentials work only on this job's disposable service container.
           FINDER_DATABASE_URL: postgresql://finder_ci:finder_ci_ephemeral@127.0.0.1:${{ job.services.postgres.ports[5432] }}/finder_ci
         run: python scripts/check_isolated_postgres.py
+      - name: Compare bounded Monitoring history on isolated PostgreSQL
+        env:
+          FINDER_OPERATIONS_FIXTURE_URL: postgresql://finder_ci:finder_ci_ephemeral@127.0.0.1:${{ job.services.postgres.ports[5432] }}/finder_ci
+        run: node --import tsx scripts/check_operations.ts
