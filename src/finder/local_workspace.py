@@ -69,6 +69,10 @@ class WorkspaceConflict(WorkspaceError):
     """The displayed review no longer represents the current workspace."""
 
 
+class WorkspaceObservationConflict(WorkspaceConflict):
+    """An immutable observation already has different claims at the supplied time."""
+
+
 class WorkspaceNotFound(WorkspaceError):
     """The requested local case does not exist."""
 
@@ -627,59 +631,179 @@ class LocalWorkspace:
     def __exit__(self, *_):
         self.close()
 
-    def import_bundle(self, value):
-        """Validate the entire input, then atomically append observations and target changes."""
-        bundle = _validate_bundle(value)
-        incoming = [_listing(row, bundle.source) for row in bundle.listings]
+    @staticmethod
+    def _current_profile(conn):
+        return (
+            conn.execute(select(_targets).order_by(_targets.c.revision.desc()).limit(1))
+            .mappings()
+            .first()
+        )
+
+    @staticmethod
+    def _check_revision(current, expected_revision):
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise WorkspaceError("Saving requires the displayed nonnegative profile revision.")
+        if expected_revision != (current["revision"] if current else 0):
+            raise WorkspaceConflict("The saved profile changed; reload it before saving.")
+
+    @staticmethod
+    def _profile_data(bundle):
         excluded = {"listings", "schema_version"} if bundle.schema_version == 1 else {"listings"}
-        target_data = bundle.model_dump(mode="json", exclude=excluded)
+        return bundle.model_dump(mode="json", exclude=excluded)
+
+    @staticmethod
+    def _observation_data(conn, row):
+        return conn.execute(
+            select(_observations.c.data).where(
+                (_observations.c.marketplace == LOCAL_SOURCE)
+                & (_observations.c.marketplace_item_id == row.marketplace_item_id)
+                & (_observations.c.observed_at == row.last_observed_at.isoformat())
+            )
+        ).scalar()
+
+    def _apply_bundle(self, conn, bundle, current, *, explicit_claims=False):
+        """Apply validated input inside the caller's single locked transaction."""
+        incoming = [_listing(row, bundle.source) for row in bundle.listings]
+        target_data = self._profile_data(bundle)
+        # Validate every collision before writing any profile or observation.
+        known = set(conn.execute(select(_listings.c.marketplace_item_id)).scalars())
+        if len(known | {row.marketplace_item_id for row in incoming}) > MAX_LISTINGS:
+            raise WorkspaceError("A workspace supports at most 100 distinct local cases.")
+        pending = {}
+        new_observations = {}
+        for row in incoming:
+            key = (row.marketplace_item_id, row.last_observed_at.isoformat())
+            data = row.model_dump(mode="json")
+            existing = self._observation_data(conn, row)
+            previous = pending.get(key, existing)
+            if previous is not None and previous != data:
+                raise WorkspaceObservationConflict(
+                    "Different case data uses an existing observation time. "
+                    "Keep the saved observation or supply an actual later observation time."
+                )
+            pending[key] = data
+            if existing is None:
+                new_observations[key] = row
+        if current is None or current["data"]["input"] != target_data:
+            revision = current["revision"] + 1 if current else 1
+            conn.execute(
+                _targets.insert().values(
+                    revision=revision,
+                    data={"input": target_data, "changed_at": _utc_now().isoformat()},
+                )
+            )
+        for row in new_observations.values():
+            self.repository.upsert(row, connection=conn)
+            if explicit_claims:
+                # Live upsert preserves old details after an enrichment failure. A manual
+                # observation is a complete set of explicit claims, including unknowns.
+                # Keep first-seen history, but do not silently borrow previous details.
+                key = (_listings.c.marketplace == LOCAL_SOURCE) & (
+                    _listings.c.marketplace_item_id == row.marketplace_item_id
+                )
+                first = conn.execute(select(_listings.c.first_observed_at).where(key)).scalar_one()
+                data = row.model_dump(mode="json")
+                data["first_observed_at"] = first
+                conn.execute(_listings.update().where(key).values(data=data))
+
+    def import_bundle(self, value, *, expected_revision=None):
+        """Atomically append validated input, optionally guarding the displayed profile."""
+        bundle = _validate_bundle(value)
         try:
             with self._lock, self.engine.begin() as conn:
                 conn.exec_driver_sql("BEGIN IMMEDIATE")
-                # Validate all observation collisions before writing any target or listing.
-                known = set(conn.execute(select(_listings.c.marketplace_item_id)).scalars())
-                if len(known | {row.marketplace_item_id for row in incoming}) > MAX_LISTINGS:
-                    raise WorkspaceError("A workspace supports at most 100 distinct local cases.")
-                pending = {}
-                new_observations = {}
-                for row in incoming:
-                    key = (row.marketplace_item_id, row.last_observed_at.isoformat())
-                    data = row.model_dump(mode="json")
-                    existing = conn.execute(
-                        select(_observations.c.data).where(
-                            (_observations.c.marketplace == LOCAL_SOURCE)
-                            & (_observations.c.marketplace_item_id == key[0])
-                            & (_observations.c.observed_at == key[1])
-                        )
-                    ).scalar()
-                    previous = pending.get(key, existing)
-                    if previous is not None and previous != data:
-                        raise WorkspaceConflict(
-                            "Different case data uses an existing observation time."
-                        )
-                    pending[key] = data
-                    if existing is None:
-                        new_observations[key] = row
-                current = (
-                    conn.execute(select(_targets).order_by(_targets.c.revision.desc()).limit(1))
-                    .mappings()
-                    .first()
-                )
-                if current is None or current["data"]["input"] != target_data:
-                    revision = current["revision"] + 1 if current else 1
-                    conn.execute(
-                        _targets.insert().values(
-                            revision=revision,
-                            data={
-                                "input": target_data,
-                                "changed_at": _utc_now().isoformat(),
-                            },
-                        )
-                    )
-                for row in new_observations.values():
-                    self.repository.upsert(row, connection=conn)
+                current = self._current_profile(conn)
+                if expected_revision is not None:
+                    self._check_revision(current, expected_revision)
+                self._apply_bundle(conn, bundle, current)
         except (SQLAlchemyError, PersistenceError):
             raise WorkspaceError("Local import failed; no partial import was saved.") from None
+        return self.snapshot()
+
+    def save_profile(self, value, *, expected_revision):
+        """Save a complete profile without adding or rewriting any observations."""
+        if not isinstance(value, dict) or "listings" in value:
+            raise WorkspaceError("Profile input must be an object without observations.")
+        # The old import schema defaulted omitted target formats to LP. The builder
+        # must leave omitted target/comparison formats unknown instead.
+        value = dict(value)
+        if isinstance(value.get("target"), dict):
+            value["target"] = {"formats": [], **value["target"]}
+        if isinstance(value.get("alternatives"), list):
+            value["alternatives"] = [
+                {"formats": [], **row} if isinstance(row, dict) else row
+                for row in value["alternatives"]
+            ]
+        bundle = _validate_bundle({**value, "listings": []})
+        try:
+            with self._lock, self.engine.begin() as conn:
+                conn.exec_driver_sql("BEGIN IMMEDIATE")
+                current = self._current_profile(conn)
+                self._check_revision(current, expected_revision)
+                if current and bundle.schema_version < current["data"]["input"].get(
+                    "schema_version", 1
+                ):
+                    raise WorkspaceError("Keep the saved profile version to preserve rich fields.")
+                self._apply_bundle(conn, bundle, current)
+        except (SQLAlchemyError, PersistenceError):
+            raise WorkspaceError(
+                "Could not save the local profile; no changes were saved."
+            ) from None
+        return self.snapshot()
+
+    def save_candidate(self, value, *, expected_revision, expected_current):
+        """Append one explicit observation using only the server's saved profile.
+
+        ``expected_current`` is the displayed row's ``current_token``, or None for
+        a new local ID. Changed existing cases require an actual later observation;
+        historical input remains available through the advanced import operation.
+        """
+        if expected_current is not None and (
+            not isinstance(expected_current, str)
+            or re.fullmatch(r"[0-9a-f]{64}", expected_current) is None
+        ):
+            raise WorkspaceError("Candidate input requires its displayed observation token.")
+        try:
+            with self._lock, self.engine.begin() as conn:
+                conn.exec_driver_sql("BEGIN IMMEDIATE")
+                current = self._current_profile(conn)
+                self._check_revision(current, expected_revision)
+                if current is None:
+                    raise WorkspaceError("Save a profile before adding a local candidate.")
+                bundle = _validate_bundle(
+                    {"schema_version": 1, **current["data"]["input"], "listings": [value]}
+                )
+                incoming = _listing(bundle.listings[0], bundle.source)
+                existing_observation = self._observation_data(conn, incoming)
+                if existing_observation is not None:
+                    if existing_observation != incoming.model_dump(mode="json"):
+                        raise WorkspaceObservationConflict(
+                            "Different case data uses an existing observation time. "
+                            "Keep the saved observation or supply an actual later observation time."
+                        )
+                    # Retrying exact claims is harmless, even if a newer observation exists.
+                    return self._snapshot(conn, _utc_now())
+                saved = conn.execute(
+                    select(_listings.c.data).where(
+                        (_listings.c.marketplace == LOCAL_SOURCE)
+                        & (_listings.c.marketplace_item_id == incoming.marketplace_item_id)
+                    )
+                ).scalar()
+                actual_token = (
+                    _digest(_load_listing(saved).model_dump(mode="json")) if saved else None
+                )
+                if expected_current != actual_token:
+                    raise WorkspaceConflict("This candidate changed; reload it before saving.")
+                if saved and incoming.last_observed_at <= _load_listing(saved).last_observed_at:
+                    raise WorkspaceError(
+                        "Another observation needs an actual time later than the saved one. "
+                        "Use advanced import for historical observations."
+                    )
+                self._apply_bundle(conn, bundle, current, explicit_claims=True)
+        except (SQLAlchemyError, PersistenceError):
+            raise WorkspaceError(
+                "Could not save the local candidate; no changes were saved."
+            ) from None
         return self.snapshot()
 
     def _snapshot(self, conn, now):
@@ -739,6 +863,7 @@ class LocalWorkspace:
             result["rows"].append(
                 {
                     "id": listing.marketplace_item_id,
+                    "current_token": _digest(data),
                     "listing": data,
                     "review": review,
                     "comparison_evidence": assessment["comparison_evidence"],

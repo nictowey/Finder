@@ -26,7 +26,7 @@ loopbackAgent.createConnection = (options) => {
 };
 const errors = [];
 function localRequest(path, options={}) {
-  assert.ok(['/', '/api/snapshot', '/api/import', '/api/verdict', '/api/export'].includes(path));
+  assert.ok(['/', '/api/snapshot', '/api/import', '/api/verdict', '/api/export', '/api/profile', '/api/candidate'].includes(path));
   assert.ok([undefined, 'GET', 'POST'].includes(options.method));
   return new Promise((resolve, reject) => {
     const body = options.body;
@@ -72,29 +72,113 @@ function blueCard(document) {
   return [...document.querySelectorAll('.case')].find((card) =>
     card.textContent.includes('Case example-blue'));
 }
+function field(document,id,value) { document.getElementById(id).value=value; }
+function submit(dom,id) { dom.window.document.getElementById(id).dispatchEvent(new dom.window.Event('submit',{cancelable:true})); }
+function click(document,text) { const button=[...document.querySelectorAll('button')].find(node=>node.textContent === text); assert.ok(button,text); button.click(); }
+const readSaved=async()=>await (await localRequest('/api/snapshot')).json();
+const exportSaved=async()=>await (await localRequest('/api/export')).json();
 (async () => {
-  let dom = await openPage();
-  let document = dom.window.document;
-  if (process.argv[3] !== '--verify') {
-    assert.match(document.getElementById('summary').textContent, /workspace is empty/);
-    document.getElementById('example').click();
-    document.getElementById('save').click();
-    await settled(dom.window);
-    assert.equal(document.querySelectorAll('.case').length, 3, document.getElementById('status').textContent);
-    blueCard(document).querySelector('.verdict').click();
-    await settled(dom.window);
-    assert.match(document.getElementById('status').textContent, /Verdict saved/);
-    dom.window.close();
-    dom = await openPage();
-    document = dom.window.document;
+  let dom=await openPage();let document=dom.window.document;
+  if(process.argv[3] !== '--verify') {
+    assert.match(document.getElementById('summary').textContent,/workspace is empty/);
+    Object.entries({'profile-source':'synthetic','target-artist':'Example Ensemble','target-album':'Offline Horizons',
+      'target-colors':'Blue','settings-maximum_subtotal':'30.00','settings-gamble_max':'15.00'}).forEach(([id,value])=>field(document,id,value));
+    submit(dom,'profile-form');submit(dom,'profile-form');await settled(dom.window);
+    let saved=await readSaved();assert.equal(saved.rows.length,0);assert.equal(saved.schema_version,1);
+    assert.deepEqual(saved.target.formats,[]);assert.deepEqual(saved.settings.tells,[]);
+    assert.equal((await exportSaved()).observations.length,0);
+    // Detailed profile fields require an explicit version upgrade through the UI.
+    document.getElementById('detailed').checked=true;
+    document.getElementById('detailed').dispatchEvent(new dom.window.Event('change'));
+    Object.entries({'target-country':'US','target-release_year':'2024','target-editions':'Limited Edition',
+      'target-cover_edition':'Alpha','target-required_components':'signed_insert','settings-condition_ids':'1000',
+      'settings-alert_mode':'strict','settings-auction_alert_minutes':'90'}).forEach(([id,value])=>field(document,id,value));
+    submit(dom,'profile-form');await settled(dom.window);saved=await readSaved();assert.equal(saved.schema_version,2);
+    document.getElementById('new-comparison').click();
+    field(document,'comparison-id','invented-black');field(document,'comparison-colors','Black');
+    submit(dom,'comparison-form');await settled(dom.window);
+    click(document,'Edit invented-black');field(document,'comparison-cover_edition','Beta');submit(dom,'comparison-form');await settled(dom.window);
+    assert.equal((await readSaved()).alternatives[0].cover_edition,'Beta');
+    click(document,'Edit invented-black');document.getElementById('remove-comparison').click();await settled(dom.window);
+    assert.equal((await readSaved()).alternatives,null);
+    document.getElementById('new-comparison').click();field(document,'comparison-id','invented-black');field(document,'comparison-colors','Black');
+    submit(dom,'comparison-form');await settled(dom.window);
+    for(const [id,color] of [['blue','Blue'],['unclear',''],['black','Black']]) {
+      document.getElementById('new-candidate').click();
+      Object.entries({'candidate-id':`example-${id}`,'candidate-title':`Example Ensemble Offline Horizons ${color} vinyl`,
+        'candidate-observed_at':'2026-01-02T03:04:05Z','candidate-colors':color}).forEach(([key,value])=>field(document,key,value));
+      if(id === 'blue') {
+        field(document,'candidate-details_observed_at','2026-01-02T03:04:05Z');
+        field(document,'candidate-current_price','20.00');field(document,'candidate-currency','EUR');
+        field(document,'candidate-shipping_cost','4.00');field(document,'candidate-shipping_currency','USD');
+      }
+      submit(dom,'case-form');submit(dom,'case-form');await settled(dom.window);
+      assert.match(document.getElementById('status').textContent,/Candidate observation saved/,document.getElementById('status').textContent);
+    }
+    saved=await readSaved();assert.equal(saved.rows.length,3);
+    let row=saved.rows.find(row=>row.id === 'example-blue');
+    assert.match(row.listing.details_observed_at,/2026-01-02T03:04:05/);assert.equal(row.listing.price_kind,'unknown');
+    assert.deepEqual(row.listing.source_metadata.manual_input.formats,[]);assert.equal(row.review.subtotal,null);
+    assert.equal(row.listing.currency,'EUR');assert.equal(row.listing.shipping_currency,'USD');
+    blueCard(document).querySelector('.verdict').click();await settled(dom.window);
+    const firstJudgment=(await exportSaved()).judgments[0].data;
+    // Cap editing from 30 to 25 persists and leaves the original judgment intact.
+    field(document,'settings-maximum_subtotal','25.00');submit(dom,'profile-form');await settled(dom.window);
+    saved=await readSaved();assert.equal(saved.settings.maximum_subtotal,'25.00');
+    assert.deepEqual((await exportSaved()).judgments[0].data,firstJudgment);
+    // A changed same-time observation fails without poisoning subsequent correction.
+    const observe=[...blueCard(document).querySelectorAll('button')].find(node=>node.textContent === 'Record another observation');observe.click();
+    assert.equal(document.getElementById('candidate-observed_at').value,'2026-01-02T03:04:05Z');
+    field(document,'candidate-title','Example Ensemble Offline Horizons blue vinyl new observation');submit(dom,'case-form');await settled(dom.window);
+    assert.match(document.getElementById('status').textContent,/actual later observation time/);
+    assert.equal((await exportSaved()).observations.length,3);
+    document.getElementById('refresh').click();await settled(dom.window);
+    assert.match(document.getElementById('candidate-title').value,/new observation/);
+    field(document,'candidate-observed_at','2026-01-02T04:04:05Z');submit(dom,'case-form');await settled(dom.window);
+    assert.match(document.getElementById('status').textContent,/Candidate observation saved/);
+    assert.equal((await exportSaved()).observations.length,4);assert.equal((await readSaved()).settings.maximum_subtotal,'25.00');
+    assert.deepEqual((await exportSaved()).judgments[0].data,firstJudgment);
+    // Another tab can append a newer observation without changing profile revision.
+    const other=await openPage();
+    [...blueCard(other.window.document).querySelectorAll('button')].find(node=>node.textContent === 'Record another observation').click();
+    field(other.window.document,'candidate-observed_at','2026-01-02T05:04:05Z');
+    field(other.window.document,'candidate-title','Example Ensemble Offline Horizons blue vinyl second tab');
+    ['candidate-details_observed_at','candidate-colors','candidate-current_price','candidate-currency','candidate-shipping_cost','candidate-shipping_currency'].forEach(id=>field(other.window.document,id,''));
+    submit(other,'case-form');await settled(other.window);
+    const unknown=(await readSaved()).rows.find(row=>row.id === 'example-blue').listing;
+    assert.equal(unknown.details_observed_at,null);assert.equal(unknown.current_price,null);assert.equal(unknown.shipping_cost,null);
+    assert.deepEqual(unknown.item_specifics,{});
+    field(document,'candidate-title','Example Ensemble Offline Horizons blue vinyl final observation');
+    field(document,'candidate-observed_at','2026-01-02T06:04:05Z');submit(dom,'case-form');await settled(dom.window);
+    assert.match(document.getElementById('status').textContent,/Saved state changed/);
+    assert.match(document.getElementById('candidate-title').value,/final observation/);
+    assert.equal((await exportSaved()).observations.length,5);
+    document.getElementById('rebase-candidate').click();submit(dom,'case-form');await settled(dom.window);
+    assert.equal((await exportSaved()).observations.length,6);
+    assert.equal((await readSaved()).settings.maximum_subtotal,'25.00');
+    assert.deepEqual((await exportSaved()).judgments[0].data,firstJudgment);
+    // Cross-tab profile edits conflict; retained drafts cannot silently overwrite caps.
+    field(other.window.document,'settings-maximum_subtotal','24.00');submit(other,'profile-form');await settled(other.window);
+    field(document,'settings-maximum_subtotal','23.00');submit(dom,'profile-form');await settled(dom.window);
+    assert.match(document.getElementById('status').textContent,/Saved state changed/);
+    assert.equal(document.getElementById('settings-maximum_subtotal').value,'23.00');assert.equal((await readSaved()).settings.maximum_subtotal,'24.00');
+    document.getElementById('reload-profile').click();field(document,'settings-maximum_subtotal','25.00');submit(dom,'profile-form');await settled(dom.window);
+    other.window.close();
+    // Rich fields and current caps hydrate after a genuine page reload.
+    dom.window.close();dom=await openPage();document=dom.window.document;
   }
-  assert.equal(blueCard(document).querySelector('.verdict').getAttribute('aria-pressed'), 'true');
-  const record = await (await localRequest('/api/export')).json();
-  assert.equal(record.export_version, 1);
-  assert.ok(JSON.stringify(record).includes('"mine"'));
-  assert.equal(errors.length, 0, errors.map(String).join('\n'));
-  dom.window.close();
-  console.log(process.argv[3] === '--verify' ?
-    'Real local service: verdict survives server restart.' :
-    'Real local service: UI import, evidence rendering, verdict, page reload, and export passed.');
-})().catch((error) => { console.error(error); process.exitCode=1; });
+  const saved=await readSaved();
+  assert.equal(saved.rows.length,3);assert.equal(saved.settings.maximum_subtotal,'25.00');
+  assert.equal(document.getElementById('settings-maximum_subtotal').value,'25.00');
+  assert.equal(document.getElementById('target-cover_edition').value,'Alpha');
+  assert.equal(document.getElementById('target-required_components').value,'signed_insert');
+  assert.equal(document.getElementById('settings-condition_ids').value,'1000');
+  assert.equal(document.getElementById('settings-alert_mode').value,'strict');
+  assert.equal(document.getElementById('candidate-observed_at').value,'');
+  assert.equal(blueCard(document).querySelector('.verdict').getAttribute('aria-pressed'),'true');
+  const record=await exportSaved();assert.equal(record.export_version,1);assert.equal(record.observations.length,6);
+  assert.equal(record.judgments[0].data.verdict,'mine');assert.equal(record.target_history[0].data.input.schema_version,undefined);
+  assert.equal(errors.length,0,errors.map(String).join('\n'));dom.window.close();
+  console.log(process.argv[3] === '--verify' ? 'Real local service: profile, rich fields, caps, observations and first judgment survive restart.' :
+    'Real local service: JSON-free profile/candidate forms, comparisons, unknowns, cap edits, collision correction, cross-tab conflicts, retained drafts and page reload passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});

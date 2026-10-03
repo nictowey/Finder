@@ -1,214 +1,156 @@
-/* Offline DOM checks only. Run with an already installed jsdom; never fetch dependencies. */
+/* Offline DOM verification. Installed jsdom only; all network and resource loads denied. */
 'use strict';
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const {TextEncoder} = require('node:util');
-const {JSDOM, VirtualConsole} = require('jsdom');
-const html = fs.readFileSync(process.argv[2], 'utf8');
-const fixture = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
-let saved = {schema_version:1, revision:0, source:null, target:null, settings:null, rows:[]};
-let delayed = null;
-let rejectNextVerdict = false;
-let failNextImport = false;
-const calls = [];
-const errors = [];
-const denyDispatcher = {
-  dispatch() { throw new Error('All resource requests are forbidden in this offline test.'); },
-  close() { return Promise.resolve(); },
-  destroy() { return Promise.resolve(); }
-};
-// Backstop every native Node connection as well as jsdom resource requests.
-require('node:net').Socket.prototype.connect = () => { throw new Error('Network disabled.'); };
-require('node:dns').lookup = () => { throw new Error('DNS disabled.'); };
-function response(status, data) {
-  return {ok:status === 200, status, json:async () => structuredClone(data)};
-}
-async function mockFetch(path, options) {
-  assert.ok(['/api/snapshot','/api/import','/api/verdict'].includes(path));
-  assert.equal(options.redirect, 'error');
-  calls.push({path, options});
-  if (path === '/api/snapshot') return response(200, saved);
-  assert.equal(options.headers['X-Finder-CSRF'], 'dom-test-token');
-  assert.equal(options.headers['Content-Type'], 'application/json');
-  const input = JSON.parse(options.body);
-  if (path === '/api/import') {
-    assert.ok([1,2].includes(input.schema_version));
-    if (delayed) await delayed.promise;
-    if (failNextImport) { failNextImport = false; return response(400, {error:'Invalid input.'}); }
-    saved = structuredClone(fixture);
-    return response(200, saved);
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const {TextEncoder}=require('node:util');
+const {JSDOM,VirtualConsole}=require('jsdom');
+const html=fs.readFileSync(process.argv[2],'utf8');
+const fixture=JSON.parse(fs.readFileSync(process.argv[3],'utf8'));
+let saved={schema_version:1,revision:0,target:null,settings:null,source:null,rows:[]};
+let delayed=null, failNext=false, conflictNext=false;
+const calls=[], errors=[];
+require('node:net').Socket.prototype.connect=() => { throw new Error('Network disabled.'); };
+require('node:dns').lookup=() => { throw new Error('DNS disabled.'); };
+const denyDispatcher={dispatch(){throw new Error('External resource forbidden.');},close(){return Promise.resolve();},destroy(){return Promise.resolve();}};
+const response=(status,data) => ({ok:status === 200,status,json:async()=>structuredClone(data)});
+async function mockFetch(path,options) {
+  assert.ok(['/api/snapshot','/api/import','/api/profile','/api/candidate','/api/verdict'].includes(path));
+  assert.equal(options.redirect,'error'); calls.push({path,options});
+  if(path === '/api/snapshot') return response(200,saved);
+  assert.equal(options.headers['X-Finder-CSRF'],'dom-test-token');
+  const input=JSON.parse(options.body);
+  if(delayed) await delayed.promise;
+  if(failNext){failNext=false;return response(400,{error:'Invalid input.'});}
+  if(conflictNext){conflictNext=false;saved.revision++;saved.settings.maximum_subtotal='19.00';return response(409,{code:'stale_state',error:'Saved state changed. Your drafts are retained.'});}
+  if(input.expected_revision !== saved.revision) return response(409,{code:'stale_state',error:'Saved state changed.'});
+  if(path === '/api/profile') {
+    saved={...saved,...structuredClone(input.profile),revision:saved.revision+1};
+  } else if(path === '/api/import') {
+    const bundle=input.bundle;
+    saved={...structuredClone(fixture),...structuredClone(bundle),revision:saved.revision+1};
+    delete saved.listings;
+    saved.rows.forEach(row=>row.current_token='token-1');
+  } else if(path === '/api/candidate') {
+    assert.deepEqual(Object.keys(input).sort(),['expected_current','expected_revision','observation']);
+    const old=saved.rows.find(row=>row.id === input.observation.id);
+    if(old && old.current_token !== input.expected_current) return response(409,{code:'stale_state',error:'Saved case changed.'});
+    if(old && input.observation.observed_at === old.listing.source_metadata.manual_input.observed_at &&
+        JSON.stringify(input.observation) !== JSON.stringify(old.listing.source_metadata.manual_input)) {
+      return response(409,{code:'observation_collision',error:'Different case data already uses this observation time. Supply the actual later observation time.'});
+    }
+    const row={...structuredClone(fixture.rows[0]),id:input.observation.id,current_token:'token-'+calls.length};
+    row.listing.title=input.observation.title;row.listing.source_metadata.manual_input=structuredClone(input.observation);
+    row.listing.source_metadata.local_source=saved.source;
+    saved.rows=saved.rows.filter(r=>r.id !== row.id).concat(row);
+  } else {
+    const row=saved.rows.find(row=>row.id === input.id); row.verdict=input.verdict;
   }
-  if (rejectNextVerdict) {
-    rejectNextVerdict = false;
-    saved.rows[0].verdict = 'other';
-    saved.rows[0].review_fingerprint = 'newer-fingerprint';
-    return response(409, {error:'This review changed. Refresh, inspect it, then save again.'});
-  }
-  assert.equal(input.expected_revision, saved.revision);
-  assert.equal(input.review_fingerprint, saved.rows[0].review_fingerprint);
-  saved.rows[0].verdict = input.verdict;
-  saved.rows[0].review_fingerprint = `${input.verdict}-fingerprint`;
-  return response(200, saved);
+  return response(200,saved);
 }
-function makeWindow() {
-  const virtualConsole = new VirtualConsole();
-  virtualConsole.on('jsdomError', (error) => errors.push(error));
-  return new JSDOM(html, {url:'http://127.0.0.1:18765/', runScripts:'dangerously',
-    resources:{dispatcher:denyDispatcher}, virtualConsole,
-    beforeParse(window) { window.fetch = mockFetch; window.TextEncoder = TextEncoder; }});
+function open() {
+  const virtualConsole=new VirtualConsole();virtualConsole.on('jsdomError',e=>errors.push(e));
+  return new JSDOM(html,{url:'http://127.0.0.1:18765/',runScripts:'dangerously',resources:{dispatcher:denyDispatcher},virtualConsole,
+    beforeParse(w){w.fetch=mockFetch;w.TextEncoder=TextEncoder;}});
 }
-async function settled(window) {
-  for (let i=0; i<100; i++) {
-    await new Promise((resolve) => setImmediate(resolve));
-    if (window.document.getElementById('cases').getAttribute('aria-busy') === 'false') return;
-  }
-  throw new Error('UI did not settle');
-}
-(async () => {
-  let dom = makeWindow();
-  let window = dom.window;
-  let document = window.document;
-  await settled(window);
-  assert.match(document.getElementById('summary').textContent, /workspace is empty/);
-  document.getElementById('example').click();
-  const draft = document.getElementById('draft').value;
-  const example = JSON.parse(draft);
-  assert.equal(example.source, 'synthetic');
-  assert.equal(example.schema_version, 2);
-  assert.equal(example.alternatives.length, 1);
-  assert.equal(example.listings.length, 3);
-  assert.match(example.listings[0].observed_at, /Z$/);
-  let release;
-  delayed = {promise:new Promise((resolve) => { release = resolve; })};
-  document.getElementById('save').click();
-  document.getElementById('save').click();
-  document.getElementById('refresh').click();
-  assert.equal(calls.filter((call) => call.path === '/api/import').length, 1);
-  assert.equal(document.getElementById('save').disabled, true);
-  // Keep edits made during a pending save; the response never rewrites the draft.
-  document.getElementById('draft').value = draft + '\n';
-  release(); delayed = null;
-  await settled(window);
-  assert.equal(document.getElementById('draft').value, draft + '\n');
-  assert.equal(document.querySelectorAll('.case').length, fixture.rows.length);
-  assert.match(document.querySelector('.case').textContent, /Your likely-match cap/);
-  assert.match(document.querySelector('.case').textContent, /30.00 USD/);
-  assert.equal(document.querySelectorAll('.case img').length, 0);
-  assert.ok(document.querySelector('.case').textContent.includes('<img src=x onerror=alert(1)>'));
-  document.querySelector('.verdict').click();
-  document.querySelector('.verdict').click();
-  await settled(window);
-  assert.equal(calls.filter((call) => call.path === '/api/verdict').length, 1);
-  assert.equal(saved.rows[0].verdict, 'mine');
-  assert.equal(document.querySelector('.verdict').getAttribute('aria-pressed'), 'true');
+async function settled(w){for(let i=0;i<100;i++){await new Promise(r=>setImmediate(r));if(w.document.getElementById('cases').getAttribute('aria-busy') === 'false') return;}throw new Error('UI did not settle');}
+let dom,w,d;
+const el=id=>d.getElementById(id);
+function fill(fields){Object.entries(fields).forEach(([id,value])=>{el(id).value=value;});}
+function submit(id){el(id).dispatchEvent(new w.Event('submit',{cancelable:true}));}
+function clickText(text){const button=[...d.querySelectorAll('button')].find(b=>b.textContent === text);assert.ok(button,text);button.click();}
+(async()=>{
+  dom=open();w=dom.window;d=w.document;await settled(w);
+  assert.match(el('summary').textContent,/workspace is empty/);
+  assert.equal(el('detailed').checked,false);
+  fill({'target-artist':'Manual Artist','target-album':'Manual Album','target-colors':'Blue','settings-maximum_subtotal':'30.00'});
+  submit('profile-form');await settled(w);
+  assert.equal(saved.schema_version,1);assert.equal(saved.rows.length,0);assert.deepEqual(saved.target.formats,[]);assert.deepEqual(saved.settings.tells,[]);
+  assert.equal(saved.settings.maximum_subtotal,'30.00');
+  // A later cap edit is saved, rather than silently ignored.
+  el('settings-maximum_subtotal').value='25.00';submit('profile-form');await settled(w);
+  assert.equal(saved.settings.maximum_subtotal,'25.00');
+  // Refresh preserves dirty profile input. Pending-save edits are retained too.
+  el('target-album').value='Draft Album';el('refresh').click();await settled(w);assert.equal(el('target-album').value,'Draft Album');
+  el('reload-profile').click();assert.equal(el('target-album').value,'Manual Album');
+  let release;delayed={promise:new Promise(r=>{release=r;})};
+  el('settings-maximum_subtotal').value='24.00';submit('profile-form');submit('profile-form');el('refresh').click();
+  const count=calls.filter(c=>c.path === '/api/profile').length;
+  el('settings-maximum_subtotal').value='23.00';release();delayed=null;await settled(w);
+  assert.equal(calls.filter(c=>c.path === '/api/profile').length,count);assert.equal(el('settings-maximum_subtotal').value,'23.00');
+  submit('profile-form');await settled(w);assert.equal(saved.settings.maximum_subtotal,'23.00');
+  // A pending-save edit back to the previous value is still a newer unsaved edit.
+  delayed={promise:new Promise(r=>{release=r;})};
+  el('settings-maximum_subtotal').value='21.00';submit('profile-form');
+  el('settings-maximum_subtotal').value='23.00';release();delayed=null;await settled(w);
+  assert.equal(saved.settings.maximum_subtotal,'21.00');assert.equal(el('settings-maximum_subtotal').value,'23.00');
+  el('refresh').click();await settled(w);assert.equal(el('settings-maximum_subtotal').value,'23.00');
+  submit('profile-form');await settled(w);assert.equal(saved.settings.maximum_subtotal,'23.00');
+  failNext=true;el('settings-maximum_subtotal').value='22.00';submit('profile-form');await settled(w);
+  assert.match(el('status').textContent,/Invalid input/);assert.equal(el('settings-maximum_subtotal').value,'22.00');
+  conflictNext=true;submit('profile-form');await settled(w);
+  assert.equal(saved.settings.maximum_subtotal,'19.00');assert.equal(el('settings-maximum_subtotal').value,'22.00');
+  const before=calls.length;submit('profile-form');await settled(w);assert.equal(calls.length,before);
+  el('reload-profile').click();assert.equal(el('settings-maximum_subtotal').value,'19.00');
+  // Explicit v2 toggle, full profile and explicit sign roles; no implied required color.
+  el('detailed').checked=true;el('detailed').dispatchEvent(new w.Event('change'));
+  fill({'target-catalog_numbers':'CAT-1\nCAT-2','target-barcodes':'012345','target-formats':'LP\nStereo','target-country':'US',
+    'target-release_year':'2024','target-editions':'Limited Edition','target-cover_edition':'Alpha','target-required_components':'signed_insert',
+    'settings-condition_ids':'1000\n3000','settings-alert_mode':'strict','settings-auction_alert_minutes':'60'});
+  el('add-clue').click();let signs=d.querySelector('.sign-row');signs.querySelector('input').value='Blue';signs.querySelectorAll('select')[0].value='required';signs.querySelectorAll('select')[1].value='color';
+  submit('profile-form');await settled(w);
+  assert.equal(saved.schema_version,2);assert.deepEqual(saved.target.catalog_numbers,['CAT-1','CAT-2']);assert.equal(saved.settings.tells[0].required,true);
+  el('new-comparison').click();fill({'comparison-id':'black','comparison-colors':'Black','comparison-formats':'LP'});submit('comparison-form');await settled(w);
+  assert.equal(saved.alternatives.length,1);assert.equal(saved.settings.maximum_subtotal,'19.00');
+  clickText('Edit black');el('comparison-cover_edition').value='Beta';submit('comparison-form');await settled(w);assert.equal(saved.alternatives[0].cover_edition,'Beta');
+  clickText('Edit black');el('remove-comparison').click();await settled(w);assert.equal(saved.alternatives.length,0);
+  // Unknowns are explicit, timestamps never filled or advanced, currencies are independent.
+  assert.equal(el('candidate-observed_at').value,'');assert.equal(el('candidate-price_kind').value,'unknown');
+  fill({'candidate-id':'manual-1','candidate-title':'Manual Artist Manual Album blue vinyl','candidate-observed_at':'2026-01-02T03:04:05Z',
+    'candidate-current_price':'10.00','candidate-currency':'EUR','candidate-shipping_cost':'2.00','candidate-shipping_currency':'USD'});
+  submit('case-form');submit('case-form');await settled(w);
+  let manual=saved.rows[0].listing.source_metadata.manual_input;
+  assert.equal(manual.details_observed_at,null);assert.equal(manual.price_kind,'unknown');assert.deepEqual(manual.formats,[]);
+  assert.equal(manual.currency,'EUR');assert.equal(manual.shipping_currency,'USD');
+  assert.equal(saved.settings.maximum_subtotal,'19.00');
+  clickText('Record another observation');assert.equal(el('candidate-observed_at').value,manual.observed_at);
+  el('candidate-title').value='Corrected draft title';submit('case-form');await settled(w);
+  assert.match(el('status').textContent,/actual later observation time/);assert.equal(saved.rows[0].listing.title,manual.title);
+  assert.equal(el('candidate-title').value,'Corrected draft title');
+  el('candidate-observed_at').value='2026-01-02T04:04:05Z';submit('case-form');await settled(w);
+  assert.equal(saved.rows.length,1);assert.equal(saved.rows[0].listing.title,'Corrected draft title');
+  assert.equal(JSON.parse(calls.at(-1).options.body).observation.observed_at,'2026-01-02T04:04:05Z');
+  // Reload hydrates all rich saved fields and sign flags without defaulting facts.
+  dom.window.close();dom=open();w=dom.window;d=w.document;await settled(w);
+  assert.equal(el('settings-maximum_subtotal').value,'19.00');assert.equal(el('target-cover_edition').value,'Alpha');
+  assert.equal(el('target-formats').value,'LP\nStereo');assert.equal(el('settings-condition_ids').value,'1000\n3000');
+  assert.equal(el('candidate-observed_at').value,'');assert.equal(el('detailed').checked,true);
+  // Imported rich settings, including anti-sign required flag, survive a narrow cap edit.
+  saved.settings.anti_tells=[{kind:'keyword',value:'reissue',required:true}];el('refresh').click();await settled(w);
+  el('settings-maximum_subtotal').value='25.00';submit('profile-form');await settled(w);
+  assert.deepEqual(saved.settings.anti_tells,[{kind:'keyword',value:'reissue',required:true}]);assert.equal(saved.target.required_components[0],'signed_insert');
+  // Duplicate nested JSON keys reach strict server validation intact.
+  const duplicate='{"schema_version":1,"source":"manual","source":"synthetic","listings":[]}';
+  el('draft').value=duplicate;failNext=true;el('save').click();await settled(w);
+  assert.ok(calls.at(-1).options.body.includes(duplicate));assert.equal(el('draft').value,duplicate);
+  // File read races retain newer edits.
+  let finishRead;const file={size:100,text:()=>new Promise(r=>{finishRead=r;})};
+  Object.defineProperty(el('file'),'files',{value:[file]});el('file').dispatchEvent(new w.Event('change'));
+  el('draft').value='keep my newer edit';finishRead('{"schema_version":1,"listings":[]}');await settled(w);
+  assert.equal(el('draft').value,'keep my newer edit');assert.match(el('status').textContent,/draft changed/);
   dom.window.close();
-  dom = makeWindow(); window = dom.window; document = window.document;
-  await settled(window);
-  assert.equal(document.querySelector('.verdict').getAttribute('aria-pressed'), 'true');
-  // A stale save refreshes the displayed decision and does not replay the user's mutation.
-  rejectNextVerdict = true;
-  document.querySelectorAll('.verdict')[2].click();
-  await settled(window);
-  assert.equal(saved.rows[0].verdict, 'other');
-  assert.equal(document.querySelectorAll('.verdict')[1].getAttribute('aria-pressed'), 'true');
-  assert.match(document.getElementById('status').textContent, /review changed/);
-  assert.equal(document.getElementById('status').classList.contains('error'), true);
-  // Failed imports keep the typed input and show the server's error.
-  document.getElementById('draft').value = draft;
-  failNextImport = true;
-  document.getElementById('save').click();
-  await settled(window);
-  assert.equal(document.getElementById('draft').value, draft);
-  assert.match(document.getElementById('status').textContent, /Invalid input/);
-  // Duplicate keys must reach server validation intact instead of being normalized away.
-  const duplicate = '{"schema_version":1,"source":"manual","source":"synthetic","listings":[]}';
-  document.getElementById('draft').value = duplicate;
-  document.getElementById('save').click();
-  await settled(window);
-  assert.equal(calls.at(-1).options.body, duplicate);
-  // Form input uses explicit observation times and keeps existing draft observations.
-  saved = {schema_version:1, revision:0, source:null, target:null, settings:null, rows:[]};
-  document.getElementById('refresh').click();
-  await settled(window);
-  document.getElementById('draft').value = '';
-  const fields = {artist:'Written Artist',album:'Written Album','case-id':'written-1',
-    'case-title':'Written Artist Written Album blue vinyl',observed:'2026-01-02T03:04:05Z',
-    color:'Blue',maximum:'30.00',gamble:'15.00'};
-  Object.entries(fields).forEach(([id,value]) => { document.getElementById(id).value = value; });
-  document.getElementById('case-form').dispatchEvent(new window.Event('submit', {cancelable:true}));
-  const manual = JSON.parse(document.getElementById('draft').value);
-  assert.equal(manual.source, 'manual');
-  assert.equal(manual.schema_version, 2);
-  assert.equal(manual.listings[0].observed_at, fields.observed);
-  assert.equal(manual.listings[0].details_observed_at, null);
-  assert.equal(manual.listings[0].shipping_cost, null);
-  assert.equal(manual.settings.tells[0].required, true);
-  // Adding a case to rich authored inputs preserves every profile/setting and existing case.
-  const rich = structuredClone(example);
-  rich.target.required_components = ['signed_insert'];
-  rich.target.cover_edition = 'Alpha';
-  rich.alternatives[0].cover_edition = 'Beta';
-  rich.settings.anti_tells = [{kind:'keyword',value:'reissue',required:false}];
-  rich.settings.condition_ids = ['1000'];
-  rich.settings.alert_mode = 'strict';
-  rich.listings[0].country = 'US';
-  rich.listings[0].release_year = 2024;
-  rich.listings[0].editions = ['Limited Edition'];
-  document.getElementById('draft').value = JSON.stringify(rich);
-  document.getElementById('case-country').value = 'UK';
-  document.getElementById('case-year').value = '2023';
-  document.getElementById('case-editions').value = 'Reissue';
-  document.getElementById('case-form').dispatchEvent(new window.Event('submit', {cancelable:true}));
-  const extended = JSON.parse(document.getElementById('draft').value);
-  assert.deepEqual(extended.target, rich.target);
-  assert.deepEqual(extended.settings, rich.settings);
-  assert.deepEqual(extended.alternatives, rich.alternatives);
-  assert.deepEqual(extended.listings.slice(0,3), rich.listings);
-  assert.equal(extended.listings[3].country, 'UK');
-  assert.equal(extended.listings[3].release_year, 2023);
-  assert.deepEqual(extended.listings[3].editions, ['Reissue']);
-  // Reloaded saved profiles are also reused when the draft is empty.
-  saved = {...structuredClone(fixture), schema_version:2, source:rich.source,
-    target:rich.target, settings:rich.settings, alternatives:rich.alternatives};
-  document.getElementById('refresh').click();
-  await settled(window);
-  const profiles = document.getElementById('profiles').textContent;
-  assert.match(profiles, /1 supplied competitor profiles/);
-  assert.match(profiles, /coverage is always incomplete/);
-  assert.match(profiles, /do not automatically reject/);
-  assert.match(profiles, /signed insert/);
-  assert.match(profiles, /Alpha/);
-  assert.match(profiles, /Beta/);
-  assert.match(profiles, /invented-black/);
-  document.getElementById('draft').value = '';
-  document.getElementById('case-form').dispatchEvent(new window.Event('submit', {cancelable:true}));
-  const fromSaved = JSON.parse(document.getElementById('draft').value);
-  assert.deepEqual(fromSaved.target, rich.target);
-  assert.deepEqual(fromSaved.settings, rich.settings);
-  assert.deepEqual(fromSaved.alternatives, rich.alternatives);
-  assert.equal(fromSaved.listings.length, 1);
-  // V1 is never silently reinterpreted as v2 by form entry.
-  const v1 = {schema_version:1, source:'manual', target:{artist:'Old Artist',album:'Old Album'},
-    settings:{}, listings:[]};
-  document.getElementById('draft').value = JSON.stringify(v1);
-  document.getElementById('case-form').dispatchEvent(new window.Event('submit', {cancelable:true}));
-  assert.equal(document.getElementById('draft').value, JSON.stringify(v1));
-  assert.match(document.getElementById('status').textContent, /Explicitly change schema_version/);
-  ['case-country','case-year','case-editions'].forEach((id) => { document.getElementById(id).value=''; });
-  document.getElementById('case-form').dispatchEvent(new window.Event('submit', {cancelable:true}));
-  assert.equal(JSON.parse(document.getElementById('draft').value).schema_version, 1);
-  // File loading must not overwrite a draft edited while its asynchronous read was pending.
-  let finishRead;
-  const file = {size:100, text:() => new Promise((resolve) => { finishRead=resolve; })};
-  Object.defineProperty(document.getElementById('file'), 'files', {value:[file]});
-  document.getElementById('file').dispatchEvent(new window.Event('change'));
-  document.getElementById('draft').value = 'keep my newer edit';
-  finishRead(draft);
-  await settled(window);
-  assert.equal(document.getElementById('draft').value, 'keep my newer edit');
-  assert.match(document.getElementById('status').textContent, /draft changed/);
-  assert.equal(document.querySelector('a[download]').getAttribute('href'), '/api/export');
-  assert.equal(errors.length, 0, errors.map(String).join('\n'));
-  dom.window.close();
-  console.log('Local review DOM: import, evidence, caps, verdict, reload, duplicate clicks, conflict, draft retention, hostile text, explicit timestamps, rich profile preservation, v1 compatibility, and file race passed.');
-})().catch((error) => { console.error(error); process.exitCode=1; });
+  saved={...structuredClone(fixture),schema_version:1,revision:20,source:'manual',target:{artist:'Imported Artist',album:'Imported Album',
+    colors:['Red','Gold'],catalog_numbers:['IMP-1'],barcodes:['0123'],formats:['EP','Stereo']},
+    settings:{maximum_subtotal:'30.00',gamble_max:'12.00',currency:'GBP',country:'GB',postal_code:'AA1 1AA',
+      condition_ids:['1000','3000'],alert_mode:'strict',auction_alert_minutes:75,
+      tells:[{kind:'catalog_number',value:'IMP-1',required:false}],anti_tells:[{kind:'keyword',value:'reissue',required:false}]}};
+  dom=open();w=dom.window;d=w.document;await settled(w);
+  assert.equal(el('detailed').checked,false);assert.equal(el('target-formats').value,'EP\nStereo');
+  assert.equal(d.querySelectorAll('.case img').length,0);assert.ok(d.querySelector('.case').textContent.includes('<img src=x onerror=alert(1)>'));
+  assert.equal(el('target-catalog_numbers').value,'IMP-1');assert.equal(el('settings-currency').value,'GBP');
+  el('settings-maximum_subtotal').value='25.00';submit('profile-form');await settled(w);
+  assert.equal(saved.schema_version,1);assert.equal('country' in saved.target,false);assert.equal('alternatives' in saved,false);
+  assert.deepEqual(saved.target.formats,['EP','Stereo']);assert.equal(saved.settings.auction_alert_minutes,75);
+  assert.deepEqual(saved.settings.tells,[{kind:'catalog_number',value:'IMP-1',required:false}]);
+  assert.equal(errors.length,0,errors.map(String).join('\n'));dom.window.close();
+  console.log('Self-serve local DOM: profile/caps, explicit v1/v2, comparison CRUD, rich hydration, unknowns, currencies, collision correction, dirty/stale/pending drafts and duplicate/file races passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});

@@ -437,3 +437,96 @@ def test_error_does_not_log_or_reflect_payload(workspace, monkeypatch, capsys):
     assert status == 500
     assert b"secret-payload-path" not in body
     assert capsys.readouterr() == ("", "")
+
+
+def test_profile_and_candidate_forms_have_separate_guarded_http_mutations(workspace):
+    data = bundle()
+    profile = {key: value for key, value in data.items() if key != "listings"}
+    profile["target"]["formats"] = []
+    status, _, body = request(
+        workspace,
+        "/api/profile",
+        method="POST",
+        body={"profile": profile, "expected_revision": 0},
+    )
+    assert status == 200
+    saved = json.loads(body)
+    assert saved["rows"] == []
+    assert saved["target"]["formats"] == []
+    observation = data["listings"][0]
+    payload = {
+        "observation": observation,
+        "expected_revision": saved["revision"],
+        "expected_current": None,
+    }
+    status, _, body = request(workspace, "/api/candidate", method="POST", body=payload)
+    assert status == 200
+    saved = json.loads(body)
+    assert len(saved["rows"]) == 1
+    assert saved["settings"]["maximum_subtotal"] == "30.00"
+    payload["expected_current"] = saved["rows"][0]["current_token"]
+    payload["observation"]["current_price"] = "11.00"
+    status, _, body = request(workspace, "/api/candidate", method="POST", body=payload)
+    assert status == 409
+    assert json.loads(body)["code"] == "observation_collision"
+    assert "actual later observation time" in json.loads(body)["error"]
+    assert workspace.snapshot()["rows"][0]["listing"]["current_price"] == "10.00"
+    profile["settings"]["maximum_subtotal"] = "25.00"
+    status, _, body = request(
+        workspace,
+        "/api/profile",
+        method="POST",
+        body={"profile": profile, "expected_revision": saved["revision"]},
+    )
+    assert status == 200
+    assert json.loads(body)["settings"]["maximum_subtotal"] == "25.00"
+    status, _, body = request(workspace, "/api/candidate", method="POST", body=payload)
+    assert status == 409
+    assert json.loads(body)["code"] == "stale_state"
+
+
+@pytest.mark.parametrize("path", ["/api/profile", "/api/candidate"])
+@pytest.mark.parametrize("headers", [[("Origin", None)], [("X-Finder-CSRF", "wrong")]])
+def test_builder_routes_keep_origin_and_token_boundary(workspace, path, headers):
+    assert request(workspace, path, method="POST", body={}, headers=headers)[0] == 403
+    assert workspace.snapshot()["revision"] == 0
+
+
+@pytest.mark.parametrize(
+    "path,payload",
+    [
+        ("/api/profile", {"profile": {}, "expected_revision": True}),
+        ("/api/profile", {"profile": {}, "expected_revision": 0, "extra": 1}),
+        ("/api/candidate", {"observation": {}, "expected_revision": 0}),
+        (
+            "/api/candidate",
+            {"observation": {}, "expected_revision": 0, "expected_current": []},
+        ),
+        ("/api/import", {"bundle": {}, "expected_revision": True}),
+    ],
+)
+def test_builder_envelopes_reject_invalid_guards(workspace, path, payload):
+    assert request(workspace, path, method="POST", body=payload)[0] == 400
+    assert workspace.snapshot()["revision"] == 0
+
+
+def test_advanced_import_envelope_guards_revision_and_preserves_duplicate_key_check(workspace):
+    saved = workspace.import_bundle(bundle())
+    status, _, body = request(
+        workspace,
+        "/api/import",
+        method="POST",
+        body={"bundle": bundle(), "expected_revision": 0},
+    )
+    assert status == 409
+    assert json.loads(body)["code"] == "stale_state"
+    assert workspace.snapshot()["revision"] == saved["revision"]
+    assert (
+        request(
+            workspace,
+            "/api/import",
+            method="POST",
+            body=b'{"expected_revision":1,"bundle":{"source":"manual","source":"synthetic"}}',
+        )[0]
+        == 400
+    )
