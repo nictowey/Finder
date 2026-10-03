@@ -2,20 +2,23 @@
 
 ## Purpose and scope
 
-Finder is the owner's **personal pressing hunter**. The owner saves specific vinyl pressings
+Finder is a pressing hunter under a **zero-cost development and product evaluation** mandate.
+The owner saves specific vinyl pressings
 (Discogs releases), sets their own prices, and gets alerts when an eBay listing is plausibly
-that pressing at or below those prices. It is not a public product. Price judgments come
+that pressing at or below those prices. It is not approved for public launch. Price judgments come
 from the owner, never from a model of eBay data.
 
 - Category: vinyl records, any genre. Other collectibles only after vinyl works well.
 - Marketplace: eBay Browse API only; never scrape eBay.
 - Catalog: Discogs catalog endpoints only.
-- Hosting: free tiers only (Neon PostgreSQL and Functions, GitHub Actions). Do not add paid
-  services or paid add-ons (including paid AI/vision APIs) without the owner's approval.
+- Development: local SQLite, synthetic fixtures and disposable local PostgreSQL. Hosted jobs
+  and live provider checks are paused under the strict $0 mandate; see
+  [zero-cost development](docs/zero-cost-development.md). Do not add paid services, trials
+  requiring billing, or production database work. Free-tier branding is not a cost guarantee.
 - Interface: owner-only dashboard, scheduled worker, push notifications, and a Python CLI.
 
-The owner decided on September 24, 2026 to run Finder for personal use only. The public-launch
-gates in `ROADMAP.md` and `docs/decisions/` are parked, not satisfied. Read
+The October 3, 2026 mandate supersedes the former personal-only goal with zero-cost product
+development. The public-launch gates in `ROADMAP.md` and `docs/decisions/` remain unsatisfied. Read
 [the personal pressing hunter plan](docs/personal-pressing-hunter-plan.md) before changing
 product behavior, and [the evidence log](docs/evidence-log.md) for dated operational history.
 
@@ -153,8 +156,8 @@ npm test
 npm run typecheck
 ```
 
-When Discogs behavior changes, also run the **Discogs smoke test** workflow and confirm both the
-offline suite and authenticated matching validation pass.
+During the zero-cost transition, run offline provider regressions only. Authenticated smoke
+checks and production scans remain paused; do not treat skipped live checks as passed.
 
 When eBay access becomes available:
 

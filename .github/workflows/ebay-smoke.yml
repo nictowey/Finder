@@ -36,9 +36,8 @@ jobs:
     name: validate (${{ inputs.environment || 'sandbox' }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Pushes always validate Sandbox; Production runs only on explicit manual dispatch.
-    # Credentials are scoped to the live steps only; offline tests never see them, and only
-    # the selected environment's keyset is ever exposed.
+    # Pushes run offline tests only during the zero-cost transition.
+    # Both provider steps below are explicitly disabled before secret resolution.
     env:
       EBAY_ENVIRONMENT: ${{ inputs.environment || 'sandbox' }}
 
@@ -74,6 +73,7 @@ jobs:
           npm run typecheck
 
       - name: Verify ${{ env.EBAY_ENVIRONMENT }} secrets are configured
+        if: ${{ false }}
         shell: bash
         env:
           EBAY_SANDBOX_CLIENT_ID: ${{ env.EBAY_ENVIRONMENT == 'sandbox' && secrets.EBAY_SANDBOX_CLIENT_ID || '' }}
@@ -93,6 +93,7 @@ jobs:
           exit "${missing}"
 
       - name: Run live eBay ${{ env.EBAY_ENVIRONMENT }} validation
+        if: ${{ false }}
         shell: bash
         env:
           EBAY_SANDBOX_CLIENT_ID: ${{ env.EBAY_ENVIRONMENT == 'sandbox' && secrets.EBAY_SANDBOX_CLIENT_ID || '' }}
@@ -104,7 +105,8 @@ jobs:
           python scripts/validate_live_ebay.py
 
   production:
-    if: inputs.environment == 'production' && github.ref == 'refs/heads/main'
+    # Production validation is paused with all hosted jobs.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: production
