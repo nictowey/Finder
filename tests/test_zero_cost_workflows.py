@@ -71,3 +71,17 @@ def test_offline_and_local_postgres_checks_remain_available():
     assert "check_isolated_postgres.py" in postgres
     assert "secrets." not in postgres
     assert not re.search(r"^    if: \$\{\{ false \}\}$", postgres, re.MULTILINE)
+
+
+def test_local_ui_checks_are_offline_and_part_of_the_active_gate():
+    workflow = (WORKFLOWS / "ebay-smoke.yml").read_text()
+    block = job_blocks(workflow)["validate"]
+    section = block.split("      - name: Exercise local review UI without services\n", 1)[1]
+    section = section.split("      - name:", 1)[0]
+    assert "EBAY_ENVIRONMENT: ''" in section
+    assert "secrets." not in section
+    assert "npm" not in section
+    assert "node tests/test_local_ui.cjs" in section
+    assert "python scripts/check_local_review_flow.py" in section
+    for helper in ("prepare_local_ui_check.py", "check_local_review_flow.py"):
+        assert f'      - "scripts/{helper}"' in workflow

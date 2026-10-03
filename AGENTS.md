@@ -15,7 +15,9 @@ from the owner, never from a model of eBay data.
   and live provider checks are paused under the strict $0 mandate; see
   [zero-cost development](docs/zero-cost-development.md). Do not add paid services, trials
   requiring billing, or production database work. Free-tier branding is not a cost guarantee.
-- Interface: owner-only dashboard, scheduled worker, push notifications, and a Python CLI.
+- Current development interface: `finder-local` for the loopback review workspace and
+  `finder-offline` for the synthetic SQLite demo. Legacy live CLI/dashboard/worker commands
+  are outside this zero-cost development path.
 
 The October 3, 2026 mandate supersedes the former personal-only goal with zero-cost product
 development. The public-launch gates in `ROADMAP.md` and `docs/decisions/` remain unsatisfied. Read
@@ -159,7 +161,7 @@ npm run typecheck
 During the zero-cost transition, run offline provider regressions only. Authenticated smoke
 checks and production scans remain paused; do not treat skipped live checks as passed.
 
-When eBay access becomes available:
+Only after live provider work is explicitly authorized under a verified cost and rights plan:
 
 1. Run one bounded live scan.
 2. Sanitize captured API-shaped responses before committing fixtures.

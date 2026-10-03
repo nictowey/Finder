@@ -4,17 +4,34 @@ Hosted scans, notifications and deployment jobs are paused in source. Developmen
 fixtures and local databases. Existing hosted resources need separate cost containment; see
 [the transition and resumption notes](docs/zero-cost-development.md). Public launch is not approved.
 
-# Finder
+## Local development review
 
-Finder is a personal tool for hunting specific vinyl pressings on eBay. Save the Discogs
+With the project's installed Python dependencies and a clean shell:
+
+```bash
+PYTHONPATH=src python -m finder.local_web --database finder-local-review.sqlite3 --init
+```
+
+Open the printed `http://127.0.0.1:8765` address in your local browser. Build or import synthetic
+or user-authored cases, inspect the existing matcher and owner-set price gates, save Mine / Other /
+Unsure, and export the review record. Stop with Ctrl+C; restart with the same command **without
+`--init`** to reload saved decisions. No provider, Neon, credential, discovery or notification
+access is part of this adapter. [Input format and boundaries](docs/local-review.md).
+
+This is a development interface. Finder's longer-term goal remains autonomous remote discovery
+and review; this local adapter does not supply or replace that service.
+
+## Legacy hosted Finder
+
+The existing hosted version was built as a personal tool for hunting specific vinyl pressings on eBay. Save the Discogs
 release you want, set the most you'd pay, and Finder watches eBay and alerts you when a
 listing is plausibly that pressing at or under your price. You confirm from the photos;
 Finder never claims a listing is an exact pressing, a bargain or worth a certain amount.
 
-**[Open the private Finder dashboard](https://br-soft-forest-b4fo15q2-watchlist.compute.c-6.us-east-2.aws.neon.tech/)**
+**[Legacy private dashboard (still uses Neon)](https://br-soft-forest-b4fo15q2-watchlist.compute.c-6.us-east-2.aws.neon.tech/)**
 (owner email and verification code required).
 
-## Using the dashboard
+## Legacy hosted dashboard (uses Neon; outside the local development path)
 
 1. **Add a pressing.** Paste a Discogs *release* link (not a master). Up to 20 watches.
 2. **Set your prices.** "Maximum when it's likely yours" applies to listings that show every
@@ -42,12 +59,26 @@ every 10 minutes with a few watches; the interval stretches as you add watches s
 daily eBay request quota (5,000 calls) is not exceeded. Listings are read from seller text
 only, so signs a seller doesn't write down are "unclear", not "no".
 
-Everything runs on free tiers (Neon and GitHub Actions). Design and limits:
+The legacy deployment uses Neon and GitHub Actions; free-tier labels are not a cost guarantee.
+Hosted/provider use remains paused under the zero-cost mandate. Historical design and limits:
 [personal pressing hunter plan](docs/personal-pressing-hunter-plan.md). Dated operational
 history: [evidence log](docs/evidence-log.md). Technical detail of the search passes:
 [resumable discovery](docs/resumable-discovery.md).
 
-## Quick start
+## Offline development
+
+To develop without using Neon or provider APIs, run the isolated synthetic demo with the
+project's installed Python dependencies:
+
+```bash
+PYTHONPATH=src python -m finder.offline --database finder-offline-demo.sqlite3
+```
+
+It exercises the existing pressing rules and persistence in a new local SQLite file, then
+prints the results. No `.env` or credentials are needed. Existing database files and exported
+live configuration are refused. [Offline development guide](docs/offline-development.md).
+
+## Legacy live provider setup (paused; do not run for local development)
 
 Requires Python 3.11+. Run these commands from the repository root:
 
