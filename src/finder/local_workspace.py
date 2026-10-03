@@ -30,25 +30,34 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic_core import PydanticCustomError
 from sqlalchemy import JSON, Column, Integer, MetaData, String, Table, create_engine, select
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import SQLAlchemyError
 
+from finder.categories.vinyl import from_variant
 from finder.categories.vinyl_clues import Clue
+from finder.categories.vinyl_covers import cover_name
 from finder.domain import Listing, Variant
 from finder.errors import PersistenceError
+from finder.matching import _normalized, _palette, score_variant
 from finder.persistence import SqlAlchemyListingRepository, listing_observations, listings
 from finder.watch_worker import assess_review
 
 MAX_IMPORT_BYTES = 256 * 1024
 MAX_LISTINGS = 100
-SCHEMA_VERSION = 1
+MAX_ALTERNATIVES = 20
+SCHEMA_VERSION = 1  # SQLite storage version; observation input versions are separate.
 APPLICATION_ID = 0x46494E4C  # FINL; checked before SQLite opens an existing file.
 LOCAL_SOURCE = "finder-local-manual"
 NOTICE = (
     "Local manual or synthetic cases only. Observation times and delivery quotes are "
-    "user claims, not provider verified. Catalog alternatives are unavailable. "
+    "user claims, not provider verified. Authored comparison profiles are incomplete; "
+    "a possible result supports only the supplied profiles, not market or physical identity. "
     "Review and price gates are simulations; this workspace sends no alerts."
+)
+UNSUPPORTED_COMPARISON = (
+    "Authored comparison is unsupported when an artist or album has no recognized identity words."
 )
 
 
@@ -217,6 +226,88 @@ class ImportBundle(_Input):
         return value
 
 
+class TargetInputV2(TargetInput):
+    country: Text | None = None
+    release_year: int | None = Field(default=None, ge=1900, le=2099, strict=True)
+    editions: Values = Field(default_factory=list)
+    required_components: list[Literal["signed_insert"]] = Field(default_factory=list, max_length=1)
+    cover_edition: (
+        Annotated[str, Field(min_length=3, max_length=60), AfterValidator(_plain_text)] | None
+    ) = None
+
+    @model_validator(mode="after")
+    def supported_cover_name(self):
+        if self.cover_edition is not None:
+            # Validate an explicit name with the existing parser, not a new seller
+            # grammar. The fixed timestamp is irrelevant to this metadata-only check.
+            variant = _variant(self, "local-cover-validation", datetime(2000, 1, 1, tzinfo=UTC))
+            isolated_cover = variant.model_copy(
+                update={"formats": [_cover_component(self.cover_edition)]}
+            )
+            if (
+                re.search(r"[,/&+;?]", self.cover_edition)
+                or _palette([self.cover_edition])
+                or from_variant(isolated_cover).editions
+                or cover_name(variant) != _normalized(self.cover_edition).removeprefix("the ")
+            ):
+                raise ValueError("Use one named cover recognized by the existing format parser")
+        return self
+
+
+class AlternativeInput(TargetInputV2):
+    id: CaseId
+
+
+class ListingInputV2(ListingInput):
+    country: Text | None = None
+    release_year: int | None = Field(default=None, ge=1900, le=2099, strict=True)
+    editions: Values = Field(default_factory=list)
+
+
+class ImportBundleV2(ImportBundle):
+    schema_version: Literal[2]
+    target: TargetInputV2
+    listings: list[ListingInputV2] = Field(max_length=MAX_LISTINGS)
+    alternatives: list[AlternativeInput] | None = Field(default=None, max_length=MAX_ALTERNATIVES)
+
+    @model_validator(mode="after")
+    def valid_alternatives(self):
+        family = (_normalized(self.target.artist), _normalized(self.target.album))
+        identities = set()
+        profiles = set()
+        for profile in self.alternatives or []:
+            other_family = (_normalized(profile.artist), _normalized(profile.album))
+            if not all((*family, *other_family)):
+                raise PydanticCustomError("unsupported_comparison_family", UNSUPPORTED_COMPARISON)
+            if other_family != family:
+                raise ValueError("Comparison profiles must have the target artist and album")
+            identity = profile.id.casefold()
+            facts = profile.model_dump(mode="json", exclude={"id"})
+            facts = {
+                key: sorted({_normalized(item) for item in value})
+                if isinstance(value, list)
+                else _normalized(value)
+                if isinstance(value, str)
+                else value
+                for key, value in facts.items()
+            }
+            fingerprint = _json(facts)
+            if identity in identities or fingerprint in profiles:
+                raise ValueError("Comparison profile IDs and facts must be distinct")
+            identities.add(identity)
+            profiles.add(fingerprint)
+        return self
+
+    @field_validator("alternatives")
+    @classmethod
+    def canonical_alternatives(cls, value):
+        # Absent and empty both mean no comparison. Supplied order has no semantics.
+        return sorted(value, key=lambda row: row.id.casefold()) if value else None
+
+
+LocalBundle = ImportBundle | ImportBundleV2
+
+
 _schema = MetaData()
 _listings = listings.to_metadata(_schema)
 _observations = listing_observations.to_metadata(_schema)
@@ -263,7 +354,15 @@ def _pairs(pairs):
     return result
 
 
-def _validate_bundle(value) -> ImportBundle:
+def _review_clock(now: datetime) -> datetime:
+    if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+        raise WorkspaceError("Review time must be a timezone-aware datetime.")
+    return now.astimezone(UTC)
+
+
+def validate_bundle(value, *, now: datetime) -> LocalBundle:
+    """Validate bounded observation input at an explicit clock, without I/O or labels."""
+    now = _review_clock(now)
     try:
         if isinstance(value, (str, bytes)):
             raw = value.encode() if isinstance(value, str) else value
@@ -275,18 +374,28 @@ def _validate_bundle(value) -> ImportBundle:
                 raise WorkspaceError("Import exceeds the 256 KiB limit.")
         else:
             raise WorkspaceError("Import must be a JSON object.")
-        bundle = ImportBundle.model_validate(value)
+        model = (
+            ImportBundleV2
+            if isinstance(value, dict) and value.get("schema_version") == 2
+            else ImportBundle
+        )
+        bundle = model.model_validate(value)
     except ValidationError as exc:
-        paths = sorted({".".join(map(str, error["loc"])) for error in exc.errors()})
+        if any(error["type"] == "unsupported_comparison_family" for error in exc.errors()):
+            raise WorkspaceError(UNSUPPORTED_COMPARISON) from None
+        paths = sorted({".".join(map(str, error["loc"])) or "bundle" for error in exc.errors()})
         raise WorkspaceError("Invalid local import fields: " + ", ".join(paths[:12])) from None
     except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
         if isinstance(exc, WorkspaceError):
             raise
         raise WorkspaceError("Import must contain valid, bounded JSON metadata.") from None
-    now = _utc_now()
     if any(row.observed_at > now for row in bundle.listings):
         raise WorkspaceError("Claimed observations cannot be in the future.")
     return bundle
+
+
+def _validate_bundle(value) -> LocalBundle:
+    return validate_bundle(value, now=_utc_now())
 
 
 def _path(value: str | Path) -> Path:
@@ -322,6 +431,12 @@ def _listing(row: ListingInput, source: str) -> Listing:
         "Barcode": row.barcodes,
         "Format": row.formats,
     }
+    if isinstance(row, ListingInputV2):
+        specifics.update(
+            Country=[row.country] if row.country else [],
+            **{"Release Year": [str(row.release_year)] if row.release_year else []},
+            Edition=row.editions,
+        )
     return Listing(
         marketplace=LOCAL_SOURCE,
         marketplace_item_id=row.id,
@@ -347,21 +462,66 @@ def _listing(row: ListingInput, source: str) -> Listing:
     )
 
 
+def _cover_component(name: str) -> dict:
+    return {"name": "All Media", "text": f"{name} Alternative Cover"}
+
+
 def _variant(target: TargetInput, target_id: str, observed_at: datetime) -> Variant:
+    formats = [{"name": "Vinyl", "descriptions": target.formats, "text": " ".join(target.colors)}]
+    extra = {}
+    work_id = target_id
+    if isinstance(target, TargetInputV2):
+        work_id = "local-work:" + _digest(
+            {"artist": _normalized(target.artist), "album": _normalized(target.album)}
+        )
+        formats[0]["descriptions"] = [*target.formats, *target.editions]
+        extra = {"country": target.country, "release_year": target.release_year}
+        if "signed_insert" in target.required_components:
+            formats.append({"name": "All Media", "text": "Signed Insert"})
+        if target.cover_edition:
+            formats.append(_cover_component(target.cover_edition))
     return Variant(
         catalog_source=LOCAL_SOURCE,
         catalog_variant_id=target_id,
-        catalog_product_id=target_id,
+        catalog_product_id=work_id,
         title=target.album,
         artists=[target.artist],
-        formats=[
-            {"name": "Vinyl", "descriptions": target.formats, "text": " ".join(target.colors)}
-        ],
+        formats=formats,
         labels=[{"catno": value} for value in target.catalog_numbers],
         identifiers={"Barcode": target.barcodes},
         observed_at=observed_at,
         source_metadata={"local_manual_target": True, "provider_verified": False},
+        **extra,
     )
+
+
+def review_local_case(bundle: LocalBundle, row: ListingInput | Listing, *, now: datetime) -> dict:
+    """Assess validated local inputs without storage, expected answers, or a live clock.
+
+    Canonical input is ``bundle.model_dump(mode="json")``. This adapter shares the
+    UI's exact conversions and policy; profile evidence is diagnostic, not a new
+    classification rule. All authored comparison coverage remains incomplete.
+    """
+    now = _review_clock(now)
+    listing = row if isinstance(row, Listing) else _listing(row, bundle.source)
+    target = _variant(bundle.target, "local-target", now)
+    profiles = bundle.alternatives if isinstance(bundle, ImportBundleV2) else None
+    alternatives = (
+        [_variant(profile, f"local-alternative:{profile.id}", now) for profile in profiles]
+        if profiles
+        else None
+    )
+    review = assess_review(
+        bundle.settings, listing, target, now=now, alternatives=alternatives, search_incomplete=True
+    )
+    return {
+        "id": listing.marketplace_item_id,
+        "listing": listing.model_dump(mode="json"),
+        "review": review,
+        "comparison_evidence": [
+            item.model_dump(mode="json") for item in score_variant(listing, target, now).evidence
+        ],
+    }
 
 
 def _load_listing(data) -> Listing:
@@ -471,7 +631,8 @@ class LocalWorkspace:
         """Validate the entire input, then atomically append observations and target changes."""
         bundle = _validate_bundle(value)
         incoming = [_listing(row, bundle.source) for row in bundle.listings]
-        target_data = bundle.model_dump(mode="json", exclude={"listings", "schema_version"})
+        excluded = {"listings", "schema_version"} if bundle.schema_version == 1 else {"listings"}
+        target_data = bundle.model_dump(mode="json", exclude=excluded)
         try:
             with self._lock, self.engine.begin() as conn:
                 conn.exec_driver_sql("BEGIN IMMEDIATE")
@@ -542,12 +703,9 @@ class LocalWorkspace:
             return result
         inputs = current["data"]["input"]
         result.update(inputs)
-        target = _variant(
-            TargetInput.model_validate(inputs["target"]),
-            meta["target_id"],
-            datetime.fromisoformat(current["data"]["changed_at"]),
-        )
-        settings = ReviewSettings.model_validate(inputs["settings"])
+        # Untagged stored inputs are v1 forever; reading never upgrades their meaning.
+        model = ImportBundleV2 if inputs.get("schema_version", 1) == 2 else ImportBundle
+        bundle = model.model_validate({"schema_version": 1, **inputs, "listings": []})
         judgments = {
             row.listing_id: row.data
             for row in conn.execute(select(_judgments.c.listing_id, _judgments.c.data))
@@ -558,9 +716,8 @@ class LocalWorkspace:
         for data in rows:
             listing = _load_listing(data)
             data = listing.model_dump(mode="json")
-            review = assess_review(
-                settings, listing, target, now=now, alternatives=None, search_incomplete=True
-            )
+            assessment = review_local_case(bundle, listing, now=now)
+            review = assessment["review"]
             evidence_fingerprint = _digest(
                 {"revision": result["revision"], "listing": data, "review": review}
             )
@@ -584,6 +741,7 @@ class LocalWorkspace:
                     "id": listing.marketplace_item_id,
                     "listing": data,
                     "review": review,
+                    "comparison_evidence": assessment["comparison_evidence"],
                     "review_fingerprint": fingerprint,
                     "evidence_fingerprint": evidence_fingerprint,
                     "verdict": judgment["verdict"] if judgment else None,

@@ -21,6 +21,12 @@ access is part of this adapter. [Input format and boundaries](docs/local-review.
 This is a development interface. Finder's longer-term goal remains autonomous remote discovery
 and review; this local adapter does not supply or replace that service.
 
+For authored sibling profiles and package requirements, see the [local profile guide](docs/local-review.md).
+[Freeze and score local case predictions](docs/local-evaluation.md) separately from expected answers;
+these diagnostics measure declared case agreement, not market accuracy.
+[Delivery options and launch gates](docs/zero-cost-launch-gates.md) describe the remaining cost,
+provider-rights and real-world evaluation requirements.
+
 ## Legacy hosted Finder
 
 The existing hosted version was built as a personal tool for hunting specific vinyl pressings on eBay. Save the Discogs

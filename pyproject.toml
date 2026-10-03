@@ -23,6 +23,7 @@ dev = ["pytest>=8,<10", "ruff>=0.9,<1"]
 finder = "finder.cli:main"
 finder-offline = "finder.offline:main"
 finder-local = "finder.local_web:main"
+finder-evaluate = "finder.local_evaluation:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
