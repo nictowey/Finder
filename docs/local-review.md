@@ -21,27 +21,56 @@ requires a new filename and an existing parent directory. It never overwrites a 
 Open the exact printed `http://127.0.0.1:8765` address in your browser. `--port 8766` chooses
 another local port; `--port 0` prints the chosen available port. No browser launches automatically.
 
-1. Load the invented example, enter a target and case in the form, or load observation JSON.
-   New form bundles and the example use v2. Adding a case reuses the complete existing draft's
-   target, settings and alternatives, or the saved inputs when the draft is empty. Edit JSON
-   explicitly to change those facts; target form fields apply only to a new bundle.
-2. Review the draft, then select **Save observation bundle**. Form entry never invents manual
-   observation times or delivery confirmation. The synthetic example uses the current fixture time.
-3. Read the existing matcher evidence, unresolved checks, and your two price caps. The policy
-   simulation is informational; it never sends an alert.
-4. Save **Mine**, **Other**, or **Unsure**. These judgments are independent of purchases.
-5. Use **Export review record** for archival JSON containing inputs, observations and decisions.
-   This export is not a restorable backup; the importer accepts observation bundles only.
-6. Stop with Ctrl+C. Restart with the same database and omit `--init` to recover saved decisions.
+1. Fill **Your local pressing profile** and select **Save local profile**. This saves no
+   candidate or dummy listing. Later edits to target facts, owner caps, destination, conditions,
+   auction settings and signs are saved through this same form. Blank formats/colors/identifiers
+   stay unknown; color does not automatically add a required sign.
+2. Original v1 fields are the default for a new profile. Explicitly enable **detailed profile
+   fields and authored comparisons (v2)** to add country/year/edition/cover/package facts. Save
+   the profile to apply this upgrade. Existing v1 observations and target history are unchanged;
+   downgrading a saved v2 profile is not supported.
+3. Optionally add comparison profiles, edit any saved comparison, or remove one. IDs and facts
+   must be distinct, and their artist/album must match the target. Comparisons always remain
+   incomplete. The profile form also lets you deliberately add required signs, supporting signs
+   and common-version anti-signs; imported supported flags and settings are retained.
+4. Fill **Candidate observation** and save. This sends only the candidate plus optimistic
+   state guards; it cannot resend or revert old target settings. Price and shipping currencies
+   are independent. Blank price/shipping/details/formats stay unknown, and price kind starts
+   as **unknown**. Supply the actual observation time, and the details time only if known.
+5. To revisit a saved case, choose **Record another observation** on its review card. This
+   copies its saved claims and original source times into one draft. Review carried-forward
+   claims and supply a genuinely new observation time. Changing data at an already recorded
+   time is rejected with guidance; correcting the one pending draft then saving a real later
+   observation succeeds without clearing JSON. This is not historical correction or editing.
+6. Read the existing matcher evidence, unresolved checks, and your two price caps. The policy
+   simulation is informational; it never sends an alert. Save **Mine**, **Other**, or **Unsure**.
+   These judgments are independent of purchases and retain their original provenance.
+7. **Advanced: observation JSON import and export** remains available for complete bundles.
+   It is optional for normal use. **Copy saved profile to JSON** includes no observations.
+   The synthetic example has fixed, historical, intentionally stale fixture times; it never
+   fills the current clock. **Export review record** is archival JSON, not a restorable backup.
+8. Stop with Ctrl+C. Restart with the same database and omit `--init` to recover saved profiles,
+   settings, observations and decisions. Saved profile fields hydrate when the page reloads.
 
 Clean close/reopen is verified. Reopening refuses any existing SQLite journal, WAL or SHM
 sidecar, including after a crash. Preserve the workspace and all sidecars for recovery; do not
 delete them to bypass the refusal. Automatic crash recovery is outside this first adapter.
 
-Unsubmitted drafts are held only in page memory. Refreshing the saved review retains your draft;
-reloading the browser discards it. Validation errors retain draft inputs. A conflicting verdict
-save refreshes the current assessment and asks you to review it again. Historical judgment
-provenance remains intact when evidence or a target changes.
+Unsubmitted drafts are held only in page memory. **Refresh saved review** retains dirty profile,
+comparison, candidate and JSON drafts; validation errors, failed requests and stale-state conflicts
+also retain inputs. Inputs edited while a request is pending are not replaced by its response.
+Repeated clicks send one pending mutation. The page requests the browser's ordinary unsaved-change
+warning before leaving, but closing/reloading after dismissing that warning discards unsaved work;
+there is no browser storage or draft-restoration claim.
+
+Profile and comparison writes require the revision on which editing began. A conflicting write
+refreshes the saved review without replaying the mutation or overwriting draft fields. Compare
+those drafts with the saved facts, then use **Reload saved profile (discard profile edits)** or
+close/reopen the comparison before editing again. Candidate writes also require the saved case's
+stable current-observation token. After reviewing a conflict, **Keep draft and use refreshed saved
+state** explicitly rebases its guards without changing claims or source timestamps. Neither stale
+responses nor candidate saves can silently revert the current profile. A timeout is uncertain:
+refresh to inspect saved state before retrying. Earlier observations and first judgments survive.
 
 ## Observation bundle
 
@@ -170,8 +199,8 @@ Each case requires id, title and a timezone-aware observed_at. Optional fields a
  condition_id, listing_ends_at, delivery_country and delivery_postal_code. Unknown price/shipping
 is null, never zero. Shipping must have the same currency to form a subtotal; destination quotes
 must explicitly match saved country and postal code for capped eligibility.
-V2 cases also accept country, release_year and editions. Form entry into a v1 draft does not
-silently upgrade it; explicitly set schema_version to 2 before using those new case fields.
+V2 cases also accept country, release_year and editions. Candidate form entry does not silently upgrade v1; explicitly enable detailed fields and
+save the profile first. In advanced JSON, set schema_version to 2 explicitly.
 When upgrading saved v1 inputs, first use `listings: []` to change only the target/profile
 contract, then add a new case or a genuinely new observation. Re-sending old v1 observations
 as v2 at their original timestamps conflicts with immutable observation history, because the
@@ -225,7 +254,8 @@ PYTHONPATH=src python -m pytest -q tests/test_local_workspace.py tests/test_loca
 `tests/test_local_ui.cjs` is a distinct offline DOM verification using an already installed jsdom,
 with fetch mocked to the local API contract and all resource loading denied. It takes a rendered
 HTML filename and a snapshot fixture filename. It exercises import, evidence/caps, verdicts,
-reload, repeated clicks, stale conflicts, retained rich-profile inputs, v1 compatibility and hostile text. It is not a real
+reload, repeated clicks, stale conflicts, dirty and pending edits, retained rich-profile inputs,
+v1 compatibility, comparison CRUD, same-time rejection/correction and hostile text. It is not a real
 browser rendering, accessibility or end-to-end network check. Do not install packages or invoke
 a registry-backed test command under the strict zero-service-use mandate.
 
@@ -236,7 +266,8 @@ PYTHONPATH=src python scripts/prepare_local_ui_check.py /tmp/finder-local-ui-che
 node tests/test_local_ui.cjs /tmp/finder-local-ui-check/index.html /tmp/finder-local-ui-check/snapshot.json
 ```
 
-The helper builds only invented inputs under the offline I/O guard. The Node check blocks native
+Both commands use already installed dependencies; set NODE_PATH to their existing location
+when the checkout does not contain node_modules. The helper builds only invented inputs under the offline I/O guard. The Node check blocks native
 connections, DNS and resource dispatch, and makes no registry requests.
 
 For the actual service integration check, with the same existing dependencies:
@@ -245,8 +276,21 @@ For the actual service integration check, with the same existing dependencies:
 PYTHONPATH=src python scripts/check_local_review_flow.py
 ```
 
-This starts only a guarded loopback server on an allocated local port. jsdom imports synthetic
-cases through the UI, saves a verdict, reloads, exports, and checks it after server restart.
+This starts only a guarded loopback server on an allocated local port. jsdom creates profiles and candidates through the JSON-free forms, exercises comparison CRUD,
+changes a cap from 30 to 25, saves a verdict, rejects changed same-time data, then saves a genuine
+later observation. It checks cross-tab conflicts, retained drafts, page reload, export, original
+judgment preservation, and persistence after server restart.
 The harness also reopens SQLite to verify persistence. The fetch bridge permits only that exact
 loopback origin, with all other native connections, DNS and resource loading blocked. This is a
 real UI-to-service integration check, but it does not verify actual browser rendering or layout.
+
+The UI routes are bounded envelopes: `/api/profile` takes `profile` and `expected_revision`;
+`/api/candidate` takes one `observation`, `expected_revision` and `expected_current` (null for a
+new case). The server derives the current profile/settings for a candidate. Advanced UI imports
+use `/api/import` with `bundle` and `expected_revision`; the legacy raw observation-bundle route
+remains accepted. Duplicate keys are validated from the original JSON at every nesting level.
+Observation-time collisions have an `observation_collision` response distinct from stale-state
+conflicts. All routes retain the same exact Host, Origin, CSRF, body bounds and CSP protections.
+
+Real-browser visual layout and accessibility QA remain unverified. These automated DOM and
+loopback checks do not establish a polished browser experience or real-world matching accuracy.

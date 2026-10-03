@@ -164,12 +164,34 @@ class LocalReviewHandler(BaseHTTPRequestHandler):
         self.send_error(405, "Only GET and POST are supported.")
 
     def _run(self, operation):
-        from finder.local_workspace import WorkspaceConflict, WorkspaceError, WorkspaceNotFound
+        from finder.local_workspace import (
+            WorkspaceConflict,
+            WorkspaceError,
+            WorkspaceNotFound,
+            WorkspaceObservationConflict,
+        )
 
         try:
             self._json(200, operation())
+        except WorkspaceObservationConflict:
+            self._json(
+                409,
+                {
+                    "code": "observation_collision",
+                    "error": "Different case data already uses this observation time. "
+                    "Your draft is retained. Correct the unsaved draft, or supply the actual later "
+                    "observation time if you observed it again. Saved history cannot be edited.",
+                },
+            )
         except WorkspaceConflict:
-            self._json(409, {"error": "This review changed. Refresh, inspect it, then save again."})
+            self._json(
+                409,
+                {
+                    "code": "stale_state",
+                    "error": "Saved state changed. Your drafts are retained. Review the refreshed "
+                    "profile and case before explicitly retrying.",
+                },
+            )
         except WorkspaceNotFound:
             self._json(404, {"error": "That case is no longer in this workspace."})
         except WorkspaceError as error:
@@ -253,7 +275,51 @@ class LocalReviewHandler(BaseHTTPRequestHandler):
         if data is None:
             return
         if self.path == "/api/import":
-            self._run(lambda: self.server.workspace.import_bundle(data))
+            if set(data) == {"bundle", "expected_revision"}:
+                if (
+                    not isinstance(data["bundle"], dict)
+                    or type(data["expected_revision"]) is not int
+                ):
+                    self.send_error(400)
+                    return
+                self._run(
+                    lambda: self.server.workspace.import_bundle(
+                        data["bundle"], expected_revision=data["expected_revision"]
+                    )
+                )
+            else:
+                self._run(lambda: self.server.workspace.import_bundle(data))
+        elif self.path == "/api/profile":
+            if (
+                set(data) != {"profile", "expected_revision"}
+                or not isinstance(data["profile"], dict)
+                or type(data["expected_revision"]) is not int
+            ):
+                self.send_error(400)
+                return
+            self._run(
+                lambda: self.server.workspace.save_profile(
+                    data["profile"], expected_revision=data["expected_revision"]
+                )
+            )
+        elif self.path == "/api/candidate":
+            if (
+                set(data) != {"observation", "expected_revision", "expected_current"}
+                or not isinstance(data["observation"], dict)
+                or type(data["expected_revision"]) is not int
+                or not (
+                    data["expected_current"] is None or isinstance(data["expected_current"], str)
+                )
+            ):
+                self.send_error(400)
+                return
+            self._run(
+                lambda: self.server.workspace.save_candidate(
+                    data["observation"],
+                    expected_revision=data["expected_revision"],
+                    expected_current=data["expected_current"],
+                )
+            )
         elif self.path == "/api/verdict":
             if (
                 set(data) != {"id", "verdict", "expected_revision", "review_fingerprint"}
