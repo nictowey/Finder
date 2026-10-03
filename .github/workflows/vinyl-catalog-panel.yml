@@ -12,7 +12,8 @@ concurrency:
 
 jobs:
   measure:
-    if: github.ref == 'refs/heads/main'
+    # Hosted execution is paused for the zero-cost transition; see docs/zero-cost-development.md.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:

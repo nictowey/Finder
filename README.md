@@ -1,3 +1,9 @@
+# Zero-cost development transition
+
+Hosted scans, notifications and deployment jobs are paused in source. Development uses offline
+fixtures and local databases. Existing hosted resources need separate cost containment; see
+[the transition and resumption notes](docs/zero-cost-development.md). Public launch is not approved.
+
 # Finder
 
 Finder is a personal tool for hunting specific vinyl pressings on eBay. Save the Discogs

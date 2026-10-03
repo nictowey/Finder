@@ -26,7 +26,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      DISCOGS_TOKEN: ${{ secrets.DISCOGS_TOKEN }}
       DISCOGS_USER_AGENT: Finder/0.2 +https://github.com/nictowey/Finder
       FINDER_DATABASE_URL: sqlite:///finder-smoke.db
 
@@ -50,6 +49,9 @@ jobs:
           ruff format --check src tests scripts
 
       - name: Verify secret is configured
+        if: ${{ false }}
+        env:
+          DISCOGS_TOKEN: ${{ secrets.DISCOGS_TOKEN }}
         shell: bash
         run: |
           if [[ -z "${DISCOGS_TOKEN}" ]]; then
@@ -58,6 +60,9 @@ jobs:
           fi
 
       - name: Run authenticated Discogs matching validation
+        if: ${{ false }}
+        env:
+          DISCOGS_TOKEN: ${{ secrets.DISCOGS_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
