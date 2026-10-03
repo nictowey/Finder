@@ -68,9 +68,14 @@ and updates the target and owner settings. Your draft stays on this page until y
 <form id="case-form"><div class="grid">
 <label>Input origin<select id="source"><option value="manual">User-authored manual case</option>
 <option value="synthetic">Invented synthetic fixture</option></select></label>
-<label>Artist<input id="artist" maxlength="160" required></label>
-<label>Album<input id="album" maxlength="300" required></label>
+<label>Artist<input id="artist" maxlength="160"></label>
+<label>Album<input id="album" maxlength="300"></label>
 <label>Target disc color (optional)<input id="color" maxlength="80" placeholder="Blue"></label>
+<label>Target country (optional; pressing fact)<input id="target-country" maxlength="160"></label>
+<label>Target release year (optional)<input id="target-year" inputmode="numeric" maxlength="4"></label>
+<label>Target editions (optional, comma-separated)<input id="target-editions" maxlength="160" placeholder="Limited Edition"></label>
+<label>Target named cover (optional)<input id="target-cover" maxlength="60" placeholder="Northern Lights"></label>
+<label>Target package requirement<select id="target-component"><option value="">None supplied</option><option value="signed_insert">Signed insert</option></select></label>
 <label>Maximum subtotal for likely matches<input id="maximum" placeholder="30.00" inputmode="decimal"></label>
 <label>Maximum subtotal for unclear cases<input id="gamble" placeholder="15.00" inputmode="decimal"></label>
 <label>Currency<input id="currency" value="USD" maxlength="3" required></label>
@@ -84,8 +89,14 @@ and updates the target and owner settings. Your draft stays on this page until y
 <label>Shipping (blank means unknown)<input id="shipping" inputmode="decimal"></label>
 <label>Quote destination country (optional)<input id="quote-country" maxlength="2"></label>
 <label>Quote destination postal code (optional)<input id="quote-postal" maxlength="16"></label>
+<label>Case country (optional; pressing claim)<input id="case-country" maxlength="160"></label>
+<label>Case release year (optional)<input id="case-year" inputmode="numeric" maxlength="4"></label>
+<label>Case editions (optional, comma-separated)<input id="case-editions" maxlength="160"></label>
 </div><p class="muted">A color adds a required color sign. Prices are your thresholds, not market
-values. Quote destinations and observation times are explicit inputs, never inferred.</p>
+values. When a draft or saved target exists, its target, settings and comparison profiles are reused;
+edit the JSON to change them. Target fields above are used only for a new bundle. Quote destinations
+and observation times are explicit inputs, never inferred. Signed insert supports only the existing
+explicit-denial check; missing mention and ambiguous claims do not verify package completeness.</p>
 <div class="actions"><button type="submit" class="secondary">Add case to JSON draft</button></div>
 </form></details>
 <div class="actions"><button id="example" class="secondary">Load synthetic example</button>
@@ -93,6 +104,8 @@ values. Quote destinations and observation times are explicit inputs, never infe
 <label for="draft">Observation bundle JSON (maximum 256 KiB, 100 case IDs)</label>
 <textarea id="draft" spellcheck="false" aria-describedby="draft-help"></textarea>
 <p id="draft-help" class="muted">Only the Save button writes this draft to the SQLite workspace.
+Schema v2 accepts up to 20 authored comparison profiles in alternatives; edit these in JSON.
+No supplied profiles means comparison is unchecked. Coverage always remains incomplete.
 Review-history exports are archival records and cannot be restored through this importer.</p>
 <div class="actions"><button id="save">Save observation bundle</button>
 <button id="refresh" class="secondary">Refresh saved review</button>
@@ -100,7 +113,7 @@ Review-history exports are archival records and cannot be restored through this 
 <div id="status" class="status" role="status" aria-live="polite"></div>
 </section>
 <section aria-labelledby="review-title"><h2 id="review-title">2. Review saved cases</h2>
-<p id="summary" class="muted">Loading the local workspace…</p><div id="cases"></div></section>
+<p id="summary" class="muted">Loading the local workspace…</p><div id="profiles"></div><div id="cases"></div></section>
 </main>
 <script nonce="@@NONCE@@">
 'use strict';
@@ -183,14 +196,46 @@ function evidence(card, title, values) {
   values.forEach((value) => list.append(textNode('li', typeof value === 'string' ? readable(value) : JSON.stringify(value))));
   card.append(list);
 }
+function profileFacts(profile) {
+  const dl = document.createElement('dl');
+  [['Artist',profile.artist],['Album',profile.album],['Disc colors',profile.colors],
+    ['Catalog numbers',profile.catalog_numbers],['Barcodes',profile.barcodes],['Formats',profile.formats],
+    ['Country',profile.country],['Release year',profile.release_year],['Editions',profile.editions],['Named cover',profile.cover_edition],
+    ['Required components',profile.required_components]].forEach(([label,value]) => {
+      const text = Array.isArray(value) ? value.map(readable).join(', ') : value;
+      detail(dl,label,text || 'Not supplied');
+    });
+  return dl;
+}
 function render() {
   el('cases').replaceChildren();
+  el('profiles').replaceChildren();
   const rows = snapshot.rows || [];
   const settings = snapshot.settings || {};
   const target = snapshot.target;
   el('summary').textContent = target ?
     `${target.artist} · ${target.album} / ${rows.length} cases / revision ${snapshot.revision}` :
     'Your workspace is empty. Save an observation bundle to begin.';
+  if (target) {
+    const profiles = snapshot.alternatives || [];
+    const panel = document.createElement('div'); panel.className = 'panel';
+    panel.append(textNode('h3','Authored pressing profiles'),
+      textNode('p',`${profiles.length} supplied competitor profiles. Comparison coverage is always incomplete. ` +
+        (profiles.length ? 'Possible pressing means support among supplied profiles only; it does not prove market or physical identity.' :
+          'No alternatives were checked; matching claims remain uncertain.'),'notice'),
+      textNode('p','Country and year are evidence only; disagreements do not automatically reject a case under the current review policy. Edition terms use the existing normalizer.','muted'));
+    if ((target.required_components || []).includes('signed_insert')) {
+      panel.append(textNode('p','The target includes a signed insert. This activates the explicit-denial guard only; it does not verify seller inclusion. A possible pressing may still have no insert mention.','notice'));
+    }
+    const own = document.createElement('details');
+    own.append(textNode('summary','Target facts'),profileFacts(target)); panel.append(own);
+    profiles.forEach((profile) => {
+      const details = document.createElement('details');
+      details.append(textNode('summary',`Local competitor ${profile.id}`),profileFacts(profile));
+      panel.append(details);
+    });
+    el('profiles').append(panel);
+  }
   if (!rows.length) el('cases').append(textNode('p', 'No saved cases yet.', 'empty'));
   rows.forEach((row) => {
     const card = document.createElement('article'); card.className = 'case';
@@ -206,9 +251,13 @@ function render() {
       `${settings.gamble_max} ${settings.currency}`);
     detail(dl, 'Price assessment', readable(row.review.alert_budget));
     detail(dl, 'Policy simulation', row.review.notify ? 'Would qualify; nothing is sent' : 'Would not qualify');
+    detail(dl, 'Supplied comparison', row.review.alternatives_checked == null ? 'Unchecked' :
+      `${row.review.alternatives_checked} checked; ${row.review.alternatives_not_ruled_out} unresolved; coverage incomplete`);
     detail(dl, 'Your verdict', row.verdict ? readable(row.verdict) : 'Not yet judged');
     card.append(dl);
     evidence(card, 'Evidence found', row.review.clues);
+    evidence(card, 'Structured target comparison', (row.comparison_evidence || []).map((item) =>
+      `${readable(item.field)}: case ${item.listing_values.join(', ')} / target ${item.variant_values.join(', ')} / ${item.matched ? 'agrees' : 'disagrees'}`));
     evidence(card, 'Still needs verification', row.review.verify);
     if (row.judgment_needs_review) {
       card.append(textNode('p', 'Assessment changed since this verdict. The saved verdict and its original record are retained.', 'notice'));
@@ -251,7 +300,7 @@ el('file').addEventListener('change', async (event) => {
     const text = await file.text();
     if (bytes(text) > maxBytes) throw new Error('The file exceeds 256 KiB.');
     const value = JSON.parse(text);
-    if (!value || value.schema_version !== 1 || !Array.isArray(value.listings)) {
+    if (!value || ![1,2].includes(value.schema_version) || !Array.isArray(value.listings)) {
       throw new Error('Import an observation bundle, not an exported review record.');
     }
     if (el('draft').value !== previous) throw new Error('Your draft changed while the file loaded; import it again.');
@@ -262,8 +311,11 @@ el('file').addEventListener('change', async (event) => {
 el('example').addEventListener('click', () => {
   if (pending) return;
   const time = new Date().toISOString();
-  writeDraft({schema_version:1,source:'synthetic',target:{artist:'Example Ensemble',album:'Offline Horizons',
-    colors:['Blue'],formats:['LP']},settings:{maximum_subtotal:'30.00',gamble_max:'15.00',currency:'USD',
+  writeDraft({schema_version:2,source:'synthetic',target:{artist:'Example Ensemble',album:'Offline Horizons',
+    colors:['Blue'],formats:['LP'],country:'US',release_year:2024,editions:['Limited Edition'],
+    required_components:[]},alternatives:[{id:'invented-black',artist:'Example Ensemble',
+      album:'Offline Horizons',colors:['Black'],formats:['LP'],country:'US',release_year:2024}],
+    settings:{maximum_subtotal:'30.00',gamble_max:'15.00',currency:'USD',
     country:'US',postal_code:'00000',tells:[{kind:'color',value:'Blue',required:true}]},
     listings:[['blue','blue','20.00'],['unclear','LP','10.00'],['black','black','8.00']].map(([id,color,price]) => ({
       id:`example-${id}`,title:`Example Ensemble Offline Horizons ${color} vinyl`,observed_at:time,
@@ -276,18 +328,36 @@ el('case-form').addEventListener('submit', (event) => {
   const value = (id) => el(id).value.trim();
   const optional = (id) => value(id) || null;
   try {
-    const draft = el('draft').value.trim() ? parseDraft() : {listings:[]};
+    const savedInput = snapshot && snapshot.target ? {schema_version:snapshot.schema_version,
+      source:snapshot.source,target:snapshot.target,settings:snapshot.settings,listings:[],
+      ...(snapshot.schema_version === 2 ? {alternatives:snapshot.alternatives} : {})} : null;
+    const draft = el('draft').value.trim() ? parseDraft() : savedInput || {listings:[]};
     if (draft.listings.length >= 100) throw new Error('The draft already contains 100 observations.');
     const color = value('color');
-    const input = {schema_version:1,source:value('source'),
-      target:{artist:value('artist'),album:value('album'),colors:color ? [color] : [],formats:['LP']},
-      settings:{maximum_subtotal:optional('maximum'),gamble_max:optional('gamble'),currency:value('currency'),
-        country:optional('country'),postal_code:optional('postal'),tells:color ? [{kind:'color',value:color,required:true}] : []},
-      listings:[...draft.listings,{id:value('case-id'),title:value('case-title'),observed_at:value('observed'),
+    const split = (id) => value(id) ? value(id).split(',').map((part) => part.trim()).filter(Boolean) : [];
+    const year = (id) => {
+      if (!value(id)) return null;
+      if (!/^(19|20)\d{2}$/.test(value(id))) throw new Error('Release years must be 1900–2099.');
+      return Number(value(id));
+    };
+    if (!draft.target && (!value('artist') || !value('album'))) throw new Error('A new bundle needs an artist and album.');
+    const base = draft.target ? draft : {schema_version:2,source:value('source'),
+      target:{artist:value('artist'),album:value('album'),colors:color ? [color] : [],formats:['LP'],
+        country:optional('target-country'),release_year:year('target-year'),editions:split('target-editions'),
+        cover_edition:optional('target-cover'),
+        required_components:value('target-component') ? [value('target-component')] : []},
+      alternatives:null,settings:{maximum_subtotal:optional('maximum'),gamble_max:optional('gamble'),currency:value('currency'),
+        country:optional('country'),postal_code:optional('postal'),tells:color ? [{kind:'color',value:color,required:true}] : []}};
+    if (base.schema_version === 1 && (value('case-country') || value('case-year') || value('case-editions'))) {
+      throw new Error('This is a v1 bundle. Explicitly change schema_version to 2 in JSON before adding v2 case fields.');
+    }
+    const input = {...base,listings:[...draft.listings,{id:value('case-id'),title:value('case-title'),observed_at:value('observed'),
         details_observed_at:optional('details-observed'),current_price:optional('price'),currency:value('currency'),
         shipping_cost:optional('shipping'),shipping_currency:value('currency'),price_kind:'fixed_price',
-        delivery_country:optional('quote-country'),delivery_postal_code:optional('quote-postal')}]};
-    writeDraft(input); message('Case added; the form supplies the draft target and settings. Review JSON, then Save.');
+        delivery_country:optional('quote-country'),delivery_postal_code:optional('quote-postal'),
+        ...(base.schema_version === 2 ? {country:optional('case-country'),release_year:year('case-year'),editions:split('case-editions')} : {})}]};
+    writeDraft(input); message(draft.target ? 'Case added; existing target, settings and profiles are retained. Review JSON, then Save.' :
+      'Case added with the form target and settings. Review JSON, then Save.');
   } catch (error) { message(error.message, true); }
 });
 run(() => request('/api/snapshot'), 'Local workspace ready.');
