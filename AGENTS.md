@@ -24,7 +24,10 @@ No authenticated cart DOM or checkout controls have been verified.
 The owner explicitly prohibits orders. `scripts/discogs_cart_inspector.mjs` may only read
 an already-authorized current cart page and report blockers. It does not launch browsers,
 configure sessions, navigate, click, fill, check agreements, place orders or pay. Read
-`docs/discogs-cart-inspection.md` before extending it. Screenshot text is not verified DOM.
+`docs/discogs-cart-inspection.md` before extending it. The separate `discogs_cart_prepare.mjs`
+may click one verified visible Add to Cart link only for an explicitly authorized selected
+listing; it must reconcile uncertain outcomes and cannot remove items, accept terms, edit
+address/payment, or submit an order. Local browser inspection is not the production runtime.
 
 
 ## October 24 cloud-only foundation

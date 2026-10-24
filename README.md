@@ -1,5 +1,5 @@
 > Read-only on-site cart blocker helper: [scope and limitations](docs/discogs-cart-inspection.md).
-> No cart mutation, agreement acceptance, order or payment functionality.
+> Optional one-click cart preparation requires explicit authorization; no agreement, order or payment functionality.
 
 > Cloud-only runtime foundation (not deployed): see [cloud architecture and gates](docs/cloud-foundation.md).
 > Read-only cloud checks now include durable release-availability polling and rechecks of
