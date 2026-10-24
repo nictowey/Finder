@@ -139,6 +139,45 @@ const result = await prepareCurrentListingCart(page, { expectedListingId: '12345
 // allowAddToCart: true is only for an explicitly authorized, selected listing.
 ```
 
+The preparation budget remains 2,000 ms by default. An explicitly supplied `timeoutMs`
+must be an integer from 5,000 through 30,000 inclusive. It bounds the complete preparation
+operation, including initial/recheck URL reads, control reads, the one click and canonical
+navigation. Increasing it never permits retries after an uncertain mutation. The independent
+DOM inspector retains its 1,500 ms read cap; a longer preparation budget does not enlarge it.
+
+### Explicit supported-local-browser port
+
+`scripts/discogs_cart_browser_adapter.mjs` exports `createSupportedLocalCartPage(tab)` for
+an already authorized supported local tab. It launches nothing and configures no session.
+It forwards async `tab.url()` and `tab.playwright.evaluate(fn, arg)`, maps the two observed
+role locators, converts a strictly boolean `isEnabled()` to `isDisabled()`, and also requires
+strict boolean visibility. Unsupported return types stop preparation rather than using
+truthiness. Click's bounded `{ timeout }` is translated to the supported `{ timeoutMs }`.
+
+```js
+import { createSupportedLocalCartPage } from './scripts/discogs_cart_browser_adapter.mjs';
+import { prepareCurrentListingCart } from './scripts/discogs_cart_prepare.mjs';
+// tab must already be authorized. Retain and reuse this same tab object.
+const page = createSupportedLocalCartPage(tab);
+const result = await prepareCurrentListingCart(page, {
+  expectedListingId: '123456', timeoutMs: 15000,
+});
+// This example does not authorize adding an item.
+```
+
+The factory caches the same frozen page for the same tab object, so repeated wrapping does
+not reset the in-process attempted-add guard. This does not establish durable identity across
+different tab objects, reconnects, module instances or processes. After an uncertain action,
+do not create a new wrapper/connection to evade reconciliation or retry an addition.
+
+The local navigation API is only `tab.goto(url)`: no Playwright options or `waitUntil`
+guarantee are forwarded. Only the helper's exact query-free canonical cart URL is eligible.
+Preparation separately verifies the URL and cart DOM afterward; an unsettled or mismatched
+result stays unconfirmed, with no repeated click or mutation-URL replay. The adapter is
+synthetic-fixture-tested, not live-verified. Actual tool semantics require review before a
+separately authorized live test. It is a local verification port, not the required cloud-only
+production runtime, authentication integration or permission to place orders.
+
 The normal-UI remove/re-add transition was exercised separately during authorized browser
 inspection, not by this new preparation function. Do not report that observation as proof
 that the function has executed a real cart addition.
@@ -159,8 +198,9 @@ labels and current selected/disabled properties. It does not rely on stale HTML 
 attributes or store dynamic option values. A displayed selection is not verified delivery
 coverage, destination or final price, and never causes another option to be chosen.
 
-The subsequent shipping-selection-aware collector was **not live-tested**: the authorized
-local computer disconnected before that retest. Earlier collector and existing-cart-path
-success must not be reported as verification of this added selector-reading code. The last
-observed quote/selection is a historical snapshot, not a current availability or cost guarantee.
-No alternate browser route was attempted to replace the unavailable local environment.
+The shipping-selection-aware collector passed a read-only live retest after the authorized
+local computer reconnected on October 24, 2026. The current full interpreter and existing-cart
+path also reported the observed shipping/total while keeping final verification unresolved.
+These are local verification results, not cloud deployment or order completion. Quotes and
+selection are historical snapshots, not guarantees of current availability or cost. The new
+supported-local-browser adapter and scripted add branch require their own live verification.

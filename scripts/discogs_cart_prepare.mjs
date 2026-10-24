@@ -2,6 +2,7 @@
 import { inspectCurrentCartDom } from './discogs_cart_inspector.mjs';
 
 export const CART_PREPARE_TIMEOUT_MS = 2_000;
+export const MAX_CART_PREPARE_TIMEOUT_MS = 30_000;
 // Page-wide, process-local only. Not durable or cross-page; never a purchase ledger.
 const attempts = new WeakMap();
 
@@ -12,7 +13,7 @@ function stopped(code, state = 'not_started', cart = null) {
 
 function preparationOptions(options) {
   if (!options || typeof options !== 'object' || Array.isArray(options) ||
-      Reflect.ownKeys(options).some(key => !['expectedListingId', 'allowAddToCart'].includes(key))) {
+      Reflect.ownKeys(options).some(key => !['expectedListingId', 'allowAddToCart', 'timeoutMs'].includes(key))) {
     return { error: 'invalid_preparation_options' };
   }
   const id = Object.getOwnPropertyDescriptor(options, 'expectedListingId')?.value;
@@ -20,7 +21,11 @@ function preparationOptions(options) {
       !Number.isSafeInteger(Number(id))) return { error: 'invalid_expected_listing_id' };
   const permission = Object.getOwnPropertyDescriptor(options, 'allowAddToCart');
   if (permission && typeof permission.value !== 'boolean') return { error: 'invalid_preparation_options' };
-  return { id, allowed: permission?.value === true };
+  const timeout = Object.getOwnPropertyDescriptor(options, 'timeoutMs');
+  if (timeout && (!Number.isInteger(timeout.value) || timeout.value < 5_000 || timeout.value > MAX_CART_PREPARE_TIMEOUT_MS)) {
+    return { error: 'invalid_preparation_options' };
+  }
+  return { id, allowed: permission?.value === true, timeoutMs: timeout?.value ?? CART_PREPARE_TIMEOUT_MS };
 }
 
 function urlKind(url, id) {
@@ -57,7 +62,7 @@ export async function prepareCurrentListingCart(page, options = {}) {
   };
   try {
     if (typeof page.url !== 'function') return stopped('unsupported_page_interface');
-    deadline = Date.now() + CART_PREPARE_TIMEOUT_MS;
+    deadline = Date.now() + input.timeoutMs;
     const initialUrl = await bounded(() => page.url());
     const kind = urlKind(initialUrl, input.id);
     if (!kind) return stopped('current_url_not_allowed');
@@ -119,7 +124,7 @@ export async function prepareCurrentListingCart(page, options = {}) {
       if (typeof page.goto !== 'function') return stopped('add_outcome_unconfirmed', 'add_outcome_requires_review');
       const canonical = `${origin}/sell/cart/`;
       await bounded(() => page.goto(canonical, {
-        timeout: Math.max(1, deadline - Date.now()), waitUntil: 'domcontentloaded',
+        timeout: Math.max(1, deadline - Date.now()),
       }));
       currentUrl = await bounded(() => page.url());
       if (currentUrl !== canonical) return stopped('add_outcome_unconfirmed', 'add_outcome_requires_review');

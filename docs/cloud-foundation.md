@@ -92,8 +92,10 @@ Do not attach a real browser profile/session or create access credentials withou
 Official server reference checked during implementation:
 https://docs.pylonsproject.org/projects/waitress/en/stable/runner.html
 
-No order, cart, payment, deployment, production database operation or real authentication
-flow was performed. Container-level and real-owner-session verification remain outstanding.
+The isolated container build and startup test passed in GitHub Actions on October 24, 2026
+(run 40133388895, commit 4b102f2). This validates the packaged server, not a persistent hosted
+service. No deployment, production database operation or real authentication flow was performed
+by this container test. Real-owner-session and deployment verification remain outstanding.
 
 
 ## Verification performed

@@ -1,4 +1,4 @@
-# Static cloud runtime foundation; not deployed or container-verified.
+# Cloud runtime foundation; isolated CI container test only, not deployed.
 # Pin an independently verified base digest before production deployment.
 FROM python:3.12-slim AS build
 WORKDIR /build

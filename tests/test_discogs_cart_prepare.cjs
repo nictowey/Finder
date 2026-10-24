@@ -51,9 +51,8 @@ function syntheticPage(options = {}) {
       state.calls.push('goto'); state.navigations.push(url);
       assert.equal(url, `${new URL(options.url ?? LISTING).origin}/sell/cart/`);
       assert.ok(!url.includes('?'));
-      assert.equal(gotoOptions.waitUntil, 'domcontentloaded');
       assert.ok(gotoOptions.timeout > 0 && gotoOptions.timeout <= CART_PREPARE_TIMEOUT_MS);
-      assert.deepEqual(Object.keys(gotoOptions).sort(), ['timeout', 'waitUntil']);
+      assert.deepEqual(Object.keys(gotoOptions), ['timeout']);
       if (options.gotoError) throw options.gotoError;
       state.url = options.afterGotoUrl ?? url;
     },
@@ -166,6 +165,20 @@ test('strict options reject missing ID, unsafe IDs, unknown flags and non-boolea
     const { page, state } = syntheticPage();
     const result = await prepareCurrentListingCart(page, options);
     assertSafe(result); assert.ok(result.code.startsWith('invalid_')); assert.deepEqual(state.calls, []);
+  }
+});
+
+test('optional preparation budget must be an integer from five through thirty seconds', async () => {
+  for (const timeoutMs of [undefined, 0, 2_000, 4_999, 30_001, 5_000.5, '5000', NaN, Infinity]) {
+    const { page, state } = syntheticPage();
+    const result = await prepareCurrentListingCart(page, { ...OPTIONS, timeoutMs });
+    assertSafe(result); assert.equal(result.code, 'invalid_preparation_options');
+    assert.deepEqual(state.calls, []);
+  }
+  for (const timeoutMs of [5_000, 15_000, 30_000]) {
+    const { page, state } = syntheticPage({ url: CART });
+    const result = await prepareCurrentListingCart(page, { expectedListingId: ID, timeoutMs });
+    assertSafe(result); assert.equal(result.code, 'cart_already_contains_expected_listing'); assert.equal(state.clicks, 0);
   }
 });
 
