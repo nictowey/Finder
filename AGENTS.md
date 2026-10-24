@@ -4,10 +4,12 @@
 
 The owner approved a private, Discogs-only primary local interface. `finder-local` now
 prepares exact-release target rules and evaluates synthetic observations; purchasing and
-provider access remain disabled. Read `docs/private-discogs-rules.md` first. The historical
+automatic discovery remain disabled. Explicit opt-in public known-listing reads are supported. Read `docs/private-discogs-rules.md` first. The historical
 review UI is retained as `finder-review`, and legacy production data/code is not migrated.
 The historical scope below applies to retained eBay components, not the new rule editor.
-No new paid services, live scraping, security bypass, purchase, merge or deployment is authorized
+The approved known-listing reader uses only public GET /marketplace/listings/{id}; no credentials,
+background discovery, cart or order endpoints. This exception supersedes the historical catalog-only
+provider rule below for this adapter alone. No new paid services, live scraping, security bypass, purchase, merge or deployment is authorized
 by this local implementation. The new rule ceiling includes shipping, tax and fees; it does
 not reuse the historical pre-tax subtotal semantics below.
 

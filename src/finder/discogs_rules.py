@@ -70,7 +70,7 @@ class Target(StrictInput):
 
 
 class Observation(StrictInput):
-    source: Literal["synthetic"]
+    source: Literal["synthetic", "discogs_public_listing"]
     listing_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,80}$")
     release_id: int = Field(gt=0)
     media: str | None = None
@@ -147,7 +147,7 @@ def evaluate(target: Target, observation: Observation, *, now: datetime, already
         "reasons": reasons,
         "total": format(total, ".2f") if total is not None else None,
         "purchase_allowed": False,
-        "mode": "synthetic_dry_run",
+        "mode": "synthetic_dry_run" if observation.source == "synthetic" else "live_read_only",
     }
 
 

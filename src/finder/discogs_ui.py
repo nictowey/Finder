@@ -1,4 +1,4 @@
-"""Bundled, loopback-only Discogs target rules interface with synthetic evaluation."""
+"""Loopback rules UI with synthetic evaluation and optional explicit listing reads."""
 
 # Bundled HTML, CSS, and JavaScript retain their native line layout.
 # ruff: noqa: E501
@@ -51,7 +51,8 @@ input,select,textarea { display:block; width:100%; margin:6px 0 0; border:1px so
 input,select { min-height:44px; } textarea { resize:vertical; min-height:360px;
   font:13px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace; }
 .check { display:flex; gap:10px; align-items:start; } .check input { width:18px; height:18px; min-height:0; margin:3px 0 0; flex-shrink:0; }
-input:focus,select:focus,textarea:focus,button:focus-visible { outline:3px solid #96cbb2; outline-offset:2px; }
+input:focus,select:focus,textarea:focus,button:focus-visible,a:focus-visible { outline:3px solid #96cbb2; outline-offset:2px; }
+a { color:var(--accent); overflow-wrap:anywhere; }
 button { background:var(--accent); border:1px solid var(--accent); border-radius:7px; color:white;
   min-height:44px; padding:10px 15px; font:650 14px/1.4 system-ui,sans-serif; cursor:pointer; }
 button.secondary { color:var(--accent); background:white; } button:disabled { opacity:.5; cursor:not-allowed; }
@@ -80,11 +81,11 @@ button.secondary { color:var(--accent); background:white; } button:disabled { op
 </head>
 <body><main>
 <header><div><p class="eyebrow">Finder / Discogs targets</p><h1>Your rules. Your limits.</h1>
-<p class="muted">Save release targets and try the rules with made-up observations.</p></div>
-<span class="badge">Private · local dry run</span></header>
+<p class="muted">Save release targets, test your rules, and optionally read a known listing.</p></div>
+<span class="badge">Private · no purchasing</span></header>
 <div class="notice"><strong>Purchasing disabled. Rules only. No live discovery.</strong>
 <p>Nothing here searches Discogs, contacts a seller, places an order, or sends an alert.
-Passing a synthetic test is not pressing verification or permission to buy.</p></div>
+The optional read button fetches only the listing you supply. Neither a listing read nor a synthetic test verifies a pressing or permits a purchase.</p></div>
 <div id="server-blockers" class="notice" hidden></div>
 <div id="status" class="status" role="status" aria-live="polite">Loading saved rules…</div>
 <div class="workspace">
@@ -117,7 +118,7 @@ Saving the same release updates its rules.</p>
 <label>Destination postal code<input id="destination-postal" name="destination_postal" type="text" required maxlength="16" pattern="[A-Za-z0-9 \-]{1,16}" autocomplete="off" spellcheck="false">
 <small>Stored locally to check the supplied destination.</small></label>
 <label class="check full"><input id="enabled" name="enabled" type="checkbox" checked>
-<span>Active target<small>Uncheck to pause this target and block synthetic review. Nothing runs automatically.</small></span></label>
+<span>Active target<small>Uncheck to pause this target and block rule eligibility. Nothing runs automatically.</small></span></label>
 </div><div class="actions"><button type="submit" id="save-target" disabled>Save target rules</button>
 <small id="draft-note">Refreshing saved state leaves these fields untouched.</small></div></form>
 </section>
@@ -127,7 +128,22 @@ Saving the same release updates its rules.</p>
 <p class="muted">Load a target to replace the fields on the left. Refresh never replaces your draft.</p>
 <div id="targets" aria-live="polite"></div></section>
 </div>
-<section class="panel evaluator" aria-labelledby="test-title"><h2 id="test-title">3. Test a synthetic observation</h2>
+<section class="panel evaluator" aria-labelledby="listing-title"><h2 id="listing-title">3. Read one known listing <span class="muted">(optional)</span></h2>
+<p class="muted">Read-only live data, kept separate from the synthetic test below. Supply a listing ID or Discogs sell/item link you already know.
+One explicit click reads that listing through the official API. There is no search, automatic refresh, checkout, or order action.</p>
+<p id="listing-capability" class="notice">Checking whether manual listing reads are enabled on this server…</p>
+<div class="evaluator-grid"><form id="listing-form">
+<label>Saved target to compare<select id="listing-target" required><option value="">Save a target first</option></select></label>
+<label class="actions" for="listing-input">Known listing ID or HTTPS Discogs sell/item link</label>
+<input id="listing-input" name="listing" type="text" required maxlength="500" autocomplete="off"
+ placeholder="e.g. 123456 or https://www.discogs.com/sell/item/123456">
+<small>Only the listing reference is sent for this read. Do not enter credentials or payment details.</small>
+<div class="actions"><button type="submit" id="read-listing" disabled>Read known listing once</button></div>
+</form><div class="result" id="listing-result" role="status" aria-live="polite">
+<h3>No live listing read yet</h3><p class="muted">Reported shipping is not a final destination quote. Tax, fees, and pressing evidence remain unverified.</p>
+<p class="disclaimer">Purchasing remains disabled. Nothing is fetched until you press the read button.</p></div></div>
+</section>
+<section class="panel evaluator" aria-labelledby="test-title"><h2 id="test-title">4. Test a synthetic observation</h2>
 <p class="muted">This is a made-up rule check, not a live listing check. Only source: "synthetic" is accepted.
 Unknown amounts or missing evidence stay unknown and may block review.</p>
 <div class="evaluator-grid"><form id="evaluate-form">
@@ -141,7 +157,7 @@ Unknown amounts or missing evidence stay unknown and may block review.</p>
 <h3>No test run yet</h3><p class="muted">The result will show every reported blocker and the supplied total, if known.</p>
 <p class="disclaimer">Purchasing remains disabled, whatever the result.</p></div></div>
 </section>
-<p class="footnote muted">Local rules and synthetic tests only. Unsaved edits exist in this page, not browser storage.
+<p class="footnote muted">Local rules, synthetic tests, and optional manual listing reads. No background polling. Unsaved edits exist in this page, not browser storage.
 Save your rules before closing or reloading. No external scripts, images, or fonts are loaded.</p>
 </main>
 <script nonce="@@NONCE@@">
@@ -155,6 +171,9 @@ let pending = false;
 let needsRefresh = false;
 let evaluationTarget = null;
 let evaluationRevision = null;
+let listingEvaluationTarget = null;
+let listingEvaluationRevision = null;
+const listingReadEnabled = () => snapshot?.capabilities?.listing_read_enabled === true;
 function node(tag, text, className) {
   const result = document.createElement(tag); result.textContent = text;
   if (className) result.className = className; return result;
@@ -168,12 +187,15 @@ function updateButtons() {
   const noTarget = !snapshot || !snapshot.targets.some((target) => String(target.release_id) === el('evaluate-target').value);
   el('evaluate').disabled = pending || needsRefresh || noTarget;
   el('example').disabled = pending || noTarget;
+  const noListingTarget = !snapshot || !snapshot.targets.some((target) => String(target.release_id) === el('listing-target').value);
+  el('read-listing').disabled = pending || needsRefresh || noListingTarget || !listingReadEnabled();
   document.querySelectorAll('.ownership').forEach((button) => { button.disabled = pending || needsRefresh; });
 }
 function setPending(next) {
   pending = next;
   el('target-form').setAttribute('aria-busy', String(next));
   el('evaluate-form').setAttribute('aria-busy', String(next));
+  el('listing-form').setAttribute('aria-busy', String(next));
   el('targets').setAttribute('aria-busy', String(next));
   updateButtons();
 }
@@ -224,9 +246,9 @@ function renderSaved() {
     detail(facts, 'Seller threshold', `${target.min_seller_percent ?? 'unknown'}% positive · ${target.min_feedback ?? 'unknown'} feedback`);
     detail(facts, 'Maximum total', `${target.max_total ?? 'unknown'} ${target.currency ?? ''}`);
     detail(facts, 'Destination', `${target.destination_country ?? 'unknown'} ${target.destination_postal ?? 'unknown'}`);
-    detail(facts, 'Target status', target.enabled === false ? 'Paused · blocks synthetic review' : 'Active · rules only');
+    detail(facts, 'Target status', target.enabled === false ? 'Paused · blocks rule eligibility' : 'Active · rules only');
     const owned=snapshot.owned.includes(target.release_id);
-    detail(facts, 'Already-owned marker', owned ? 'Yes · blocks synthetic review' : 'Not marked');
+    detail(facts, 'Already-owned marker', owned ? 'Yes · blocks rule eligibility' : 'Not marked');
     card.append(facts);
     const load=node('button', 'Load these rules into the form', 'secondary'); load.type='button';
     load.addEventListener('click', () => {
@@ -246,15 +268,20 @@ function renderSaved() {
       `Already-owned marker ${owned ? 'cleared' : 'saved'} for release ${target.release_id}. Purchasing remains disabled.`));
     card.append(load, ownership); el('targets').append(card);
   });
-  const selected=el('evaluate-target').value;
-  el('evaluate-target').replaceChildren(node('option', targets.length ? 'Choose a saved target' : 'Save a target first'));
-  el('evaluate-target').firstElementChild.value='';
-  targets.forEach((target) => {
-    const option=node('option', `${target.release_id}${target.label ? ' · ' + target.label : ''}`);
-    option.value=String(target.release_id); el('evaluate-target').append(option);
+  ['evaluate-target','listing-target'].forEach((id) => {
+    const selected=el(id).value;
+    el(id).replaceChildren(node('option', targets.length ? 'Choose a saved target' : 'Save a target first'));
+    el(id).firstElementChild.value='';
+    targets.forEach((target) => {
+      const option=node('option', `${target.release_id}${target.label ? ' · ' + target.label : ''}`);
+      option.value=String(target.release_id); el(id).append(option);
+    });
+    if (targets.some((target) => String(target.release_id) === selected)) el(id).value=selected;
+    else if (!selected && targets.length === 1) el(id).value=String(targets[0].release_id);
   });
-  if (targets.some((target) => String(target.release_id) === selected)) el('evaluate-target').value=selected;
-  else if (!selected && targets.length === 1) el('evaluate-target').value=String(targets[0].release_id);
+  el('listing-capability').textContent=listingReadEnabled() ?
+    'Manual listing reads are enabled. One listing is read only when you press the button; there is no automatic fetching.' :
+    'Manual listing reads are disabled on this server. The optional --live-listing-read server flag enables this read-only feature. Synthetic tests remain available.';
   const blockers=Array.isArray(snapshot.blockers) ? snapshot.blockers : [];
   el('server-blockers').replaceChildren(); el('server-blockers').hidden=blockers.length === 0;
   if (blockers.length) {
@@ -266,6 +293,11 @@ function renderSaved() {
     el('result').querySelector('h3').textContent='Previous test is out of date';
     const warning=node('p', 'Saved rules or owned markers changed after this test. Run it again before relying on this result.', 'error');
     warning.id='result-stale'; el('result').prepend(warning);
+  }
+  if (listingEvaluationTarget !== null && listingEvaluationRevision !== snapshot.revision && !el('listing-result-stale')) {
+    el('listing-result').querySelector('h3').textContent='Previous listing check is out of date';
+    const warning=node('p', 'Saved rules or owned markers changed after this read. Read the listing again explicitly before relying on this comparison.', 'error');
+    warning.id='listing-result-stale'; el('listing-result').prepend(warning);
   }
   updateButtons();
 }
@@ -323,6 +355,7 @@ el('refresh').addEventListener('click', async () => {
   finally { setPending(false); }
 });
 el('evaluate-target').addEventListener('change', updateButtons);
+el('listing-target').addEventListener('change', updateButtons);
 el('example').addEventListener('click', () => {
   if (pending || !snapshot) return;
   const target=snapshot.targets.find((row) => String(row.release_id) === el('evaluate-target').value);
@@ -385,6 +418,82 @@ el('evaluate-form').addEventListener('submit', async (event) => {
     el('result').replaceChildren(node('h3', 'No usable test result'), node('p', errorText(error), 'error'),
       node('p', 'Your JSON draft is unchanged. Purchasing remains disabled.', 'disclaimer'));
     message(`${errorText(error)} Your JSON draft is unchanged.`, true);
+  } finally { setPending(false); }
+});
+function known(value) {
+  return (typeof value === 'string' && value.trim()) || (typeof value === 'number' && Number.isFinite(value)) ? String(value) : 'Unknown';
+}
+function reportedMoney(amount, currency) {
+  return known(amount) === 'Unknown' ? 'Unknown' : `${known(amount)} ${known(currency)}`;
+}
+function renderListingResult(data, targetId) {
+  const listing=data?.listing, assessment=data?.evaluation;
+  if (!listing || typeof listing !== 'object' || Array.isArray(listing) ||
+      !assessment || typeof assessment.eligible_for_review !== 'boolean' || !Array.isArray(assessment.reasons) ||
+      assessment.reasons.some((reason) => typeof reason !== 'string') || assessment.purchase_allowed !== false ||
+      !(assessment.total === null || typeof assessment.total === 'string')) {
+    throw new Error('The server returned an invalid read-only listing result. No comparison can be trusted.');
+  }
+  const revisionMatches=Number.isSafeInteger(assessment.rules_revision) && assessment.rules_revision === snapshot.revision;
+  const result=el('listing-result'); result.replaceChildren();
+  result.append(node('h3', !revisionMatches ? 'Rules version is unverified' :
+    assessment.eligible_for_review ? 'Manual review only · purchase disabled' : 'Live listing does not pass the rules'));
+  if (!revisionMatches) result.append(node('p', 'The result used a different or missing rules version. No eligibility decision is shown. Refresh saved state, then read this listing again explicitly.', 'error'));
+  result.append(node('p', `One read-only listing snapshot compared with saved release ${targetId}. This is not continuous monitoring.`, 'muted'));
+  const facts=document.createElement('dl');
+  detail(facts, 'Listing ID', known(listing.listing_id));
+  detail(facts, 'Reported release ID', known(listing.release_id));
+  detail(facts, 'Media grade', known(listing.media));
+  detail(facts, 'Sleeve grade', known(listing.sleeve));
+  detail(facts, 'Seller positive %', known(listing.seller_percent));
+  detail(facts, 'Seller feedback count', known(listing.feedback));
+  detail(facts, 'Item price', reportedMoney(listing.item, listing.currency));
+  detail(facts, 'Reported shipping (not a quote)', reportedMoney(listing.reported_shipping, listing.reported_shipping_currency));
+  detail(facts, 'Reported shipping restriction', listing.shipping_blocked === true ? 'Shipping blocked' : listing.shipping_blocked === false ? 'Not reported blocked; destination quote still unknown' : 'Unknown');
+  detail(facts, 'Availability', listing.available === true ? 'Reported available' : listing.available === false ? 'Reported unavailable' : 'Unknown');
+  detail(facts, 'Destination-confirmed shipping', 'Unknown');
+  detail(facts, 'Tax and mandatory fees', 'Unknown');
+  detail(facts, 'Physical pressing evidence', 'Unverified');
+  detail(facts, 'Evaluated all-in total', assessment.total === null ? 'Unknown, not zero' : reportedMoney(assessment.total, listing.currency));
+  detail(facts, 'Purchase allowed', 'No. Purchasing is disabled.');
+  result.append(facts);
+  const urlMatch=typeof listing.url === 'string' ? listing.url.match(/^https:\/\/(?:www\.)?discogs\.com\/sell\/item\/([1-9]\d*)\/?$/) : null;
+  if (urlMatch && urlMatch[1] === String(listing.listing_id)) {
+    const link=node('a', 'Open this listing on Discogs'); link.href=listing.url; link.target='_blank'; link.rel='noopener noreferrer'; result.append(link);
+  } else result.append(node('p', 'Listing link: Unknown', 'muted'));
+  result.append(node('p', 'Reported shipping is not a final destination quote; tax, fees, and pressing evidence remain unverified.', 'notice'));
+  if (typeof data.warning === 'string' && data.warning.trim()) result.append(node('p', data.warning, 'muted'));
+  result.append(node('h3', 'Reported reasons'));
+  if (assessment.reasons.length) {
+    const reasons=document.createElement('ul'); assessment.reasons.forEach((reason) => reasons.append(node('li', readable(reason)))); result.append(reasons);
+  } else result.append(node('p', 'No additional blockers were reported. This is not pressing verification, a final price quote, or purchase permission.'));
+  result.append(node('p', 'Data provided by Discogs. A read-only snapshot can become outdated. Any later read requires another explicit click. Purchasing remains disabled.', 'disclaimer'));
+  return revisionMatches;
+}
+el('listing-form').addEventListener('submit', async (event) => {
+  event.preventDefault(); if (pending || !snapshot || needsRefresh || !listingReadEnabled()) return;
+  const targetId=Number(value('listing-target')), listing=value('listing-input');
+  if (!Number.isSafeInteger(targetId) || targetId < 1 || !snapshot.targets.some((target) => target.release_id === targetId)) {
+    message('Choose a saved release target for the manual listing comparison.', true); return;
+  }
+  if (!listing || listing.length > 500) { message('Supply one listing ID or HTTPS Discogs sell/item link, up to 500 characters.', true); return; }
+  setPending(true); message('Reading the one supplied listing through the local server…');
+  el('listing-result').replaceChildren(node('h3', 'Reading one known listing…'), node('p', 'Read-only. No checkout or order action.', 'muted'));
+  try {
+    const data=await request('/api/listing', {release_id:targetId, listing});
+    const revisionMatches=renderListingResult(data, targetId);
+    listingEvaluationTarget=revisionMatches ? targetId : null;
+    listingEvaluationRevision=revisionMatches ? data.evaluation.rules_revision : null;
+    if (revisionMatches) message('One listing read completed. Destination shipping, tax, fees, and pressing evidence remain unverified. Purchasing is disabled.');
+    else {
+      needsRefresh=true;
+      message('The listing comparison used different or unverified rules. Refresh saved state, then read it again explicitly. Your drafts are intact.', true);
+    }
+  } catch (error) {
+    listingEvaluationTarget=null; listingEvaluationRevision=null;
+    el('listing-result').replaceChildren(node('h3', 'No usable listing result'), node('p', errorText(error), 'error'),
+      node('p', 'No automatic retry will run. Your listing input and other drafts are unchanged. Purchasing remains disabled.', 'disclaimer'));
+    message(`${errorText(error)} No automatic retry will run. Your drafts are unchanged.`, true);
   } finally { setPending(false); }
 });
 (async () => {

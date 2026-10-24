@@ -2,7 +2,7 @@
 
 October 24, 2026: the owner approved replacing Finder's local primary interface with a
 private Discogs-only target tool. This branch implements the **rules preparation and
-synthetic dry-run slice**, not a functioning marketplace sniper.
+synthetic dry-run slice plus explicit known-listing read**, not a functioning marketplace sniper.
 
 ## Run locally
 
@@ -19,6 +19,24 @@ retained as `finder-review` (or `python -m finder.local_web`). Use a new databas
 legacy databases are rejected rather than migrated, overwritten or emptied. Production,
 existing watch data, hosted workflows, provider credentials and the old eBay code are unchanged.
 
+## Explicit known-listing read (opt-in)
+
+Start with `--live-listing-read` to enable a manual public API read from an exact listing
+ID or canonical Discogs sell/item URL. The default remains network-disabled. This opt-in
+mode uses a fixed official API endpoint with timeout, bounded response, no redirects, no
+credentials, at most 20 attempts/minute and a rate-limit cooldown. It does not enumerate
+listings or run in the background. Environments using SOCKS proxies need `httpx[socks]`.
+The loopback app retains host/origin/CSRF guards; the offline audit network guard is not
+used in this explicit network-enabled mode. No other provider operation is implemented.
+
+Data provided by Discogs: https://www.discogs.com/developers#page:marketplace
+
+API-reported shipping is shown separately, never accepted as a final destination quote.
+Shipping-blocked/unknown status is disclosed. Tax, fees, destination and physical pressing
+evidence remain unverified; no live read can authorize a purchase or meet all-in eligibility.
+A real public adapter read succeeded on October 24; no cart/order/payment was attempted.
+Only normalized bounded fields are returned, not seller text, images or credentials.
+
 ## Implemented
 
 - Exact Discogs release ID or canonical HTTPS release link as the target key.
@@ -28,7 +46,8 @@ existing watch data, hosted workflows, provider credentials and the old eBay cod
 - Owner-entered already-owned marker blocks repeated eligibility for that release.
 - Synthetic evaluator with explicit rejection reasons. Missing shipping, tax, fees, condition,
   reputation, matching destination, recent observation or pressing evidence fails closed.
-- Decimal arithmetic, inclusive maximum, no currency conversion, no secrets or external calls.
+- Decimal arithmetic, inclusive maximum, no currency conversion or secrets. External calls
+  require the explicit known-listing startup option.
 - Loopback-only listener, host validation, CSRF/origin checks, bounded JSON requests and CSP.
 
 A synthetic 'confirmed' evidence value is a test input, not verified real seller identity.
@@ -37,10 +56,11 @@ rules means eligible for review only; every result says `purchase_allowed: false
 
 ## Deliberately not implemented
 
-Live listing ingestion, scraping, real-time monitoring, automatic cart/order/payment,
+Automatic listing discovery, scraping, real-time monitoring, automatic cart/order/payment,
 credentials, notifications, deployment and a real-purchase ledger are absent. There is no
 hidden enable-purchases switch. Owned markers are manual bookkeeping, not orders or receipts.
-The evaluator accepts synthetic observations only and does not persist them.
+Synthetic JSON input accepts only synthetic observations. API observations are constructed server-side
+and cannot be supplied through the synthetic input endpoint. Neither is persisted.
 
 Native Discogs saved searches are a potential permitted discovery source, not an integrated
 source here. Current official documentation describes exact Wantlist release, condition,
@@ -57,7 +77,8 @@ https://support.discogs.com/hc/en-us/articles/360009334593-API-Terms-of-Use
 Any future purchasing needs explicit concrete owner limits and purchase authorization,
 validated checkout totals for the actual destination, fresh availability, transactional
 one-copy protection, reconciliation after uncertain outcomes, and no blind retry of orders.
-No network capability or purchasing is enabled by saving settings on this page.
+No network capability or purchasing is enabled by saving settings on this page. Explicit known-listing
+reads require the separate server startup opt-in described above.
 
 ## Local verification (October 24, 2026)
 
@@ -77,4 +98,15 @@ No network capability or purchasing is enabled by saving settings on this page.
   inclusive-total evaluation, owned blocking, and absent checkout route.
 - CI reruns the new rules/server/DOM suite after Node/jsdom installation so browser-state
   checks are exercised rather than skipped for missing dependencies.
-- No live provider, checkout, purchase or production deployment verification was attempted.
+- Known-listing public API read verified; no checkout, purchase or production deployment attempted.
+
+
+### Known-listing update verification
+
+- 94 focused adapter/rules/server/DOM tests passed, including malformed fields, unsupported
+  currencies/precision, unknown shipping/tax, fixed endpoint, timeouts, no redirects and cooldowns.
+- Aggregate Python rerun: 2,930 passed, four unchanged Node/PGlite subprocesses were SIGKILLed;
+  all four passed the isolated retry. Ruff, format and typecheck passed.
+- Direct public adapter read succeeded. A later end-to-end server live read returned a
+  sanitized 502, so live transport reliability is not established. It did not produce an
+  eligibility result or trigger a retry, cart, order or payment.

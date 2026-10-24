@@ -9,13 +9,19 @@ require('node:net').Socket.prototype.connect=() => { throw new Error('Network di
 require('node:dns').lookup=() => { throw new Error('DNS disabled.'); };
 const denyDispatcher={dispatch(){throw new Error('External resource forbidden.');},close(){return Promise.resolve();},destroy(){return Promise.resolve();}};
 const clone=value=>structuredClone(value);
-let saved={revision:0,targets:[],owned:[],mode:'dry_run',purchasing_enabled:false};
+let saved={revision:0,targets:[],owned:[],mode:'dry_run',purchasing_enabled:false,capabilities:{listing_read_enabled:false}};
 let mutationFailure=null, readFailure=null, failReadAfterSave=false, delayed=null;
 let evaluation={eligible_for_review:false,reasons:['Pressing evidence is unknown.'],total:null,purchase_allowed:false};
+let listingFailure=null;
+let listingResponse={listing:{listing_id:'456',release_id:123,media:'VG+',sleeve:null,seller_percent:99.8,feedback:0,
+  item:'20.00',currency:'USD',reported_shipping:null,reported_shipping_currency:null,shipping_blocked:true,available:true,
+  url:'https://www.discogs.com/sell/item/456'},
+  evaluation:{eligible_for_review:false,reasons:['Destination shipping is unknown.','Tax and fees are unknown.','Pressing evidence is unverified.'],total:null,purchase_allowed:false},
+  warning:'Reported shipping is not a final destination quote; tax/fees/pressing unverified.'};
 const calls=[],errors=[];
 const response=(status,data)=>({ok:status>=200 && status<300,status,json:async()=>clone(data)});
 async function mockFetch(path, options) {
-  assert.ok(['/api/snapshot','/api/target','/api/owned','/api/evaluate'].includes(path));
+  assert.ok(['/api/snapshot','/api/target','/api/owned','/api/evaluate','/api/listing'].includes(path));
   assert.equal(options.mode,'same-origin');assert.equal(options.redirect,'error');assert.equal(options.credentials,'omit');
   assert.equal(options.cache,'no-store');calls.push({path,options});
   if(path === '/api/snapshot') {
@@ -27,6 +33,14 @@ async function mockFetch(path, options) {
   assert.equal(options.headers['Content-Type'],'application/json');
   const input=JSON.parse(options.body);
   if(delayed) await delayed.promise;
+  if(path === '/api/listing') {
+    assert.deepEqual(Object.keys(input).sort(),['listing','release_id']);
+    assert.equal(typeof input.release_id,'number');assert.equal(typeof input.listing,'string');
+    assert.equal(saved.capabilities.listing_read_enabled,true);
+    if(listingFailure) {const failure=listingFailure;listingFailure=null;
+      if(failure instanceof Error) throw failure;return response(failure,{error:'Known listing is unavailable.'});}
+    return response(200,{...listingResponse,evaluation:{rules_revision:saved.revision,...listingResponse.evaluation}});
+  }
   if(path === '/api/evaluate') {
     assert.deepEqual(Object.keys(input).sort(),['observation','release_id']);
     assert.equal(typeof input.release_id,'number');assert.equal(input.observation.source,'synthetic');
@@ -91,6 +105,8 @@ function clickText(text) {
   assert.equal(d.querySelectorAll('script').length,1);assert.equal(d.querySelectorAll('script[src],link[href],img,iframe').length,0);
   assert.equal(d.querySelector('script').nonce,'dom-test-nonce');assert.equal(d.querySelector('style').nonce,'dom-test-nonce');
   assert.equal(el('save-target').disabled,false);assert.equal(el('evaluate').disabled,true);
+  assert.equal(el('read-listing').disabled,true);assert.match(el('listing-capability').textContent,/disabled on this server/);
+  submit('listing-form');await settled(w);assert.equal(posts('/api/listing').length,0);
   assert.equal(el('destination-country').value,'US');assert.equal(el('destination-postal').value,'');
   assert.equal(el('enabled').checked,true);
   assert.equal(el('destination-postal').required,true);assert.equal(el('destination-postal').maxLength,16);
@@ -169,7 +185,7 @@ function clickText(text) {
   // One-copy markers are local rules, not a purchase action, and invalidate an older result.
   el('observation').value=jsonDraft;submit('evaluate-form');await settled(w);
   clickText('Mark already owned');await settled(w);assert.deepEqual(saved.owned,[123]);
-  assert.match(el('targets').textContent,/Yes · blocks synthetic review/);assert.match(el('result-stale').textContent,/changed after this test/);
+  assert.match(el('targets').textContent,/Yes · blocks rule eligibility/);assert.match(el('result-stale').textContent,/changed after this test/);
   assert.doesNotMatch(el('result').textContent,/Eligible for synthetic review/);
   assert.equal(el('max-total').value,'42.00');assert.equal(el('observation').value,jsonDraft);
   clickText('Clear already-owned marker');await settled(w);assert.deepEqual(saved.owned,[]);
@@ -186,7 +202,7 @@ function clickText(text) {
   const beforePause=posts('/api/target').length;submit('target-form');submit('target-form');
   assert.equal(posts('/api/target').length,beforePause+1);release();delayed=null;await settled(w);
   assert.equal(saved.targets[0].enabled,false);assert.equal(saved.targets[0].max_total,'79.00');
-  assert.match(el('targets').textContent,/Paused · blocks synthetic review/);
+  assert.match(el('targets').textContent,/Paused · blocks rule eligibility/);
   el('enabled').checked=true;clickText('Load these rules into the form');assert.equal(el('enabled').checked,false);
   submit('evaluate-form');await settled(w);assert.match(el('result').textContent,/Not eligible for review/);
   assert.match(el('result').textContent,/Target is paused/);
@@ -205,6 +221,68 @@ function clickText(text) {
   saved.purchasing_enabled=true;el('refresh').click();await settled(w);
   assert.match(el('status').textContent,/purchasing-disabled/);assert.equal(el('save-target').disabled,true);assert.equal(el('evaluate').disabled,true);
   saved.purchasing_enabled=false;el('refresh').click();await settled(w);assert.equal(el('save-target').disabled,false);
+  // A manual known-listing read is isolated from synthetic tests and never starts automatically.
+  assert.equal(posts('/api/listing').length,0);
+  saved.capabilities.listing_read_enabled=true;el('refresh').click();await settled(w);
+  assert.equal(el('read-listing').disabled,false);assert.equal(posts('/api/listing').length,0);
+  assert.equal(el('listing-target').value,'123');assert.match(el('listing-capability').textContent,/no automatic fetching/);
+  el('observation').value='synthetic draft remains separate';el('max-total').value='78.00';
+  el('listing-input').value='https://www.discogs.com/sell/item/456';
+  delayed={promise:new Promise(resolve=>{release=resolve;})};
+  submit('listing-form');submit('listing-form');el('read-listing').click();el('refresh').click();
+  assert.equal(posts('/api/listing').length,1);assert.equal(el('read-listing').disabled,true);
+  el('listing-input').value='457';release();delayed=null;await settled(w);
+  assert.equal(JSON.parse(posts('/api/listing')[0].options.body).listing,'https://www.discogs.com/sell/item/456');
+  assert.equal(el('listing-input').value,'457');assert.equal(el('observation').value,'synthetic draft remains separate');
+  assert.equal(el('max-total').value,'78.00');assert.match(el('listing-result').textContent,/Live listing does not pass the rules/);
+  assert.match(el('listing-result').textContent,/Unknown, not zero/);assert.match(el('listing-result').textContent,/Shipping blocked/);
+  assert.match(el('listing-result').textContent,/Data provided by Discogs/);assert.match(el('listing-result').textContent,/not a final destination quote/);
+  assert.equal(el('listing-result').querySelectorAll('li').length,3);
+  assert.equal(el('listing-result').querySelector('a').href,'https://www.discogs.com/sell/item/456');
+  assert.equal(el('listing-result').querySelector('a').rel,'noopener noreferrer');
+  assert.equal(el('listing-result').querySelectorAll('img,script,iframe').length,0);
+  const facts=[...el('listing-result').querySelectorAll('dt')];
+  assert.equal(facts.find(row=>row.textContent==='Seller feedback count').nextElementSibling.textContent,'0');
+  assert.equal(facts.find(row=>row.textContent==='Sleeve grade').nextElementSibling.textContent,'Unknown');
+  el('refresh').click();await settled(w);assert.equal(posts('/api/listing').length,1);assert.equal(el('listing-input').value,'457');
+  // Provider data and warnings stay inert text; unsafe or mismatched URLs never become links.
+  const cleanListing=clone(listingResponse);
+  listingResponse.listing.media=malicious;listingResponse.warning=malicious;listingResponse.evaluation.reasons=[malicious];
+  listingResponse.listing.url='javascript:window.pwned=true';listingResponse.listing.available=false;
+  submit('listing-form');await settled(w);
+  assert.ok(el('listing-result').textContent.includes(malicious));assert.equal(el('listing-result').querySelectorAll('img,script,a').length,0);
+  assert.equal(w.pwned,undefined);assert.match(el('listing-result').textContent,/Reported unavailable/);
+  listingResponse=clone(cleanListing);listingResponse.listing.url='https://www.discogs.com/sell/item/999';
+  submit('listing-form');await settled(w);assert.equal(el('listing-result').querySelectorAll('a').length,0);
+  listingResponse=clone(cleanListing);
+  // Read errors preserve every draft, show no stale success, and do not retry.
+  for(const failure of [403,404,502,new TypeError('offline')]) {
+    listingFailure=failure;const previous=posts('/api/listing').length;submit('listing-form');await settled(w);
+    assert.equal(posts('/api/listing').length,previous+1);assert.match(el('listing-result').textContent,/No usable listing result/);
+    assert.match(el('listing-result').textContent,/No automatic retry/);assert.equal(el('listing-input').value,'457');
+    assert.equal(el('observation').value,'synthetic draft remains separate');assert.equal(el('read-listing').disabled,false);
+  }
+  // A read-only response can never grant purchase permission or qualification against unseen rules.
+  listingResponse.evaluation.purchase_allowed=true;submit('listing-form');await settled(w);
+  assert.match(el('listing-result').textContent,/invalid read-only listing result/);
+  listingResponse.evaluation.purchase_allowed=false;listingResponse.evaluation.eligible_for_review=true;
+  for(const revision of [saved.revision+1,saved.revision-1,undefined,'1']) {
+    listingResponse.evaluation.rules_revision=revision;submit('listing-form');await settled(w);
+    assert.match(el('listing-result').textContent,/Rules version is unverified/);
+    assert.doesNotMatch(el('listing-result').textContent,/Manual review only|Live listing does not pass/);
+    assert.equal(el('read-listing').disabled,true);assert.equal(el('evaluate').disabled,true);
+    assert.equal(el('listing-result').querySelectorAll('li').length,3);
+    const previous=posts('/api/listing').length;el('refresh').click();await settled(w);
+    assert.equal(posts('/api/listing').length,previous);assert.equal(el('read-listing').disabled,false);
+  }
+  listingResponse=clone(cleanListing);submit('listing-form');await settled(w);
+  clickText('Mark already owned');await settled(w);assert.match(el('listing-result-stale').textContent,/changed after this read/);
+  assert.match(el('listing-result').textContent,/Previous listing check is out of date/);
+  const readsBeforeDisable=posts('/api/listing').length;
+  saved.capabilities.listing_read_enabled=false;el('refresh').click();await settled(w);
+  submit('listing-form');await settled(w);assert.equal(el('read-listing').disabled,true);assert.equal(posts('/api/listing').length,readsBeforeDisable);
+  saved.capabilities={listing_read_enabled:'true'};el('refresh').click();await settled(w);assert.equal(el('read-listing').disabled,true);
+  delete saved.capabilities;el('refresh').click();await settled(w);assert.equal(el('read-listing').disabled,true);
   assert.deepEqual(errors,[]);dom.window.close();
-  console.log('Discogs UI offline DOM checks passed: save, reload, stale drafts, uncertain writes, owned markers, synthetic evaluation and XSS.');
+  console.log('Discogs UI offline DOM checks passed: rules, stale drafts, owned markers, synthetic tests, explicit read-only listing requests, revision guards and XSS.');
 })().catch(error=>{console.error(error);if(dom)dom.window.close();process.exitCode=1;});

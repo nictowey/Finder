@@ -1,5 +1,5 @@
 > October 24 update: the primary `finder-local` interface is now a private Discogs-only
-> rules editor with synthetic evaluation and purchasing disabled. See
+> rules editor with synthetic evaluation, optional explicit public listing reads, and purchasing disabled. See
 > [setup and limitations](docs/private-discogs-rules.md). The prior local review command
 > is available as `finder-review`; existing databases are not automatically converted.
 
@@ -17,7 +17,8 @@ PYTHONPATH=src python -m finder.discogs_web --database finder-discogs.sqlite3 --
 
 Set exact release targets, condition/reputation minimums and all-in delivered caps in the
 loopback page. Reopen without `--init` to retain saved rules. Purchasing is disabled;
-synthetic evaluation is not a live market check. See [the Discogs guide](docs/private-discogs-rules.md).
+synthetic evaluation is not a live market check. Add `--live-listing-read` only to enable
+one known-listing public API read per explicit button click, not automated discovery. See [the Discogs guide](docs/private-discogs-rules.md).
 
 ## Historical local development review
 

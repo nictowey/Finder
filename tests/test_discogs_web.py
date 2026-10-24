@@ -19,7 +19,7 @@ def store(tmp_path):
     result.close()
 
 
-def request(store, path="/", data=None, *, token="token", origin=ORIGIN, host=None):
+def request(store, path="/", data=None, *, token="token", origin=ORIGIN, host=None, reader=None):
     body = b"" if data is None else json.dumps(data).encode()
     method = "GET" if data is None else "POST"
     headers = f"Host: {host or f'127.0.0.1:{PORT}'}\r\n"
@@ -29,7 +29,9 @@ def request(store, path="/", data=None, *, token="token", origin=ORIGIN, host=No
             f"Origin: {origin}\r\nX-Finder-CSRF: {token}\r\n"
         )
     connection = MemorySocket(f"{method} {path} HTTP/1.1\r\n{headers}\r\n".encode() + body)
-    server = SimpleNamespace(workspace=store, server_port=PORT, origin=ORIGIN, csrf_token="token")
+    server = SimpleNamespace(
+        workspace=store, server_port=PORT, origin=ORIGIN, csrf_token="token", listing_reader=reader
+    )
     DiscogsHandler(connection, ("127.0.0.1", 1234), server)
     head, _, result = bytes(connection.output).partition(b"\r\n\r\n")
     return int(head.split(b" ")[1]), result
@@ -81,3 +83,40 @@ def test_offline_ui_interactions(tmp_path):
         ["node", "tests/test_discogs_ui.cjs", str(page)], capture_output=True, text=True, timeout=30
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_live_read_opt_in_and_source_spoof_rejected(store):
+    store.save(target().model_dump(), 0)
+    assert request(store, "/api/listing", {"release_id": 123, "listing": "123"})[0] == 403
+    assert (
+        request(
+            store,
+            "/api/evaluate",
+            {"release_id": 123, "observation": {"source": "discogs_public_listing"}},
+        )[0]
+        == 400
+    )
+
+
+def test_live_read_normalized_data_not_purchase(store):
+    import httpx
+    from test_discogs_listing import payload
+
+    from finder.discogs_listing import ListingReader
+
+    store.save(target().model_dump(), 0)
+    reader = ListingReader(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json=payload()))
+    )
+    status, body = request(
+        store, "/api/listing", {"release_id": 123, "listing": "123"}, reader=reader
+    )
+    data = json.loads(body)
+    assert status == 200 and data["listing"]["release_id"] == 123
+    assert not data["evaluation"]["eligible_for_review"]
+    assert data["evaluation"]["purchase_allowed"] is False
+    assert data["evaluation"]["rules_revision"] == 1
+    assert (
+        request(store, "/api/listing", {"release_id": 123, "listing": "123"}, reader=reader)[0]
+        == 502
+    )
