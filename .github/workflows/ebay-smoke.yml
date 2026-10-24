@@ -93,7 +93,7 @@ jobs:
         run: |
           python -m pytest -q tests/test_discogs_listing.py tests/test_discogs_rules.py tests/test_discogs_web.py tests/test_cloud_app.py tests/test_discogs_monitor.py tests/test_execution_guard.py
           python scripts/check_cloud_owner_flow.py
-          node --test tests/test_discogs_cart_inspector.cjs tests/test_discogs_cart_prepare.cjs tests/test_discogs_cart_browser_adapter.cjs
+          node --test tests/test_discogs_cart_inspector.cjs tests/test_discogs_cart_prepare.cjs tests/test_discogs_cart_browser_adapter.cjs tests/test_discogs_listing_release_dom.cjs tests/test_discogs_rule_cart_gate.cjs
 
       - name: Build and smoke-test isolated non-root cloud container
         run: bash scripts/check_cloud_container.sh

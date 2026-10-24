@@ -179,14 +179,17 @@ do not create a new wrapper/connection to evade reconciliation or retry an addit
 The local navigation API is only `tab.goto(url)`: no Playwright options or `waitUntil`
 guarantee are forwarded. Only the helper's exact query-free canonical cart URL is eligible.
 Preparation separately verifies the URL and cart DOM afterward; an unsettled or mismatched
-result stays unconfirmed, with no repeated click or mutation-URL replay. The adapter is
-synthetic-fixture-tested, not live-verified. Actual tool semantics require review before a
-separately authorized live test. It is a local verification port, not the required cloud-only
-production runtime, authentication integration or permission to place orders.
+result stays unconfirmed, with no repeated click or mutation-URL replay. The adapter was fixture-tested and then exercised through the authorized local browser
+on October 24, 2026. It is a local verification port, not the required cloud-only production
+runtime, authentication integration or permission to place orders.
 
-The normal-UI remove/re-add transition was exercised separately during authorized browser
-inspection, not by this new preparation function. Do not report that observation as proof
-that the function has executed a real cart addition.
+A later authorized local test executed the complete supplied esbuild-minified artifact:
+the existing-cart branch passed, the operator removed only the specifically approved test
+item, and one preparation call clicked its visible add link and reconciled one matching cart
+row at the canonical cart URL. The final quote remained unverified and purchase remained
+false. No agreement, address, shipping selection, payment or order was changed. The child
+reported using the complete artifact but did not independently verify its SHA. This validates
+that local adapter flow, not production Playwright, cloud hosting or automatic checkout.
 
 
 ## After shipping information is entered by the owner
@@ -208,5 +211,70 @@ The shipping-selection-aware collector passed a read-only live retest after the 
 local computer reconnected on October 24, 2026. The current full interpreter and existing-cart
 path also reported the observed shipping/total while keeping final verification unresolved.
 These are local verification results, not cloud deployment or order completion. Quotes and
-selection are historical snapshots, not guarantees of current availability or cost. The new
-supported-local-browser adapter and scripted add branch require their own live verification.
+selection are historical snapshots, not guarantees of current availability or cost. The later supported-local-browser adapter and single-add verification is described above.
+
+## Optional saved-release identity gate
+
+`scripts/discogs_rule_cart_gate.mjs` exports
+`prepareRuleQualifiedListingCart(page, authenticatedDataPort, options)`. Its scope is
+**saved-release identity only**, not complete buying-rule qualification. Media/sleeve grade,
+seller thresholds, currency and price ceilings are not enforced by this gate. A matching
+Discogs reference does not independently verify the seller's physical copy. Unknown final
+shipping, tax and fees remain unknown, never zero; `eligible_for_review` is not purchase
+permission. Every result explicitly reports unsupported purchase eligibility and keeps
+`purchase_allowed: false` and `stop_required: true`.
+
+Require explicit positive decimal-string `expectedReleaseId` and `expectedListingId`, plus
+the nonnegative integer `expectedRevision` of saved rules. The release must be uniquely
+saved, enabled and unowned, with the kill switch off. Rules and control revisions must
+remain unchanged. The API must report the exact listing/release, current availability and
+matching `evaluation.rules_revision`. No title, master ID, catalog-number or barcode fallback
+is permitted. Exact listing-page identity is required; existing-cart reconciliation remains
+with the separate read-only inspector.
+
+The self-contained `collectListingReleaseDom(expected)` requires one visible main, one
+visible `main a.hifi-heading-link[href*='/release/']`, and one visible main anchor whose exact
+rendered label is `Release Details`. Both release hrefs must be strict same-origin absolute
+HTTPS `/release/<ID>` links. Unrelated release links are ignored. Canonical and `og:url`
+metadata must each occur once and exactly equal the current HTTPS `/shop/item/<ID>` or
+`/sell/item/<ID>` URL. Ports, credentials, query strings, fragments, encoded paths and
+ambiguous/hidden identity elements fail closed. The local adapter permits this exact
+additional read-only collector, not arbitrary evaluation.
+
+The caller-supplied data port exposes `readSnapshot()` returning the existing
+`{ revision, targets, owned, kill_switch, control_revision }` shape, and
+`readListing({ release_id: number, listing: string })` returning `{ listing, evaluation }`.
+Its name does not authenticate it: a real integration must supply genuinely owner-authorized
+reads and preserve authentication, Origin/CSRF controls and provider budgets. No hosted
+transport, connector, request client, credentials or session is wired here. Synthetic ports
+are fixtures, not production evidence. The existing cloud listing reader's three-second
+cooldown still applies; fresh reads that cannot be performed must fail closed. The helper
+never sleeps/retries or invents cached freshness to bypass that limit.
+
+```js
+import { prepareRuleQualifiedListingCart } from './scripts/discogs_rule_cart_gate.mjs';
+// Both arguments must already exist through authorized integrations.
+const result = await prepareRuleQualifiedListingCart(page, authenticatedDataPort, {
+  expectedReleaseId: '111', expectedListingId: '222', expectedRevision: 3,
+  timeoutMs: 15000,
+});
+// Addition still requires explicit allowAddToCart: true and prior user authorization.
+```
+
+Checks run before preparation and again inside the wrapped Add to Cart click. The final gate
+rereads saved state, API identity and current DOM, checks saved controls again, then rechecks
+the href, visibility and URL immediately before invoking the actual click. Remote reads are
+not atomic with browser state. One overall bounded deadline applies; late API/DOM results
+cannot trigger a delayed click. Concurrent calls and changed data-port objects stop, and the
+same page/port retains a stable wrapper. A failed final recheck consumes the conservative
+low-level attempt latch even when no browser click occurred; report that as blocked-before-add
+and do not create a new wrapper to retry. Uncertain actual clicks likewise cannot be repeated.
+This is not a durable multi-instance purchase guard, a live verified authenticated data
+integration, or autonomous cloud deployment. Existing cloud-only production gates remain.
+
+On October 24, 2026 at approximately 21:47 UTC, the exact listing-release collector passed
+an authorized local read-only verification: one visible main, one identity heading and one
+Release Details link matched the intended release, listing URL, canonical URL and `og:url`.
+No discrepancy or mutation was reported. This verifies that collector in that local context
+only. The full saved-state/API identity-gated preparation pipeline has not been live-tested
+or connected to a hosted authenticated data transport.

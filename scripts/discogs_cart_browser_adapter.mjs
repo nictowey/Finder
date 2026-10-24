@@ -1,6 +1,7 @@
 /** Explicit port for an already authorized supported local-browser tab. No setup or tool calls. */
 import { collectCartDom } from './discogs_cart_inspector.mjs';
 import { MAX_CART_PREPARE_TIMEOUT_MS } from './discogs_cart_prepare.mjs';
+import { collectListingReleaseDom } from './discogs_rule_cart_gate.mjs';
 
 // Repeated wrapping of the SAME tab object cannot reset preparation's page guard.
 // This is not durable across module/process instances or alternate tab objects.
@@ -54,7 +55,7 @@ export function createSupportedLocalCartPage(tab) {
   const page = Object.freeze({
     url() { return tab.url(); },
     evaluate(fn, arg) {
-      if (fn !== collectCartDom) throw new TypeError('unsupported_browser_evaluation');
+      if (fn !== collectCartDom && fn !== collectListingReleaseDom) throw new TypeError('unsupported_browser_evaluation');
       return playwright.evaluate(fn, arg);
     },
     getByRole(role, query) {
