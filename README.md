@@ -1,3 +1,5 @@
+> Cloud-only runtime foundation (not deployed): see [cloud architecture and gates](docs/cloud-foundation.md).
+
 > October 24 update: the primary `finder-local` interface is now a private Discogs-only
 > rules editor with synthetic evaluation, optional explicit public listing reads, and purchasing disabled. See
 > [setup and limitations](docs/private-discogs-rules.md). The prior local review command

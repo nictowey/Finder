@@ -1,5 +1,13 @@
 # Finder Agent Guide
 
+## October 24 cloud-only foundation
+
+The owner requires a cloud runtime, not an always-on Mac, and explicitly prohibits placing
+orders at this stage. `docs/cloud-foundation.md` describes the owner-authenticated WSGI
+foundation and unverified container/deployment gates. Existing local tools remain development
+fixtures, not the final cloud delivery. Do not deploy, configure real credentials/sessions,
+create access grants, or connect a real checkout adapter without further authorization.
+
 ## October 24 private Discogs pivot
 
 The owner approved a private, Discogs-only primary local interface. `finder-local` now
