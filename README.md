@@ -2,6 +2,9 @@
 > No cart mutation, agreement acceptance, order or payment functionality.
 
 > Cloud-only runtime foundation (not deployed): see [cloud architecture and gates](docs/cloud-foundation.md).
+> Read-only cloud checks now include durable release-availability polling and rechecks of
+> supplied listing IDs. **Automatic listing discovery is still not connected.** This is
+> not yet the release-link-only sniper. [Capabilities and blockers](docs/discogs-monitor.md).
 
 > October 24 update: the primary `finder-local` interface is now a private Discogs-only
 > rules editor with synthetic evaluation, optional explicit public listing reads, and purchasing disabled. See

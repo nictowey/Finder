@@ -8,6 +8,7 @@ from pathlib import Path
 import httpx
 
 from finder.cloud_app import CloudApp, OwnerSession
+from finder.discogs_listing import ListingReader, ReleaseStatsReader
 from finder.discogs_rules import RulesStore, Target
 
 ORIGIN = "https://finder.example"
@@ -66,6 +67,30 @@ def check(app):
         assert http("/api/target", data)[0] == 409
         assert http("/api/buy", {})[0] == 404
         assert json.loads(http("/api/snapshot")[1])["capabilities"]["checkout_available"] is False
+        assert json.loads(http("/api/monitor/run", {})[1])["status"] == "stopped"
+        assert http("/api/kill", {"killed": False, "expected_revision": 0})[0] == 200
+        assert (
+            http(
+                "/api/monitor/track",
+                {
+                    "release_id": 123,
+                    "listing": "123",
+                    "remove": False,
+                    "expected_revision": 1,
+                    "monitor_revision": 0,
+                },
+            )[0]
+            == 200
+        )
+        assert json.loads(http("/api/monitor/run", {})[1]) == {"status": "ok", "requests": 1}
+        monitored = json.loads(http("/api/snapshot")[1])["monitor"]
+        listing = next(row for row in monitored["rows"] if row["kind"] == "listing")
+        assert listing["review"]["status"] == "needs_total"
+        assert listing["review"]["total"] is None
+        assert listing["review"]["qualifies_all_in"] is False
+        assert http("/api/kill", {"killed": True, "expected_revision": 1})[0] == 200
+        assert json.loads(http("/api/monitor/run", {})[1])["requests"] == 0
+        assert http("/api/checkout", {})[0] == 404
     finally:
         server.task_dispatcher.shutdown(timeout=5)
         server.close()
@@ -95,5 +120,36 @@ if __name__ == "__main__":
             ORIGIN,
             transport=httpx.MockTransport(auth),
         )
-        check(CloudApp(path, ORIGIN, verifier))
-        print("Cloud HTTP fixture passed: owner auth, save, stale revision, absent checkout.")
+
+        def provider(request):
+            assert request.method == "GET" and request.url.host == "api.discogs.com"
+            assert "cookie" not in request.headers and "authorization" not in request.headers
+            assert request.url.path == "/marketplace/listings/123"
+            return httpx.Response(
+                200,
+                json={
+                    "id": 123,
+                    "release": {"id": 123},
+                    "status": "For Sale",
+                    "condition": "Very Good Plus (VG+)",
+                    "sleeve_condition": "Very Good (VG)",
+                    "seller": {"stats": {"rating": "100", "total": 200}},
+                    "price": {"value": "20.00", "currency": "USD"},
+                    "shipping_is_blocked": False,
+                },
+            )
+
+        transport = httpx.MockTransport(provider)
+        check(
+            CloudApp(
+                path,
+                ORIGIN,
+                verifier,
+                listing_reader=ListingReader(transport=transport),
+                stats_reader=ReleaseStatsReader(transport=transport),
+            )
+        )
+        print(
+            "Cloud HTTP fixture passed: owner auth, revisions, monitor controls, unknown total, "
+            "absent checkout. Synthetic provider responses only."
+        )

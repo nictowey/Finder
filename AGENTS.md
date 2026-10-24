@@ -1,5 +1,24 @@
 # Finder Agent Guide
 
+## October 24 continuation: read-only cloud monitoring
+
+The owner authorizes continuing PR #107 from `a4a3768458fdebc3436427303db9d94ba5e4c13a`,
+with tests and pushes. Cloud-only operation, no email monitoring, orders or payments.
+Ask before paid hosting or persistent credential/session configuration. Keep this PR draft;
+no merge or production deployment is part of the current implementation.
+The cloud opt-in monitor may use public GET `/marketplace/stats/{release_id}` and recheck
+owner-supplied listing IDs through the existing public listing reader. This extends the
+earlier manual-read-only exception below, not permission for scraping or undocumented APIs.
+Counts/lowest item prices are aggregate availability, never individual listing discovery,
+condition/seller qualification, a delivered quote or evidence of a new/sold copy.
+See `docs/discogs-monitor.md` for capabilities, schema, scheduling and remaining blockers.
+
+Preserve the prior explicit browser-recovery block. A managed cloud route reached a public
+release page; Discogs sign-in then displayed Cloudflare bot verification. Stop that attempt:
+no recovery retry, alternate sign-in route, session export or browser launch workaround.
+An offer to log in does not remove this restriction or authorize persistent credentials.
+No authenticated cart DOM or checkout controls have been verified.
+
 ## Read-only cart inspection
 
 The owner explicitly prohibits orders. `scripts/discogs_cart_inspector.mjs` may only read

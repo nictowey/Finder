@@ -4,6 +4,10 @@ October 24, 2026: the owner approved replacing Finder's local primary interface 
 private Discogs-only target tool. This branch implements the **rules preparation and
 synthetic dry-run slice plus explicit known-listing read**, not a functioning marketplace sniper.
 
+The subsequent cloud continuation adds optional aggregate release availability and scheduled
+rechecks of supplied listing IDs; see [cloud monitoring](discogs-monitor.md). The loopback
+development fixture remains manual. Automatic release-listing discovery remains unimplemented.
+
 ## Run locally
 
 Install the project with its development dependencies in an isolated Python environment.
@@ -56,8 +60,8 @@ rules means eligible for review only; every result says `purchase_allowed: false
 
 ## Deliberately not implemented
 
-Automatic listing discovery, scraping, real-time monitoring, automatic cart/order/payment,
-credentials, notifications, deployment and a real-purchase ledger are absent. There is no
+Automatic listing discovery, scraping, real-time individual-listing monitoring, automatic cart/order/payment,
+credentials, external notifications, deployment and a real-purchase ledger are absent. There is no
 hidden enable-purchases switch. Owned markers are manual bookkeeping, not orders or receipts.
 Synthetic JSON input accepts only synthetic observations. API observations are constructed server-side
 and cannot be supplied through the synthetic input endpoint. Neither is persisted.

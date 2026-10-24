@@ -1,4 +1,4 @@
-"""Explicit public known-listing reads. No discovery, credentials, cart or orders."""
+"""Bounded public listing and release-statistics reads. No enumeration, cart or orders."""
 
 import json
 import math
@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 
 import httpx
 
-from finder.discogs_rules import Observation
+from finder.discogs_rules import CURRENCIES, Observation, release_id
 
 GRADE_NAMES = {
     "Poor (P)": "P",
@@ -25,6 +25,11 @@ GRADE_NAMES = {
 
 class ListingReadError(ValueError):
     """Sanitized failure; never contains provider payloads or credentials."""
+
+    def __init__(self, message, *, retry_after=60, rate_limited=False):
+        super().__init__(message)
+        self.retry_after = retry_after
+        self.rate_limited = rate_limited
 
 
 def listing_id(value):
@@ -137,6 +142,10 @@ class ListingReader:
 
     def read(self, value):
         ident = listing_id(value)
+        return normalize(self._request(f"/marketplace/listings/{ident}"), ident)
+
+    def _request(self, path, *, params=None):
+        """Only subclasses construct fixed public GET routes; never accept an input URL."""
         now = self.clock()
         if now < self.next_read:
             raise ListingReadError("Read cooldown active. Wait before explicitly trying again.")
@@ -152,7 +161,7 @@ class ListingReader:
                 },
             ) as client:
                 with client.stream(
-                    "GET", f"https://api.discogs.com/marketplace/listings/{ident}"
+                    "GET", f"https://api.discogs.com{path}", params=params
                 ) as response:
                     if response.status_code == 429:
                         self.next_read = now + 60
@@ -161,7 +170,9 @@ class ListingReader:
                             self.next_read = now + max(60, min(int(retry), 86400))
                         raise ListingReadError(
                             "Discogs rate limit reached. No automatic retry; "
-                            "wait before trying again."
+                            "wait before trying again.",
+                            retry_after=int(self.next_read - now),
+                            rate_limited=True,
                         )
                     if response.status_code != 200:
                         raise ListingReadError(
@@ -172,10 +183,34 @@ class ListingReader:
                         data.extend(chunk)
                         if len(data) > 256 * 1024:
                             raise ListingReadError("Discogs response exceeded the safe size limit.")
-            return normalize(json.loads(data, parse_float=Decimal), ident)
+            return json.loads(data, parse_float=Decimal)
         except (httpx.HTTPError, ImportError):
             raise ListingReadError(
                 "Discogs request failed or timed out; availability is unknown."
             ) from None
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
             raise ListingReadError("Discogs returned an unreadable listing response.") from None
+
+
+class ReleaseStatsReader(ListingReader):
+    """Aggregate release availability only. This endpoint does not discover listing IDs."""
+
+    def read(self, value, currency):
+        ident = release_id(value)
+        if currency not in CURRENCIES:
+            raise ListingReadError("Unsupported currency.")
+        data = self._request(f"/marketplace/stats/{ident}", params={"curr_abbr": currency})
+        if not isinstance(data, dict):
+            raise ListingReadError("Discogs returned unreadable release availability.")
+        count = data.get("num_for_sale")
+        if type(count) is not int or not 0 <= count <= 10000000:
+            raise ListingReadError("Discogs returned an invalid listing count.")
+        price, reported_currency = money(data.get("lowest_price"))
+        if reported_currency != currency:
+            price = None
+        return {
+            "release_id": ident,
+            "num_for_sale": count,
+            "lowest_item_price": price,
+            "currency": currency,
+        }

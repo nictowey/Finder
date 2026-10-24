@@ -1,4 +1,4 @@
-"""Loopback rules UI with synthetic evaluation and optional explicit listing reads."""
+"""Private rules UI with synthetic evaluation, manual reads and cloud monitor status."""
 
 # Bundled HTML, CSS, and JavaScript retain their native line layout.
 # ruff: noqa: E501
@@ -8,7 +8,7 @@ import json
 import re
 
 
-def render_page(csrf_token: str, nonce: str) -> str:
+def render_page(csrf_token: str, nonce: str, *, cloud=False) -> str:
     """Render escaped security tokens without recursively replacing their contents."""
     replacements = {
         "@@NONCE@@": html.escape(nonce, quote=True),
@@ -17,7 +17,30 @@ def render_page(csrf_token: str, nonce: str) -> str:
         .replace(">", "\\u003e")
         .replace("&", "\\u0026"),
     }
-    return re.sub(r"@@(?:NONCE|TOKEN)@@", lambda match: replacements[match.group()], _PAGE)
+    page = _PAGE
+    if cloud:
+        page = (
+            page.replace(
+                "Purchasing disabled. Rules only. No live discovery.",
+                "Purchasing disabled. Read-only monitoring.",
+            )
+            .replace(
+                "Nothing here searches Discogs, contacts a seller, places an order, or sends an alert.\n"
+                "The optional read button fetches only the listing you supply.",
+                "Cloud checks can track aggregate release availability and supplied listing IDs. "
+                "Automatic listing discovery is not connected. No orders or email monitoring.",
+            )
+            .replace(
+                "Local rules, synthetic tests, and optional manual listing reads. No background polling.",
+                "Private server rules and read-only monitoring. Scheduled checks require an enabled "
+                "cloud worker and durable hosting.",
+            )
+            .replace(
+                "Local rules ready. No discovery or purchasing is running.",
+                "Private rules ready. See Cloud monitoring for worker and source status.",
+            )
+        )
+    return re.sub(r"@@(?:NONCE|TOKEN)@@", lambda match: replacements[match.group()], page)
 
 
 _PAGE = r"""<!doctype html>
@@ -116,9 +139,9 @@ Saving the same release updates its rules.</p>
  minlength="2" maxlength="2" value="US" autocomplete="off" autocapitalize="characters" spellcheck="false">
 <small>Two-letter country code.</small></label>
 <label>Destination postal code<input id="destination-postal" name="destination_postal" type="text" required maxlength="16" pattern="[A-Za-z0-9 \-]{1,16}" autocomplete="off" spellcheck="false">
-<small>Stored locally to check the supplied destination.</small></label>
+<small>Stored in your private workspace to check the supplied destination.</small></label>
 <label class="check full"><input id="enabled" name="enabled" type="checkbox" checked>
-<span>Active target<small>Uncheck to pause this target and block rule eligibility. Nothing runs automatically.</small></span></label>
+<span>Active target<small>Uncheck to pause this target and block rule eligibility. Scheduled reads also require an enabled cloud monitor.</small></span></label>
 </div><div class="actions"><button type="submit" id="save-target" disabled>Save target rules</button>
 <small id="draft-note">Refreshing saved state leaves these fields untouched.</small></div></form>
 </section>
@@ -128,6 +151,24 @@ Saving the same release updates its rules.</p>
 <p class="muted">Load a target to replace the fields on the left. Refresh never replaces your draft.</p>
 <div id="targets" aria-live="polite"></div></section>
 </div>
+<section id="monitor-panel" class="panel evaluator" aria-labelledby="monitor-title" hidden>
+<h2 id="monitor-title">Cloud monitoring</h2>
+<p id="monitor-status" class="notice"></p>
+<p id="discovery-status" class="muted"></p>
+<div class="actions"><button type="button" id="toggle-monitor">Start cloud reads</button>
+<button type="button" id="monitor-once" class="secondary">Run one due check</button></div>
+<p class="muted">Release availability is checked every 10 minutes; supplied listing IDs every 5 minutes.
+The server keeps checking while this page is closed, when deployed and started. Refresh to see results.
+No email or external notifications are sent. Checks can be delayed by rate limits or outages.</p>
+<form id="track-form"><div class="grid">
+<label>Saved release<select id="track-target" required><option value="">Save a target first</option></select></label>
+<label>Known listing ID or link<input id="track-listing" required maxlength="500" autocomplete="off" placeholder="Discogs sell/item link"></label>
+</div><div class="actions"><button type="submit" id="track-listing-button" class="secondary">Track this known listing</button></div>
+<small>Tracking saves the reference. The first successful check must establish its reported release ID.
+This does not discover other listings for the release.</small></form>
+<div id="monitor-rows" aria-live="polite"></div>
+<h3>Recent updates</h3><div id="monitor-events"></div>
+</section>
 <section class="panel evaluator" aria-labelledby="listing-title"><h2 id="listing-title">3. Read one known listing <span class="muted">(optional)</span></h2>
 <p class="muted">Read-only live data, kept separate from the synthetic test below. Supply a listing ID or Discogs sell/item link you already know.
 One explicit click reads that listing through the official API. There is no search, automatic refresh, checkout, or order action.</p>
@@ -189,6 +230,10 @@ function updateButtons() {
   el('example').disabled = pending || noTarget;
   const noListingTarget = !snapshot || !snapshot.targets.some((target) => String(target.release_id) === el('listing-target').value);
   el('read-listing').disabled = pending || needsRefresh || noListingTarget || !listingReadEnabled();
+  const monitor=snapshot?.monitor;
+  el('toggle-monitor').disabled=pending || needsRefresh || monitor?.configured !== true;
+  el('monitor-once').disabled=pending || needsRefresh || monitor?.configured !== true || snapshot?.kill_switch !== false;
+  el('track-listing-button').disabled=pending || needsRefresh || !monitor || !el('track-target').value;
   document.querySelectorAll('.ownership').forEach((button) => { button.disabled = pending || needsRefresh; });
 }
 function setPending(next) {
@@ -268,7 +313,7 @@ function renderSaved() {
       `Already-owned marker ${owned ? 'cleared' : 'saved'} for release ${target.release_id}. Purchasing remains disabled.`));
     card.append(load, ownership); el('targets').append(card);
   });
-  ['evaluate-target','listing-target'].forEach((id) => {
+  ['evaluate-target','listing-target','track-target'].forEach((id) => {
     const selected=el(id).value;
     el(id).replaceChildren(node('option', targets.length ? 'Choose a saved target' : 'Save a target first'));
     el(id).firstElementChild.value='';
@@ -299,7 +344,83 @@ function renderSaved() {
     const warning=node('p', 'Saved rules or owned markers changed after this read. Read the listing again explicitly before relying on this comparison.', 'error');
     warning.id='listing-result-stale'; el('listing-result').prepend(warning);
   }
+  renderMonitor();
   updateButtons();
+}
+function sourceLink(kind, reference, label) {
+  if (!/^[1-9][0-9]{0,15}$/.test(String(reference)) || !Number.isSafeInteger(Number(reference))) return node('span', 'Source link unavailable');
+  const link=node('a', label); link.href=`https://www.discogs.com/sell/${kind === 'release' ? 'release' : 'item'}/${reference}`;
+  link.target='_blank'; link.rel='noopener noreferrer'; return link;
+}
+function timeLabel(timestamp) {
+  return typeof timestamp === 'number' && Number.isFinite(timestamp) ? new Date(timestamp * 1000).toLocaleString() : 'Not yet';
+}
+function renderMonitor() {
+  const monitor=snapshot?.monitor;
+  el('monitor-panel').hidden=!monitor;
+  if (!monitor) return;
+  // A malformed response must not present an operating or purchasing-capable monitor.
+  if (monitor.automatic_listing_discovery !== false || monitor.checkout_available !== false ||
+      monitor.email_monitoring !== false || !Number.isSafeInteger(monitor.revision) ||
+      !Array.isArray(monitor.rows) || !Array.isArray(monitor.events)) {
+    throw new Error('Unverified monitoring response. Refresh before changing monitoring settings.');
+  }
+  el('monitor-status').textContent=monitor.configured !== true ?
+    'Cloud polling is not configured. No scheduled provider checks are running.' :
+    snapshot.kill_switch !== false ? 'Cloud reads are stopped. Saved targets are intact.' :
+    monitor.worker_running !== true ? 'Read adapters are configured; the background worker is not running. Manual due checks only.' :
+    'Cloud reads are enabled. Individual listing discovery is not connected. No checkout capability.';
+  el('discovery-status').textContent=monitor.discovery_blocker;
+  el('toggle-monitor').textContent=snapshot.kill_switch === false ? 'Stop cloud reads' : 'Start cloud reads';
+  const rows=el('monitor-rows'); rows.replaceChildren();
+  if (!monitor.rows.length) rows.append(node('p', 'No availability snapshots yet. A stopped monitor does not mean no copies are for sale.', 'empty'));
+  monitor.rows.forEach((row) => {
+    const card=node('article', '', 'target');
+    card.append(node('h3', row.kind === 'release' ? `Release ${row.release_id} · availability only` : `Listing ${row.reference} · reported details`));
+    const facts=document.createElement('dl');
+    detail(facts, 'Check status', row.paused ? 'Target paused or owned' : readable(row.status));
+    detail(facts, 'Last successful check', timeLabel(row.last_success));
+    detail(facts, 'Next due', timeLabel(row.next_check));
+    detail(facts, 'Fresh snapshot', row.fresh === true ? 'Yes' : 'No · availability is unverified');
+    if (row.kind === 'release') {
+      detail(facts, 'Reported listings', row.data?.num_for_sale ?? 'Unknown');
+      detail(facts, 'Lowest item price only', reportedMoney(row.data?.lowest_item_price, row.data?.currency));
+      detail(facts, 'Condition, seller and delivered total', 'Not supplied by this aggregate endpoint');
+    } else {
+      detail(facts, 'Reported release', known(row.data?.release_id));
+      detail(facts, 'Media / sleeve', `${known(row.data?.media)} / ${known(row.data?.sleeve)}`);
+      detail(facts, 'Seller', `${known(row.data?.seller_percent)}% · ${known(row.data?.feedback)} feedback`);
+      detail(facts, 'Item price', reportedMoney(row.data?.item, row.data?.currency));
+      detail(facts, 'All-in filter', row.review?.status === 'needs_total' ? 'Needs delivered total · does not qualify yet' : 'Blocked or not checked');
+      detail(facts, 'Delivered total', 'Unknown · shipping, tax and fees unverified');
+    }
+    card.append(facts, sourceLink(row.kind, row.reference, 'Data provided by Discogs · open source'));
+    if (row.review?.reasons?.length) {
+      const list=document.createElement('ul'); row.review.reasons.forEach((reason) => list.append(node('li', reason))); card.append(list);
+    }
+    if (row.kind === 'listing') {
+      const remove=node('button', 'Stop tracking this listing', 'secondary'); remove.type='button';
+      remove.addEventListener('click', () => monitorAction('/api/monitor/track', {release_id:row.release_id, listing:row.reference,
+        remove:true, expected_revision:snapshot.revision, monitor_revision:snapshot.monitor.revision}, 'Listing tracking removed.'));
+      card.append(remove);
+    }
+    rows.append(card);
+  });
+  el('monitor-events').replaceChildren();
+  if (!monitor.events.length) el('monitor-events').append(node('p', 'No recent updates. Discovery coverage remains incomplete.', 'muted'));
+  monitor.events.forEach((event) => el('monitor-events').append(node('p',
+    `${timeLabel(event.at)} · Release ${event.release_id} · ${event.kind === 'release' ? 'Availability snapshot updated; listing identities unknown' : 'Known listing details updated; delivered total still unverified'}`)));
+}
+async function monitorAction(path, body, success) {
+  if (pending || needsRefresh || !snapshot?.monitor) return;
+  setPending(true); message('Updating cloud monitoring…');
+  try {
+    const result=await request(path,body); needsRefresh=true; await refreshState();
+    message(path === '/api/monitor/run' ? `Due check: ${readable(result.status)}. No checkout or payment action.` : success);
+  } catch (error) {
+    needsRefresh=true;
+    message(`${errorText(error)} Refresh saved state before retrying; drafts are unchanged.`,true);
+  } finally { setPending(false); }
 }
 async function refreshState() {
   const data=validateSnapshot(await request('/api/snapshot'));
@@ -356,6 +477,18 @@ el('refresh').addEventListener('click', async () => {
 });
 el('evaluate-target').addEventListener('change', updateButtons);
 el('listing-target').addEventListener('change', updateButtons);
+el('track-target').addEventListener('change', updateButtons);
+el('toggle-monitor').addEventListener('click', () => monitorAction('/api/kill',
+  {killed:snapshot.kill_switch === false, expected_revision:snapshot.control_revision}, 'Cloud read controls updated.'));
+el('monitor-once').addEventListener('click', () => monitorAction('/api/monitor/run', {}, 'Due check finished.'));
+el('track-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (!snapshot?.monitor) return;
+  const release_id=Number(value('track-target')), listing=value('track-listing');
+  if (!Number.isSafeInteger(release_id) || release_id < 1 || !listing) return;
+  monitorAction('/api/monitor/track', {release_id, listing, remove:false,
+    expected_revision:snapshot.revision, monitor_revision:snapshot.monitor.revision}, 'Known listing reference saved. Its release still needs a successful check.');
+});
 el('example').addEventListener('click', () => {
   if (pending || !snapshot) return;
   const target=snapshot.targets.find((row) => String(row.release_id) === el('evaluate-target').value);

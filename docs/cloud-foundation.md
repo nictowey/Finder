@@ -4,6 +4,10 @@ The owner requires cloud operation, not an always-on Mac, and explicitly does no
 orders placed yet. This branch adds a cloud WSGI application and a static container recipe.
 It is not a functioning Discogs buyer, and no deployment or paid resource is authorized.
 
+The continuation adds optional read-only cloud polling and a private change log. See
+[the monitoring contract](discogs-monitor.md). Aggregate release availability and supplied
+listing rechecks are implemented; automatic listing discovery and checkout are not.
+
 ## Owner identity and routing decision
 
 Reuse the existing Finder verified-owner auth boundary in `functions/watchlist.ts`:
@@ -38,6 +42,10 @@ The factory requires deployment configuration (none configured by this work):
 - `FINDER_CLOUD_DATABASE`: existing tagged rules SQLite file on private durable storage.
 - Optional `FINDER_CLOUD_LISTING_READ=1`: enables the known-listing adapter only after the
   independent persistent kill switch is released by an authenticated CSRF-protected request.
+- Optional `FINDER_CLOUD_MONITOR=1`: creates the public read adapters and one in-process
+  scheduler. It remains stopped until the same authenticated kill switch is released.
+  Requires durable private storage and a cloud process that stays running. No credentials
+  are sent to Discogs; no browser session, email, cart, order or payment route is configured.
 
 No dotenv is loaded. Missing configuration or invalid/legacy database fails startup.
 Initialize a new rules file explicitly with the existing RulesStore initializer before

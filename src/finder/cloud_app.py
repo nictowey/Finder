@@ -14,7 +14,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from finder.discogs_listing import ListingReader, ListingReadError, observation
+from finder.discogs_listing import ListingReader, ListingReadError, ReleaseStatsReader, observation
+from finder.discogs_monitor import MonitorLoop, ReleaseMonitor
 from finder.discogs_rules import RulesStore
 from finder.discogs_ui import render_page
 
@@ -88,7 +89,16 @@ class OwnerSession:
 
 
 class CloudApp:
-    def __init__(self, database, origin, authenticator, *, listing_reader=None):
+    def __init__(
+        self,
+        database,
+        origin,
+        authenticator,
+        *,
+        listing_reader=None,
+        stats_reader=None,
+        start_monitor=False,
+    ):
         self.database = Path(database)
         self.origin = https_url(origin, origin=True)
         self.host = urlsplit(self.origin).netloc
@@ -115,6 +125,12 @@ class CloudApp:
                     BEGIN SELECT RAISE(ABORT,'append-only'); END;
             """)
         store.close()
+        self.monitor = ReleaseMonitor(
+            self.database, stats_reader=stats_reader, listing_reader=listing_reader
+        )
+        self.monitor_loop = MonitorLoop(self.monitor) if start_monitor else None
+        if self.monitor_loop:
+            self.monitor_loop.start()
 
     def token(self, cookie):
         return hmac.new(self.csrf_key, cookie.encode(), hashlib.sha256).hexdigest()
@@ -168,7 +184,7 @@ class CloudApp:
             return reply(403, {"error": "Invalid CSRF token. Reload the authenticated page."})
         if method == "GET" and path == "/":
             nonce = secrets.token_urlsafe(24)
-            page = render_page(csrf, nonce).replace(
+            page = render_page(csrf, nonce, cloud=True).replace(
                 "credentials:'omit'", "credentials:'same-origin'"
             )
             return reply(200, page, html=True, nonce=nonce)
@@ -186,10 +202,16 @@ class CloudApp:
                             **store.snapshot(),
                             "capabilities": {
                                 "listing_read_enabled": self.reader is not None and not killed,
+                                "automatic_listing_discovery": False,
                                 "checkout_available": False,
                             },
                             "kill_switch": killed,
                             "control_revision": control_revision,
+                            "monitor": {
+                                **self.monitor.snapshot(store),
+                                "worker_running": self.monitor_loop is not None
+                                and self.monitor_loop.thread.is_alive(),
+                            },
                         },
                     )
                 if method != "POST":
@@ -204,7 +226,13 @@ class CloudApp:
                     data = json.loads(raw)
                     if not isinstance(data, dict):
                         raise ValueError("Object required.")
-                    if path in {"/api/target", "/api/owned", "/api/kill"}:
+                    if path in {
+                        "/api/target",
+                        "/api/owned",
+                        "/api/kill",
+                        "/api/monitor/track",
+                        "/api/monitor/run",
+                    }:
                         with store.db:
                             store.db.execute(
                                 "INSERT INTO cloud_audit(at,operation,outcome) VALUES(?,?,?)",
@@ -256,7 +284,7 @@ class CloudApp:
                             for t in store.snapshot()["targets"]
                         ):
                             raise ValueError("Save target first.")
-                        listing = self.reader.read(data["listing"])
+                        listing = self.monitor.read_known(data["listing"])
                         evaluation = store.review(
                             data["release_id"], observation(listing).model_dump()
                         )
@@ -270,6 +298,16 @@ class CloudApp:
                             "warning": "Shipping, tax, fees and pressing remain unverified. "
                             "No checkout capability.",
                         }
+                    elif path == "/api/monitor/track" and set(data) == {
+                        "release_id",
+                        "listing",
+                        "remove",
+                        "expected_revision",
+                        "monitor_revision",
+                    }:
+                        result = self.monitor.track(store, **data)
+                    elif path == "/api/monitor/run" and not data:
+                        result = self.monitor.run_once()
                     else:
                         return reply(404, {"error": "Unknown route. Checkout is not implemented."})
                     with store.db:
@@ -295,6 +333,10 @@ class CloudApp:
                     return reply(400, {"error": "Invalid fields."})
                 except RuntimeError:
                     return reply(409, {"error": "Saved state changed. Reload before retrying."})
+            except sqlite3.Error:
+                return reply(
+                    503, {"error": "Saved monitoring state is unavailable. Refresh later."}
+                )
             finally:
                 store.close()
 
@@ -305,11 +347,14 @@ def create_app():
     owner = os.environ["FINDER_CLOUD_OWNER_EMAIL"]
     auth_url = os.environ["FINDER_CLOUD_AUTH_URL"]
     path = Path(os.environ["FINDER_CLOUD_DATABASE"])
+    monitor_enabled = os.environ.get("FINDER_CLOUD_MONITOR") == "1"
     return CloudApp(
         path,
         origin,
         OwnerSession(auth_url, owner, origin),
         listing_reader=ListingReader()
-        if os.environ.get("FINDER_CLOUD_LISTING_READ") == "1"
+        if monitor_enabled or os.environ.get("FINDER_CLOUD_LISTING_READ") == "1"
         else None,
+        stats_reader=ReleaseStatsReader() if monitor_enabled else None,
+        start_monitor=monitor_enabled,
     )
