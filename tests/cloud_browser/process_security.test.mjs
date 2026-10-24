@@ -26,6 +26,8 @@ function fixture() {
       calls.set(path, (calls.get(path) ?? 0) + 1);
       onRead(path, calls.get(path));
       if (failures.has(path)) return missing();
+      const comm = /^\/proc\/(\d+)\/comm$/u.exec(path);
+      if (comm) return (processes.get(Number(comm[1])).comm ?? 'unknown') + '\n';
       const match = /^\/proc\/(\d+)(?:\/task\/(\d+))?\/(stat|status|cmdline)$/u.exec(path);
       assert.ok(match, `Unexpected fixture read: ${path}`);
       const process = processes.get(Number(match[1]));
@@ -143,4 +145,44 @@ test('main executable may be the official sibling firefox-bin', () => {
 test('baseline is mandatory and cannot be replaced with an invented filter count', () => {
   assert.throws(() => collectProcessSecurity({rootPid: 10, executablePath: EXE, baseline: {}}),
     /capture the matching baseline/u);
+});
+
+test('failure diagnostics describe runtime title shape without accepting it as identity', () => {
+  const f = fixture();
+  f.processes.get(30).args = ['Web Content', 'PRIVATE_PROFILE_PATH', 'PRIVATE_TOKEN'];
+  f.processes.get(30).comm = 'Web Content';
+  assert.throws(f.check, error => {
+    assert.equal(error.code, 'failed');
+    assert.match(error.message, /"argv0_name":"web_content"/u);
+    assert.match(error.message, /"comm":"web_content"/u);
+    assert.match(error.message, /"has_contentproc_token":false/u);
+    assert.ok(!error.message.includes('PRIVATE'));
+    assert.ok(!error.message.includes('/pinned'));
+    return true;
+  });
+});
+
+test('unknown names and unreadable optional diagnostic comm remain sanitized', () => {
+  const f = fixture();
+  f.processes.get(30).args = ['PRIVATE unrecognized -contentproc shape'];
+  f.processes.get(30).comm = 'PRIVATE_COMPUTER';
+  f.failures.set('/proc/25/comm', true);
+  assert.throws(f.check, error => {
+    assert.match(error.message, /"has_contentproc_text":true/u);
+    assert.match(error.message, /"comm":"other"/u);
+    assert.match(error.message, /"comm":"unavailable"/u);
+    assert.ok(!error.message.includes('PRIVATE'));
+    return error.code === 'failed';
+  });
+});
+
+test('diagnostics aggregate equal shapes rather than logging raw per-process arguments', () => {
+  const f = fixture();
+  f.processes.get(30).args = ['Web Content'];
+  f.add(35, 25, ['Web Content'], 3);
+  assert.throws(f.check, error => {
+    assert.match(error.message, /"descendant_count":4/u);
+    assert.match(error.message, /"count":2/u);
+    return error.code === 'failed';
+  });
 });

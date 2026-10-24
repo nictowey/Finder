@@ -52,7 +52,10 @@ state, seller content or browser profiles are uploaded.
 Docker is unavailable in the development workspace. A sandbox-enabled local browser launch
 was unavailable because required socket operations were prohibited; no weaker launch was
 attempted. Source/unit checks are distinct from the dedicated GitHub CI container result.
-Only a successful `Isolated cloud browser pipeline` run demonstrates this packaged smoke.
+The synthetic functional result is reported independently of process-security evidence.
+A functional pass with missing or failed security evidence still exits nonzero and is not a
+runtime acceptance. Only a successful `Isolated cloud browser pipeline` run demonstrates
+this packaged smoke.
 If that run fails, do not describe the browser as working or change security policy to pass.
 
 Official references:

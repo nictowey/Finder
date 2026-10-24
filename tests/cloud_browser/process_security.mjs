@@ -10,6 +10,35 @@ import {dirname, join} from 'node:path';
 
 const baselines = new WeakMap();
 const LIMIT = 4096;
+const ROLES = ['tab', 'gpu', 'rdd', 'socket', 'utility', 'forkserver', 'gmplugin', 'vr', 'ipdlunittest'];
+// Diagnostic classifications only. Names never establish process identity or permission.
+function knownName(value) {
+  return ({'Web Content': 'web_content', 'Isolated Web Co': 'isolated_web_content',
+    'Isolated Web Content': 'isolated_web_content', 'Privileged Cont': 'privileged_content',
+    'Privileged Content': 'privileged_content', 'RDD Process': 'rdd',
+    'Socket Process': 'socket', 'Utility Process': 'utility', 'forkserver': 'forkserver',
+    'MainThread': 'main_thread', 'firefox': 'firefox', 'firefox-bin': 'firefox'})[value] ?? 'other';
+}
+function descendantDiagnostics(fs, descendants, argsByPid, allowed) {
+  const groups = new Map();
+  for (const pid of descendants) {
+    const args = argsByPid.get(pid);
+    let comm = 'unavailable';
+    try {
+      const value = fs.readFileSync(`/proc/${pid}/comm`, 'utf8');
+      comm = value.length <= 256 ? knownName(value.trim()) : 'other';
+    } catch { /* Optional diagnostic only; required evidence is never skipped. */ }
+    const row = {pinned_argv0: allowed.has(args[0]), argv0_name: knownName(args[0]),
+      has_contentproc_token: args.includes('-contentproc'), contentproc_second: args[1] === '-contentproc',
+      has_contentproc_text: args.some(arg => /(?:^|\s)-contentproc(?:\s|$)/u.test(arg)),
+      has_is_for_browser: args.includes('-isForBrowser'), argument_count: args.length,
+      final_role: ROLES.includes(args.at(-1)) ? args.at(-1) : 'other', comm};
+    const key = JSON.stringify(row);
+    groups.set(key, (groups.get(key) ?? 0) + 1);
+  }
+  return {descendant_count: descendants.length, groups: [...groups].slice(0, 16)
+    .map(([shape, count]) => ({...JSON.parse(shape), count})), truncated: groups.size > 16};
+}
 const reject = (code, detail) => {
   const error = new Error(`Process security ${code}: ${detail}`);
   error.code = code;
@@ -162,8 +191,7 @@ export function collectProcessSecurity({rootPid = process.pid, executablePath, e
       if (!args.includes('-contentproc')) continue;
       requireThat(args[1] === '-contentproc', 'unsupported Firefox child argument structure');
       requireThat(allowed.has(args[0]), 'content executable argument differs from pinned Firefox');
-      if (!['tab', 'gpu', 'rdd', 'socket', 'utility', 'forkserver', 'gmplugin', 'vr', 'ipdlunittest']
-        .includes(args.at(-1))) reject('unavailable', 'unknown Firefox child process role');
+      if (!ROLES.includes(args.at(-1))) reject('unavailable', 'unknown Firefox child process role');
       if (args.at(-1) !== 'tab') continue;
       // Do not request ptrace permissions for child /exe. Identity is the observed ancestry,
       // pinned argv[0], exact version-specific role and stable PID/starttime, not binary attestation.
@@ -172,7 +200,8 @@ export function collectProcessSecurity({rootPid = process.pid, executablePath, e
         'content filtering does not exceed the measured runner and browser baselines');
       content.push(item);
     }
-    requireThat(content.length > 0, 'no identifiable Firefox content processes');
+    if (!content.length) reject('failed', 'no identifiable Firefox content processes; ' +
+      JSON.stringify(descendantDiagnostics(fs, hierarchy.descendants(browserPid), argumentsByPid, allowed)));
     // Re-read every ancestry edge, argv and executable used above after the security reads.
     for (const pid of [rootPid, ...argumentsByPid.keys()]) {
       if (JSON.stringify(hierarchy.records.get(pid)) !== JSON.stringify(stat(fs, `/proc/${pid}`, pid)))
