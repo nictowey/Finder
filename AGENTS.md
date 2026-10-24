@@ -1,5 +1,13 @@
 # Finder Agent Guide
 
+## Read-only cart inspection
+
+The owner explicitly prohibits orders. `scripts/discogs_cart_inspector.mjs` may only read
+an already-authorized current cart page and report blockers. It does not launch browsers,
+configure sessions, navigate, click, fill, check agreements, place orders or pay. Read
+`docs/discogs-cart-inspection.md` before extending it. Screenshot text is not verified DOM.
+
+
 ## October 24 cloud-only foundation
 
 The owner requires a cloud runtime, not an always-on Mac, and explicitly prohibits placing

@@ -1,3 +1,6 @@
+> Read-only on-site cart blocker helper: [scope and limitations](docs/discogs-cart-inspection.md).
+> No cart mutation, agreement acceptance, order or payment functionality.
+
 > Cloud-only runtime foundation (not deployed): see [cloud architecture and gates](docs/cloud-foundation.md).
 
 > October 24 update: the primary `finder-local` interface is now a private Discogs-only
