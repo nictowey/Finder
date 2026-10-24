@@ -27,6 +27,7 @@ on:
       - "deployment/Dockerfile"
       - ".dockerignore"
       - "scripts/check_cloud_container.sh"
+      - "scripts/discogs_*.mjs"
 
 permissions:
   contents: read

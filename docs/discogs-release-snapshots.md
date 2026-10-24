@@ -138,8 +138,7 @@ On October 24, 2026, the exact final collector (SHA256
 `c1b00901e243b6d2c769a9e898c154ba471affdae88ea243d104ff9ea786da0d`, with only the
 module export removed for tool execution) passed a bounded authorized local-browser read
 of a seven-row page: complete range/count agreement, seven unique listing IDs and all
-structural assertions, with purchase unavailable. The strict empty-page branch passed on
-an earlier collector revision; later changes corrected nonempty row extraction only, and
-final empty behavior is fixture-tested. No targets were created and no cart was changed.
+structural assertions, with purchase unavailable. The same final collector also passed a bounded authorized read of the strict empty-page
+shape at 22:11 UTC: matching zero ranges, zero rows and all four assertions. No targets were created and no cart was changed.
 This validates these observed single-page shapes, not unattended collection, all Discogs
 layouts, continuous access, authenticated import transport or physical pressing identity.
