@@ -1,4 +1,4 @@
-/** Saved-release identity and seller-reported media-completeness gate. No transport, login, session setup or purchasing. */
+/** Saved-release identity and seller-disclosed media-omission gate. No transport, login, session setup or purchasing. */
 import { prepareCurrentListingCart, CART_PREPARE_TIMEOUT_MS, MAX_CART_PREPARE_TIMEOUT_MS } from './discogs_cart_prepare.mjs';
 
 const guardedPages = new WeakMap();
@@ -10,7 +10,7 @@ const revision = value => Number.isSafeInteger(value) && value >= 0;
 function result(code, context = null, preparation = null) {
   return {
     ...(preparation ?? { status: 'blocked', code, preparation_state: 'blocked_before_add', cart_inspection: null }),
-    qualification_scope: 'saved_release_identity_and_reported_media_completeness',
+    qualification_scope: 'saved_release_identity_and_media_omission_check',
     identity_preflight_passed: context?.preflightPassed === true,
     identity_rechecked_before_click: context?.rechecked === true,
     purchase_eligibility: 'unsupported', stop_required: true, purchase_allowed: false,
@@ -109,7 +109,7 @@ async function checkIdentity(context, finalCheck) {
   if (response.evaluation?.rules_revision !== input.savedRevision) return 'listing_rules_revision_changed';
   const completeness = response.evaluation.media_completeness;
   if (completeness?.status === 'incomplete') return 'record_set_incomplete';
-  if (!completeness || completeness.status !== 'reported_complete' ||
+  if (!completeness || !['reported_complete', 'no_disclosed_media_omission'].includes(completeness.status) ||
       completeness.release_id !== Number(input.release) || completeness.verified !== false ||
       !Number.isSafeInteger(completeness.expected_media_count) || completeness.expected_media_count < 1 ||
       completeness.expected_media_count > 100) return 'record_set_completeness_unverified';

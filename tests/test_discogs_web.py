@@ -105,8 +105,11 @@ def test_live_read_normalized_data_not_purchase(store):
     from finder.discogs_listing import ListingReader
 
     store.save(target().model_dump(), 0)
+    clock = [100.0]
     reader = ListingReader(
-        transport=httpx.MockTransport(lambda r: httpx.Response(200, json=payload()))
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json=payload())),
+        clock=lambda: clock[0],
+        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
     )
     status, body = request(
         store, "/api/listing", {"release_id": 123, "listing": "123"}, reader=reader

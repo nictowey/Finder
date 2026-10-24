@@ -246,7 +246,9 @@ function setPending(next) {
 }
 async function request(path, body) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
+  // Explicit listing review may include a second catalog GET after a bounded rate-budget wait.
+  // Aborting the UI request does not prove server-side cancellation.
+  const timeout = setTimeout(() => controller.abort(), path === '/api/listing' ? 25000 : 10000);
   try {
     const response = await fetch(path, {method:body === undefined ? 'GET' : 'POST',
       headers:body === undefined ? {} : {'Content-Type':'application/json', 'X-Finder-CSRF':csrf},
@@ -494,12 +496,12 @@ el('example').addEventListener('click', () => {
   const target=snapshot.targets.find((row) => String(row.release_id) === el('evaluate-target').value);
   if (!target) return;
   el('observation').value=JSON.stringify({source:'synthetic', listing_id:'synthetic-example-only', release_id:target.release_id,
-    seller_comments:'Includes both discs', seller_comments_supported:true,
-    release_media_metadata:{id:target.release_id,formats:[{name:'Vinyl',qty:'2'}]},
+    seller_comments:'Clean copy with light surface marks.', seller_comments_supported:true,
+    release_media_metadata:{id:target.release_id,formats:[{name:'Vinyl',qty:'1'}]},
     media:'VG+', sleeve:'VG+', seller_percent:99.5, feedback:200, item:'20.00', shipping:'5.00', tax:'2.00', fees:'0.00',
     currency:target.currency, destination_country:target.destination_country, destination_postal:target.destination_postal,
     observed_at:new Date().toISOString(), available:true, pressing_evidence:'unknown'}, null, 2);
-  message('Loaded made-up example JSON with the current time. Pressing evidence is deliberately unknown. Nothing was imported or fetched.');
+  message('Loaded made-up one-record example JSON, not actual release metadata. Pressing evidence is deliberately unknown. Nothing was imported or fetched.');
 });
 function renderResult(data, targetId, observation) {
   if (!data || typeof data.eligible_for_review !== 'boolean' || !Array.isArray(data.reasons) ||
@@ -591,7 +593,8 @@ function renderListingResult(data, targetId) {
   detail(facts, 'Physical pressing evidence', 'Unverified');
   const completeness=assessment.media_completeness;
   detail(facts, 'Playable record set', completeness?.status === 'incomplete' ? 'Incomplete: blocked' :
-    completeness?.status === 'reported_complete' ? 'Seller reports complete; not physically verified' : 'Unknown: blocked');
+    completeness?.status === 'reported_complete' ? 'Seller reports complete; not physically verified' :
+    completeness?.status === 'no_disclosed_media_omission' ? 'No missing records disclosed; not physically verified' : 'Unknown: blocked');
   detail(facts, 'Expected vinyl count', known(completeness?.expected_media_count));
   detail(facts, 'Evaluated all-in total', assessment.total === null ? 'Unknown, not zero' : reportedMoney(assessment.total, listing.currency));
   detail(facts, 'Purchase allowed', 'No. Purchasing is disabled.');

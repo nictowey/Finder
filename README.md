@@ -26,7 +26,8 @@ PYTHONPATH=src python -m finder.discogs_web --database finder-discogs.sqlite3 --
 Set exact release targets, condition/reputation minimums and all-in delivered caps in the
 loopback page. Reopen without `--init` to retain saved rules. Purchasing is disabled;
 synthetic evaluation is not a live market check. Add `--live-listing-read` only to enable
-one known-listing public API read per explicit button click, not automated discovery. See [the Discogs guide](docs/private-discogs-rules.md).
+one known-listing public API read per explicit button click, plus at most one exact-release
+catalog read for media-omission checks, not automated discovery. See [the Discogs guide](docs/private-discogs-rules.md).
 
 ## Historical local development review
 

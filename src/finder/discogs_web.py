@@ -71,7 +71,7 @@ class DiscogsHandler(LocalReviewHandler):
                     for t in self.server.workspace.snapshot()["targets"]
                 ):
                     raise ValueError("Save a target first.")
-                listing = reader.read(data["listing"])
+                listing = reader.read_for_release(data["listing"], data["release_id"])
                 evaluation = self.server.workspace.review(
                     data["release_id"], observation(listing).model_dump()
                 )

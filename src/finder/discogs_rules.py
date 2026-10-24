@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from finder.discogs_completeness import assess_media_completeness
+from finder.discogs_completeness import assess_media_completeness, current_release_media
 
 GRADES = ("P", "F", "G", "G+", "VG", "VG+", "NM", "M")
 CURRENCIES = ("USD", "EUR", "GBP", "CAD", "AUD")
@@ -92,6 +92,7 @@ class Observation(StrictInput):
     seller_comments: str | None = Field(default=None, max_length=4096)
     seller_comments_supported: bool = True
     release_media_metadata: dict | None = None
+    release_media_provenance: dict | None = None
 
     @field_validator("item", "shipping", "tax", "fees", mode="before")
     @classmethod
@@ -102,16 +103,21 @@ class Observation(StrictInput):
 def evaluate(target: Target, observation: Observation, *, now: datetime, already_owned=False):
     """Eligibility is a synthetic rule result, never permission to place an order."""
     reasons = []
+    metadata = observation.release_media_metadata
+    if observation.source == "discogs_public_listing":
+        metadata = current_release_media(
+            metadata, observation.release_media_provenance, observation.release_id, now=now
+        )
     completeness = assess_media_completeness(
         observation.release_id,
         observation.seller_comments,
-        observation.release_media_metadata,
+        metadata,
         comments_supported=observation.seller_comments_supported,
     )
     if completeness["status"] == "incomplete":
         reasons.append("Playable vinyl set is incomplete; missing records are not acceptable.")
-    elif completeness["status"] != "reported_complete":
-        reasons.append("Playable vinyl set completeness is unknown; a full record set is required.")
+    elif completeness["status"] not in {"reported_complete", "no_disclosed_media_omission"}:
+        reasons.append("Playable-media omission check is unknown; a full record set is required.")
     if now.tzinfo is None:
         raise ValueError("Evaluation clock must include timezone.")
     try:

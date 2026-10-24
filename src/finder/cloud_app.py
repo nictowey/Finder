@@ -284,7 +284,21 @@ class CloudApp:
                             for t in store.snapshot()["targets"]
                         ):
                             raise ValueError("Save target first.")
-                        listing = self.monitor.read_known(data["listing"])
+                        # Do not block Stop/rule changes during bounded provider I/O or wait.
+                        self.lock.release()
+                        try:
+                            listing = self.monitor.read_known(
+                                data["listing"], release_id=data["release_id"]
+                            )
+                        finally:
+                            self.lock.acquire()
+                        if (
+                            store.db.execute(
+                                "SELECT killed,revision FROM cloud_control WHERE id=1"
+                            ).fetchone()
+                            != control
+                        ):
+                            return reply(409, {"error": "Cloud controls changed during the read."})
                         evaluation = store.review(
                             data["release_id"], observation(listing).model_dump()
                         )

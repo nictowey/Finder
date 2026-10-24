@@ -18,7 +18,7 @@ let listingResponse={listing:{listing_id:'456',release_id:123,media:'VG+',sleeve
   url:'https://www.discogs.com/sell/item/456'},
   evaluation:{eligible_for_review:false,reasons:['Destination shipping is unknown.','Tax and fees are unknown.','Pressing evidence is unverified.'],total:null,purchase_allowed:false},
   warning:'Reported shipping is not a final destination quote; tax/fees/pressing unverified.'};
-const calls=[],errors=[];
+const calls=[],errors=[],requestTimeouts=[];
 const response=(status,data)=>({ok:status>=200 && status<300,status,json:async()=>clone(data)});
 async function mockFetch(path, options) {
   assert.ok(['/api/snapshot','/api/target','/api/owned','/api/evaluate','/api/listing'].includes(path));
@@ -80,6 +80,7 @@ function open() {
   const virtualConsole=new VirtualConsole();virtualConsole.on('jsdomError',error=>errors.push(error));
   return new JSDOM(html,{url:'http://127.0.0.1:18765/',runScripts:'dangerously',resources:{dispatcher:denyDispatcher},virtualConsole,
     beforeParse(w){w.fetch=mockFetch;w.TextEncoder=TextEncoder;
+      const timer=w.setTimeout.bind(w);w.setTimeout=(fn,delay,...args)=>{requestTimeouts.push(delay);return timer(fn,delay,...args);};
       w.Storage.prototype.setItem=()=>{throw new Error('Browser persistence forbidden.');};
       w.Storage.prototype.getItem=()=>{throw new Error('Browser persistence forbidden.');};}});
 }
@@ -283,6 +284,8 @@ function clickText(text) {
   submit('listing-form');await settled(w);assert.equal(el('read-listing').disabled,true);assert.equal(posts('/api/listing').length,readsBeforeDisable);
   saved.capabilities={listing_read_enabled:'true'};el('refresh').click();await settled(w);assert.equal(el('read-listing').disabled,true);
   delete saved.capabilities;el('refresh').click();await settled(w);assert.equal(el('read-listing').disabled,true);
+  assert.ok(requestTimeouts.includes(25000));assert.ok(requestTimeouts.includes(10000));
+  assert.ok(requestTimeouts.every(delay=>delay===10000 || delay===25000));
   assert.deepEqual(errors,[]);dom.window.close();
   console.log('Discogs UI offline DOM checks passed: rules, stale drafts, owned markers, synthetic tests, explicit read-only listing requests, revision guards and XSS.');
 })().catch(error=>{console.error(error);if(dom)dom.window.close();process.exitCode=1;});

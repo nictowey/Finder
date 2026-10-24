@@ -3,7 +3,9 @@
 import json
 import math
 import re
+import threading
 import time
+from collections import OrderedDict
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
@@ -11,6 +13,7 @@ import httpx
 
 from finder.discogs_completeness import (
     assess_media_completeness,
+    current_release_media,
     normalize_comments,
     project_release_media,
 )
@@ -72,10 +75,10 @@ def money(value):
         return None, currency
 
 
-def normalize(payload, requested_id, *, release_metadata=None):
+def normalize(payload, requested_id, *, release_metadata=None, release_provenance=None, now=None):
     """Use only top-level API comments; catalog metadata must be supplied separately.
 
-    The public reader does not fetch catalog metadata. An embedded listing.release
+    Catalog metadata must have fresh public API provenance. An embedded listing.release
     summary, title, barcode, seller fields or precomputed verdict is not authoritative.
     """
     if (
@@ -108,12 +111,20 @@ def normalize(payload, requested_id, *, release_metadata=None):
     shipping, shipping_currency = money(payload.get("shipping_price"))
     available = payload.get("status") == "For Sale"
     comments = normalize_comments(payload.get("comments"))
-    metadata = project_release_media(release_metadata, release["id"])
+    metadata = current_release_media(
+        release_metadata, release_provenance, release["id"], now=now or datetime.now(UTC)
+    )
+    provenance = (
+        {key: release_provenance[key] for key in ("source", "release_id", "fetched_at")}
+        if metadata
+        else None
+    )
     return dict(
         listing_id=str(requested_id),
         seller_comments=comments["text"],
         seller_comments_supported=comments["supported"],
         release_media_metadata=metadata,
+        release_media_provenance=provenance,
         media_completeness=assess_media_completeness(
             release["id"], comments["text"], metadata, comments_supported=comments["supported"]
         ),
@@ -154,23 +165,130 @@ def observation(listing):
         seller_comments=listing.get("seller_comments"),
         seller_comments_supported=listing.get("seller_comments_supported", False),
         release_media_metadata=listing.get("release_media_metadata"),
+        release_media_provenance=listing.get("release_media_provenance"),
     )
 
 
-class ListingReader:
-    def __init__(self, *, transport=None, clock=time.monotonic):
-        self.transport, self.clock, self.next_read = transport, clock, 0.0
+class PublicReadBudget:
+    """One shared request slot per three seconds; at most one bounded explicit wait.
 
-    def read(self, value):
-        ident = listing_id(value)
-        return normalize(self._request(f"/marketplace/listings/{ident}"), ident)
+    Default state is local to this instance/process. Cloud callbacks reserve the existing
+    durable budget instead; no SQLite transaction or mutex is held while sleeping.
+    """
 
-    def _request(self, path, *, params=None):
-        """Only subclasses construct fixed public GET routes; never accept an input URL."""
-        now = self.clock()
-        if now < self.next_read:
+    def __init__(self, *, clock=time.monotonic, sleep=time.sleep, claim=None, defer=None):
+        self.clock, self.sleep = clock, sleep
+        self.claim_callback, self.defer_callback = claim, defer
+        self.next_read = 0.0
+        self.lock = threading.Lock()
+
+    def _claim(self):
+        if self.claim_callback is not None:
+            return self.claim_callback()
+        with self.lock:
+            now = self.clock()
+            if now < self.next_read:
+                return self.next_read - now
+            self.next_read = now + 3.0
+            return 0.0
+
+    def reserve(self, *, wait=False):
+        delay = self._claim()
+        if delay and wait and 0 < delay <= 3.0:
+            self.sleep(delay)
+            delay = self._claim()
+        if delay:
             raise ListingReadError("Read cooldown active. Wait before explicitly trying again.")
-        self.next_read = now + 3.0  # At most 20 attempts/minute, below public API limit.
+
+    def defer(self, seconds):
+        seconds = max(60, min(seconds, 86400))
+        if self.defer_callback is not None:
+            self.defer_callback(seconds)
+        else:
+            with self.lock:
+                self.next_read = max(self.next_read, self.clock() + seconds)
+
+
+class ListingReader:
+    def __init__(
+        self,
+        *,
+        transport=None,
+        clock=time.monotonic,
+        sleep=time.sleep,
+        wall_clock=time.time,
+        budget=None,
+    ):
+        self.transport, self.clock, self.wall_clock = transport, clock, wall_clock
+        self.budget = budget or PublicReadBudget(clock=clock, sleep=sleep)
+        self._media_cache = OrderedDict()
+        self._cache_lock = threading.Lock()
+
+    @property
+    def next_read(self):
+        return self.budget.next_read
+
+    def _now(self):
+        return datetime.fromtimestamp(self.wall_clock(), UTC)
+
+    def read(self, value, *, budget=None):
+        """One listing GET, including when called by the scheduled monitor."""
+        ident = listing_id(value)
+        return normalize(self._request(f"/marketplace/listings/{ident}", budget=budget), ident)
+
+    def read_for_release(self, value, configured_release_id, *, budget=None):
+        """Explicit known-listing review only: at most one additional catalog GET.
+
+        Never discover a release from seller text or fetch an unexpected listing release.
+        Catalog failure preserves the listing with unknown completeness. No stale cache reuse.
+        """
+        ident, release = listing_id(value), release_id(configured_release_id)
+        payload = self._request(f"/marketplace/listings/{ident}", budget=budget)
+        listing = normalize(payload, ident)
+        if listing["release_id"] != release:
+            return listing
+        with self._cache_lock:
+            cached = self._media_cache.get(release)
+            if cached and current_release_media(*cached, release, now=self._now()):
+                self._media_cache.move_to_end(release)
+            else:
+                self._media_cache.pop(release, None)
+                cached = None
+        if cached is None:
+            try:
+                raw = self._request(f"/releases/{release}", budget=budget, wait=True)
+                metadata = project_release_media(raw, release)
+                if metadata is None:
+                    return listing
+                provenance = {
+                    "source": "discogs_release_api",
+                    "release_id": release,
+                    "fetched_at": self._now().isoformat(),
+                }
+                cached = (metadata, provenance)
+                with self._cache_lock:
+                    self._media_cache[release] = cached
+                    self._media_cache.move_to_end(release)
+                    while len(self._media_cache) > 100:
+                        self._media_cache.popitem(last=False)
+            except ListingReadError:
+                return listing
+        return normalize(
+            payload,
+            ident,
+            release_metadata=cached[0],
+            release_provenance=cached[1],
+            now=self._now(),
+        )
+
+    def _request(self, path, *, params=None, budget=None, wait=False):
+        """Only callers construct fixed public GET routes; never accept an input URL."""
+        active_budget = budget or self.budget
+        active_budget.reserve(wait=wait)
+        if active_budget is not self.budget:
+            # Cloud's durable slot coordinates the stats worker; retain the reader's
+            # local cooldown too, including when a caller also uses it directly.
+            self.budget.reserve()
         try:
             with httpx.Client(
                 transport=self.transport,
@@ -185,14 +303,17 @@ class ListingReader:
                     "GET", f"https://api.discogs.com{path}", params=params
                 ) as response:
                     if response.status_code == 429:
-                        self.next_read = now + 60
+                        seconds = 60
                         retry = response.headers.get("Retry-After", "")
                         if retry.isdigit() and len(retry) <= 6:
-                            self.next_read = now + max(60, min(int(retry), 86400))
+                            seconds = max(60, min(int(retry), 86400))
+                        active_budget.defer(seconds)
+                        if active_budget is not self.budget:
+                            self.budget.defer(seconds)
                         raise ListingReadError(
                             "Discogs rate limit reached. No automatic retry; "
                             "wait before trying again.",
-                            retry_after=int(self.next_read - now),
+                            retry_after=seconds,
                             rate_limited=True,
                         )
                     if response.status_code != 200:

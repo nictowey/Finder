@@ -150,8 +150,10 @@ hidden, duplicate, expandable, clipped or oversized text becomes null. It remain
 display data, never instructions or proof of a complete set. Existing baselines without the
 field remain compatible. Known-to-known changes use the existing diff semantics; unknown
 transitions are suppressed. A complete inventory snapshot does not mean each record set is
-complete: that separate qualification gate requires exact-release format quantity and an
-unambiguous supported seller report, and blocks unknown evidence.
+complete: that separate qualification gate requires exact-release format quantity and a
+fully read description with no disclosed omission (or an explicit completeness report). It
+blocks incomplete or ambiguous/unavailable evidence, but does not require an ordinary listing
+to explicitly say every disc is included.
 
 On October 24, 2026 at approximately 22:21 UTC, the updated collector was exercised in the
 approved local browser on a seven-row marketplace. All completeness assertions passed;

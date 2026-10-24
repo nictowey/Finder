@@ -17,7 +17,14 @@ cloud deployment, production database changes, order or payment have been perfor
    first successful read establishes only their reported release association. A wrong
    release, unavailable item, missing/below-minimum grades or seller information, unsupported
    currency, shipping restriction or item price already above the ceiling blocks review.
-4. Otherwise the listing is shown as **Needs delivered total**. API-reported shipping is
+   Known missing playable media and unknown media-omission checks also block review; grades
+   never establish that all records are present.
+4. Only a listing with an acceptable disclosed-media-omission assessment is shown as
+   **Needs delivered total**. Scheduled listing polls remain one GET and do not fetch catalog
+   metadata, so their media-omission result stays unknown unless an authorized integration
+   supplied fresh authoritative metadata. Explicit known-listing review may read the exact
+   catalog release using the same durable per-request budget; see
+   [record-set assessment and metadata integration](private-discogs-rules.md#playable-record-sets-and-disclosed-omissions). API-reported shipping is
    not a destination-confirmed quote. Shipping, tax, mandatory fees and physical pressing
    evidence remain unverified. `total: null`, `qualifies_all_in: false` and
    `purchase_allowed: false` are invariant for these live-read triage results.

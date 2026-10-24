@@ -8,11 +8,13 @@ summaries and absence of a missing-media keyword cannot establish a complete set
 import html
 import re
 import unicodedata
+from datetime import UTC, datetime, timedelta
 
 MAX_COMMENTS = 4096
 MAX_MEDIA_COUNT = 100
 MAX_FORMATS = 32
 MAX_RELEASE_ID = 9007199254740991
+RELEASE_MEDIA_TTL = 6 * 3600
 
 _NUMBERS = {
     "one": 1,
@@ -43,7 +45,7 @@ def normalize_comments(value):
     """
     if not isinstance(value, str):
         return {"text": None, "supported": False}
-    supported = 0 < len(value) <= MAX_COMMENTS
+    supported = len(value) <= MAX_COMMENTS
     text = value[:MAX_COMMENTS]
     decoded = html.unescape(text)
     if decoded != text or re.search(r"[<>]", decoded):
@@ -55,7 +57,7 @@ def normalize_comments(value):
     if not text.isascii():
         supported = False
     text = re.sub(r"\s+", " ", text).strip()[:MAX_COMMENTS]
-    return {"text": text or None, "supported": supported and bool(text)}
+    return {"text": text, "supported": supported}
 
 
 def project_release_media(release_metadata, release_id):
@@ -94,6 +96,33 @@ def project_release_media(release_metadata, release_id):
             return None
         projected.append({"name": "Vinyl", "qty": str(number)})
     return {"id": release_id, "formats": projected}
+
+
+def current_release_media(release_metadata, provenance, release_id, *, now):
+    """Accept live metadata only with fresh exact-release public-catalog provenance."""
+    if (
+        not isinstance(provenance, dict)
+        or provenance.get("source") != "discogs_release_api"
+        or type(provenance.get("release_id")) is not int
+        or provenance["release_id"] != release_id
+        or not isinstance(provenance.get("fetched_at"), str)
+        or not 20 <= len(provenance["fetched_at"]) <= 40
+        or now.tzinfo is None
+    ):
+        return None
+    try:
+        fetched = datetime.fromisoformat(provenance["fetched_at"].replace("Z", "+00:00"))
+        if (
+            fetched.tzinfo is None
+            or fetched.utcoffset() != timedelta(0)
+            or not timedelta(0)
+            <= now.astimezone(UTC) - fetched
+            < timedelta(seconds=RELEASE_MEDIA_TTL)
+        ):
+            return None
+    except (ValueError, OverflowError):
+        return None
+    return project_release_media(release_metadata, release_id)
 
 
 def _number(text):
@@ -181,14 +210,78 @@ def _positive_count(clause, expected):
     return None
 
 
+def _uncertain_media_claim(text):
+    uncertainty = (
+        r"(?:may|might|maybe|perhaps|possibly|probably|uncertain|unsure|not sure|"
+        r"cannot confirm|can't confirm|cannot guarantee|can't guarantee|unconfirmed|"
+        r"not checked|unchecked|if available)"
+    )
+    subject = (
+        r"(?:missing|complete|partial|all|both|contents|records?|discs?|lps?|vinyl|"
+        r"set|include[ds]?)"
+    )
+    return bool(
+        re.search(rf"\b{uncertainty}\b.{{0,100}}\b{subject}\b", text)
+        or re.search(rf"\b{subject}\b.{{0,100}}\b{uncertainty}\b", text)
+        or ("?" in text and re.search(rf"\b{subject}\b", text))
+    )
+
+
+def _unsupported_language(text):
+    """Known language hints only, not a dictionary whitelist or reliable translator.
+
+    Ordinary English seller prose need not match a vocabulary/complete-set template.
+    Recognized foreign-language hints are unsupported. Non-ASCII text is separately
+    excluded by normalize_comments. These heuristics cannot identify every language.
+    """
+    return bool(
+        re.search(
+            r"\b(?:sin|falta|faltan|incluye|incluidos|ambos|discos|estado|vinilo|disque|disques|"
+            r"manque|manquant|sans|avec|tres|etat|beide|platten|schallplatten|fehlt|fehlend|"
+            r"ohne|sauber|erhalten|vinile|manca|mancante|dischi|senza|plaat|platen|ontbreekt)\b",
+            text,
+        )
+    )
+
+
+def _unresolved_media_warning(text, expected):
+    # Do not interpret familiar playback/format mentions as omissions. Ambiguous quantity
+    # or omission wording is different from routine prose and must stop qualification.
+    for clause in re.split(r"[.;,!]+|\b(?:but|however)\b", text):
+        clause = clause.strip()
+        if not clause:
+            continue
+        if _uncertain_media_claim(clause):
+            return True
+        count = _positive_count(clause, expected)
+        if count is not None and count != expected:
+            return True
+        if re.search(r"\b(?:partial|incomplete|missing|absent|lack|lacks|without)\b", clause):
+            harmless = re.sub(
+                rf"\b(?:(?:missing|no|without)\s+{_PACKAGING}"
+                rf"|{_PACKAGING}\s+(?:is\s+)?(?:missing|not\s+included)"
+                rf"|(?:no|not)\s+missing\s+{_MEDIA}(?:\s*{_NUMBER})?"
+                rf"|no\s+{_MEDIA}(?:\s+are)?\s+missing"
+                r"|without\s+(?:any\s+)?(?:skips|scratches|noise|issues|problems))\b",
+                " ",
+                clause,
+            )
+            if re.search(r"\b(?:partial|incomplete|missing|absent|lack|lacks|without)\b", harmless):
+                return True
+        if re.search(r"\b(?:either|or)\b", clause) and re.search(rf"\b{_MEDIA}\b", clause):
+            if not re.fullmatch(r"no skips on either disc", clause):
+                return True
+    return False
+
+
 def assess_media_completeness(
     release_id, comments, release_metadata=None, *, comments_supported=True
 ):
-    """Classify bounded English claims conservatively; absence of a warning never passes.
+    """Assess disclosed media omissions, never verify that the physical copy is complete.
 
-    A reported_complete result means only the seller reports the expected playable vinyl
-    media. It does not verify reality, condition, packaging or the physical pressing.
-    Unknown clauses, quantities, languages and contradictory claims fail closed.
+    Exact catalog quantity is per release, never a blanket two records. Ordinary fully read
+    supported comments need not affirm the quantity. Missing/unavailable or truncated text
+    and ambiguous warnings fail closed; explicit omissions override positive seller claims.
     """
     metadata = project_release_media(release_metadata, release_id)
     expected = sum(int(entry["qty"]) for entry in metadata["formats"]) if metadata else None
@@ -210,7 +303,11 @@ def assess_media_completeness(
         "reasons": [],
         "packaging_uncertain": packaging,
     }
-    if _missing_media(text, expected):
+    clauses = [
+        part.strip() for part in re.split(r"[.;,!]+|\b(?:but|however)\b", text) if part.strip()
+    ]
+    definite = "; ".join(clause for clause in clauses if not _uncertain_media_claim(clause))
+    if _missing_media(definite, expected):
         result["status"] = "incomplete"
         result["reasons"].append(
             "Seller comments explicitly report missing or partial playable media."
@@ -219,39 +316,25 @@ def assess_media_completeness(
         result["reasons"].append(
             "Authoritative exact-release Vinyl quantity is unavailable or unsupported."
         )
-    elif not normalized["supported"] or comments_supported is not True:
+    elif (
+        not normalized["supported"] or comments_supported is not True or _unsupported_language(text)
+    ):
         result["reasons"].append(
-            "Seller comments are unavailable, truncated or unsupported for completeness."
+            "Seller comments are unavailable, truncated or unsupported for omission checks."
+        )
+    elif _unresolved_media_warning(text, expected):
+        result["reasons"].append(
+            "Seller comments contain an ambiguous media omission or quantity warning."
         )
     else:
-        clauses = [part.strip() for part in re.split(r"[.;,!]+", text) if part.strip()]
-        positive, unknown = False, not clauses
-        for clause in clauses:
-            count = _positive_count(clause, expected)
-            if count is not None:
-                positive = True
-                unknown = unknown or count != expected
-                continue
-            # Only small, explicit ancillary phrases may accompany a complete-set claim.
-            # Arbitrary prose is not language-detected or assumed harmless.
-            ancillary = re.fullmatch(
-                rf"(?:(?:missing|no|without)\s+{_PACKAGING}"
-                rf"|{_PACKAGING}\s+(?:is\s+)?(?:missing|not\s+included)"
-                r"|(?:vg\+?|nm|m|mint|near mint)(?:\s+(?:vinyl|records?|media))?"
-                rf"|no\s+skips(?:\s+on\s+(?:{_NUMBERED}|either\s+disc|both\s+discs))?)",
-                clause,
-            )
-            if not ancillary:
-                unknown = True
-        if positive and not unknown:
-            result["status"] = "reported_complete"
-            result["reasons"].append(
-                "Seller reports all expected playable vinyl media; not independently verified."
-            )
-        else:
-            result["reasons"].append(
-                "No unambiguous supported seller report of the full expected vinyl set."
-            )
+        positive = any(_positive_count(clause, expected) == expected for clause in clauses)
+        result["status"] = "reported_complete" if positive else "no_disclosed_media_omission"
+        result["reasons"].append(
+            "Seller reports all expected playable vinyl media; not independently verified."
+            if positive
+            else "No playable-media omission disclosed in available seller comments; "
+            "contents are not verified."
+        )
     if packaging:
         result["reasons"].append(
             "Optional packaging may be missing or uncertain; assessed separately from media."

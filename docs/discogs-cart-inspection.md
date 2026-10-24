@@ -281,9 +281,15 @@ or connected to a hosted authenticated data transport.
 
 ### Complete playable record sets
 The rule-qualified preparation gate additionally requires the recomputed assessment to be
-`reported_complete` for the exact release, with a bounded positive authoritative vinyl count.
+`reported_complete` or `no_disclosed_media_omission` for the exact release, with a bounded
+positive authoritative vinyl count. Ordinary fully read comments need not explicitly state
+that every record is included; absence of a disclosed omission is not physical verification.
 Incomplete sets are rejected regardless of condition grade; unknown or unavailable evidence
 also stops before preparation. This check repeats immediately before the Add to Cart click.
 Seller-reported completeness is not independent physical verification. The bare low-level
-helper is not an autonomous entry point. Current live reads lack the separately supplied
-authoritative release-format metadata, so they remain unknown and blocked.
+helper is not an autonomous entry point. Explicit known-listing reviews can now fetch the
+exact saved release catalog metadata through the shared request budget. Missing, stale or
+unsupported metadata still leaves the omission assessment unknown and blocks preparation.
+The combined live listing-plus-catalog test could not be completed in the test environment
+and remains unverified. The standalone public catalog quantity read succeeded;
+offline tests exercise the integrated path without claiming hosted or live checkout proof.

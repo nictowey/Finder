@@ -80,7 +80,7 @@ function fixture(options = {}) {
 }
 function blocked(result) {
   assert.equal(result.purchase_allowed, false); assert.equal(result.stop_required, true);
-  assert.equal(result.qualification_scope, 'saved_release_identity_and_reported_media_completeness');
+  assert.equal(result.qualification_scope, 'saved_release_identity_and_media_omission_check');
   assert.equal(result.purchase_eligibility, 'unsupported');
   assert.ok(!JSON.stringify(result).includes('Same synthetic album'));
   assert.ok(!JSON.stringify(result).includes('SECRET'));
@@ -284,4 +284,13 @@ test('seller completeness changing before click stops the add without retry', as
   }});
   const result=await prepareRuleQualifiedListingCart(page,port,OPTIONS);
   assert.equal(result.code,'record_set_incomplete'); assert.equal(state.clicks,0); blocked(result);
+});
+
+
+test('ordinary fully read seller text need not explicitly claim every disc is included', async () => {
+  const response=listing(); response.evaluation.media_completeness.status='no_disclosed_media_omission';
+  response.evaluation.media_completeness.expected_media_count=1;
+  const {page,port,state}=fixture({listing:response});
+  const result=await prepareRuleQualifiedListingCart(page,port,OPTIONS);
+  assert.equal(result.code,'cart_observed_after_add');assert.equal(state.clicks,1);blocked(result);
 });

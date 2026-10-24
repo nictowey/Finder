@@ -37,7 +37,11 @@ def setup(tmp_path):
         return httpx.Response(returned["status"], json=data, headers={"Retry-After": "1200"})
 
     transport = httpx.MockTransport(handle)
-    reader = ListingReader(transport=transport, clock=lambda: clock[0])
+    reader = ListingReader(
+        transport=transport,
+        clock=lambda: clock[0],
+        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    )
     stats = ReleaseStatsReader(transport=transport, clock=lambda: clock[0])
     app = CloudApp(path, ORIGIN, verifier(), listing_reader=reader, stats_reader=stats)
     app.monitor.clock = lambda: clock[0]

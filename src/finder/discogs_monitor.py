@@ -11,8 +11,8 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from finder.discogs_completeness import assess_media_completeness
-from finder.discogs_listing import ListingReadError, listing_id
+from finder.discogs_completeness import assess_media_completeness, current_release_media
+from finder.discogs_listing import ListingReadError, PublicReadBudget, listing_id
 from finder.discogs_release_snapshots import ReleaseSnapshots
 from finder.discogs_rules import GRADES, RulesStore, Target
 
@@ -26,19 +26,25 @@ DISCOVERY_BLOCKER = (
 )
 
 
-def listing_review(target, listing, *, fresh, owned=False):
+def listing_review(target, listing, *, fresh, owned=False, now=None):
     """Triage a reported listing; never invent a delivered quote or verify its pressing."""
     reasons = []
+    metadata = current_release_media(
+        listing.get("release_media_metadata"),
+        listing.get("release_media_provenance"),
+        listing["release_id"],
+        now=now or datetime.now(UTC),
+    )
     completeness = assess_media_completeness(
         listing["release_id"],
         listing.get("seller_comments"),
-        listing.get("release_media_metadata"),
+        metadata,
         comments_supported=listing.get("seller_comments_supported", False),
     )
     if completeness["status"] == "incomplete":
         reasons.append("Playable vinyl set is incomplete; missing records are not acceptable.")
-    elif completeness["status"] != "reported_complete":
-        reasons.append("Playable vinyl set completeness is unknown; a full record set is required.")
+    elif completeness["status"] not in {"reported_complete", "no_disclosed_media_omission"}:
+        reasons.append("Playable-media omission check is unknown; a full record set is required.")
     if not fresh:
         reasons.append("Listing snapshot is stale; wait for a successful refresh.")
     if not target.enabled or owned:
@@ -121,35 +127,69 @@ class ReleaseMonitor:
     def enabled(self):
         return self.stats_reader is not None
 
-    def read_known(self, value):
-        """Manual cloud reads share the worker's durable request budget."""
+    def read_known(self, value, *, release_id=None):
+        """Explicit reads reserve the worker's durable budget for each HTTP request."""
         ident = listing_id(value)
         if self.listing_reader is None:
             raise ListingReadError("Listing reads are unavailable.")
         store = RulesStore(self.database)
         try:
-            now = self.clock()
             with store.db:
-                store.db.execute("BEGIN IMMEDIATE")
-                killed = store.db.execute("SELECT killed FROM cloud_control WHERE id=1").fetchone()[
-                    0
-                ]
-                due = store.db.execute(
-                    "SELECT next_request FROM discogs_monitor_control WHERE id=1"
-                ).fetchone()[0]
-                if killed or now < due:
-                    raise ListingReadError("Cloud reads are stopped or cooling down.")
-                store.db.execute("UPDATE discogs_monitor_control SET next_request=?", (now + 3,))
-            try:
-                return self.listing_reader.read(ident)
-            except ListingReadError as error:
-                if error.rate_limited:
-                    with store.db:
-                        store.db.execute(
-                            "UPDATE discogs_monitor_control SET next_request=max(next_request,?)",
-                            (self.clock() + min(86400, error.retry_after),),
-                        )
-                raise
+                store.db.execute("BEGIN")
+                control = store.db.execute(
+                    "SELECT killed,revision FROM cloud_control WHERE id=1"
+                ).fetchone()
+                initial = store.snapshot()
+                if control[0] or (
+                    release_id is not None
+                    and not any(target["release_id"] == release_id for target in initial["targets"])
+                ):
+                    raise ListingReadError("Cloud reads are stopped or the target is unavailable.")
+
+            def unchanged():
+                current_control = store.db.execute(
+                    "SELECT killed,revision FROM cloud_control WHERE id=1"
+                ).fetchone()
+                current = store.snapshot()
+                if current_control != control or current["revision"] != initial["revision"]:
+                    raise ListingReadError("Cloud controls or saved rules changed during the read.")
+
+            def claim():
+                # Commit before any sleep/network, so Stop and target changes stay available.
+                with store.db:
+                    store.db.execute("BEGIN IMMEDIATE")
+                    unchanged()
+                    now = self.clock()
+                    due = store.db.execute(
+                        "SELECT next_request FROM discogs_monitor_control WHERE id=1"
+                    ).fetchone()[0]
+                    if now < due:
+                        return due - now
+                    store.db.execute(
+                        "UPDATE discogs_monitor_control SET next_request=?", (now + 3,)
+                    )
+                    return 0.0
+
+            def defer(seconds):
+                # Rate limits persist even if Stop/rules changed while the request ran.
+                with store.db:
+                    store.db.execute(
+                        "UPDATE discogs_monitor_control SET next_request=max(next_request,?)",
+                        (self.clock() + seconds,),
+                    )
+
+            budget = PublicReadBudget(
+                clock=self.clock, sleep=self.listing_reader.budget.sleep, claim=claim, defer=defer
+            )
+            listing = (
+                self.listing_reader.read(ident, budget=budget)
+                if release_id is None
+                else self.listing_reader.read_for_release(ident, release_id, budget=budget)
+            )
+            with store.db:
+                store.db.execute("BEGIN")
+                unchanged()
+            return listing
         finally:
             store.close()
 
@@ -250,6 +290,7 @@ class ReleaseMonitor:
                         data,
                         fresh=item["fresh"],
                         owned=release in current["owned"],
+                        now=datetime.fromtimestamp(now, UTC),
                     )
                 if kind == "release" and data and data["currency"] != target.currency:
                     item["data"], item["fresh"] = None, False
