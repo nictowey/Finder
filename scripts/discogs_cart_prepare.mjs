@@ -57,7 +57,8 @@ export async function prepareCurrentListingCart(page, options = {}) {
   };
   try {
     if (typeof page.url !== 'function') return stopped('unsupported_page_interface');
-    const initialUrl = page.url();
+    deadline = Date.now() + CART_PREPARE_TIMEOUT_MS;
+    const initialUrl = await bounded(() => page.url());
     const kind = urlKind(initialUrl, input.id);
     if (!kind) return stopped('current_url_not_allowed');
     record = attempts.get(page);
@@ -66,7 +67,6 @@ export async function prepareCurrentListingCart(page, options = {}) {
     if (!record) { record = { inFlight: false, attempted: false }; attempts.set(page, record); }
     record.inFlight = true;
     ownsLock = true;
-    deadline = Date.now() + CART_PREPARE_TIMEOUT_MS;
     if (kind === 'cart') {
       const cart = await bounded(() => inspectCurrentCartDom(page, { expectedListingId: input.id }));
       const matches = cart.observations.includes('expected_listing_link_observed');
@@ -99,18 +99,18 @@ export async function prepareCurrentListingCart(page, options = {}) {
     const link = links[0];
     const expectedHref = `/sell/cart/?add=${input.id}&ev=`;
     if (await bounded(() => link.getAttribute('href')) !== expectedHref) return stopped('unexpected_add_link');
-    if (page.url() !== initialUrl || !await bounded(() => link.isVisible()) ||
+    if (await bounded(() => page.url()) !== initialUrl || !await bounded(() => link.isVisible()) ||
         await bounded(() => link.getAttribute('href')) !== expectedHref) return stopped('listing_changed_before_add');
-    if (page.url() !== initialUrl) return stopped('listing_changed_before_add');
+    if (await bounded(() => page.url()) !== initialUrl) return stopped('listing_changed_before_add');
     // Record BEFORE invoking click. Even an exception/timeout may mean it happened.
     if (deadline <= Date.now()) throw timeout;
     record.attempted = true;
     clicked = true;
     await bounded(() => link.click({ timeout: Math.max(1, deadline - Date.now()) }));
-    let currentUrl = page.url();
+    let currentUrl = await bounded(() => page.url());
     while (currentUrl === initialUrl) {
       await bounded(() => new Promise(resolve => setTimeout(resolve, 25)));
-      currentUrl = page.url();
+      currentUrl = await bounded(() => page.url());
     }
     const origin = /^https:\/\/(?:www\.)?discogs\.com/u.exec(initialUrl)[0];
     if (currentUrl === `${origin}/sell/cart/?add=${input.id}&ev=`) {
@@ -121,7 +121,7 @@ export async function prepareCurrentListingCart(page, options = {}) {
       await bounded(() => page.goto(canonical, {
         timeout: Math.max(1, deadline - Date.now()), waitUntil: 'domcontentloaded',
       }));
-      currentUrl = page.url();
+      currentUrl = await bounded(() => page.url());
       if (currentUrl !== canonical) return stopped('add_outcome_unconfirmed', 'add_outcome_requires_review');
     }
     if (urlKind(currentUrl, input.id) !== 'cart') return stopped('add_outcome_unconfirmed', 'add_outcome_requires_review');

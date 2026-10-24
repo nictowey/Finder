@@ -43,11 +43,14 @@ function assertStopped(result) {
   }
 }
 
-function fakePage({ url = URL, text = TEXT, afterUrl = url, readError, neverResolve = false } = {}) {
+function fakePage({ url = URL, text = TEXT, afterUrl = url, readError, neverResolve = false, asyncUrl = false, urlRead } = {}) {
   const calls = [];
-  let reads = 0;
+  let reads = 0, urlReads = 0;
   const page = new Proxy({
-    url() { calls.push('url'); return reads ? afterUrl : url; },
+    url() {
+      calls.push('url'); const value = reads ? afterUrl : url;
+      return urlRead ? urlRead(++urlReads, value) : asyncUrl ? Promise.resolve(value) : value;
+    },
     locator(selector) {
       calls.push(`locator:${selector}`);
       assert.equal(selector, 'body');
@@ -313,11 +316,14 @@ function cartDom(html = CART_DOM, url = URL) {
   }, close() { observer.disconnect(); dom.window.close(); } };
 }
 
-function domPage(fixture, { url = URL, afterUrl = url, error, neverResolve = false } = {}) {
+function domPage(fixture, { url = URL, afterUrl = url, error, neverResolve = false, asyncUrl = false, urlRead } = {}) {
   const calls = [];
-  let evaluated = false;
+  let evaluated = false, urlReads = 0;
   const page = new Proxy({
-    url() { calls.push('url'); return evaluated ? afterUrl : url; },
+    url() {
+      calls.push('url'); const value = evaluated ? afterUrl : url;
+      return urlRead ? urlRead(++urlReads, value) : asyncUrl ? Promise.resolve(value) : value;
+    },
     async evaluate(fn, id) {
       calls.push('evaluate');
       assert.equal(fn, collectCartDom);
@@ -569,4 +575,57 @@ test('DOM evaluate has an independent timeout without navigation or cancellation
   assertStopped(result);
   assert.equal(result.code, 'cart_read_timeout');
   assert.deepEqual(calls, ['url', 'evaluate']);
+});
+
+test('both inspectors support async URL reads and preserve changed-URL rejection', async () => {
+  const fixture = cartDom();
+  try {
+    for (const afterUrl of [URL, 'https://evil.invalid/']) {
+      for (const [inspect, adapter] of [
+        [inspectCurrentCart, fakePage({ asyncUrl: true, afterUrl })],
+        [inspectCurrentCartDom, domPage(fixture, { asyncUrl: true, afterUrl })],
+      ]) {
+        const result = await inspect(adapter.page, OPTIONS);
+        assertStopped(result);
+        assert.equal(result.code, afterUrl === URL ? 'missing_address_and_unknown_final_quote' : 'current_url_changed');
+        assert.equal(adapter.calls.filter(call => call === 'url').length, 2);
+      }
+    }
+  } finally { fixture.close(); }
+});
+
+test('async initial URL errors and disallowed URLs stop before any content read', async () => {
+  for (const inspect of [inspectCurrentCart, inspectCurrentCartDom]) {
+    for (const reject of [false, true]) {
+      const calls = [];
+      const page = {
+        url() { calls.push('url'); return reject ? Promise.reject(new Error('SECRET_URL_ERROR')) : Promise.resolve('https://evil.invalid/'); },
+        locator() { throw new Error('Content must not be read'); },
+        evaluate() { throw new Error('Content must not be read'); },
+      };
+      const result = await inspect(page, OPTIONS);
+      assertStopped(result);
+      assert.equal(result.code, reject ? 'cart_read_failed' : 'current_url_not_allowed');
+      assert.deepEqual(calls, ['url']);
+      assert.ok(!JSON.stringify(result).includes('SECRET'));
+    }
+  }
+});
+
+test('initial and post-read async URLs are bounded under the same inspection deadline', { timeout: 5_000 }, async () => {
+  const fixture = cartDom();
+  try {
+    await Promise.all([1, 2].flatMap(hangAt => {
+      const urlRead = (read, value) => read === hangAt ? new Promise(() => {}) : Promise.resolve(value);
+      return [
+        [inspectCurrentCart, fakePage({ urlRead })],
+        [inspectCurrentCartDom, domPage(fixture, { urlRead })],
+      ].map(async ([inspect, adapter]) => {
+        const result = await inspect(adapter.page, OPTIONS);
+        assertStopped(result); assert.equal(result.code, 'cart_read_timeout');
+        assert.equal(adapter.calls.filter(call => call === 'url').length, hangAt);
+        if (hangAt === 1) assert.deepEqual(adapter.calls, ['url']);
+      });
+    }));
+  } finally { fixture.close(); }
 });

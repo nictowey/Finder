@@ -6,6 +6,19 @@
  */
 export const MAX_CART_TEXT_LENGTH = 100_000;
 export const CART_READ_TIMEOUT_MS = 1_500;
+const CART_READ_TIMEOUT = Symbol('cart_read_timeout');
+
+async function readBeforeDeadline(operation, deadline) {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw CART_READ_TIMEOUT;
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(operation),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(CART_READ_TIMEOUT), remaining); }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
 
 const CART_URL = /^https:\/\/(?:www\.)?discogs\.com\/(?:sell|shop)\/cart\/?$/;
 const UNRESOLVED_CHECKS = Object.freeze([
@@ -109,33 +122,26 @@ export function inspectCartText(url, text, options = {}) {
 /**
  * The caller must supply an authorized existing Playwright-like page.
  * options.expectedListingId must be a positive safe-integer decimal string.
- * Only url() and locator('body').innerText({ timeout }) may be invoked.
+ * Only url() (sync or async) and locator('body').innerText({ timeout }) are invoked.
  * Timeout bounds our wait; it cannot cancel a nonconforming page implementation.
  */
 export async function inspectCurrentCart(page, options = {}) {
   const invalidOptions = optionsError(options);
   if (invalidOptions) return blocked(invalidOptions);
-  let timer;
-  const timedOut = Symbol('read_timeout');
+  const deadline = Date.now() + CART_READ_TIMEOUT_MS;
   try {
     if (!page || typeof page.url !== 'function' || typeof page.locator !== 'function') {
       return blocked('unsupported_page_interface');
     }
-    const initialUrl = page.url();
+    const initialUrl = await readBeforeDeadline(() => page.url(), deadline);
     if (!allowedUrl(initialUrl)) return blocked('current_url_not_allowed');
-    const text = await Promise.race([
-      Promise.resolve().then(() => page.locator('body').innerText({ timeout: CART_READ_TIMEOUT_MS })),
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(timedOut), CART_READ_TIMEOUT_MS);
-      }),
-    ]);
+    const text = await readBeforeDeadline(
+      () => page.locator('body').innerText({ timeout: CART_READ_TIMEOUT_MS }), deadline);
     // Recheck after the read; even a switch between the two allowed routes fails.
-    if (page.url() !== initialUrl) return blocked('current_url_changed');
+    if (await readBeforeDeadline(() => page.url(), deadline) !== initialUrl) return blocked('current_url_changed');
     return inspectCartText(initialUrl, text, options);
   } catch (error) {
-    return blocked(error === timedOut || error?.name === 'TimeoutError' ? 'cart_read_timeout' : 'cart_read_failed');
-  } finally {
-    clearTimeout(timer);
+    return blocked(error === CART_READ_TIMEOUT || error?.name === 'TimeoutError' ? 'cart_read_timeout' : 'cart_read_failed');
   }
 }
 
@@ -289,27 +295,22 @@ export function inspectCartDomSnapshot(url, snapshot, options = {}) {
     'missing_address_and_unknown_final_quote' : 'final_quote_unverified', observations);
 }
 
-/** Only reads page.url() and page.evaluate(collectCartDom, expectedListingId). */
+/** Only reads sync/async page.url() and page.evaluate(collectCartDom, expectedListingId). */
 export async function inspectCurrentCartDom(page, options = {}) {
   const invalidOptions = optionsError(options);
   if (invalidOptions) return blocked(invalidOptions);
-  let timer;
-  const timedOut = Symbol('read_timeout');
+  const deadline = Date.now() + CART_READ_TIMEOUT_MS;
   try {
     if (!page || typeof page.url !== 'function' || typeof page.evaluate !== 'function') {
       return blocked('unsupported_page_interface');
     }
-    const initialUrl = page.url();
+    const initialUrl = await readBeforeDeadline(() => page.url(), deadline);
     if (!allowedUrl(initialUrl)) return blocked('current_url_not_allowed');
-    const snapshot = await Promise.race([
-      Promise.resolve().then(() => page.evaluate(collectCartDom, options.expectedListingId)),
-      new Promise((_, reject) => { timer = setTimeout(() => reject(timedOut), CART_READ_TIMEOUT_MS); }),
-    ]);
-    if (page.url() !== initialUrl) return blocked('current_url_changed');
+    const snapshot = await readBeforeDeadline(
+      () => page.evaluate(collectCartDom, options.expectedListingId), deadline);
+    if (await readBeforeDeadline(() => page.url(), deadline) !== initialUrl) return blocked('current_url_changed');
     return inspectCartDomSnapshot(initialUrl, snapshot, options);
   } catch (error) {
-    return blocked(error === timedOut || error?.name === 'TimeoutError' ? 'cart_read_timeout' : 'cart_read_failed');
-  } finally {
-    clearTimeout(timer);
+    return blocked(error === CART_READ_TIMEOUT || error?.name === 'TimeoutError' ? 'cart_read_timeout' : 'cart_read_failed');
   }
 }

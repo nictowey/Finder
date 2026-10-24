@@ -22,7 +22,8 @@ an invisible tax row is unknown, never zero.
 ## Verified read-only DOM contract
 
 Import `inspectCurrentCartDom` and pass an already-authorized Playwright-like page plus an
-explicit expected listing ID. It uses only `page.url()` and `page.evaluate(collectCartDom, id)`.
+explicit expected listing ID. It uses only `page.url()` and `page.evaluate(collectCartDom, id)`. URL reads may return a
+string or a Promise; both initial and post-read values are awaited within a bounded deadline.
 The collector is self-contained and serializable for a supported read-only DOM evaluation
 interface. It does not launch/connect browsers, read/export cookies, configure credentials,
 make requests, or grant persistent access.

@@ -30,7 +30,7 @@ function snapshot(id = ID) {
 }
 
 function syntheticPage(options = {}) {
-  const state = { url: options.url ?? LISTING, clicks: 0, navigations: [], calls: [] };
+  const state = { url: options.url ?? LISTING, clicks: 0, navigations: [], calls: [], urlReads: 0 };
   const permitted = (object, methods) => new Proxy(object, {
     get(target, key) {
       assert.ok(methods.includes(key), `Forbidden operation ${String(key)}`);
@@ -38,7 +38,10 @@ function syntheticPage(options = {}) {
     },
   });
   const page = permitted({
-    url() { state.calls.push('url'); return state.url; },
+    url() {
+      state.calls.push('url'); state.urlReads++;
+      return options.urlRead ? options.urlRead(state) : options.asyncUrl ? Promise.resolve(state.url) : state.url;
+    },
     async evaluate(fn, id) {
       state.calls.push('evaluate'); assert.equal(fn, collectCartDom); assert.equal(id, ID);
       if (options.evaluateError) throw options.evaluateError;
@@ -293,4 +296,46 @@ test('definitive read failure before click permits later fresh inspection, not a
   fail = false;
   assert.equal((await prepareCurrentListingCart(page, OPTIONS)).code, 'cart_observed_after_add');
   assert.equal(state.clicks, 1);
+});
+
+test('preparation supports asynchronous initial, pre-click, post-click and post-navigation URL reads', async () => {
+  const { page, state } = syntheticPage({ asyncUrl: true, afterClickUrl: `${CART}?add=123456&ev=` });
+  const result = await prepareCurrentListingCart(page, OPTIONS);
+  assertSafe(result); assert.equal(result.code, 'cart_observed_after_add');
+  assert.equal(state.clicks, 1); assert.deepEqual(state.navigations, [CART]);
+  assert.ok(state.urlReads >= 7);
+});
+
+test('asynchronous wrong initial URL or changed pre-click URL never causes a mutation', async () => {
+  for (const options of [{ asyncUrl: true, url: 'https://evil.invalid/' },
+    { asyncUrl: true, onHrefRead(state) { state.url = 'https://evil.invalid/'; } }]) {
+    const { page, state } = syntheticPage(options);
+    const result = await prepareCurrentListingCart(page, OPTIONS);
+    assertSafe(result); assert.ok(['current_url_not_allowed', 'listing_changed_before_add'].includes(result.code));
+    assert.equal(state.clicks, 0); assert.deepEqual(state.navigations, []);
+  }
+});
+
+test('asynchronous initial and pre-click URL hangs are bounded with no mutations', { timeout: 5_000 }, async () => {
+  await Promise.all([1, 2, 3].map(async hangAt => {
+    const { page, state } = syntheticPage({ urlRead(state) {
+      return state.urlReads === hangAt ? new Promise(() => {}) : Promise.resolve(state.url);
+    } });
+    const result = await prepareCurrentListingCart(page, OPTIONS);
+    assertSafe(result); assert.equal(result.code, 'preparation_read_timeout');
+    assert.equal(state.clicks, 0); assert.deepEqual(state.navigations, []);
+    if (hangAt === 1) assert.deepEqual(state.calls, ['url']);
+  }));
+});
+
+test('post-click async URL timeout is uncertain and preserves the no-retry guard', { timeout: 5_000 }, async () => {
+  let hang = true;
+  const { page, state } = syntheticPage({ urlRead(state) {
+    return hang && state.clicks > 0 ? new Promise(() => {}) : Promise.resolve(state.url);
+  } });
+  const result = await prepareCurrentListingCart(page, OPTIONS);
+  assertSafe(result); assert.equal(result.code, 'add_outcome_uncertain'); assert.equal(state.clicks, 1);
+  hang = false; state.url = LISTING;
+  const repeated = await prepareCurrentListingCart(page, OPTIONS);
+  assertSafe(repeated); assert.equal(repeated.code, 'add_attempt_already_recorded'); assert.equal(state.clicks, 1);
 });
