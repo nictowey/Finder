@@ -22,5 +22,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Test process evidence validation
+        run: node --test tests/cloud_browser/process_security.test.mjs
       - name: Build and run non-root network-isolated browser pipeline
         run: bash scripts/check_cloud_browser.sh

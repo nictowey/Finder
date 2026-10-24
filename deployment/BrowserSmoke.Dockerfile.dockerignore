@@ -10,6 +10,7 @@
 !tests/cloud_browser/package.json
 !tests/cloud_browser/package-lock.json
 !tests/cloud_browser/smoke.mjs
+!tests/cloud_browser/process_security.mjs
 !tests/cloud_browser/verify_pipeline.py
 !deployment/
 !deployment/BrowserSmoke.Dockerfile

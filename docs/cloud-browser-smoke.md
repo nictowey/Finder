@@ -19,9 +19,16 @@ Runtime is non-root UID 10001, read-only root filesystem, network:none, no added
 no-new-privileges, private shared memory, two CPUs and a 2 GiB memory ceiling. Only disposable
 /tmp is writable. No ports or host browser/session mounts are used. Cleanup removes the
 container/image, including on failure. Browser sandbox-disabling variables or flags are not
-used. The browser's own about:support DOM must report effective content sandbox level >= 4 and
-seccomp BPF support; absent evidence or launch failure fails the test instead of relaxing
-container security.
+used. After actual fixture rendering, read-only Linux process evidence must show non-root Firefox
+web-content descendants with NoNewPrivs, active seccomp filtering, and additional filters
+beyond the measured browser parent and Node/container baseline. Unreadable or ambiguous
+evidence fails the test instead of relaxing container security. This establishes observed
+additional syscall filtering, not a runtime Firefox sandbox level or proof of every sandbox
+boundary. Static inspection of this pinned Firefox build found its Linux content sandbox
+default at level6, with no Playwright launch or preference override disabling it. Runtime
+process evidence remains mandatory; defaults alone cannot establish working protection.
+Navigation to the privileged about:support page did not succeed in this Playwright test:
+both load and commit waits timed out, so that diagnostic method is not used.
 
 Four synthetic marketplace documents are fulfilled in memory at the exact URL required by
 the unchanged production collector. This is not a request to Discogs: every unmatched browser
@@ -35,7 +42,7 @@ preserving the last successful baseline, database reopen/replay deduplication, a
 playable media overriding VG+ grades. Catalog counts in these fixtures are explicitly
 synthetic. Ordinary descriptions do not need a complete-set claim. Purchases remain false.
 
-Output contains browser/package versions, sandbox evidence, elapsed milliseconds, Node
+Output contains browser/package versions, process-filter evidence, elapsed milliseconds, Node
 maximum RSS, cgroup memory peak when available and pipeline results. These are one bounded
 smoke's measurements, not 24/7 capacity or latency guarantees. No screenshots, real account
 state, seller content or browser profiles are uploaded.
