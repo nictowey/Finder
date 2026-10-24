@@ -124,6 +124,12 @@ after a click is an uncertain outcome, not a reason to retry. In-process duplica
 are not durable multi-instance purchase locks; new processes require fresh reconciliation
 rather than assuming a previous attempt failed. No invocation returns purchase permission.
 
+The add link's raw href must be exactly `/sell/cart/?add=<expectedID>&ev=` or that exact
+path/query prefixed by the current listing's literal HTTPS origin. No URL normalization is
+used: foreign origins, ports, credentials, encoded paths, query changes and fragments stop.
+The same raw href must remain unchanged at the pre-click recheck, even if switching between
+the otherwise allowed relative and absolute forms.
+
 Unknown authenticated shapes, a different listing, ambiguous links or cart contents, unknown
 final costs and access errors remain stops. Normal UI automation is not permission to
 retry a denied protected-browser route. Synthetic tests establish state-machine behavior;

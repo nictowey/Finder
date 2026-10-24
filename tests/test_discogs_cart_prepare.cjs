@@ -197,7 +197,7 @@ test('missing, hidden, duplicate visible, excessive or unknown controls stop wit
 
 test('only the observed exact add href is allowed, never direct URL requests', async () => {
   for (const href of ['/sell/cart/?add=999999&ev=', '/sell/cart/?add=123456',
-    '/sell/cart/?ev=&add=123456', 'https://www.discogs.com/sell/cart/?add=123456&ev=',
+    '/sell/cart/?ev=&add=123456', 'https://evil.invalid/sell/cart/?add=123456&ev=',
     '/sell/cart/?add=123456&ev=&extra=1', '/sell/cart/?add=123456&ev=#fragment',
     '/sell/cart/?add=123456&ev=\n', '/orders/new']) {
     const { page, state } = syntheticPage({ links: [{ visible: true, href }] });

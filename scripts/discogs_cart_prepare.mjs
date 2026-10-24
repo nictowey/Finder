@@ -102,10 +102,13 @@ export async function prepareCurrentListingCart(page, options = {}) {
     const links = await visibleMatches(page.getByRole('link', { name: 'Add to Cart', exact: true }));
     if (!links || links.length !== 1) return stopped('unsupported_add_link_shape');
     const link = links[0];
+    const origin = /^https:\/\/(?:www\.)?discogs\.com/u.exec(initialUrl)[0];
     const expectedHref = `/sell/cart/?add=${input.id}&ev=`;
-    if (await bounded(() => link.getAttribute('href')) !== expectedHref) return stopped('unexpected_add_link');
+    const observedHref = await bounded(() => link.getAttribute('href'));
+    // Literal alternatives only: no URL normalization, query parsing or redirects.
+    if (observedHref !== expectedHref && observedHref !== `${origin}${expectedHref}`) return stopped('unexpected_add_link');
     if (await bounded(() => page.url()) !== initialUrl || !await bounded(() => link.isVisible()) ||
-        await bounded(() => link.getAttribute('href')) !== expectedHref) return stopped('listing_changed_before_add');
+        await bounded(() => link.getAttribute('href')) !== observedHref) return stopped('listing_changed_before_add');
     if (await bounded(() => page.url()) !== initialUrl) return stopped('listing_changed_before_add');
     // Record BEFORE invoking click. Even an exception/timeout may mean it happened.
     if (deadline <= Date.now()) throw timeout;
@@ -117,7 +120,6 @@ export async function prepareCurrentListingCart(page, options = {}) {
       await bounded(() => new Promise(resolve => setTimeout(resolve, 25)));
       currentUrl = await bounded(() => page.url());
     }
-    const origin = /^https:\/\/(?:www\.)?discogs\.com/u.exec(initialUrl)[0];
     if (currentUrl === `${origin}/sell/cart/?add=${input.id}&ev=`) {
       // Never replay or reload the mutating add URL. Exactly one normal browser
       // navigation to a fixed query-free cart is allowed, only after this click.

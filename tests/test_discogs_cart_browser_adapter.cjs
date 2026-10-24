@@ -30,7 +30,7 @@ function cartSnapshot() {
 }
 
 function localTab(options = {}) {
-  const state = { url: LISTING, reads: 0, clicks: 0, navigations: [], clickOptions: [], calls: [] };
+  const state = { url: LISTING, reads: 0, hrefReads: 0, clicks: 0, navigations: [], clickOptions: [], calls: [] };
   const strict = (target, names) => new Proxy(target, { get(object, key) {
     assert.ok(names.includes(key), `Unsupported local tool ${String(key)}`); return object[key];
   } });
@@ -63,7 +63,11 @@ function localTab(options = {}) {
             return strict({
               async isVisible() { return Object.hasOwn(options, 'visible') ? options.visible : true; },
               async isEnabled() { assert.equal(role, 'button'); return options.enabled; },
-              async getAttribute(name) { assert.equal(role, 'link'); assert.equal(name, 'href'); return `/sell/cart/?add=${ID}&ev=`; },
+              async getAttribute(name) {
+                assert.equal(role, 'link'); assert.equal(name, 'href'); state.hrefReads++;
+                return options.hrefRead ? options.hrefRead(state.hrefReads) :
+                  Object.hasOwn(options, 'href') ? options.href : `/sell/cart/?add=${ID}&ev=`;
+              },
               async click(clickOptions) {
                 assert.equal(role, 'link'); assert.deepEqual(Object.keys(clickOptions), ['timeoutMs']);
                 assert.ok(Number.isInteger(clickOptions.timeoutMs) && clickOptions.timeoutMs >= 1 && clickOptions.timeoutMs <= 30_000);
@@ -164,4 +168,41 @@ test('adapter exposes no order controls, arbitrary evaluation, mutation URL navi
     assert.throws(() => link.click(options));
   }
   assert.equal(state.clicks, 0); assert.deepEqual(state.navigations, []);
+});
+
+test('relative and literal same-origin absolute add hrefs both pass through the supported adapter', async () => {
+  for (const href of [`/sell/cart/?add=${ID}&ev=`, `${CART}?add=${ID}&ev=`]) {
+    const { tab, state } = localTab({ href });
+    const result = await prepareCurrentListingCart(createSupportedLocalCartPage(tab), OPTIONS);
+    safe(result); assert.equal(result.code, 'cart_observed_after_add');
+    assert.equal(state.clicks, 1); assert.equal(state.hrefReads, 2); assert.deepEqual(state.navigations, [CART]);
+  }
+});
+
+test('absolute href acceptance never normalizes foreign origins, ports, credentials, encoded paths or query variants', async () => {
+  for (const href of [
+    `https://evil.invalid/sell/cart/?add=${ID}&ev=`, `https://discogs.com/sell/cart/?add=${ID}&ev=`,
+    `http://www.discogs.com/sell/cart/?add=${ID}&ev=`, `https://www.discogs.com:443/sell/cart/?add=${ID}&ev=`,
+    `https://user@www.discogs.com/sell/cart/?add=${ID}&ev=`, `https://user:secret@www.discogs.com/sell/cart/?add=${ID}&ev=`,
+    `https://www.discogs.com/sell/%63art/?add=${ID}&ev=`, `https://www.discogs.com/sell/../sell/cart/?add=${ID}&ev=`,
+    `${CART}?ev=&add=${ID}`, `${CART}?add=${ID}&ev=&extra=1`, `${CART}?add=${ID}&add=${ID}&ev=`,
+    `${CART}?add=${ID}&ev=&ev=`, `${CART}?add=${ID}&ev=#fragment`, `${CART}?add=${ID}&ev=\n`,
+    `${CART}?add=%31%32%33%34%35%36&ev=`, `${CART}?add=999999&ev=`,
+    `//www.discogs.com/sell/cart/?add=${ID}&ev=`,
+  ]) {
+    const { tab, state } = localTab({ href });
+    const result = await prepareCurrentListingCart(createSupportedLocalCartPage(tab), OPTIONS);
+    safe(result); assert.equal(result.code, 'unexpected_add_link');
+    assert.equal(state.clicks, 0); assert.deepEqual(state.navigations, []);
+  }
+});
+
+test('raw href must remain byte-for-byte unchanged even when both alternatives would separately be allowed', async () => {
+  const relative = `/sell/cart/?add=${ID}&ev=`, absolute = `${CART}?add=${ID}&ev=`;
+  for (const pair of [[relative, absolute], [absolute, relative], [absolute, `${CART}?add=999999&ev=`]]) {
+    const { tab, state } = localTab({ hrefRead: read => pair[Math.min(read - 1, 1)] });
+    const result = await prepareCurrentListingCart(createSupportedLocalCartPage(tab), OPTIONS);
+    safe(result); assert.equal(result.code, 'listing_changed_before_add');
+    assert.equal(state.hrefReads, 2); assert.equal(state.clicks, 0); assert.deepEqual(state.navigations, []);
+  }
 });
