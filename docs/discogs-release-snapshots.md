@@ -142,3 +142,21 @@ structural assertions, with purchase unavailable. The same final collector also 
 shape at 22:11 UTC: matching zero ranges, zero rows and all four assertions. No targets were created and no cart was changed.
 This validates these observed single-page shapes, not unattended collection, all Discogs
 layouts, continuous access, authenticated import transport or physical pressing identity.
+
+### Seller descriptions
+The optional `fields.seller_description` is bounded to 2,000 characters. The collector reads
+only the observed seller-comment paragraph, not grade help or whole-row text. Missing,
+hidden, duplicate, expandable, clipped or oversized text becomes null. It remains untrusted
+display data, never instructions or proof of a complete set. Existing baselines without the
+field remain compatible. Known-to-known changes use the existing diff semantics; unknown
+transitions are suppressed. A complete inventory snapshot does not mean each record set is
+complete: that separate qualification gate requires exact-release format quantity and an
+unambiguous supported seller report, and blocks unknown evidence.
+
+On October 24, 2026 at approximately 22:21 UTC, the updated collector was exercised in the
+approved local browser on a seven-row marketplace. All completeness assertions passed;
+a VG+/VG+ row's seller paragraph explicitly reporting missing disc 1 and disc 2 only was
+captured. The cart was unchanged. The child reported running the supplied logic but did
+not independently verify its artifact hash. This confirms description capture in that
+observed layout, not physical contents, classifier accuracy for arbitrary prose, automatic
+purchase eligibility or hosted execution.

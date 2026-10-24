@@ -9,6 +9,11 @@ from decimal import Decimal, InvalidOperation
 
 import httpx
 
+from finder.discogs_completeness import (
+    assess_media_completeness,
+    normalize_comments,
+    project_release_media,
+)
 from finder.discogs_rules import CURRENCIES, Observation, release_id
 
 GRADE_NAMES = {
@@ -67,7 +72,12 @@ def money(value):
         return None, currency
 
 
-def normalize(payload, requested_id):
+def normalize(payload, requested_id, *, release_metadata=None):
+    """Use only top-level API comments; catalog metadata must be supplied separately.
+
+    The public reader does not fetch catalog metadata. An embedded listing.release
+    summary, title, barcode, seller fields or precomputed verdict is not authoritative.
+    """
     if (
         not isinstance(payload, dict)
         or type(payload.get("id")) is not int
@@ -97,8 +107,16 @@ def normalize(payload, requested_id):
     item, currency = money(payload.get("price"))
     shipping, shipping_currency = money(payload.get("shipping_price"))
     available = payload.get("status") == "For Sale"
+    comments = normalize_comments(payload.get("comments"))
+    metadata = project_release_media(release_metadata, release["id"])
     return dict(
         listing_id=str(requested_id),
+        seller_comments=comments["text"],
+        seller_comments_supported=comments["supported"],
+        release_media_metadata=metadata,
+        media_completeness=assess_media_completeness(
+            release["id"], comments["text"], metadata, comments_supported=comments["supported"]
+        ),
         release_id=release["id"],
         media=GRADE_NAMES.get(payload.get("condition"))
         if isinstance(payload.get("condition"), str)
@@ -133,6 +151,9 @@ def observation(listing):
         observed_at=datetime.now(UTC).isoformat(),
         available=listing["available"],
         pressing_evidence="unknown",
+        seller_comments=listing.get("seller_comments"),
+        seller_comments_supported=listing.get("seller_comments_supported", False),
+        release_media_metadata=listing.get("release_media_metadata"),
     )
 
 

@@ -11,6 +11,7 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from finder.discogs_completeness import assess_media_completeness
 from finder.discogs_listing import ListingReadError, listing_id
 from finder.discogs_release_snapshots import ReleaseSnapshots
 from finder.discogs_rules import GRADES, RulesStore, Target
@@ -28,6 +29,16 @@ DISCOVERY_BLOCKER = (
 def listing_review(target, listing, *, fresh, owned=False):
     """Triage a reported listing; never invent a delivered quote or verify its pressing."""
     reasons = []
+    completeness = assess_media_completeness(
+        listing["release_id"],
+        listing.get("seller_comments"),
+        listing.get("release_media_metadata"),
+        comments_supported=listing.get("seller_comments_supported", False),
+    )
+    if completeness["status"] == "incomplete":
+        reasons.append("Playable vinyl set is incomplete; missing records are not acceptable.")
+    elif completeness["status"] != "reported_complete":
+        reasons.append("Playable vinyl set completeness is unknown; a full record set is required.")
     if not fresh:
         reasons.append("Listing snapshot is stale; wait for a successful refresh.")
     if not target.enabled or owned:
@@ -56,6 +67,7 @@ def listing_review(target, listing, *, fresh, owned=False):
         reasons.append("Shipping availability is blocked or unverified.")
     return {
         "status": "blocked" if reasons else "needs_total",
+        "media_completeness": completeness,
         "reasons": reasons
         + [
             "Destination-confirmed shipping, tax and mandatory fees are unknown.",

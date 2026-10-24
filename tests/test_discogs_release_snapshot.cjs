@@ -105,3 +105,21 @@ test('media value span and feedback list scope exclude unrelated labels, bold se
   blocked(read({markup:html().replace('<span>Very Good Plus','<span class="unknown">Very Good Plus')}));
   blocked(read({markup:html().replace('<li><strong>100.0%</strong>','<li><strong>Unavailable</strong>')}));
 });
+
+
+test('bounded verified seller description remains untrusted data independent of VG+ grade', () => {
+  const comment='<p class="hide_mobile">NO DISC 1, disc 2 only.</p>';
+  const markup=html().replace('</p></td>', '</p>'+comment+'</td>');
+  const result=read({markup}); assert.equal(result.complete,true);
+  assert.equal(result.rows[0].fields.seller_description,'NO DISC 1, disc 2 only.');
+  assert.equal(result.rows[0].fields.media,'Very Good Plus (VG+)');
+  assert.equal(result.rows[1].fields.seller_description,null);
+  assert.equal(result.purchase_allowed,false);
+  for(const changed of [comment.replace('class="hide_mobile"','class="hide_mobile" hidden'),
+    comment+comment, comment.replace('NO DISC 1, disc 2 only.','x'.repeat(2001)),
+    comment.replace('NO DISC 1, disc 2 only.','Includes both <a>read more</a>'),
+    comment.replace('class="hide_mobile"','class="hide_mobile" style="overflow:hidden"')]) {
+    const r=read({markup:markup.replace(comment,changed)}); assert.equal(r.complete,true);
+    assert.equal(r.rows[0].fields.seller_description,null);
+  }
+});

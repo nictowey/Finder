@@ -494,6 +494,8 @@ el('example').addEventListener('click', () => {
   const target=snapshot.targets.find((row) => String(row.release_id) === el('evaluate-target').value);
   if (!target) return;
   el('observation').value=JSON.stringify({source:'synthetic', listing_id:'synthetic-example-only', release_id:target.release_id,
+    seller_comments:'Includes both discs', seller_comments_supported:true,
+    release_media_metadata:{id:target.release_id,formats:[{name:'Vinyl',qty:'2'}]},
     media:'VG+', sleeve:'VG+', seller_percent:99.5, feedback:200, item:'20.00', shipping:'5.00', tax:'2.00', fees:'0.00',
     currency:target.currency, destination_country:target.destination_country, destination_postal:target.destination_postal,
     observed_at:new Date().toISOString(), available:true, pressing_evidence:'unknown'}, null, 2);
@@ -587,6 +589,10 @@ function renderListingResult(data, targetId) {
   detail(facts, 'Destination-confirmed shipping', 'Unknown');
   detail(facts, 'Tax and mandatory fees', 'Unknown');
   detail(facts, 'Physical pressing evidence', 'Unverified');
+  const completeness=assessment.media_completeness;
+  detail(facts, 'Playable record set', completeness?.status === 'incomplete' ? 'Incomplete: blocked' :
+    completeness?.status === 'reported_complete' ? 'Seller reports complete; not physically verified' : 'Unknown: blocked');
+  detail(facts, 'Expected vinyl count', known(completeness?.expected_media_count));
   detail(facts, 'Evaluated all-in total', assessment.total === null ? 'Unknown, not zero' : reportedMoney(assessment.total, listing.currency));
   detail(facts, 'Purchase allowed', 'No. Purchasing is disabled.');
   result.append(facts);

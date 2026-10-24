@@ -39,7 +39,8 @@ API-reported shipping is shown separately, never accepted as a final destination
 Shipping-blocked/unknown status is disclosed. Tax, fees, destination and physical pressing
 evidence remain unverified; no live read can authorize a purchase or meet all-in eligibility.
 A real public adapter read succeeded on October 24; no cart/order/payment was attempted.
-Only normalized bounded fields are returned, not seller text, images or credentials.
+Only normalized bounded fields are returned, including bounded top-level listing comments as
+untrusted text data. Raw provider payloads, images and credentials are not retained.
 
 ## Implemented
 
@@ -114,3 +115,36 @@ reads require the separate server startup opt-in described above.
 - Direct public adapter read succeeded. A later end-to-end server live read returned a
   sanitized 502, so live transport reliability is not established. It did not produce an
   eligibility result or trigger a retry, cart, order or payment.
+
+
+## Complete playable record sets
+
+Media grade is separate from completeness: a VG+ copy can still be missing a record.
+Both synthetic evaluation and known-listing monitoring now fail closed on `unknown` or
+`incomplete` playable-vinyl completeness, independently of matching release ID, grades and price.
+The response exposes `media_completeness` with `status`, `release_id`, `expected_media_count`,
+`reasons`, `packaging_uncertain`, and `verified: false`. Status is `reported_complete`,
+`incomplete`, or `unknown`; it never means the actual contents have been independently verified.
+
+The pure assessor accepts only separately supplied authoritative exact-release catalog metadata:
+integer `id` matching the listing release, and a bounded `formats` array with `name: "Vinyl"`
+and valid `qty` values totaling 1–100 playable records. It does not infer quantity from titles,
+barcodes or an embedded seller/listing release summary. Mixed or unsupported formats, malformed
+quantities and mismatched metadata remain unknown. This change adds **no catalog request or
+new route**. Current live listing reads therefore remain unknown unless the application is
+separately integrated with authorized authoritative catalog metadata.
+
+Only the official listing response's top-level `comments` string supplies seller-text evidence.
+The projection retains at most 4,096 characters as inert text, no raw response. Truncation, HTML,
+controls, non-ASCII text, unrecognized language/prose and ambiguous or contradictory quantities
+cannot produce a positive assessment. Clear missing-media reports in the bounded portion still
+reject. Explicit missing-record reports take precedence over complete-set claims. A narrow
+recognized statement such as "Includes both discs" can produce `reported_complete` only when
+the authoritative expected quantity is exactly two. Absence of missing-media keywords does not
+establish completeness; this is a conservative English-phrase checker, not a semantic guarantee.
+
+Missing inserts, posters and other optional packaging are reported separately as packaging
+uncertainty, not automatically counted as missing playable media. No existing saved target or
+listing data is rewritten as complete. Earlier synthetic positive test cases supply explicit
+made-up catalog quantities and complete-set comments. Every evaluation and monitor review
+still returns `purchase_allowed: false`.

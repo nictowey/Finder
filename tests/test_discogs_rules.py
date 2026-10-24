@@ -46,6 +46,8 @@ def observation(**changes):
         observed_at=NOW.isoformat(),
         available=True,
         pressing_evidence="confirmed",
+        seller_comments="Includes both discs.",
+        release_media_metadata={"id": 123, "formats": [{"name": "Vinyl", "qty": "2"}]},
     )
     data.update(changes)
     return Observation.model_validate(data)

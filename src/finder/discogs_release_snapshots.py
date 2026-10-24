@@ -23,7 +23,16 @@ MAX_SEEN = 1000
 RETENTION_SECONDS = 30 * 86400
 MAX_AGE_SECONDS = 300
 MAX_ID = 9007199254740991
-FIELD_NAMES = ("price", "media", "sleeve", "seller", "seller_rating", "seller_feedback", "shipping")
+FIELD_NAMES = (
+    "price",
+    "media",
+    "sleeve",
+    "seller",
+    "seller_rating",
+    "seller_feedback",
+    "shipping",
+    "seller_description",
+)
 WARNING = (
     "Imported displayed observations, not verified live/authenticated data. Disappearance "
     "is not a sale; a new listing ID can be a relisting. Physical pressing, availability "
@@ -53,6 +62,7 @@ class DisplayedFields(StrictInput):
     seller_rating: str | None = Field(max_length=160)
     seller_feedback: str | None = Field(max_length=160)
     shipping: str | None = Field(max_length=240)
+    seller_description: str | None = Field(default=None, max_length=2000)
 
     @field_validator(*FIELD_NAMES)
     @classmethod
@@ -341,11 +351,14 @@ class ReleaseSnapshots:
             changes.append(("disappeared", ident, {}))
         for ident in sorted(old.keys() & new.keys(), key=int):
             fields = {
-                field: {"before": old[ident]["fields"][field], "after": new[ident]["fields"][field]}
+                field: {
+                    "before": old[ident]["fields"].get(field),
+                    "after": new[ident]["fields"].get(field),
+                }
                 for field in FIELD_NAMES
-                if old[ident]["fields"][field] is not None
-                and new[ident]["fields"][field] is not None
-                and old[ident]["fields"][field] != new[ident]["fields"][field]
+                if old[ident]["fields"].get(field) is not None
+                and new[ident]["fields"].get(field) is not None
+                and old[ident]["fields"].get(field) != new[ident]["fields"].get(field)
             }
             if fields:
                 changes.append(("changed", ident, fields))
@@ -407,6 +420,9 @@ class ReleaseSnapshots:
                     release = target["release_id"]
                     row = saved.get(release)
                     baseline = json.loads(row[3]) if row and row[3] else None
+                    if baseline is not None:
+                        for listing in baseline["rows"]:
+                            listing["fields"].setdefault("seller_description", None)
                     releases.append(
                         dict(
                             release_id=release,

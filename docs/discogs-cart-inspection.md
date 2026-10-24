@@ -278,3 +278,12 @@ Release Details link matched the intended release, listing URL, canonical URL an
 No discrepancy or mutation was reported. This verifies that collector in that local context
 only. The full saved-state/API identity-gated preparation pipeline has not been live-tested
 or connected to a hosted authenticated data transport.
+
+### Complete playable record sets
+The rule-qualified preparation gate additionally requires the recomputed assessment to be
+`reported_complete` for the exact release, with a bounded positive authoritative vinyl count.
+Incomplete sets are rejected regardless of condition grade; unknown or unavailable evidence
+also stops before preparation. This check repeats immediately before the Add to Cart click.
+Seller-reported completeness is not independent physical verification. The bare low-level
+helper is not an autonomous entry point. Current live reads lack the separately supplied
+authoritative release-format metadata, so they remain unknown and blocked.

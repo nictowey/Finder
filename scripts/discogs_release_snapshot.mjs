@@ -115,12 +115,24 @@ export function collectReleaseMarketplaceDom(expectedReleaseId) {
       const ratingContainer = feedbackNode?.closest('li');
       const ratings = ratingContainer && sellerCell.contains(ratingContainer) ?
         [...ratingContainer.querySelectorAll('strong')].filter(node => visible(node) && /^\d{1,3}(?:\.\d+)?%$/u.test(text(node) ?? '')) : [];
+      // Only the verified seller-comment paragraph, never grade help or full row text.
+      const commentNodes = row.querySelectorAll('td.item_description > p.hide_mobile:not(.label_and_cat)');
+      const comment = commentNodes.length === 1 && visible(commentNodes[0]) ? commentNodes[0] : null;
+      let description = null;
+      if (comment && !comment.querySelector('a,button,[aria-expanded]')) {
+        const style = document.defaultView.getComputedStyle(comment);
+        const clipped = comment.scrollHeight > comment.clientHeight || comment.scrollWidth > comment.clientWidth ||
+          ['hidden', 'clip'].includes(style.overflow) || ['hidden', 'clip'].includes(style.overflowY) ||
+          style.textOverflow === 'ellipsis' || (style.webkitLineClamp && style.webkitLineClamp !== 'none' && style.webkitLineClamp !== '0');
+        if (!clipped) description = text(comment, 2000);
+      }
       const fields = {
         price: priceText && /^[A-Z]{3}$/u.test(currency ?? '') ? `${priceText} ${currency}` : null,
         media: media || null, sleeve, seller: text(sellerNode, 120),
         seller_rating: ratings.length === 1 ? text(ratings[0]) : null,
         seller_feedback: text(feedbackNode),
         shipping: text(one(row, 'span.item_shipping'), 240),
+        seller_description: description,
       };
       if (['price', 'media', 'sleeve', 'seller', 'seller_rating', 'seller_feedback'].some(key => !fields[key] || /^(?:loading(?:\.\.\.)?|error|unavailable)$/iu.test(fields[key]))) return stop('row_fields_not_loaded');
       if (fields.price.length > 160 || fields.media.length > 160) return stop('row_fields_oversized');

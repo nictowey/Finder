@@ -85,7 +85,8 @@ def check(app):
         assert json.loads(http("/api/monitor/run", {})[1]) == {"status": "ok", "requests": 1}
         monitored = json.loads(http("/api/snapshot")[1])["monitor"]
         listing = next(row for row in monitored["rows"] if row["kind"] == "listing")
-        assert listing["review"]["status"] == "needs_total"
+        assert listing["review"]["status"] == "blocked"
+        assert listing["review"]["media_completeness"]["status"] == "unknown"
         assert listing["review"]["total"] is None
         assert listing["review"]["qualifies_all_in"] is False
         assert http("/api/kill", {"killed": True, "expected_revision": 1})[0] == 200

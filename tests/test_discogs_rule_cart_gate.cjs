@@ -13,7 +13,7 @@ const OPTIONS = { expectedReleaseId: RELEASE, expectedListingId: LISTING_ID, exp
 const saved = () => ({ revision: 3, targets: [{ release_id: 111, enabled: true, label: 'Same synthetic album' }],
   owned: [], kill_switch: false, control_revision: 2 });
 const listing = () => ({ listing: { listing_id: LISTING_ID, release_id: 111, available: true },
-  evaluation: { rules_revision: 3, eligible_for_review: false, purchase_allowed: false, reasons: ['Final quote unknown'] } });
+  evaluation: { media_completeness: { status: 'reported_complete', release_id: 111, expected_media_count: 2, verified: false }, rules_revision: 3, eligible_for_review: false, purchase_allowed: false, reasons: ['Final quote unknown'] } });
 const identity = () => ({ schema: 'discogs_listing_release_dom_v1', code: 'observed', purchase_allowed: false,
   current_url: LISTING, page_listing_id: LISTING_ID, main_count: 1, heading_count: 1, details_count: 1,
   canonical_count: 1, og_count: 1, heading_release_id: RELEASE, details_release_id: RELEASE,
@@ -80,7 +80,7 @@ function fixture(options = {}) {
 }
 function blocked(result) {
   assert.equal(result.purchase_allowed, false); assert.equal(result.stop_required, true);
-  assert.equal(result.qualification_scope, 'saved_release_identity_only');
+  assert.equal(result.qualification_scope, 'saved_release_identity_and_reported_media_completeness');
   assert.equal(result.purchase_eligibility, 'unsupported');
   assert.ok(!JSON.stringify(result).includes('Same synthetic album'));
   assert.ok(!JSON.stringify(result).includes('SECRET'));
@@ -262,4 +262,26 @@ test('unknown initial page, missing explicit identities/revision and unapproved 
   const { page, port, state } = fixture();
   const result = await prepareRuleQualifiedListingCart(page, port, { ...OPTIONS, allowAddToCart: false });
   blocked(result); assert.equal(result.code, 'add_to_cart_not_authorized'); assert.equal(result.identity_preflight_passed, true); assert.equal(state.clicks, 0);
+});
+
+
+test('full record set is separate from matching release and VG+ grades', async () => {
+  for (const evidence of [undefined, null, {status:'unknown'}, {status:'incomplete'},
+    {status:'reported_complete',release_id:112,expected_media_count:2,verified:false},
+    {status:'reported_complete',release_id:111,expected_media_count:NaN,verified:false},
+    {status:'reported_complete',release_id:111,expected_media_count:2,verified:true}]) {
+    const response=listing(); response.evaluation.media_completeness=evidence;
+    response.listing.condition='Very Good Plus (VG+)';
+    const {page,port,state}=fixture({listing:response});
+    const result=await prepareRuleQualifiedListingCart(page,port,OPTIONS);
+    assert.equal(result.code,evidence?.status==='incomplete'?'record_set_incomplete':'record_set_completeness_unverified');
+    assert.equal(state.clicks,0); assert.equal(state.identities,0); blocked(result);
+  }
+});
+test('seller completeness changing before click stops the add without retry', async () => {
+  const {page,port,state}=fixture({readListing(state) {
+    const response=listing(); if(state.listings>1) response.evaluation.media_completeness.status='incomplete'; return response;
+  }});
+  const result=await prepareRuleQualifiedListingCart(page,port,OPTIONS);
+  assert.equal(result.code,'record_set_incomplete'); assert.equal(state.clicks,0); blocked(result);
 });

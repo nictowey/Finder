@@ -10,6 +10,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from finder.discogs_completeness import assess_media_completeness
+
 GRADES = ("P", "F", "G", "G+", "VG", "VG+", "NM", "M")
 CURRENCIES = ("USD", "EUR", "GBP", "CAD", "AUD")
 
@@ -87,6 +89,9 @@ class Observation(StrictInput):
     observed_at: str
     available: bool
     pressing_evidence: Literal["confirmed", "unknown", "conflicting"]
+    seller_comments: str | None = Field(default=None, max_length=4096)
+    seller_comments_supported: bool = True
+    release_media_metadata: dict | None = None
 
     @field_validator("item", "shipping", "tax", "fees", mode="before")
     @classmethod
@@ -97,6 +102,16 @@ class Observation(StrictInput):
 def evaluate(target: Target, observation: Observation, *, now: datetime, already_owned=False):
     """Eligibility is a synthetic rule result, never permission to place an order."""
     reasons = []
+    completeness = assess_media_completeness(
+        observation.release_id,
+        observation.seller_comments,
+        observation.release_media_metadata,
+        comments_supported=observation.seller_comments_supported,
+    )
+    if completeness["status"] == "incomplete":
+        reasons.append("Playable vinyl set is incomplete; missing records are not acceptable.")
+    elif completeness["status"] != "reported_complete":
+        reasons.append("Playable vinyl set completeness is unknown; a full record set is required.")
     if now.tzinfo is None:
         raise ValueError("Evaluation clock must include timezone.")
     try:
@@ -144,6 +159,7 @@ def evaluate(target: Target, observation: Observation, *, now: datetime, already
             reasons.append("All-in total exceeds your maximum.")
     return {
         "eligible_for_review": not reasons,
+        "media_completeness": completeness,
         "reasons": reasons,
         "total": format(total, ".2f") if total is not None else None,
         "purchase_allowed": False,

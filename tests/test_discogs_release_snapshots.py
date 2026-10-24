@@ -564,3 +564,74 @@ def test_kill_and_edit_after_observation_context_discard_without_writing(setup):
             expected_baseline_revision=context["releases"][0]["baseline_revision"],
         )
     assert set(table_counts(engine).values()) == {0}
+
+
+@pytest.mark.parametrize("description", [None, "", " \n\t "])
+def test_unavailable_seller_description_is_null_not_an_incomplete_snapshot(setup, description):
+    engine, clock, _ = setup
+    ingest(engine, observed(clock, [listing(1001, seller_description=description)]))
+    baseline = release_state(engine)["baseline"]
+    assert baseline["rows"][0]["fields"]["seller_description"] is None
+    assert baseline["complete"] is True
+
+
+def test_seller_description_is_optional_displayed_data_not_record_set_verification(setup):
+    engine, clock, _ = setup
+    value = observed(clock)
+    del value["rows"][0]["fields"]["seller_description"]
+    ingest(engine, value)
+    assert release_state(engine)["baseline"]["rows"][0]["fields"]["seller_description"] is None
+    clock[0] += 1
+    result = ingest(
+        engine, observed(clock, [listing(1001, seller_description=" No disc 1 ")]), baseline=1
+    )
+    assert result["purchase_allowed"] is False and result["pressing_verified"] is False
+    assert result["status"] == "unchanged"
+    assert (
+        release_state(engine)["baseline"]["rows"][0]["fields"]["seller_description"] == "No disc 1"
+    )
+    clock[0] += 1
+    ingest(
+        engine,
+        observed(clock, [listing(1001, seller_description="Both discs present")]),
+        baseline=2,
+    )
+    assert engine.snapshot()["changes"][0]["fields"] == {
+        "seller_description": {"before": "No disc 1", "after": "Both discs present"}
+    }
+
+
+@pytest.mark.parametrize("description", ["x" * 2001, 1, True, {"text": "record"}, "a\x00b"])
+def test_seller_description_bound_and_type_fail_without_mutation(setup, description):
+    engine, clock, _ = setup
+    with pytest.raises(ValueError):
+        ingest(engine, observed(clock, [listing(1001, seller_description=description)]))
+    assert set(table_counts(engine).values()) == {0}
+
+
+def test_maximum_seller_description_preserved_without_truncation(setup):
+    engine, clock, _ = setup
+    description = "x" * 2000
+    ingest(engine, observed(clock, [listing(1001, seller_description=description)]))
+    assert (
+        release_state(engine)["baseline"]["rows"][0]["fields"]["seller_description"] == description
+    )
+
+
+def test_pre_description_stored_baselines_upgrade_as_unknown_without_false_change(setup):
+    engine, clock, _ = setup
+    ingest(engine, observed(clock))
+    store = RulesStore(engine.database)
+    with store.db:
+        encoded = store.db.execute("SELECT baseline FROM discogs_release_baselines").fetchone()[0]
+        old = json.loads(encoded)
+        del old["rows"][0]["fields"]["seller_description"]
+        store.db.execute("UPDATE discogs_release_baselines SET baseline=?", (json.dumps(old),))
+    store.close()
+    reopened = ReleaseSnapshots(engine.database, clock=lambda: clock[0])
+    assert release_state(reopened)["baseline"]["rows"][0]["fields"]["seller_description"] is None
+    clock[0] += 1
+    value = observed(clock)
+    value["rows"][0]["fields"]["seller_description"] = "Both records included"
+    assert ingest(reopened, value, baseline=1)["status"] == "unchanged"
+    assert reopened.snapshot()["changes"] == []

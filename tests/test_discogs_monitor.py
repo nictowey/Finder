@@ -116,7 +116,8 @@ def test_known_listing_poll_separates_conditions_from_missing_delivered_quote(se
     row = state(app)["monitor"]["rows"][0]
     assert row["kind"] == "listing" and row["fresh"] is True
     assert row["data"]["reported_shipping"] == "2.50"
-    assert row["review"]["status"] == "needs_total"
+    assert row["review"]["status"] == "blocked"
+    assert row["review"]["media_completeness"]["status"] == "unknown"
     assert row["review"]["total"] is None and row["review"]["qualifies_all_in"] is False
     assert row["review"]["purchase_allowed"] is False
     assert tick(app) == {"status": "cooldown", "requests": 0}
@@ -401,7 +402,9 @@ def test_stale_and_owned_reviews_fail_closed_without_totals():
     listing = normalize(payload(), 123)
     assert listing_review(target(), listing, fresh=False)["status"] == "blocked"
     assert listing_review(target(), listing, fresh=True, owned=True)["status"] == "blocked"
-    assert listing_review(target(max_total="20"), listing, fresh=True)["status"] == "needs_total"
+    review = listing_review(target(max_total="20"), listing, fresh=True)
+    assert review["status"] == "blocked"
+    assert review["media_completeness"]["status"] == "unknown"
 
 
 def test_cloud_monitor_routes_require_owner_origin_csrf(setup):
