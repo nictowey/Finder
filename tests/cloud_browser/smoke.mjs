@@ -24,7 +24,9 @@ try {
   });
   const page=await context.newPage();
   // Read the browser's own diagnostic DOM, not a website or saved user session.
-  await page.goto('about:support',{timeout:15000});
+  // Use navigation commit only as transport readiness; diagnostic readiness
+  // still requires the actual sandbox values below, never just navigation.
+  await page.goto('about:support',{waitUntil:'commit',timeout:15000});
   const effective=page.locator('#sandbox-tbody tr').filter({has:page.locator('th[data-l10n-id="effective-content-sandbox-level"]')}).locator('td');
   await effective.waitFor({state:'attached',timeout:10000});
   const level=Number((await effective.textContent()).trim());
