@@ -77,7 +77,13 @@ Never wire a generic browser object into it and claim that purchasing is enabled
 
 `deployment/Dockerfile` is a non-root, multi-stage Python/Waitress recipe; the build context
 uses an allowlist `.dockerignore`. No credentials are baked into layers. No Docker/Podman
-runtime was available in the workspace, so the image has not been built or launched.
+runtime was available in the workspace. The existing offline CI workflow now runs
+`bash scripts/check_cloud_container.sh` to build the image and exercise its actual production
+entrypoint as UID 10001. The smoke test uses a read-only filesystem, disposable tmpfs data,
+no published ports and `--network none`; it checks missing-configuration startup failure,
+HTTP health, and rejection of unauthenticated, foreign-host and foreign-origin requests.
+No real credentials or provider connections are supplied. CI must pass before claiming
+container verification; this does not establish deployment, persistent storage or real login.
 Before any deployment, verify and pin the base image digest, resolve/lock dependencies,
 choose hosting/storage and confirm cost limits, integrate existing auth under the intended
 origin, test real sign-in/expiry/CSRF, verify HTTPS/private port exposure and backup/restore.
