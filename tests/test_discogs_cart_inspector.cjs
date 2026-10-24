@@ -35,9 +35,10 @@ function assertStopped(result) {
   for (const code of [
     'exact_listing_unverified', 'release_id_unverified', 'media_condition_unverified',
     'sleeve_condition_unverified', 'seller_identity_unverified', 'seller_rating_unverified',
-    'quantity_unverified', 'destination_unverified', 'currency_unknown',
+    'quantity_unverified', 'destination_unverified',
     'final_shipping_unverified', 'tax_unverified', 'fees_unverified', 'final_total_unverified',
   ]) assert.ok(result.unresolved_checks.includes(code));
+  assert.ok(result.unresolved_checks.includes('currency_unknown') || result.unresolved_checks.includes('currency_unverified'));
   for (const value of [result.code, ...result.observations, ...result.unresolved_checks]) {
     assert.match(value, /^[a-z_]+$/u);
   }
@@ -441,7 +442,8 @@ test('hidden taxes are unknown, not zero; visible taxes and numeric totals still
       const result = inspectCartDomSnapshot(URL, snapshot, OPTIONS);
       assertStopped(result);
       assert.ok(result.unresolved_checks.includes('tax_unverified'));
-      assert.ok(!JSON.stringify(result).includes('20.00'));
+      assert.ok(!JSON.stringify(result).includes('SECRET_'));
+      assert.equal(result.observed_quote.final_quote_verified, false);
     } finally { fixture.close(); }
   }
 });
@@ -457,7 +459,7 @@ test('scoped missing-address recognition ignores unrelated text and never return
     const result = inspectCartDomSnapshot(URL, snapshot, OPTIONS);
     assertStopped(result);
     assert.equal(result.code, 'final_quote_unverified');
-    assert.ok(result.observations.includes('shipping_address_unknown'));
+    assert.ok(result.observations.includes('address_warning_absent_destination_unverified'));
   } finally { fixture.close(); }
 });
 
@@ -627,5 +629,182 @@ test('initial and post-read async URLs are bounded under the same inspection dea
         if (hangAt === 1) assert.deepEqual(adapter.calls, ['url']);
       });
     }));
+  } finally { fixture.close(); }
+});
+
+function numericCartSnapshot() {
+  const fixture = cartDom(CART_DOM.replace('$20.00', '$100.00 USD')
+    .replace('To be determined by seller', '$5.00 USD')
+    .replace('To be determined by seller', '$105.00 USD')
+    .replace("You haven't provided a shipping address yet.", 'Synthetic destination configured'));
+  try { return fixture.collect(); } finally { fixture.close(); }
+}
+
+test('displayed numeric amounts are preserved as observations, not final verified acquisition costs', () => {
+  const result = inspectCartDomSnapshot(URL, numericCartSnapshot(), OPTIONS);
+  assertStopped(result); assert.equal(result.code, 'final_quote_unverified');
+  assert.deepEqual(result.observed_quote, {
+    source: 'visible_cart', final_quote_verified: false,
+    subtotal: { amount: '100.00', currency: 'USD' }, shipping: { amount: '5.00', currency: 'USD' },
+    tax: null, fees: null, total: { amount: '105.00', currency: 'USD' },
+  });
+  for (const code of ['shipping_amount_observed_not_verified', 'total_amount_observed_not_verified',
+    'address_warning_absent_destination_unverified', 'tax_hidden_unknown']) assert.ok(result.observations.includes(code));
+  assert.ok(!result.observations.includes('shipping_unknown'));
+  assert.ok(!result.observations.includes('total_unknown'));
+  assert.ok(result.unresolved_checks.includes('currency_unverified'));
+  assert.ok(result.unresolved_checks.includes('destination_unverified'));
+});
+
+test('strict displayed-money formats support only matching rule currencies and bounded two-decimal amounts', () => {
+  const base = numericCartSnapshot();
+  for (const [value, currency, amount] of [
+    ['$100.00 USD', 'USD', '100.00'], ['100.00USD', 'USD', '100.00'], ['USD 100.00', 'USD', '100.00'],
+    ['US$100.00', 'USD', '100.00'], ['€100.00 EUR', 'EUR', '100.00'], ['€100.00', 'EUR', '100.00'],
+    ['GBP 100.00', 'GBP', '100.00'], ['£100.00 GBP', 'GBP', '100.00'],
+    ['CA$100.00 CAD', 'CAD', '100.00'], ['$100.00 CAD', 'CAD', '100.00'],
+    ['A$100.00 AUD', 'AUD', '100.00'], ['$100.00 AUD', 'AUD', '100.00'],
+    ['$1,000.00 USD', 'USD', '1000.00'], ['9999999.99 USD', 'USD', '9999999.99'],
+    ['0.00 USD', 'USD', '0.00'],
+  ]) {
+    const snapshot = structuredClone(base);
+    snapshot.subtotal.value = value; snapshot.shipping.value = `0.00 ${currency}`; snapshot.total.value = value;
+    const result = inspectCartDomSnapshot(URL, snapshot, OPTIONS);
+    assertStopped(result);
+    assert.deepEqual(result.observed_quote.subtotal, { amount, currency });
+    assert.deepEqual(result.observed_quote.total, { amount, currency });
+    assert.equal(result.observed_quote.final_quote_verified, false);
+  }
+});
+
+test('malformed, unsupported, ambiguous or unbounded displayed money stays unknown', () => {
+  const base = numericCartSnapshot();
+  for (const value of ['100', '100.0 USD', '100.000 USD', 'NaN USD', 'Infinity USD', '1e2 USD',
+    '-1.00 USD', '+1.00 USD', '100.00 JPY', '$100.00', '€100.00 USD', 'US$100.00 CAD',
+    '$100.00 EUR', 'USD 10000000.00', 'USD 1,00.00', 'USD 01.00', '1,000,000,000.00 USD',
+    '100.00 usd', '100.00 USD\n', 'USD 100.00 EUR', '100.00 USD SECRET_EXTRA']) {
+    const snapshot = structuredClone(base);
+    snapshot.shipping.value = value; snapshot.total.value = value;
+    const result = inspectCartDomSnapshot(URL, snapshot, OPTIONS);
+    assertStopped(result);
+    assert.equal(result.observed_quote.shipping, null, value);
+    assert.equal(result.observed_quote.total, null, value);
+    assert.ok(result.observations.includes('shipping_unknown'));
+    assert.ok(result.observations.includes('total_unknown'));
+  }
+});
+
+test('mixed currencies invalidate amount observations; absent or hidden taxes never become zero', () => {
+  const base = numericCartSnapshot();
+  const mismatch = structuredClone(base); mismatch.shipping.value = '5.00 EUR';
+  const result = inspectCartDomSnapshot(URL, mismatch, OPTIONS);
+  assertStopped(result); assert.ok(result.observations.includes('displayed_currency_mismatch'));
+  for (const key of ['subtotal', 'shipping', 'tax', 'fees', 'total']) assert.equal(result.observed_quote[key], null);
+  assert.ok(result.unresolved_checks.includes('currency_unknown'));
+  for (const count of [0, 1]) {
+    const snapshot = structuredClone(base);
+    snapshot.tax = { count, visible: false, label: null, value: null };
+    const observed = inspectCartDomSnapshot(URL, snapshot, OPTIONS);
+    assertStopped(observed); assert.equal(observed.observed_quote.tax, null);
+    assert.equal(observed.observed_quote.fees, null);
+    assert.ok(observed.unresolved_checks.includes('tax_unverified'));
+    assert.ok(observed.unresolved_checks.includes('fees_unverified'));
+  }
+});
+
+test('pending shipping remains pending and subtotal is never manufactured into a final total', () => {
+  const snapshot = numericCartSnapshot();
+  snapshot.shipping.value = 'To be determined by seller'; snapshot.total.value = 'To be determined by seller';
+  const result = inspectCartDomSnapshot(URL, snapshot, OPTIONS);
+  assertStopped(result); assert.equal(result.observed_quote.subtotal.amount, '100.00');
+  assert.equal(result.observed_quote.shipping, null); assert.equal(result.observed_quote.total, null);
+  assert.ok(result.observations.includes('shipping_to_be_determined'));
+  assert.ok(result.observations.includes('total_to_be_determined'));
+});
+
+const METHOD_DOM = `<div class="order_shipping_fields">
+  <select class="shipping_method" name="shipping_method" aria-label="Shipping method">
+    <option value="SECRET_DYNAMIC_PICKUP" selected>Local Pickup</option>
+    <option value="SECRET_DYNAMIC_SHIPPING">Standard shipping</option>
+  </select></div>`;
+
+function shippingFixture(method = METHOD_DOM) {
+  return cartDom(CART_DOM.replace('<table class="order_summary">', `${method}<table class="order_summary">`));
+}
+
+test('shipping selection uses current properties, not stale selected attributes or option values', () => {
+  const fixture = shippingFixture();
+  try {
+    const select = fixture.dom.window.document.querySelector('select.shipping_method');
+    select.selectedIndex = 1;
+    assert.equal(select.options[0].hasAttribute('selected'), true);
+    assert.equal(select.options[0].selected, false);
+    Object.defineProperty(select, 'selectedIndex', { get() { return 1; }, set() { throw new Error('Selection setter forbidden'); } });
+    for (let index = 0; index < select.options.length; index++) {
+      const option = select.options[index];
+      Object.defineProperty(option, 'selected', { get() { return index === 1; }, set() { throw new Error('Selection setter forbidden'); } });
+      Object.defineProperty(option, 'value', { get() { throw new Error('Option values are forbidden'); } });
+      const original = option.getAttribute.bind(option);
+      option.getAttribute = name => {
+        assert.ok(!['selected', 'value'].includes(name)); return original(name);
+      };
+    }
+    const snapshot = fixture.collect();
+    assert.equal(snapshot.shipping_methods.selected_index, 1);
+    assert.deepEqual(snapshot.shipping_methods.options.map(option => option.selected), [false, true]);
+    assert.ok(!JSON.stringify(snapshot).includes('SECRET_DYNAMIC'));
+    const result = inspectCartDomSnapshot(URL, snapshot, OPTIONS);
+    assertStopped(result);
+    assert.deepEqual(result.observed_shipping_method, {
+      source: 'visible_cart', selected_label: 'Standard shipping', selection_verified: false,
+    });
+    assert.ok(!JSON.stringify(result).includes('Local Pickup'));
+    assert.ok(result.observations.includes('shipping_method_selection_observed_not_verified'));
+  } finally { fixture.close(); }
+});
+
+test('hidden, multiple, over-limit, unselected, disabled or oversized-label shipping methods remain unknown', () => {
+  for (const method of [METHOD_DOM.replace('<select ', '<select hidden '), `${METHOD_DOM}${METHOD_DOM}`,
+    METHOD_DOM.replace(/<option[\s\S]*<\/option>/u, Array.from({ length: 21 }, (_, index) => `<option>Method ${index}</option>`).join('')),
+    METHOD_DOM.replace('selected>', 'selected disabled>'), METHOD_DOM.replace('Local Pickup', 'x'.repeat(101))]) {
+    const fixture = shippingFixture(method);
+    try {
+      const snapshot = fixture.collect();
+      assert.ok(snapshot.shipping_methods.option_count <= 20);
+      assert.ok(snapshot.shipping_methods.options.length <= 20);
+      for (const option of snapshot.shipping_methods.options) assert.ok(option.label === null || option.label.length <= 100);
+      const result = inspectCartDomSnapshot(URL, snapshot, OPTIONS);
+      assertStopped(result); assert.equal(result.observed_shipping_method.selected_label, null);
+      assert.equal(result.observed_shipping_method.selection_verified, false);
+    } finally { fixture.close(); }
+  }
+  const fixture = shippingFixture();
+  try {
+    fixture.dom.window.document.querySelector('select.shipping_method').selectedIndex = -1;
+    assert.equal(inspectCartDomSnapshot(URL, fixture.collect(), OPTIONS).observed_shipping_method.selected_label, null);
+  } finally { fixture.close(); }
+});
+
+test('inconsistent selected flags and selected index are never interpreted as a reliable choice', () => {
+  const fixture = shippingFixture();
+  try {
+    const base = fixture.collect();
+    for (const mutate of [
+      methods => { methods.options[1].selected = true; },
+      methods => { methods.selected_index = 1; },
+      methods => { methods.selected_index = 20; },
+      methods => { methods.option_count = 3; },
+      methods => { methods.options[0].selected = 'true'; },
+      methods => { methods.options[0].label = 'x'.repeat(101); },
+      methods => { methods.options[0].label = 'Shipping\u0000hidden'; },
+      methods => { methods.options[0].label = 'Shipping\nnew line'; },
+      methods => { methods.options[0].label = 'Shipping\u202econcealed'; },
+      methods => { methods.options[0].label = ' Shipping '; },
+    ]) {
+      const snapshot = structuredClone(base); mutate(snapshot.shipping_methods);
+      const result = inspectCartDomSnapshot(URL, snapshot, OPTIONS);
+      assertStopped(result); assert.equal(result.observed_shipping_method.selected_label, null);
+      assert.equal(result.observed_shipping_method.selection_verified, false);
+    }
   } finally { fixture.close(); }
 });

@@ -38,7 +38,7 @@ const UNRESOLVED_CHECKS = Object.freeze([
 ]);
 
 function blocked(code, observations = []) {
-  // Only internal codes leave this boundary. Never return input text or errors.
+  // Blocker diagnostics contain only internal codes, never raw text or errors.
   return {
     status: 'blocked',
     code,
@@ -240,13 +240,65 @@ export function collectCartDom(expectedListingId) {
     const payments = container.querySelectorAll('input.payment_method[name="payment_method"]');
     result.payment_control_count = count(payments);
     result.payment_control_visible = payments.length === 1 && visible(payments[0]);
+    const methods = container.querySelectorAll('.order_shipping_fields select.shipping_method[name="shipping_method"]');
+    const shownMethod = methods.length === 1 && visible(methods[0]);
+    const methodOptions = shownMethod ? methods[0].options : [];
+    result.shipping_methods = {
+      selector_count: count(methods), visible: shownMethod,
+      option_count: Math.min(methodOptions.length, 20), options_over_limit: methodOptions.length > 20,
+      selected_index: shownMethod && Number.isInteger(methods[0].selectedIndex) &&
+        methods[0].selectedIndex >= -1 && methods[0].selectedIndex < 20 ? methods[0].selectedIndex : null,
+      options: methodOptions.length <= 20 ? [...methodOptions].map(option => {
+        const label = typeof option.label === 'string' ? option.label.replace(/\s+/gu, ' ').trim() : null;
+        // DOM properties reflect current selection; attributes may be stale.
+        // Never read, persist or return an option value, and never select one.
+        return { label: label && label.length <= 100 ? label : null,
+          selected: option.selected === true, disabled: option.disabled === true };
+      }) : [],
+    };
     return result;
   } catch {
     return fail('dom_read_failed');
   }
 }
 
-/** Inspect a bounded collector snapshot; never return its hrefs or quote text. */
+// Displayed money is not a final quote. Keep exact decimal strings, never floats,
+// and match the existing rule editor's currencies and seven-digit amount bound.
+function displayedMoney(value) {
+  if (typeof value !== 'string' || value.length > 100 || value.trim() !== value ||
+      /[\x00-\x1f\x7f]/u.test(value)) return null;
+  const symbols = { USD: ['$', 'US$'], EUR: ['€'], GBP: ['£'], CAD: ['$', 'CA$', 'C$'], AUD: ['$', 'AU$', 'A$'] };
+  let currency = null, body = value;
+  const prefix = /^(USD|EUR|GBP|CAD|AUD) (.+)$/u.exec(value);
+  const suffix = /^(.+?) ?(USD|EUR|GBP|CAD|AUD)$/u.exec(value);
+  if (prefix) { currency = prefix[1]; body = prefix[2]; }
+  else if (suffix) { currency = suffix[2]; body = suffix[1]; }
+  const match = /^(US\$|CA\$|C\$|AU\$|A\$|\$|€|£)? ?((?:0|[1-9][0-9]{0,6}|[1-9][0-9]{0,2}(?:,[0-9]{3}){1,2})\.[0-9]{2})$/u.exec(body);
+  if (!match) return null;
+  const symbol = match[1];
+  if (!currency) currency = { 'US$': 'USD', '€': 'EUR', '£': 'GBP', 'CA$': 'CAD', 'C$': 'CAD', 'AU$': 'AUD', 'A$': 'AUD' }[symbol];
+  if (!currency || (symbol && !symbols[currency].includes(symbol))) return null;
+  const amount = match[2].replace(/,/gu, '');
+  return amount.split('.')[0].length <= 7 ? { amount, currency } : null;
+}
+
+function observedShippingMethod(methods) {
+  if (!methods || methods.selector_count !== 1 || methods.visible !== true || methods.options_over_limit !== false ||
+      !Number.isInteger(methods.option_count) || methods.option_count < 1 || methods.option_count > 20 ||
+      !Array.isArray(methods.options) || methods.options.length !== methods.option_count ||
+      !Number.isInteger(methods.selected_index) || methods.selected_index < 0 || methods.selected_index >= methods.option_count) return null;
+  if (!methods.options.every(option => option && typeof option.selected === 'boolean' && typeof option.disabled === 'boolean' &&
+      (option.label === null || (typeof option.label === 'string' && option.label.length > 0 && option.label.length <= 100 &&
+        option.label.trim() === option.label && !/[\x00-\x1f\x7f\u2028\u2029\u202a-\u202e\u2066-\u2069]/u.test(option.label)))) ||
+      methods.options.filter(option => option.selected).length !== 1) return null;
+  const selected = methods.options[methods.selected_index];
+  return selected.selected && !selected.disabled ? selected.label : null;
+}
+
+/**
+ * Interpret a bounded snapshot as static codes plus normalized displayed money
+ * and a bounded selected-method label. Never return raw hrefs, addresses or errors.
+ */
 export function inspectCartDomSnapshot(url, snapshot, options = {}) {
   if (!allowedUrl(url)) return blocked('current_url_not_allowed');
   const invalidOptions = optionsError(options);
@@ -267,7 +319,7 @@ export function inspectCartDomSnapshot(url, snapshot, options = {}) {
   observations.push('quantity_controls_absent_not_verification');
   if (snapshot.address_container_count !== 1 || snapshot.edit_shipping_address_present !== true ||
       typeof snapshot.missing_address !== 'boolean') return blocked('unsupported_address_shape', observations);
-  observations.push(snapshot.missing_address ? 'shipping_address_missing' : 'shipping_address_unknown');
+  observations.push(snapshot.missing_address ? 'shipping_address_missing' : 'address_warning_absent_destination_unverified');
   if (snapshot.summary_count !== 1) return blocked('unsupported_quote_shape', observations);
   const validQuote = quote => quote && Number.isInteger(quote.count) && quote.count >= 0 && quote.count <= 2 &&
     typeof quote.visible === 'boolean' && ['label', 'value'].every(key => quote[key] === null ||
@@ -289,10 +341,30 @@ export function inspectCartDomSnapshot(url, snapshot, options = {}) {
   }
   const shippingPending = shipping.value === 'To be determined by seller';
   const totalPending = total.value === 'To be determined by seller';
-  observations.push(shippingPending ? 'shipping_to_be_determined' : 'shipping_unknown');
-  observations.push(totalPending ? 'total_to_be_determined' : 'total_unknown');
-  return blocked(snapshot.missing_address && shippingPending && totalPending ?
+  const observed = { subtotal: null, shipping: null, tax: null, fees: null, total: null };
+  for (const [key, label] of [['subtotal', /^Subtotal$/u], ['shipping', /^Shipping$/u],
+    ['tax', /^(?:(?:sales )?tax(?:es)?|vat)$/iu], ['total', /^Total$/u]]) {
+    const quote = snapshot[key];
+    if (quote.count === 1 && quote.visible && label.test(quote.label)) observed[key] = displayedMoney(quote.value);
+  }
+  const currencies = new Set(Object.values(observed).filter(Boolean).map(money => money.currency));
+  if (currencies.size > 1) {
+    for (const key of Object.keys(observed)) observed[key] = null;
+    observations.push('displayed_currency_mismatch');
+  }
+  if (observed.subtotal) observations.push('subtotal_amount_observed_not_verified');
+  observations.push(shippingPending ? 'shipping_to_be_determined' : observed.shipping ? 'shipping_amount_observed_not_verified' : 'shipping_unknown');
+  observations.push(totalPending ? 'total_to_be_determined' : observed.total ? 'total_amount_observed_not_verified' : 'total_unknown');
+  const selectedLabel = observedShippingMethod(snapshot.shipping_methods);
+  observations.push(selectedLabel ? 'shipping_method_selection_observed_not_verified' : 'shipping_method_unknown');
+  const result = blocked(snapshot.missing_address && shippingPending && totalPending ?
     'missing_address_and_unknown_final_quote' : 'final_quote_unverified', observations);
+  if (observed.subtotal && observed.shipping && observed.total) {
+    result.unresolved_checks = result.unresolved_checks.map(code => code === 'currency_unknown' ? 'currency_unverified' : code);
+  }
+  result.observed_quote = { source: 'visible_cart', final_quote_verified: false, ...observed };
+  result.observed_shipping_method = { source: 'visible_cart', selected_label: selectedLabel, selection_verified: false };
+  return result;
 }
 
 /** Only reads sync/async page.url() and page.evaluate(collectCartDom, expectedListingId). */

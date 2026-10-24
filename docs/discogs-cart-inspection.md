@@ -41,6 +41,8 @@ Observed generic selectors, without hardcoded seller identifiers:
 - Address warning: `[id^='shipping_address_']` and `a.edit_shipping_address`.
 - Summary: `.order_summary`, first cell labels and `td.order_summary_value`;
   subtotal `tr.order_subtotal`, shipping `td.order_shipping_amount`, total `tr.order_total`.
+- Shipping method: `.order_shipping_fields select.shipping_method[name='shipping_method']`,
+  reading `selectedIndex` and each option's current `selected` property, never its value.
 - Agreement: `input.agree_terms[name='agree_terms']`.
 - Final control: `button.order_button.checkout_v1`, never clicked.
 
@@ -50,8 +52,9 @@ scopes, unexpected rows/links, hidden amounts, unknown shape and read failures s
 is checked rather than treating hidden DOM tax information as a displayed quote.
 
 The collector returns only bounded structural observations, not full body text, address,
-seller name or payment information. The wrapper returns static diagnostic codes and permanent
-`purchase_allowed: false`. A matching item link establishes only the observed selected listing
+seller name or payment information. The wrapper returns sanitized diagnostic codes, bounded visible money observations when
+unambiguous, and permanent `purchase_allowed: false`. Observed amounts are not verified
+destination-specific all-in costs. A matching item link establishes only the observed selected listing
 reference. It does not prove a release ID, seller reputation, conditions, quantity, destination
 or final all-in cost. No quantity input was observed in the inspected one-row cart; this does
 not establish a universal quantity model. Those checks remain unresolved.
@@ -73,8 +76,10 @@ The corrected exact collector was subsequently executed successfully through the
 local Chrome DOM-read tool. It observed one matching cart row, a visible missing-address
 warning, shipping/total still TBD, hidden tax with no value returned, and an enabled final
 control that did not grant permission. This verifies that exact collector in that local
-browser/tool context only, not a cloud runtime or completed checkout. The optional
-preparation function remains synthetic-fixture-tested unless separately stated.
+browser/tool context only, not a cloud runtime or completed checkout. The revised orchestration
+also passed its already-in-cart path through the authorized local two-method read-only port
+(async URL and DOM evaluation). That test did not add anything; the scripted-add path remains
+synthetic-fixture-tested. The child did not independently verify the forwarded bundle hash.
 
 ## What remains
 
@@ -137,3 +142,25 @@ const result = await prepareCurrentListingCart(page, { expectedListingId: '12345
 The normal-UI remove/re-add transition was exercised separately during authorized browser
 inspection, not by this new preparation function. Do not report that observation as proof
 that the function has executed a real cart addition.
+
+
+## After shipping information is entered by the owner
+
+A fresh authorized local observation after the owner manually added shipping information
+showed numeric subtotal, shipping and total instead of TBD. The collector observed those
+values without reading or retaining the address. The absent missing-address warning does
+not verify a destination, and visible numeric amounts do not establish final tax/fee treatment
+or purchase eligibility. The interpreter distinguishes numeric observations from unknown
+values and still stops with final-quote verification outstanding.
+
+A cheaper local-pickup option must not be silently substituted for shipping. No delivery
+option is selected or changed by these helpers. The shipping selector was subsequently inspected: the collector reads at most 20 bounded
+labels and current selected/disabled properties. It does not rely on stale HTML selected
+attributes or store dynamic option values. A displayed selection is not verified delivery
+coverage, destination or final price, and never causes another option to be chosen.
+
+The subsequent shipping-selection-aware collector was **not live-tested**: the authorized
+local computer disconnected before that retest. Earlier collector and existing-cart-path
+success must not be reported as verification of this added selector-reading code. The last
+observed quote/selection is a historical snapshot, not a current availability or cost guarantee.
+No alternate browser route was attempted to replace the unavailable local environment.
