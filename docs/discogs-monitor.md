@@ -123,3 +123,5 @@ pausing/ownership, concurrent claims, in-flight changes and six-hour expiration.
 DOM fixture uses the actual authenticated page template with synthetic fetch responses;
 it exercises stop/start, tracking/removal, aggregate-vs-listing labels and uncertain saves.
 These checks validate application behavior, not live Discogs discovery or checkout.
+
+Selected-release rendered snapshot/diff logic is documented in [discogs-release-snapshots.md](discogs-release-snapshots.md). It accepts bounded observations only; it does not enable continuous page acquisition.

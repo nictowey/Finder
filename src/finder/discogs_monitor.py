@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from finder.discogs_listing import ListingReadError, listing_id
+from finder.discogs_release_snapshots import ReleaseSnapshots
 from finder.discogs_rules import GRADES, RulesStore, Target
 
 RELEASE_INTERVAL = 600
@@ -101,6 +102,8 @@ class ReleaseMonitor:
                 """)
         finally:
             store.close()
+
+        self.release_snapshots = ReleaseSnapshots(database, clock=lambda: self.clock())
 
     @property
     def enabled(self):
@@ -256,6 +259,7 @@ class ReleaseMonitor:
             automatic_listing_discovery=False,
             discovery_blocker=DISCOVERY_BLOCKER,
             checkout_available=False,
+            release_snapshots=self.release_snapshots.snapshot(store),
             email_monitoring=False,
             rows=rows,
             events=events,
