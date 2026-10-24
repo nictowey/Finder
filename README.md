@@ -1,10 +1,25 @@
+> October 24 update: the primary `finder-local` interface is now a private Discogs-only
+> rules editor with synthetic evaluation and purchasing disabled. See
+> [setup and limitations](docs/private-discogs-rules.md). The prior local review command
+> is available as `finder-review`; existing databases are not automatically converted.
+
 # Zero-cost development transition
 
 Hosted scans, notifications and deployment jobs are paused in source. Development uses offline
 fixtures and local databases. Existing hosted resources need separate cost containment; see
 [the transition and resumption notes](docs/zero-cost-development.md). Public launch is not approved.
 
-## Local development review
+## Private Discogs targets (primary local interface)
+
+```bash
+PYTHONPATH=src python -m finder.discogs_web --database finder-discogs.sqlite3 --init
+```
+
+Set exact release targets, condition/reputation minimums and all-in delivered caps in the
+loopback page. Reopen without `--init` to retain saved rules. Purchasing is disabled;
+synthetic evaluation is not a live market check. See [the Discogs guide](docs/private-discogs-rules.md).
+
+## Historical local development review
 
 With the project's installed Python dependencies and a clean shell:
 
@@ -18,8 +33,8 @@ Unsure, and export the review record. Stop with Ctrl+C; restart with the same co
 `--init`** to reload saved decisions. No provider, Neon, credential, discovery or notification
 access is part of this adapter. [Input format and boundaries](docs/local-review.md).
 
-This is a development interface. Finder's longer-term goal remains autonomous remote discovery
-and review; this local adapter does not supply or replace that service.
+This historical review interface remains available for regression work. The new Discogs-only
+primary interface is also local-only; neither currently supplies live discovery or checkout.
 
 For authored sibling profiles and package requirements, see the [local profile guide](docs/local-review.md).
 [Freeze and score local case predictions](docs/local-evaluation.md) separately from expected answers;

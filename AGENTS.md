@@ -1,5 +1,16 @@
 # Finder Agent Guide
 
+## October 24 private Discogs pivot
+
+The owner approved a private, Discogs-only primary local interface. `finder-local` now
+prepares exact-release target rules and evaluates synthetic observations; purchasing and
+provider access remain disabled. Read `docs/private-discogs-rules.md` first. The historical
+review UI is retained as `finder-review`, and legacy production data/code is not migrated.
+The historical scope below applies to retained eBay components, not the new rule editor.
+No new paid services, live scraping, security bypass, purchase, merge or deployment is authorized
+by this local implementation. The new rule ceiling includes shipping, tax and fees; it does
+not reuse the historical pre-tax subtotal semantics below.
+
 ## Purpose and scope
 
 Finder is a pressing hunter under a **zero-cost development and product evaluation** mandate.
