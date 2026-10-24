@@ -22,7 +22,11 @@ container/image, including on failure. Browser sandbox-disabling variables or fl
 used. After actual fixture rendering, read-only Linux process evidence must show non-root Firefox
 web-content descendants with NoNewPrivs, active seccomp filtering, and additional filters
 beyond the measured browser parent and Node/container baseline. Unreadable or ambiguous
-evidence fails the test instead of relaxing container security. This establishes observed
+evidence fails the test instead of relaxing container security. Transient unavailable
+process/thread evidence gets at most three strict reads, 50ms apart; failed identity or
+security assertions are not retried. Fork-server command lines are normalized only when a
+single canonical space-joined field still exactly identifies the pinned executable,
+child marker and known role. Process names alone never qualify a child. This establishes observed
 additional syscall filtering, not a runtime Firefox sandbox level or proof of every sandbox
 boundary. Static inspection of this pinned Firefox build found its Linux content sandbox
 default at level6, with no Playwright launch or preference override disabling it. Runtime

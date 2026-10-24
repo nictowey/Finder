@@ -11,6 +11,19 @@ import {dirname, join} from 'node:path';
 const baselines = new WeakMap();
 const LIMIT = 4096;
 const ROLES = ['tab', 'gpu', 'rdd', 'socket', 'utility', 'forkserver', 'gmplugin', 'vr', 'ipdlunittest'];
+function flattenedInterpretation(args, allowed) {
+  const raw = args.length === 1 ? args[0] : '';
+  const tokens = raw.split(' ');
+  const canonical = args.length === 1 && raw.length <= 32768 && tokens.length >= 3 &&
+    tokens.length <= 256 && /^[\x21-\x7e]+(?: [\x21-\x7e]+)*$/u.test(raw) && !/['"\\]/u.test(raw);
+  const shape = {flattened_single_argument: args.length === 1,
+    flattened_canonical_ascii_spaces: canonical,
+    flattened_pinned_first: allowed.has(tokens[0]),
+    flattened_child_marker_second: tokens[1] === '-contentproc',
+    flattened_final_role: ROLES.includes(tokens.at(-1)) ? tokens.at(-1) : 'other'};
+  return {tokens, shape, valid: canonical && shape.flattened_pinned_first &&
+    shape.flattened_child_marker_second && shape.flattened_final_role !== 'other'};
+}
 // Diagnostic classifications only. Names never establish process identity or permission.
 function knownName(value) {
   return ({'Web Content': 'web_content', 'Isolated Web Co': 'isolated_web_content',
@@ -32,7 +45,8 @@ function descendantDiagnostics(fs, descendants, argsByPid, allowed) {
       has_contentproc_token: args.includes('-contentproc'), contentproc_second: args[1] === '-contentproc',
       has_contentproc_text: args.some(arg => /(?:^|\s)-contentproc(?:\s|$)/u.test(arg)),
       has_is_for_browser: args.includes('-isForBrowser'), argument_count: args.length,
-      final_role: ROLES.includes(args.at(-1)) ? args.at(-1) : 'other', comm};
+      final_role: ROLES.includes(args.at(-1)) ? args.at(-1) : 'other', comm,
+      ...flattenedInterpretation(args, allowed).shape};
     const key = JSON.stringify(row);
     groups.set(key, (groups.get(key) ?? 0) + 1);
   }
@@ -187,7 +201,18 @@ export function collectProcessSecurity({rootPid = process.pid, executablePath, e
     const threshold = Math.max(baseline.container_filters, maxFilters(root), maxFilters(browser));
     const content = [];
     for (const pid of hierarchy.descendants(browserPid)) {
-      const args = argumentsByPid.get(pid);
+      const rawArgs = argumentsByPid.get(pid);
+      let args = rawArgs;
+      // Observed Firefox fork-server children can expose one space-joined argv string.
+      // Normalize only that unambiguous bounded representation, never a process name.
+      const embedded = rawArgs.some(arg => arg !== '-contentproc' &&
+        /(?:^|\s)-contentproc(?:\s|$)/u.test(arg));
+      if (embedded) {
+        const interpretation = flattenedInterpretation(rawArgs, allowed);
+        if (!interpretation.valid) reject('failed', 'ambiguous flattened Firefox arguments; ' +
+          JSON.stringify(descendantDiagnostics(fs, hierarchy.descendants(browserPid), argumentsByPid, allowed)));
+        args = interpretation.tokens;
+      }
       if (!args.includes('-contentproc')) continue;
       requireThat(args[1] === '-contentproc', 'unsupported Firefox child argument structure');
       requireThat(allowed.has(args[0]), 'content executable argument differs from pinned Firefox');
@@ -198,7 +223,7 @@ export function collectProcessSecurity({rootPid = process.pid, executablePath, e
       const item = processEvidence(fs, pid, expectedUid);
       requireThat(item.filters > threshold && item.threads.every(thread => thread.filters > threshold),
         'content filtering does not exceed the measured runner and browser baselines');
-      content.push(item);
+      content.push({...item, flattened: embedded});
     }
     if (!content.length) reject('failed', 'no identifiable Firefox content processes; ' +
       JSON.stringify(descendantDiagnostics(fs, hierarchy.descendants(browserPid), argumentsByPid, allowed)));
@@ -222,9 +247,26 @@ export function collectProcessSecurity({rootPid = process.pid, executablePath, e
     browser_start_ticks: last.browser.started, container_baseline_filters: baseline.container_filters,
     browser_parent_filters: maxFilters(last.browser), comparison_baseline_filters: last.threshold,
     content_processes: last.content.length,
+    flattened_content_processes: last.content.filter(item => item.flattened).length,
     content_threads: last.content.reduce((count, item) => count + item.threads.length, 0),
     minimum_content_filters: Math.min(...last.content.flatMap(item =>
       [item.filters, ...item.threads.map(thread => thread.filters)])),
     content_identity: 'stable_descendant_and_pinned_argv_role',
     child_executable_links_inspected: false, full_sandbox_attested: false};
+}
+
+/** Bounded readiness retry. A failed security assertion is never retried or downgraded.
+ * The second argument injects timing/collection only for offline unit tests.
+ */
+export async function collectStableProcessSecurity(options, {
+  collect = collectProcessSecurity,
+  delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
+} = {}) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try { return await collect(options); }
+    catch (error) {
+      if (error.code !== 'unavailable' || attempt === 2) throw error;
+      await delay(50);
+    }
+  }
 }

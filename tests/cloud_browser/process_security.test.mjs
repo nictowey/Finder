@@ -1,7 +1,8 @@
 /** Offline /proc snapshots only. No processes or browser launches. */
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {captureProcessSecurityBaseline, collectProcessSecurity} from './process_security.mjs';
+import {captureProcessSecurityBaseline, collectProcessSecurity, collectStableProcessSecurity}
+  from './process_security.mjs';
 
 const EXE = '/pinned/firefox/firefox';
 function fixture() {
@@ -185,4 +186,112 @@ test('diagnostics aggregate equal shapes rather than logging raw per-process arg
     assert.match(error.message, /"count":2/u);
     return error.code === 'failed';
   });
+});
+
+test('one canonical space-joined child command preserves exact identity and filter gates', () => {
+  const f = fixture();
+  f.processes.get(30).args = [f.processes.get(30).args.join(' ')];
+  const result = f.check();
+  assert.equal(result.content_processes, 1);
+  assert.equal(result.flattened_content_processes, 1);
+  assert.equal(result.minimum_content_filters, 3);
+  f.processes.get(30).threadOverrides[31] = {filters: 1};
+  assert.throws(f.check, /content filtering does not exceed/u);
+});
+
+for (const [name, args] of [
+  ['foreign executable', ['/foreign/firefox -contentproc 4 tab']],
+  ['prefix garbage', [`PREFIX ${EXE} -contentproc 4 tab`]],
+  ['suffix garbage', [`${EXE} -contentproc 4 tab SUFFIX`]],
+  ['quoted executable', [`"${EXE}" -contentproc 4 tab`]],
+  ['single-quoted argument', [`${EXE} -contentproc 'ambiguous value' 4 tab`]],
+  ['backslash escape', [`${EXE} -contentproc escaped\\ value 4 tab`]],
+  ['embedded fake flag', [`${EXE} fake-contentproc 4 tab`]],
+  ['mixed NUL and joined arguments', [EXE, '-contentproc 4 tab']],
+  ['mixed joined command and extra NUL token', [`${EXE} -contentproc 4 tab`, 'extra']],
+  ['unknown role', [`${EXE} -contentproc 4 future-role`]],
+  ['tab whitespace', [`${EXE}\t-contentproc 4 tab`]],
+  ['newline whitespace', [`${EXE} -contentproc\n4 tab`]],
+  ['double spaces', [`${EXE}  -contentproc 4 tab`]],
+  ['leading space', [` ${EXE} -contentproc 4 tab`]],
+  ['trailing space', [`${EXE} -contentproc 4 tab `]],
+  ['control character', [`${EXE} -contentproc x\x01 4 tab`]],
+  ['non-ASCII text', [`${EXE} -contentproc café 4 tab`]],
+]) test(`flattened child representation rejects ${name}`, () => {
+  const f = fixture(); f.processes.get(30).args = args;
+  assert.throws(f.check, error => error.code === 'failed' || error.code === 'unavailable');
+});
+
+test('rejected flattened diagnostics expose booleans and allowlisted roles, never input text', () => {
+  const f = fixture();
+  f.processes.get(30).args = [`${EXE} -contentproc "PRIVATE_PROFILE" 4 tab`];
+  assert.throws(f.check, error => {
+    assert.match(error.message, /"flattened_canonical_ascii_spaces":false/u);
+    assert.match(error.message, /"flattened_pinned_first":true/u);
+    assert.match(error.message, /"flattened_child_marker_second":true/u);
+    assert.match(error.message, /"flattened_final_role":"tab"/u);
+    assert.ok(!error.message.includes('PRIVATE_PROFILE'));
+    assert.ok(!error.message.includes(EXE));
+    return error.code === 'failed';
+  });
+});
+
+test('stability comparisons retain the original unnormalized process arguments', () => {
+  const f = fixture();
+  const original = [...f.processes.get(30).args];
+  f.onRead((path, count) => {
+    if (path === '/proc/30/cmdline' && count === 2) f.processes.get(30).args = [original.join(' ')];
+  });
+  assert.throws(f.check, error => error.code === 'unavailable' && /arguments changed/u.test(error.message));
+});
+
+test('stable wrapper immediately returns strict evidence without a delay', async () => {
+  const result = {status: 'observed'}, options = {sentinel: true};
+  let calls = 0;
+  assert.equal(await collectStableProcessSecurity(options, {
+    collect: received => {assert.equal(received, options); calls++; return result;},
+    delay: () => assert.fail('No delay after success'),
+  }), result);
+  assert.equal(calls, 1);
+});
+
+test('stable wrapper retries unavailable evidence twice with exactly 50ms waits', async () => {
+  let calls = 0;
+  const waits = [], result = {status: 'observed'};
+  assert.equal(await collectStableProcessSecurity({}, {
+    collect: () => {
+      if (++calls < 3) throw Object.assign(new Error('transient'), {code: 'unavailable'});
+      return result;
+    },
+    delay: milliseconds => {waits.push(milliseconds);},
+  }), result);
+  assert.equal(calls, 3);
+  assert.deepEqual(waits, [50, 50]);
+});
+
+for (const code of ['unavailable', 'failed', undefined])
+  test(`stable wrapper keeps ${code ?? 'unexpected'} errors bounded and failing`, async () => {
+    const original = Object.assign(new Error('not accepted'), {code});
+    let calls = 0;
+    const waits = [];
+    await assert.rejects(collectStableProcessSecurity({}, {
+      collect: () => {calls++; throw original;},
+      delay: milliseconds => {waits.push(milliseconds);},
+    }), error => error === original);
+    assert.equal(calls, code === 'unavailable' ? 3 : 1);
+    assert.deepEqual(waits, code === 'unavailable' ? [50, 50] : []);
+  });
+
+test('failed security after transient evidence loss stops the wrapper immediately', async () => {
+  let calls = 0;
+  const waits = [];
+  await assert.rejects(collectStableProcessSecurity({}, {
+    collect: () => {
+      calls++;
+      throw Object.assign(new Error('cannot pass'), {code: calls === 1 ? 'unavailable' : 'failed'});
+    },
+    delay: milliseconds => {waits.push(milliseconds);},
+  }), error => error.code === 'failed');
+  assert.equal(calls, 2);
+  assert.deepEqual(waits, [50]);
 });

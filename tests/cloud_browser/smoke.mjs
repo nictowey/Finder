@@ -4,7 +4,7 @@ import {readFileSync,mkdirSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {performance} from 'node:perf_hooks';
 import {firefox} from 'playwright';
-import {captureProcessSecurityBaseline,collectProcessSecurity} from './process_security.mjs';
+import {captureProcessSecurityBaseline,collectStableProcessSecurity} from './process_security.mjs';
 import {collectReleaseMarketplaceDom} from '../../scripts/discogs_release_snapshot.mjs';
 
 const started=performance.now();
@@ -39,7 +39,7 @@ try {
     // Synthetic functional evidence remains independently observable; the overall
     // smoke still fails if mandatory process evidence is absent or fails.
     try {
-      processSecurity=collectProcessSecurity({rootPid:process.pid,executablePath:firefox.executablePath(),expectedUid:10001,baseline});
+      processSecurity=await collectStableProcessSecurity({rootPid:process.pid,executablePath:firefox.executablePath(),expectedUid:10001,baseline});
     } catch(error) {
       securityError ??= error;
       securityFailures.push({code:error.code??'unknown',message:error.message});
