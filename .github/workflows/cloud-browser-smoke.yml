@@ -1,0 +1,26 @@
+name: Isolated cloud browser pipeline
+on:
+  push:
+    paths:
+      - '.github/workflows/cloud-browser-smoke.yml'
+      - 'deployment/BrowserSmoke.Dockerfile*'
+      - 'scripts/check_cloud_browser.sh'
+      - 'scripts/discogs_release_snapshot.mjs'
+      - 'tests/cloud_browser/**'
+      - 'tests/test_cloud_browser_pipeline.py'
+      - 'src/finder/**'
+      - 'pyproject.toml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cloud-browser-smoke-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  isolated-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run non-root network-isolated browser pipeline
+        run: bash scripts/check_cloud_browser.sh
