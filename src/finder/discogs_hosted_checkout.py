@@ -19,6 +19,7 @@ from finder.discogs_rules import amount
 
 LISTING_ID = re.compile(r"[1-9][0-9]{0,15}\Z", re.ASCII)
 MONEY = re.compile(r"[0-9]{1,7}(?:\.[0-9]{1,2})?\Z", re.ASCII)
+OPERATOR_CART_LISTING = "3526572746"
 
 
 class CheckoutStopped(RuntimeError):
@@ -57,8 +58,11 @@ def _money(value):
 class HostedCartReadOnlyReader:
     """Read one current cart through the approved owner-only fixed-action socket."""
 
-    def __init__(self, path=HOSTED_SOCKET):
+    def __init__(self, path=HOSTED_SOCKET, *, operator_one_use=False):
+        if type(operator_one_use) is not bool:
+            raise ValueError("operator_one_use must be boolean")
         self.path = Path(path)
+        self.operator_one_use = operator_one_use
 
     def _private(self):
         try:
@@ -83,9 +87,19 @@ class HostedCartReadOnlyReader:
     def __call__(self, listing_id):
         if type(listing_id) is not str or not LISTING_ID.fullmatch(listing_id):
             raise CheckoutStopped("invalid_listing_id")
+        if self.operator_one_use and listing_id != OPERATOR_CART_LISTING:
+            raise CheckoutStopped("operator_cart_listing_mismatch")
         if not self._private():
             raise CheckoutStopped("private_cart_reader_unavailable")
-        request = json.dumps({"action": "current_cart", "listing_id": listing_id}) + "\n"
+        request = (
+            json.dumps(
+                {
+                    "action": "operator_current_cart" if self.operator_one_use else "current_cart",
+                    "listing_id": listing_id,
+                }
+            )
+            + "\n"
+        )
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
                 connection.settimeout(15)

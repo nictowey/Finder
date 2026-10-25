@@ -21,6 +21,8 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
       operatorBootPath: '/bridge/operator-boot',
       operatorAckPath: '/bridge/operator-rocky-ack',
       operatorUsedPath: '/bridge/operator-rocky-used',
+      operatorCartAckPath: '/bridge/operator-cart-ack',
+      operatorCartUsedPath: '/bridge/operator-cart-used',
     } : {}); }
   catch (error) { await context.close(); throw error; }
   return async () => {

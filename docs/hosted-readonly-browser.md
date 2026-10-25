@@ -121,6 +121,19 @@ restrict inconsistent automated scraping and circumvention of technical limits. 
 successful one-page read does not establish permission or reliability for unattended
 collection. Do not activate a scheduler or bypass a challenge based on this test.
 
+A separate approved cart-only recovery action is scoped to listing `3526572746`
+in one already-open `/sell/cart` or `/shop/cart` page. It requires a fresh
+owner-only `/bridge/operator-cart-ack` containing
+`operator_confirmed_current_cart:3526572746:<current-boot-id>` and exclusively
+creates `/bridge/operator-cart-used` before inspection. It rejects a challenge,
+wrong or duplicate cart page, changed URL, wrong listing or multiple item rows,
+and cannot navigate, change the cart or submit an order. The global stop and
+consumed Rocky grant remain in place. Installing the browser-service code
+requires a browser process restart, which closes the currently displayed page;
+the user must reopen the cart and complete any normal verification before a
+fresh acknowledgement and the single read. This is a diagnostic read, not a
+general unlock or a final quote. Deferred sales tax still blocks checkout.
+
 ## Approved private socket handoff (stopped)
 
 The owner approved Sniper code reading the signed-in browser through a restricted

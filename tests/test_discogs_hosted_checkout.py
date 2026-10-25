@@ -90,6 +90,17 @@ def test_read_existing_cart_only_and_never_promote_displayed_total(monkeypatch):
     assert not evidence.destination_verified
 
 
+def test_operator_cart_request_is_exact_one_use_action_without_retry(monkeypatch):
+    requests = []
+    fake_socket(monkeypatch, cart_reply(), record=requests)
+    reader = HostedCartReadOnlyReader(operator_one_use=True)
+    with pytest.raises(CheckoutStopped, match="operator_cart_listing_mismatch"):
+        reader("1002")
+    evidence = reader("3526572746")
+    assert requests == [{"action": "operator_current_cart", "listing_id": "3526572746"}]
+    assert evidence.tax_hidden_unknown and evidence.purchase_allowed is False
+
+
 @pytest.mark.parametrize(
     ("change", "code"),
     [

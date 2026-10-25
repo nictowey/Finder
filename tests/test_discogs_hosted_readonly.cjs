@@ -300,7 +300,9 @@ async function operatorSocket(context, directory) {
   const options = { durableStopPath: join(directory, 'access-stopped'),
     operatorBootPath: join(directory, 'operator-boot'),
     operatorAckPath: join(directory, 'operator-rocky-ack'),
-    operatorUsedPath: join(directory, 'operator-rocky-used') };
+    operatorUsedPath: join(directory, 'operator-rocky-used'),
+    operatorCartAckPath: join(directory, 'operator-cart-ack'),
+    operatorCartUsedPath: join(directory, 'operator-cart-used') };
   return { path, options, close: await listenHostedReadOnly(context, path, options) };
 }
 async function writeOperatorAck(socket) {
@@ -308,6 +310,127 @@ async function writeOperatorAck(socket) {
   await writeFile(socket.options.operatorAckPath,
     `operator_confirmed_current_release:4204639:${bootId}\n`, { mode: 0o600 });
 }
+async function writeCartAck(socket) {
+  const bootId = (await readFile(socket.options.operatorBootPath, 'utf8')).trim();
+  await writeFile(socket.options.operatorCartAckPath,
+    `operator_confirmed_current_cart:3526572746:${bootId}\n`, { mode: 0o600 });
+}
+function cartSnapshot() {
+  const quote = (count, visible, label, value) => ({ count, visible, label, value });
+  return { schema: 'discogs_cart_dom_v1', code: 'observed', purchase_allowed: false,
+    form_count: 1, order_container_count: 1, item_row_count: 1, listing_link_count: 1,
+    canonical_listing_href: '/sell/item/3526572746', listing_matches_expected: true,
+    quantity_control_count: 0, address_container_count: 1, edit_shipping_address_present: true,
+    missing_address: false, summary_count: 1,
+    subtotal: quote(1, true, 'Subtotal', '$199.99 USD'),
+    shipping: quote(1, true, 'Shipping', '$5.85 USD'),
+    tax: quote(2, false, null, null), total: quote(1, true, 'Total', '$205.84 USD'),
+    final_button_count: 1, final_button_visible: true, final_button_enabled: true,
+    agreement_count: 1, agreement_visible: true,
+    payment_control_count: 1, payment_control_visible: true,
+    shipping_methods: { selector_count: 1, visible: true, option_count: 1,
+      options_over_limit: false, selected_index: 0,
+      options: [{ label: 'Standard - USPS - $5.85', selected: true, disabled: false }] } };
+}
+function operatorCartFixture({ url = cartUrl, title = 'Shopping Cart', changed = false,
+  snapshot = cartSnapshot(), hold = null, duplicate = false } = {}) {
+  const calls = [];
+  const page = new Proxy({
+    url() { calls.push('url'); return changed && calls.includes('evaluate') ?
+      'https://www.discogs.com/sell/release/4204639' : url; },
+    title() { calls.push('title'); return title; },
+    async evaluate(fn, id) {
+      calls.push('evaluate'); assert.equal(fn, collectCartDom);
+      assert.equal(id, '3526572746'); if (hold) await hold;
+      return structuredClone(snapshot);
+    },
+  }, { get(target, key) {
+    assert.ok(['url', 'title', 'evaluate'].includes(key), `Forbidden cart action: ${String(key)}`);
+    return target[key];
+  } });
+  const context = new Proxy({ pages() { calls.push('pages'); return duplicate ? [page, page] : [page]; } },
+    { get(target, key) { assert.equal(key, 'pages', `Forbidden context action: ${String(key)}`); return target[key]; } });
+  return { context, calls };
+}
+
+test('one-use current cart recovery reads exact visible row and preserves global stop', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-operator-'));
+  const fixture = operatorCartFixture();
+  const request = JSON.stringify({ action: 'operator_current_cart', listing_id: '3526572746' }) + '\n';
+  try {
+    let socket = await operatorSocket(fixture.context, directory);
+    try {
+      stopped(await sendSocket(socket.path, request), 'operator_acknowledgement_required');
+      assert.deepEqual(fixture.calls, []);
+      await writeCartAck(socket);
+      const result = await sendSocket(socket.path, request);
+      stopped(result, 'final_quote_unverified');
+      assert.equal(result.observed_quote.total.amount, '205.84');
+      assert.equal(result.observed_quote.tax, null);
+      assert.ok(result.observations.includes('tax_hidden_unknown'));
+      stopped(await sendSocket(socket.path, request), 'operator_recovery_unavailable');
+      stopped(await sendSocket(socket.path, JSON.stringify(cartRequest) + '\n'), 'access_restricted');
+      stopped(await sendSocket(socket.path,
+        JSON.stringify({ action: 'operator_current_release', release_id: '4204639' }) + '\n'),
+      'operator_acknowledgement_required');
+      assert.ok(!fixture.calls.some(call => ['goto', 'click', 'newPage'].includes(call)));
+    } finally { await socket.close(); }
+    socket = await operatorSocket(fixture.context, directory);
+    try {
+      stopped(await sendSocket(socket.path, request), 'operator_acknowledgement_required');
+      stopped(await sendSocket(socket.path, JSON.stringify(cartRequest) + '\n'), 'access_restricted');
+    } finally { await socket.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('cart exception consumes on wrong item, multiple rows, duplicate pages, challenge and page change', async () => {
+  for (const [config, code] of [
+    [{ url: releaseUrl }, 'exact_current_page_not_unique'],
+    [{ duplicate: true }, 'exact_current_page_not_unique'],
+    [{ title: 'Just a moment... Cloudflare' }, 'access_restricted'],
+    [{ changed: true }, 'page_changed_during_read'],
+    [{ snapshot: { ...cartSnapshot(), listing_matches_expected: false } }, 'expected_listing_not_observed'],
+    [{ snapshot: { ...cartSnapshot(), item_row_count: 2 } }, 'unsupported_cart_quantity'],
+  ]) {
+    const directory = await mkdtemp(join(tmpdir(), 'sniper-operator-'));
+    const fixture = operatorCartFixture(config);
+    try {
+      const socket = await operatorSocket(fixture.context, directory);
+      try {
+        await writeCartAck(socket);
+        const request = JSON.stringify({ action: 'operator_current_cart', listing_id: '3526572746' }) + '\n';
+        stopped(await sendSocket(socket.path, request), code);
+        stopped(await sendSocket(socket.path, request), 'operator_recovery_unavailable');
+      } finally { await socket.close(); }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }
+});
+
+test('cart acknowledgement must be current and exact; concurrent calls cannot replay', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-operator-'));
+  let release;
+  const hold = new Promise(resolve => { release = resolve; });
+  const fixture = operatorCartFixture({ hold });
+  const request = { action: 'operator_current_cart', listing_id: '3526572746' };
+  try {
+    await writeFile(join(directory, 'operator-cart-ack'),
+      'operator_confirmed_current_cart:3526572746:old-boot\n', { mode: 0o600 });
+    const socket = await operatorSocket(fixture.context, directory);
+    try {
+      stopped(await sendSocket(socket.path, JSON.stringify(request) + '\n'),
+        'operator_acknowledgement_required');
+      await writeCartAck(socket);
+      stopped(await sendSocket(socket.path, JSON.stringify({ ...request, navigate: true }) + '\n'),
+        'unsupported_operator_recovery');
+      const first = sendSocket(socket.path, JSON.stringify(request) + '\n');
+      await new Promise(resolve => setImmediate(resolve));
+      stopped(await sendSocket(socket.path, JSON.stringify(request) + '\n'), 'read_in_progress');
+      release();
+      stopped(await first, 'final_quote_unverified');
+      assert.equal(fixture.calls.filter(call => call === 'evaluate').length, 1);
+    } finally { release(); await socket.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 test('operator recovery is one-use, preserves stop across restart and never navigates', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'sniper-operator-'));

@@ -21,6 +21,7 @@ const MAX_RETRY_AFTER_MS = 24 * 60 * 60_000;
 const SHARED_SOCKET = '/bridge/sniper-read-only.sock';
 const SHARED_GROUP = 113;
 const OPERATOR_RELEASE = '4204639';
+const OPERATOR_CART_LISTING = '3526572746';
 
 export function privateBridgeDirectory(directory, uid = process.getuid()) {
   return Boolean(directory?.isDirectory?.() && directory.uid === uid &&
@@ -181,6 +182,42 @@ async function observeOperatorCurrentRelease(context) {
     }
     return bounded({ status: 'observed', source: 'hosted_browser_read_only', observation,
       stop_required: true, purchase_allowed: false });
+  } catch { return stopped('hosted_read_failed'); }
+}
+
+/** One read of the already-open exact cart. No navigation or control interaction. */
+async function observeOperatorCurrentCart(context) {
+  if (!context || typeof context.pages !== 'function') return stopped('browser_context_unavailable');
+  try {
+    const pages = context.pages();
+    if (!Array.isArray(pages) || pages.length > 16) return stopped('browser_pages_unavailable');
+    const matches = pages.filter(page => page && typeof page.url === 'function' &&
+      typeof page.title === 'function' && typeof page.evaluate === 'function' &&
+      exactUrl('current_cart', OPERATOR_CART_LISTING, page.url()));
+    if (matches.length !== 1) return stopped('exact_current_page_not_unique');
+    const page = matches[0], url = page.url();
+    const title = await beforeDeadline(() => page.title());
+    if (page.url() !== url) return stopped('page_changed_during_read');
+    if (/just a moment|attention required|security check|captcha|cloudflare|sign in|log in/iu.test(title)) {
+      return stopped('access_restricted');
+    }
+    const restrictedPage = Object.freeze({
+      url: () => page.url(),
+      evaluate: (fn, id) => {
+        if (fn !== collectCartDom || id !== OPERATOR_CART_LISTING) throw new TypeError('unsupported_collector');
+        return page.evaluate(fn, id);
+      },
+    });
+    const result = await beforeDeadline(() => inspectCurrentCartDom(restrictedPage,
+      { expectedListingId: OPERATOR_CART_LISTING }));
+    if (page.url() !== url) return stopped('page_changed_during_read');
+    if (result?.purchase_allowed !== false || result.status !== 'blocked' ||
+        !['final_quote_unverified', 'missing_address_and_unknown_final_quote'].includes(result.code) ||
+        !result.observations?.includes('expected_listing_link_observed') ||
+        !result.observations?.includes('single_cart_row_observed')) {
+      return stopped(result?.code || 'cart_observation_unverified');
+    }
+    return bounded({ ...result, source: 'hosted_browser_read_only', stop_required: true, purchase_allowed: false });
   } catch { return stopped('hosted_read_failed'); }
 }
 
@@ -365,6 +402,7 @@ export function createListingNavigator(context, { now = () => Date.now() } = {})
 /** Local Unix socket only; the caller must keep it inside a private container. */
 export async function listenHostedReadOnly(context, socketPath, {
   durableStopPath = null, operatorBootPath = null, operatorAckPath = null, operatorUsedPath = null,
+  operatorCartAckPath = null, operatorCartUsedPath = null,
 } = {}) {
   const shared = socketPath === SHARED_SOCKET;
   if (typeof socketPath !== 'string' || (!shared && !/^\/tmp\/[a-z][a-z0-9-]{0,47}\.sock$/u.test(socketPath))) {
@@ -379,6 +417,13 @@ export async function listenHostedReadOnly(context, socketPath, {
   if ([durableStopPath, operatorBootPath, operatorAckPath, operatorUsedPath].some(Boolean) &&
       (!durableStopPath || !operatorBootPath || !operatorAckPath || !operatorUsedPath)) {
     throw new TypeError('incomplete_operator_recovery_configuration');
+  }
+  if ([operatorCartAckPath, operatorCartUsedPath].some(Boolean) &&
+      (!durableStopPath || !operatorBootPath || !operatorCartAckPath || !operatorCartUsedPath)) {
+    throw new TypeError('incomplete_cart_recovery_configuration');
+  }
+  if (shared && (!operatorCartAckPath || !operatorCartUsedPath)) {
+    throw new TypeError('cart_recovery_configuration_required');
   }
   if (durableStopPath) {
     // The old process is stopped. A missing marker on first upgrade must fail closed.
@@ -436,6 +481,27 @@ export async function listenHostedReadOnly(context, socketPath, {
           // Exclusive creation consumes the sole grant before any browser inspection.
           await writeFile(operatorUsedPath, 'consumed\n', { flag: 'wx', mode: 0o600 });
           return send(await observeOperatorCurrentRelease(context));
+        } catch {
+          return send(stopped('operator_recovery_unavailable'));
+        } finally { busy = false; }
+      }
+      if (request?.action === 'operator_current_cart') {
+        if (!durableStopPath || !accessStopped || busy || !operatorCartAckPath || !operatorCartUsedPath ||
+            Reflect.ownKeys(request).length !== 2 || request.listing_id !== OPERATOR_CART_LISTING) {
+          return send(stopped('unsupported_operator_recovery'));
+        }
+        busy = true;
+        try {
+          const ack = await stat(operatorCartAckPath).catch(() => null);
+          if (!ack?.isFile() || ack.uid !== process.getuid() ||
+              (ack.mode & 0o777) !== 0o600 ||
+              await readFile(operatorCartAckPath, 'utf8') !==
+                `operator_confirmed_current_cart:${OPERATOR_CART_LISTING}:${bootId}\n`) {
+            return send(stopped('operator_acknowledgement_required'));
+          }
+          // Consume before looking at the browser; an uncertain read cannot replay.
+          await writeFile(operatorCartUsedPath, 'consumed\n', { flag: 'wx', mode: 0o600 });
+          return send(await observeOperatorCurrentCart(context));
         } catch {
           return send(stopped('operator_recovery_unavailable'));
         } finally { busy = false; }
