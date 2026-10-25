@@ -134,6 +134,18 @@ the user must reopen the cart and complete any normal verification before a
 fresh acknowledgement and the single read. This is a diagnostic read, not a
 general unlock or a final quote. Deferred sales tax still blocks checkout.
 
+For a separately approved additional cart read, the same `operator_current_cart`
+action accepts a lowercase UUIDv4 `grant_id`, still only for listing `3526572746`.
+The operator must create an owner-only mode `0600`
+`/bridge/operator-cart-grant-<grant_id>-ack` containing
+`operator_confirmed_current_cart:3526572746:<grant_id>:<current-boot-id>`.
+Before looking at the page, the bridge exclusively creates the matching
+`operator-cart-grant-<grant_id>-used` marker. The old `operator-cart-used` marker
+is never removed or reused. A changed boot, missing or malformed acknowledgement,
+replayed grant, wrong page, challenge, or unsupported cart shape stops. The
+bridge does not mint acknowledgements: each new grant requires a distinct,
+specifically approved operator action, and the global stop remains in place.
+
 ## Approved private socket handoff (stopped)
 
 The owner approved Sniper code reading the signed-in browser through a restricted

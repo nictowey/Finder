@@ -5,7 +5,7 @@ const { test, before } = require('node:test');
 const { connect } = require('node:net');
 const { stat, mkdtemp, writeFile, readFile, rm } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
-const { join } = require('node:path');
+const { dirname, join } = require('node:path');
 const { randomUUID } = require('node:crypto');
 let observeCurrentHostedPage, createReleaseNavigator, createListingNavigator,
   listenHostedReadOnly, privateBridgeDirectory, launchHostedReadOnlyBrowser,
@@ -25,6 +25,7 @@ const releaseUrl = 'https://www.discogs.com/sell/release/111';
 const cartUrl = 'https://www.discogs.com/sell/cart/';
 const releaseRequest = { action: 'current_release', release_id: '111' };
 const cartRequest = { action: 'current_cart', listing_id: '222' };
+const cartGrantId = 'a0c12345-1234-4abc-8def-123456789abc';
 const navigateRequest = { action: 'observe_release', release_id: '111' };
 const itemUrl = 'https://www.discogs.com/shop/item/222';
 const itemRequest = { action: 'observe_listing', release_id: '111', listing_id: '222' };
@@ -315,6 +316,11 @@ async function writeCartAck(socket) {
   await writeFile(socket.options.operatorCartAckPath,
     `operator_confirmed_current_cart:3526572746:${bootId}\n`, { mode: 0o600 });
 }
+async function writeCartGrantAck(socket, grantId = cartGrantId) {
+  const bootId = (await readFile(socket.options.operatorBootPath, 'utf8')).trim();
+  await writeFile(join(dirname(socket.options.operatorCartAckPath), `operator-cart-grant-${grantId}-ack`),
+    `operator_confirmed_current_cart:3526572746:${grantId}:${bootId}\n`, { mode: 0o600 });
+}
 function cartSnapshot() {
   const quote = (count, visible, label, value) => ({ count, visible, label, value });
   return { schema: 'discogs_cart_dom_v1', code: 'observed', purchase_allowed: false,
@@ -381,6 +387,66 @@ test('one-use current cart recovery reads exact visible row and preserves global
       stopped(await sendSocket(socket.path, JSON.stringify(cartRequest) + '\n'), 'access_restricted');
     } finally { await socket.close(); }
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('a scoped cart grant is single-use and never clears the consumed legacy grant', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-operator-'));
+  const fixture = operatorCartFixture();
+  const legacy = JSON.stringify({ action: 'operator_current_cart', listing_id: '3526572746' }) + '\n';
+  const scoped = JSON.stringify({ action: 'operator_current_cart', listing_id: '3526572746',
+    grant_id: cartGrantId }) + '\n';
+  try {
+    const socket = await operatorSocket(fixture.context, directory);
+    try {
+      await writeCartAck(socket);
+      stopped(await sendSocket(socket.path, legacy), 'final_quote_unverified');
+      stopped(await sendSocket(socket.path, scoped), 'operator_acknowledgement_required');
+      await writeCartGrantAck(socket);
+      stopped(await sendSocket(socket.path, scoped), 'final_quote_unverified');
+      assert.equal((await readFile(join(directory, 'operator-cart-used'), 'utf8')), 'consumed\n');
+      assert.equal((await readFile(join(directory, `operator-cart-grant-${cartGrantId}-used`), 'utf8')),
+        'consumed\n');
+      stopped(await sendSocket(socket.path, scoped), 'operator_recovery_unavailable');
+      stopped(await sendSocket(socket.path, legacy), 'operator_recovery_unavailable');
+      stopped(await sendSocket(socket.path, JSON.stringify(cartRequest) + '\n'), 'access_restricted');
+      assert.equal(fixture.calls.filter(call => call === 'evaluate').length, 2);
+      assert.ok(!fixture.calls.some(call => ['goto', 'click', 'newPage'].includes(call)));
+    } finally { await socket.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('scoped cart grants reject wrong scope, stale boot, malformed IDs and changed pages', async () => {
+  for (const [config, code] of [
+    [{}, 'final_quote_unverified'],
+    [{ title: 'Just a moment... Cloudflare' }, 'access_restricted'],
+    [{ snapshot: { ...cartSnapshot(), listing_matches_expected: false } }, 'expected_listing_not_observed'],
+  ]) {
+    const directory = await mkdtemp(join(tmpdir(), 'sniper-operator-'));
+    const fixture = operatorCartFixture(config);
+    const scoped = { action: 'operator_current_cart', listing_id: '3526572746', grant_id: cartGrantId };
+    try {
+      let socket = await operatorSocket(fixture.context, directory);
+      try {
+        await writeCartGrantAck(socket);
+        stopped(await sendSocket(socket.path, JSON.stringify({ ...scoped, listing_id: '999' }) + '\n'),
+          'unsupported_operator_recovery');
+        stopped(await sendSocket(socket.path, JSON.stringify({ ...scoped, grant_id: '../x' }) + '\n'),
+          'unsupported_operator_recovery');
+        stopped(await sendSocket(socket.path, JSON.stringify({ ...scoped, extra: true }) + '\n'),
+          'unsupported_operator_recovery');
+        stopped(await sendSocket(socket.path, JSON.stringify(scoped) + '\n'), code);
+        stopped(await sendSocket(socket.path, JSON.stringify(scoped) + '\n'),
+          'operator_recovery_unavailable');
+      } finally { await socket.close(); }
+      socket = await operatorSocket(fixture.context, directory);
+      try {
+        const otherGrant = { ...scoped, grant_id: 'b0c12345-1234-4abc-8def-123456789abc' };
+        stopped(await sendSocket(socket.path, JSON.stringify(otherGrant) + '\n'),
+          'operator_acknowledgement_required');
+        stopped(await sendSocket(socket.path, JSON.stringify(cartRequest) + '\n'), 'access_restricted');
+      } finally { await socket.close(); }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }
 });
 
 test('cart exception consumes on wrong item, multiple rows, duplicate pages, challenge and page change', async () => {

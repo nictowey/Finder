@@ -21,6 +21,10 @@ from finder.discogs_rules import amount
 LISTING_ID = re.compile(r"[1-9][0-9]{0,15}\Z", re.ASCII)
 MONEY = re.compile(r"[0-9]{1,7}(?:\.[0-9]{1,2})?\Z", re.ASCII)
 OPERATOR_CART_LISTING = "3526572746"
+CART_GRANT_ID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z",
+    re.ASCII,
+)
 LOGGER = logging.getLogger(__name__)
 # The bridge may return a stop code derived from page inspection. Never log its
 # unchecked value: an unexpected response could otherwise put account text in logs.
@@ -91,11 +95,18 @@ def _money(value):
 class HostedCartReadOnlyReader:
     """Read one current cart through the approved owner-only fixed-action socket."""
 
-    def __init__(self, path=HOSTED_SOCKET, *, operator_one_use=False):
+    def __init__(self, path=HOSTED_SOCKET, *, operator_one_use=False, operator_grant_id=None):
         if type(operator_one_use) is not bool:
             raise ValueError("operator_one_use must be boolean")
+        if operator_grant_id is not None and (
+            not operator_one_use
+            or type(operator_grant_id) is not str
+            or not CART_GRANT_ID.fullmatch(operator_grant_id)
+        ):
+            raise ValueError("operator_grant_id must be a one-use UUID")
         self.path = Path(path)
         self.operator_one_use = operator_one_use
+        self.operator_grant_id = operator_grant_id
 
     def _private(self):
         try:
@@ -124,15 +135,13 @@ class HostedCartReadOnlyReader:
             raise CheckoutStopped("operator_cart_listing_mismatch")
         if not self._private():
             raise CheckoutStopped("private_cart_reader_unavailable")
-        request = (
-            json.dumps(
-                {
-                    "action": "operator_current_cart" if self.operator_one_use else "current_cart",
-                    "listing_id": listing_id,
-                }
-            )
-            + "\n"
-        )
+        payload = {
+            "action": "operator_current_cart" if self.operator_one_use else "current_cart",
+            "listing_id": listing_id,
+        }
+        if self.operator_grant_id is not None:
+            payload["grant_id"] = self.operator_grant_id
+        request = json.dumps(payload) + "\n"
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
                 connection.settimeout(15)

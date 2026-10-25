@@ -16,6 +16,8 @@ from finder.discogs_hosted_checkout import (
     HostedCheckoutPreflight,
 )
 
+GRANT_ID = "a0c12345-1234-4abc-8def-123456789abc"
+
 
 @pytest.fixture
 def candidate_state(tmp_path):
@@ -99,6 +101,22 @@ def test_operator_cart_request_is_exact_one_use_action_without_retry(monkeypatch
     evidence = reader("3526572746")
     assert requests == [{"action": "operator_current_cart", "listing_id": "3526572746"}]
     assert evidence.tax_hidden_unknown and evidence.purchase_allowed is False
+
+
+def test_scoped_one_use_cart_request_carries_only_a_valid_grant_id(monkeypatch):
+    requests = []
+    fake_socket(monkeypatch, cart_reply(), record=requests)
+    reader = HostedCartReadOnlyReader(operator_one_use=True, operator_grant_id=GRANT_ID)
+    evidence = reader("3526572746")
+    assert evidence.purchase_allowed is False
+    assert requests == [
+        {"action": "operator_current_cart", "listing_id": "3526572746", "grant_id": GRANT_ID}
+    ]
+    for invalid in ("../x", "A0c12345-1234-4abc-8def-123456789abc", "", 123):
+        with pytest.raises(ValueError, match="operator_grant_id"):
+            HostedCartReadOnlyReader(operator_one_use=True, operator_grant_id=invalid)
+    with pytest.raises(ValueError, match="operator_grant_id"):
+        HostedCartReadOnlyReader(operator_grant_id=GRANT_ID)
 
 
 @pytest.mark.parametrize(

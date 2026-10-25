@@ -4,7 +4,8 @@
  */
 import { createServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { chmod, readFile, stat, unlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, readFile, stat, unlink, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { collectCartDom, inspectCurrentCartDom } from './discogs_cart_inspector.mjs';
 import { collectReleaseMarketplaceDom } from './discogs_release_snapshot.mjs';
 import { collectListingDetailDom, collectListingReadinessDom } from './discogs_listing_detail_snapshot.mjs';
@@ -22,6 +23,7 @@ const SHARED_SOCKET = '/bridge/sniper-read-only.sock';
 const SHARED_GROUP = 113;
 const OPERATOR_RELEASE = '4204639';
 const OPERATOR_CART_LISTING = '3526572746';
+const CART_GRANT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 export function privateBridgeDirectory(directory, uid = process.getuid()) {
   return Boolean(directory?.isDirectory?.() && directory.uid === uid &&
@@ -422,6 +424,9 @@ export async function listenHostedReadOnly(context, socketPath, {
       (!durableStopPath || !operatorBootPath || !operatorCartAckPath || !operatorCartUsedPath)) {
     throw new TypeError('incomplete_cart_recovery_configuration');
   }
+  if (operatorCartAckPath && dirname(operatorCartAckPath) !== dirname(operatorCartUsedPath)) {
+    throw new TypeError('cart_grant_directory_mismatch');
+  }
   if (shared && (!operatorCartAckPath || !operatorCartUsedPath)) {
     throw new TypeError('cart_recovery_configuration_required');
   }
@@ -486,21 +491,30 @@ export async function listenHostedReadOnly(context, socketPath, {
         } finally { busy = false; }
       }
       if (request?.action === 'operator_current_cart') {
+        const keys = Reflect.ownKeys(request);
+        const scoped = keys.includes('grant_id');
+        const grantId = Object.getOwnPropertyDescriptor(request, 'grant_id')?.value;
         if (!durableStopPath || !accessStopped || busy || !operatorCartAckPath || !operatorCartUsedPath ||
-            Reflect.ownKeys(request).length !== 2 || request.listing_id !== OPERATOR_CART_LISTING) {
+            keys.length !== (scoped ? 3 : 2) || request.listing_id !== OPERATOR_CART_LISTING ||
+            (scoped && (typeof grantId !== 'string' || !CART_GRANT_ID.test(grantId)))) {
           return send(stopped('unsupported_operator_recovery'));
         }
+        const directory = dirname(operatorCartAckPath);
+        const ackPath = scoped ? join(directory, `operator-cart-grant-${grantId}-ack`) : operatorCartAckPath;
+        const usedPath = scoped ? join(directory, `operator-cart-grant-${grantId}-used`) : operatorCartUsedPath;
+        const expectedAck = scoped ?
+          `operator_confirmed_current_cart:${OPERATOR_CART_LISTING}:${grantId}:${bootId}\n` :
+          `operator_confirmed_current_cart:${OPERATOR_CART_LISTING}:${bootId}\n`;
         busy = true;
         try {
-          const ack = await stat(operatorCartAckPath).catch(() => null);
+          const ack = await lstat(ackPath).catch(() => null);
           if (!ack?.isFile() || ack.uid !== process.getuid() ||
               (ack.mode & 0o777) !== 0o600 ||
-              await readFile(operatorCartAckPath, 'utf8') !==
-                `operator_confirmed_current_cart:${OPERATOR_CART_LISTING}:${bootId}\n`) {
+              await readFile(ackPath, 'utf8') !== expectedAck) {
             return send(stopped('operator_acknowledgement_required'));
           }
           // Consume before looking at the browser; an uncertain read cannot replay.
-          await writeFile(operatorCartUsedPath, 'consumed\n', { flag: 'wx', mode: 0o600 });
+          await writeFile(usedPath, 'consumed\n', { flag: 'wx', mode: 0o600 });
           return send(await observeOperatorCurrentCart(context));
         } catch {
           return send(stopped('operator_recovery_unavailable'));
