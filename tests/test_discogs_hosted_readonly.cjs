@@ -5,10 +5,11 @@ const { test, before } = require('node:test');
 const { connect } = require('node:net');
 const { stat } = require('node:fs/promises');
 const { randomUUID } = require('node:crypto');
-let observeCurrentHostedPage, listenHostedReadOnly, launchHostedReadOnlyBrowser,
+let observeCurrentHostedPage, createReleaseNavigator, listenHostedReadOnly, launchHostedReadOnlyBrowser,
   collectReleaseMarketplaceDom, collectCartDom;
 before(async () => {
-  ({ observeCurrentHostedPage, listenHostedReadOnly } = await import('../scripts/discogs_hosted_readonly.mjs'));
+  ({ observeCurrentHostedPage, createReleaseNavigator, listenHostedReadOnly } =
+    await import('../scripts/discogs_hosted_readonly.mjs'));
   ({ launchHostedReadOnlyBrowser } = await import('../scripts/discogs_hosted_browser_runtime.mjs'));
   ({ collectReleaseMarketplaceDom } = await import('../scripts/discogs_release_snapshot.mjs'));
   ({ collectCartDom } = await import('../scripts/discogs_cart_inspector.mjs'));
@@ -18,8 +19,10 @@ const releaseUrl = 'https://www.discogs.com/sell/release/111';
 const cartUrl = 'https://www.discogs.com/sell/cart/';
 const releaseRequest = { action: 'current_release', release_id: '111' };
 const cartRequest = { action: 'current_cart', listing_id: '222' };
+const navigateRequest = { action: 'observe_release', release_id: '111' };
 const observedRelease = () => ({ source: 'discogs_rendered_release', release_id: 111,
-  url: releaseUrl, status: 'observed', complete: true, total: 0, rows: [], purchase_allowed: false });
+  url: releaseUrl, status: 'observed', complete: true, has_next: false,
+  total: 0, rows: [], purchase_allowed: false });
 function fixture(url = releaseUrl, response = observedRelease()) {
   const calls = [];
   const page = new Proxy({
@@ -38,6 +41,37 @@ function fixture(url = releaseUrl, response = observedRelease()) {
     assert.equal(key, 'pages', `Forbidden context action: ${String(key)}`); return target[key];
   } });
   return { context, page, calls };
+}
+function navigationFixture({ status = 200, title = 'Marketplace', landed = releaseUrl,
+  result = observedRelease(), retryAfter = null, ready = true } = {}) {
+  const calls = [];
+  const page = new Proxy({
+    goto(url, options) {
+      calls.push(['goto', url, options]);
+      return { status: () => status, headerValue: () => Promise.resolve(retryAfter) };
+    },
+    url: () => landed,
+    title: async () => title,
+    waitForSelector(selector) {
+      calls.push(['ready', selector]);
+      if (!ready) throw new Error('fixture not ready');
+    },
+    evaluate(fn, id) {
+      calls.push(['evaluate', id]);
+      assert.equal(fn, collectReleaseMarketplaceDom);
+      assert.equal(id, '111');
+      return structuredClone(result);
+    },
+    close: async () => calls.push(['close']),
+  }, { get(target, key) {
+    if (key === 'then') return undefined;
+    assert.ok(['goto', 'url', 'title', 'waitForSelector', 'evaluate', 'close'].includes(key),
+      `Forbidden navigation action: ${String(key)}`);
+    return target[key];
+  } });
+  const context = new Proxy({ newPage: async () => { calls.push(['newPage']); return page; } },
+    { get(target, key) { assert.equal(key, 'newPage'); return target[key]; } });
+  return { context, calls };
 }
 function stopped(result, code) {
   assert.equal(result.status, 'blocked'); assert.equal(result.code, code);
@@ -124,4 +158,95 @@ test('staged launcher uses only approved profile and fixed socket, then closes c
     assert.equal((await stat('/tmp/sniper-read-only.sock')).mode & 0o777, 0o600);
   } finally { await close(); }
   assert.deepEqual(calls.at(-1), ['close']);
+});
+
+test('one exact release request uses canonical URL, fixed collector, closes tab, then cools down', async () => {
+  let time = 1_000_000;
+  const { context, calls } = navigationFixture();
+  const navigate = createReleaseNavigator(context, { now: () => time });
+  const result = await navigate(navigateRequest);
+  assert.equal(result.status, 'observed');
+  assert.equal(result.observation.complete, true);
+  assert.equal(result.purchase_allowed, false);
+  assert.deepEqual(calls[1], ['goto', releaseUrl, { waitUntil: 'domcontentloaded', timeout: 12000 }]);
+  assert.equal(calls.filter(call => call[0] === 'evaluate').length, 1);
+  assert.deepEqual(calls.at(-1), ['close']);
+  stopped(await navigate(navigateRequest), 'release_cooldown');
+  assert.equal(calls.filter(call => call[0] === 'newPage').length, 1);
+  time += 15 * 60_000;
+  assert.equal((await navigate(navigateRequest)).status, 'observed');
+});
+
+test('invalid or expanded navigation requests are blocked before opening a page', async () => {
+  const { context, calls } = navigationFixture();
+  const navigate = createReleaseNavigator(context);
+  for (const request of [{ action: 'observe_release', release_id: '0111' },
+    { ...navigateRequest, url: 'https://elsewhere.test/' },
+    { action: 'observe_release', release_id: '111/../../cart' }]) {
+    stopped(await navigate(request), 'unsupported_read_request');
+  }
+  assert.deepEqual(calls, []);
+});
+
+test('partial pagination and unready page stop without returning incomplete rows', async () => {
+  const partial = navigationFixture({ result: { ...observedRelease(), status: 'incomplete',
+    complete: false, has_next: true, error_code: 'additional_page_required', rows: [] } });
+  const first = await createReleaseNavigator(partial.context)(navigateRequest);
+  assert.equal(first.status, 'incomplete');
+  assert.equal(first.code, 'additional_page_required');
+  assert.equal(first.purchase_allowed, false);
+  assert.equal(first.stop_required, true);
+  assert.ok(!('observation' in first));
+  assert.deepEqual(partial.calls.at(-1), ['close']);
+  const unready = navigationFixture({ ready: false });
+  stopped(await createReleaseNavigator(unready.context)(navigateRequest), 'marketplace_not_ready');
+  assert.ok(!unready.calls.some(call => call[0] === 'evaluate'));
+});
+
+test('429 honors Retry-After without retrying and 403 or challenge latches access stop', async () => {
+  let time = 1_000_000;
+  const rate = navigationFixture({ status: 429, retryAfter: '3600' });
+  const limited = createReleaseNavigator(rate.context, { now: () => time });
+  stopped(await limited(navigateRequest), 'rate_limited');
+  time += 15 * 60_000;
+  stopped(await limited(navigateRequest), 'release_cooldown');
+  assert.equal(rate.calls.filter(call => call[0] === 'goto').length, 1);
+  const denied = navigationFixture({ status: 403 });
+  const blocked = createReleaseNavigator(denied.context);
+  stopped(await blocked(navigateRequest), 'access_restricted');
+  stopped(await blocked(navigateRequest), 'access_restricted');
+  assert.equal(denied.calls.filter(call => call[0] === 'goto').length, 1);
+  const challenge = navigationFixture({ title: 'Just a moment...' });
+  stopped(await createReleaseNavigator(challenge.context)(navigateRequest), 'access_restricted');
+  assert.ok(!challenge.calls.some(call => call[0] === 'evaluate'));
+});
+
+test('cancellation closes navigation tab and concurrent attempt does not overlap', async () => {
+  let resolveGoto;
+  const calls = [];
+  const page = { goto: () => new Promise(resolve => { resolveGoto = resolve; }),
+    close: async () => calls.push('close') };
+  const context = { newPage: async () => { calls.push('newPage'); return page; } };
+  const navigate = createReleaseNavigator(context);
+  const controller = new AbortController();
+  const pending = navigate(navigateRequest, { signal: controller.signal });
+  await new Promise(resolve => setImmediate(resolve));
+  stopped(await navigate(navigateRequest), 'read_in_progress');
+  controller.abort();
+  resolveGoto(null);
+  stopped(await pending, 'read_cancelled');
+  assert.deepEqual(calls, ['newPage', 'close', 'close']);
+});
+
+test('owner-only socket dispatches one canonical navigation and refuses immediate repeat', async () => {
+  const { context, calls } = navigationFixture();
+  const path = `/tmp/sniper-test-${randomUUID().replaceAll('-', '')}.sock`;
+  const close = await listenHostedReadOnly(context, path);
+  try {
+    const first = await sendSocket(path, JSON.stringify(navigateRequest) + '\n');
+    assert.equal(first.status, 'observed');
+    assert.equal(first.purchase_allowed, false);
+    stopped(await sendSocket(path, JSON.stringify(navigateRequest) + '\n'), 'release_cooldown');
+    assert.equal(calls.filter(call => call[0] === 'goto').length, 1);
+  } finally { await close(); }
 });
