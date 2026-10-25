@@ -189,10 +189,14 @@ def verify_pipeline(snapshots):
     times = _validate_sequence(snapshots)
     ordinary = _evaluate_row(snapshots[0]["rows"][0], times[0])
     incomplete = _evaluate_row(snapshots[1]["rows"][0], times[1])
-    _require(ordinary["eligible_for_review"] is True, "ordinary_prose_must_pass_omission_check")
+    _require(ordinary["eligible_for_review"] is True, "clear_no_damage_prose_must_pass_review")
     _require(
         ordinary["media_completeness"]["status"] == "no_disclosed_media_omission",
         "ordinary_prose_is_not_completeness_proof",
+    )
+    _require(
+        ordinary["media_defects"]["status"] == "no_disclosed_media_defect",
+        "clear_negation_is_not_damage_proof",
     )
     _require(incomplete["eligible_for_review"] is False, "missing_media_must_block_review")
     _require(incomplete["media_completeness"]["status"] == "incomplete", "missing_media_not_found")
