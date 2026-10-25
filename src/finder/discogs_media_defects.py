@@ -11,6 +11,7 @@ _DAMAGE = (
     r"crack(?:ed|s)?|brok(?:en|e)|chip(?:ped|s)?|"
     r"skip(?:s|ped|ping)?|jump(?:s|ed|ing)?|stuck\s+grooves?|"
     r"scratch(?:ed|es|ing)?|scuff(?:ed|s|ing)?|hairlines?|"
+    r"goug(?:e|es|ed|ing)|surface\s+marks?|"
     r"distort(?:ed|ion)|surface\s+noise|crackle|pops?)"
 )
 _UNCERTAIN = re.compile(
@@ -33,7 +34,8 @@ _CLEAR_DAMAGE = re.compile(
 )
 _PHYSICAL = re.compile(
     r"\b(?:crack(?:ed|s)?|brok(?:en|e)|chip(?:ped|s)?|"
-    r"scratch(?:ed|es|ing)?|scuff(?:ed|s|ing)?|hairlines?)\b"
+    r"scratch(?:ed|es|ing)?|scuff(?:ed|s|ing)?|hairlines?|"
+    r"goug(?:e|es|ed|ing)|surface\s+marks?)\b"
 )
 _PLAYBACK = re.compile(
     r"\b(?:audible|loud|constant|persistent|heavy|severe)\s+"

@@ -43,7 +43,8 @@ Playable-media completeness and media damage are separate assessments.
 Explicit missing records and definite media/playback damage block review even
 when a listed grade meets the target. Defects currently recognize contextual
 English warp/dish, crack/break/chip, skip/jump/stuck groove, media
-scratch/scuff/hairline, and clearly stated playback noise/distortion. Clear
+scratch/scuff/hairline/gouge/surface marks, and clearly stated playback
+noise/distortion. Clear
 negations and packaging-only damage do not assert playable-media damage.
 Ambiguous, contradictory, unsupported or absent seller descriptions fail closed.
 These pattern checks cannot verify the physical copy and may miss novel wording.
