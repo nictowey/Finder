@@ -8,6 +8,13 @@ only prints health. Even with `--run` it exits if the schedule is paused, the
 kill switch is active, or the reader is unavailable; it never resumes a schedule.
 The web app does not start a worker or call `tick`. A new rules database
 starts with this schedule paused, the cloud kill switch stopped, and no targets.
+An ID-only `discogs_monitor_releases` table now lets the scheduler observe an
+exact release without inventing a price, condition, seller or destination
+buying rule. Saves require the current rules revision and invalidate an
+in-flight observation. Complete snapshots and changes are retained for these
+read-only targets, while candidate capture is skipped unless a separate active
+buying rule exists. This schema addition does not save any targets, start the
+worker, clear the browser stop or enable orders.
 The authenticated cloud `/api/snapshot` and private local rule editor report its
 paused state, next request, per-target due/failure state and last error. `set_paused`
 uses an expected revision for explicit

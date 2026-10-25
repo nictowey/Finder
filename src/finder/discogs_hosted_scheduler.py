@@ -143,7 +143,35 @@ class HostedReleaseScheduler:
                         failures INTEGER NOT NULL DEFAULT 0,
                         last_status TEXT NOT NULL DEFAULT 'waiting',
                         last_attempt REAL);
+                    CREATE TABLE IF NOT EXISTS discogs_monitor_releases (
+                        release_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL
+                        CHECK(enabled IN (0,1)));
                 """)
+        finally:
+            store.close()
+
+    def set_monitor_release(self, release_id, enabled, *, expected_rules_revision):
+        """Save an ID-only read target; never create an implicit buying rule."""
+        if (
+            type(release_id) is not int
+            or not 0 < release_id <= 9007199254740991
+            or type(enabled) is not bool
+            or type(expected_rules_revision) is not int
+        ):
+            raise ValueError("An exact release, enabled flag and rules revision are required.")
+        store = RulesStore(self.database)
+        try:
+            with store.db:
+                store.db.execute("BEGIN IMMEDIATE")
+                if store.snapshot()["revision"] != expected_rules_revision:
+                    raise RuntimeError("Saved state changed.")
+                store.db.execute(
+                    "INSERT INTO discogs_monitor_releases(release_id,enabled) VALUES(?,?) "
+                    "ON CONFLICT(release_id) DO UPDATE SET enabled=excluded.enabled",
+                    (release_id, int(enabled)),
+                )
+                store.db.execute("UPDATE state SET revision=revision+1")
+            return store.snapshot()["revision"]
         finally:
             store.close()
 
@@ -215,13 +243,24 @@ class HostedReleaseScheduler:
                     return None
                 rules = store.snapshot()
                 enabled = sorted(
-                    t["release_id"]
-                    for t in rules["targets"]
-                    if t["enabled"] and t["release_id"] not in rules["owned"]
+                    {
+                        *(
+                            t["release_id"]
+                            for t in rules["targets"]
+                            if t["enabled"] and t["release_id"] not in rules["owned"]
+                        ),
+                        *(
+                            row[0]
+                            for row in store.db.execute(
+                                "SELECT release_id FROM discogs_monitor_releases WHERE enabled=1"
+                            )
+                        ),
+                    }
                 )
                 store.db.execute(
                     "DELETE FROM discogs_hosted_due WHERE release_id NOT IN "
-                    "(SELECT release_id FROM targets)"
+                    "(SELECT release_id FROM targets UNION SELECT release_id "
+                    "FROM discogs_monitor_releases)"
                 )
                 for release in enabled:
                     store.db.execute(
@@ -263,6 +302,7 @@ class HostedReleaseScheduler:
                     rules["revision"],
                     control[1],
                     baseline[0] if baseline else 0,
+                    any(t["release_id"] == release and t["enabled"] for t in rules["targets"]),
                 )
         finally:
             store.close()
@@ -272,9 +312,15 @@ class HostedReleaseScheduler:
         claim = self._claim()
         if claim is None:
             return {"status": "idle", "purchase_allowed": False}
-        release, token, schedule_revision, rules_revision, control_revision, baseline_revision = (
-            claim
-        )
+        (
+            release,
+            token,
+            schedule_revision,
+            rules_revision,
+            control_revision,
+            baseline_revision,
+            buying_rule,
+        ) = claim
         error = None
         result = None
         try:
@@ -292,7 +338,7 @@ class HostedReleaseScheduler:
                 expected_schedule_revision=schedule_revision,
                 expected_schedule_token=token,
             )
-            if self.candidates is not None:
+            if self.candidates is not None and buying_rule:
                 self.candidates.capture(
                     release,
                     rules_revision=rules_revision,

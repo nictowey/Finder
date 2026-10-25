@@ -102,6 +102,68 @@ def test_disabled_by_default_and_requires_saved_enabled_unowned_target(setup):
     assert calls == []
 
 
+def test_monitor_only_release_does_not_require_or_create_buying_criteria(tmp_path):
+    database = tmp_path / "monitor.db"
+    RulesStore(database, create=True).close()
+    CloudApp(database, ORIGIN, verifier())
+    clock = [datetime(2026, 10, 25, tzinfo=UTC).timestamp()]
+    reader_calls = []
+
+    def read(release):
+        reader_calls.append(release)
+        return page(clock[0])
+
+    worker = scheduler(database, clock, read)
+    with pytest.raises(ValueError):
+        worker.set_monitor_release(123, True, expected_rules_revision=-1.0)
+    revision = worker.set_monitor_release(123, True, expected_rules_revision=0)
+    assert revision == 1
+    with pytest.raises(RuntimeError):
+        worker.set_monitor_release(123, True, expected_rules_revision=0)
+    store = RulesStore(database)
+    with store.db:
+        store.db.execute("UPDATE cloud_control SET killed=0,revision=1")
+    assert store.snapshot()["targets"] == []
+    store.close()
+    resume(worker)
+    captures = []
+    worker.candidates = SimpleNamespace(
+        capture=lambda *args, **kwargs: captures.append((args, kwargs))
+    )
+    assert worker.tick()["status"] == "baseline"
+    assert reader_calls == [123]
+    assert captures == []
+    assert worker.snapshots.snapshot()["releases"][0]["release_id"] == 123
+    assert worker.health()["purchase_allowed"] is False
+    worker.set_monitor_release(123, False, expected_rules_revision=1)
+    clock[0] += MIN_INTERVAL + 1
+    assert worker.tick()["status"] == "idle"
+    assert reader_calls == [123]
+
+
+def test_disabling_monitor_during_read_rejects_inflight_baseline(tmp_path):
+    database = tmp_path / "monitor-race.db"
+    RulesStore(database, create=True).close()
+    CloudApp(database, ORIGIN, verifier())
+    clock = [datetime(2026, 10, 25, tzinfo=UTC).timestamp()]
+    worker = scheduler(database, clock, None)
+    worker.set_monitor_release(123, True, expected_rules_revision=0)
+    store = RulesStore(database)
+    with store.db:
+        store.db.execute("UPDATE cloud_control SET killed=0,revision=1")
+    store.close()
+    resume(worker)
+
+    def read(_):
+        worker.set_monitor_release(123, False, expected_rules_revision=1)
+        return page(clock[0])
+
+    worker.reader = read
+    assert worker.tick()["status"] == "blocked"
+    assert worker.snapshots.snapshot()["releases"][0]["baseline_revision"] == 0
+    assert change_ids(database) == []
+
+
 def test_unwired_reader_stops_if_schedule_was_resumed(setup):
     database, clock = setup
     worker = scheduler(database, clock, None)

@@ -288,6 +288,9 @@ class ReleaseSnapshots:
                         UNIQUE(release_id,revision,kind,listing_id));
                     CREATE TABLE IF NOT EXISTS discogs_release_acknowledged (
                         sequence INTEGER PRIMARY KEY, acknowledged_at REAL NOT NULL);
+                    CREATE TABLE IF NOT EXISTS discogs_monitor_releases (
+                        release_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL
+                        CHECK(enabled IN (0,1)));
                 """)
         finally:
             store.close()
@@ -305,8 +308,14 @@ class ReleaseSnapshots:
         if current["revision"] != rules_revision:
             raise RuntimeError("Rules revision changed.")
         target = next((t for t in current["targets"] if t["release_id"] == release), None)
-        if target is None or not target["enabled"] or release in current["owned"]:
-            raise ValueError("Save an active, unowned exact-release target before importing.")
+        monitor = store.db.execute(
+            "SELECT enabled FROM discogs_monitor_releases WHERE release_id=?", (release,)
+        ).fetchone()
+        buying_target_active = (
+            target is not None and target["enabled"] and release not in current["owned"]
+        )
+        if not buying_target_active and not (monitor and monitor[0]):
+            raise ValueError("Save an active exact-release target before importing.")
         previous = store.db.execute(
             "SELECT revision,baseline_at,baseline,attempted_at FROM discogs_release_baselines "
             "WHERE release_id=?",
@@ -326,7 +335,9 @@ class ReleaseSnapshots:
             "discogs_release_changes",
         ):
             store.db.execute(
-                f"DELETE FROM {table} WHERE release_id NOT IN (SELECT release_id FROM targets)"
+                f"DELETE FROM {table} WHERE release_id NOT IN "
+                "(SELECT release_id FROM targets UNION "
+                "SELECT release_id FROM discogs_monitor_releases)"
             )
         store.db.execute(
             "DELETE FROM discogs_release_seen WHERE present=0 AND last_seen<?",
@@ -526,7 +537,14 @@ class ReleaseSnapshots:
                     )
                 }
                 releases = []
-                for target in current["targets"]:
+                targets = {t["release_id"]: t for t in current["targets"]}
+                monitor_enabled = {}
+                for release, enabled in store.db.execute(
+                    "SELECT release_id,enabled FROM discogs_monitor_releases"
+                ):
+                    monitor_enabled[release] = bool(enabled)
+                    targets.setdefault(release, {"release_id": release, "enabled": bool(enabled)})
+                for target in targets.values():
                     release = target["release_id"]
                     row = saved.get(release)
                     baseline = json.loads(row[3]) if row and row[3] else None
@@ -551,8 +569,10 @@ class ReleaseSnapshots:
                             import_allowed=bool(
                                 control
                                 and not control[0]
-                                and target["enabled"]
-                                and release not in current["owned"]
+                                and (
+                                    monitor_enabled.get(release, False)
+                                    or (target["enabled"] and release not in current["owned"])
+                                )
                             ),
                         )
                     )
