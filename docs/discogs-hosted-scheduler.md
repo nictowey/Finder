@@ -41,6 +41,15 @@ rejects redirects and stale reads, and records reported shipping separately.
 A public detail never supplies a destination-confirmed shipping, tax, fee or
 physical pressing claim, so it stays blocked for all-in candidate eligibility.
 This is a bounded detail integration, not permission for recurring collection.
+The owner later approved an exact individual item-page read through the existing
+private hosted browser. An optional `HostedListingCandidateReader` sends only
+`observe_listing` with the saved exact release and discovered listing IDs. The
+browser action accepts only canonical item URLs, a fixed DOM collector, and
+bounded read-only fields. Reported page shipping is kept separate from a payable
+destination total; unknown currency, tax, fees, quantity provenance and physical
+pressing evidence still block eligibility. An already-in-cart control also blocks
+the candidate. Neither reader is wired into a live
+candidate worker or a recurring schedule.
 
 The reviewer applies exact-release and observation freshness, release quantity,
 seller-comment damage, media/sleeve grade, seller reputation and all-in

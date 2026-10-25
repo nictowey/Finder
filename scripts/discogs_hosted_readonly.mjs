@@ -1,11 +1,12 @@
 /** Fixed observations inside an owner-approved persistent Firefox context.
- * Only observe_release may open a new tab at a canonical release URL. This module
+ * Only fixed release and item reads may open a new tab at canonical URLs. This module
  * never logs a session, mutates a cart, accepts an agreement, or exposes Playwright.
  */
 import { createServer } from 'node:net';
 import { chmod, stat, unlink } from 'node:fs/promises';
 import { collectCartDom, inspectCurrentCartDom } from './discogs_cart_inspector.mjs';
 import { collectReleaseMarketplaceDom } from './discogs_release_snapshot.mjs';
+import { collectListingDetailDom } from './discogs_listing_detail_snapshot.mjs';
 
 const ID = /^[1-9][0-9]{0,15}$/u;
 const MAX_REQUEST_BYTES = 512;
@@ -32,8 +33,17 @@ function stopped(code) {
 function requestShape(request) {
   if (!request || typeof request !== 'object' || Array.isArray(request)) return null;
   const keys = Reflect.ownKeys(request);
-  if (keys.length !== 2 || !keys.includes('action')) return null;
+  if (!keys.includes('action')) return null;
   const action = Object.getOwnPropertyDescriptor(request, 'action')?.value;
+  if (['current_listing', 'observe_listing'].includes(action)) {
+    if (keys.length !== 3 || !keys.includes('release_id') || !keys.includes('listing_id')) return null;
+    const release = Object.getOwnPropertyDescriptor(request, 'release_id')?.value;
+    const listing = Object.getOwnPropertyDescriptor(request, 'listing_id')?.value;
+    return typeof release === 'string' && ID.test(release) && Number.isSafeInteger(Number(release)) &&
+      typeof listing === 'string' && ID.test(listing) && Number.isSafeInteger(Number(listing)) ?
+      { action, id: listing, release } : null;
+  }
+  if (keys.length !== 2) return null;
   const field = ['current_release', 'observe_release'].includes(action) ? 'release_id' :
     action === 'current_cart' ? 'listing_id' : null;
   if (!field || !keys.includes(field)) return null;
@@ -45,6 +55,8 @@ function exactUrl(action, id, url) {
   if (typeof url !== 'string' || url.length > 100 || /[\s\x00-\x1f\x7f]/u.test(url)) return false;
   if (['current_release', 'observe_release'].includes(action)) return url === `https://www.discogs.com/sell/release/${id}` ||
     url === `https://www.discogs.com/sell/release/${id}/`;
+  if (['current_listing', 'observe_listing'].includes(action)) return url === `https://www.discogs.com/sell/item/${id}` ||
+    url === `https://www.discogs.com/shop/item/${id}`;
   return /^https:\/\/(?:www\.)?discogs\.com\/(?:sell|shop)\/cart\/?$/u.test(url);
 }
 
@@ -87,6 +99,21 @@ export async function observeCurrentHostedPage(context, request) {
       const cart = await beforeDeadline(() => inspectCurrentCartDom(restrictedPage, { expectedListingId: input.id }));
       if (page.url() !== originalUrl) return stopped('page_changed_during_read');
       return bounded({ ...cart, source: 'hosted_browser_read_only', stop_required: true, purchase_allowed: false });
+    }
+    if (input.action === 'current_listing') {
+      const observation = await beforeDeadline(() => page.evaluate(collectListingDetailDom,
+        { release_id: input.release, listing_id: input.id }));
+      if (page.url() !== originalUrl || !exactUrl(input.action, input.id, observation?.url)) {
+        return stopped('page_changed_during_read');
+      }
+      if (observation?.source !== 'discogs_rendered_listing' ||
+          observation.release_id !== Number(input.release) || observation.listing_id !== input.id ||
+          observation.purchase_allowed !== false) return stopped('listing_observation_unverified');
+      if (observation.status !== 'observed' || observation.complete !== true) {
+        return bounded({ ...stopped(observation.error_code || 'incomplete_listing_page'), status: 'incomplete' });
+      }
+      return bounded({ status: 'observed', source: 'hosted_browser_read_only', observation,
+        stop_required: true, purchase_allowed: false });
     }
     const observation = await beforeDeadline(() => page.evaluate(collectReleaseMarketplaceDom, input.id));
     if (page.url() !== originalUrl) return stopped('page_changed_during_read');
@@ -188,6 +215,85 @@ export function createReleaseNavigator(context, { now = () => Date.now() } = {})
   };
 }
 
+/** One fixed item-page load. No recurrence, cart controls, or arbitrary URL input. */
+export function createListingNavigator(context, { now = () => Date.now() } = {}) {
+  let nextAllowedAt = 0, accessStopped = false, active = false;
+  return async (request, { signal } = {}) => {
+    const input = requestShape(request);
+    if (!input || input.action !== 'observe_listing') return stopped('unsupported_read_request');
+    if (accessStopped) return stopped('access_restricted');
+    if (active) return stopped('read_in_progress');
+    const currentTime = now();
+    if (currentTime < nextAllowedAt) return { ...stopped('listing_cooldown'),
+      cooldown_seconds: Math.ceil((nextAllowedAt - currentTime) / 1000) };
+    if (!context || typeof context.newPage !== 'function') return stopped('browser_context_unavailable');
+    active = true;
+    nextAllowedAt = currentTime + MIN_RELEASE_INTERVAL_MS;
+    let page;
+    const cancel = () => { if (page) void page.close().catch(() => {}); };
+    signal?.addEventListener('abort', cancel, { once: true });
+    try {
+      if (signal?.aborted) return stopped('read_cancelled');
+      page = await context.newPage();
+      if (signal?.aborted) return stopped('read_cancelled');
+      const response = await page.goto(`https://www.discogs.com/sell/item/${input.id}`,
+        { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS });
+      if (signal?.aborted) return stopped('read_cancelled');
+      if (!response || typeof response.status !== 'function') return stopped('http_response_unavailable');
+      const status = response.status();
+      if ([429, 503].includes(status)) {
+        const retryAfter = typeof response.headerValue === 'function' ?
+          await Promise.resolve(response.headerValue('retry-after')).catch(() => null) : null;
+        nextAllowedAt = Math.max(nextAllowedAt, now() + Math.max(MIN_RELEASE_INTERVAL_MS,
+          retryAfterMillis(retryAfter)));
+        return { ...stopped(status === 429 ? 'rate_limited' : 'service_unavailable'),
+          cooldown_seconds: Math.ceil((nextAllowedAt - now()) / 1000) };
+      }
+      if (status === 401 || status === 403) {
+        accessStopped = true;
+        return stopped(status === 401 ? 'auth_required' : 'access_restricted');
+      }
+      if (status !== 200) return stopped('unexpected_http_status');
+      const landed = page.url();
+      if (!exactUrl(input.action, input.id, landed)) {
+        if (/\/(?:login|signin|cdn-cgi)(?:\/|\?|$)/iu.test(landed)) accessStopped = true;
+        return stopped(accessStopped ? 'access_restricted' : 'unexpected_redirect');
+      }
+      const title = await page.title();
+      if (/just a moment|attention required|security check|captcha|cloudflare/iu.test(title)) {
+        accessStopped = true;
+        return stopped('access_restricted');
+      }
+      try {
+        await page.waitForSelector('main [data-testid="item-details"]',
+          { state: 'attached', timeout: READY_TIMEOUT_MS });
+        await page.waitForSelector('main span.hifi-grade-chip-display',
+          { state: 'attached', timeout: READY_TIMEOUT_MS });
+      } catch { return stopped('listing_not_ready'); }
+      if (signal?.aborted) return stopped('read_cancelled');
+      const observation = await beforeDeadline(() => page.evaluate(collectListingDetailDom,
+        { release_id: input.release, listing_id: input.id }));
+      if (signal?.aborted) return stopped('read_cancelled');
+      if (page.url() !== landed || !exactUrl(input.action, input.id, observation?.url)) {
+        return stopped('page_changed_during_read');
+      }
+      if (observation?.source !== 'discogs_rendered_listing' ||
+          observation.release_id !== Number(input.release) || observation.listing_id !== input.id ||
+          observation.purchase_allowed !== false) return stopped('listing_observation_unverified');
+      if (observation.status !== 'observed' || observation.complete !== true) {
+        return bounded({ ...stopped(observation.error_code || 'incomplete_listing_page'), status: 'incomplete' });
+      }
+      return bounded({ status: 'observed', source: 'hosted_browser_read_only', observation,
+        stop_required: true, purchase_allowed: false });
+    } catch { return stopped(signal?.aborted ? 'read_cancelled' : 'navigation_or_read_failed'); }
+    finally {
+      signal?.removeEventListener('abort', cancel);
+      if (page) await page.close().catch(() => {});
+      active = false;
+    }
+  };
+}
+
 /** Local Unix socket only; the caller must keep it inside a private container. */
 export async function listenHostedReadOnly(context, socketPath) {
   const shared = socketPath === SHARED_SOCKET;
@@ -202,6 +308,9 @@ export async function listenHostedReadOnly(context, socketPath) {
   }
   let busy = false;
   const navigateRelease = createReleaseNavigator(context);
+  const navigateListing = createListingNavigator(context);
+  let accessStopped = false;
+  let restrictedUntil = 0;
   const server = createServer(connection => {
     let input = Buffer.alloc(0), done = false;
     const controller = new AbortController();
@@ -224,11 +333,24 @@ export async function listenHostedReadOnly(context, socketPath) {
       let request;
       try { request = JSON.parse(input.subarray(0, newline).toString('utf8')); }
       catch { return send(stopped('unsupported_read_request')); }
+      if (accessStopped) return send(stopped('access_restricted'));
+      if (Date.now() < restrictedUntil) return send({ ...stopped('rate_limited'),
+        cooldown_seconds: Math.ceil((restrictedUntil - Date.now()) / 1000) });
       busy = true;
-      const navigation = requestShape(request)?.action === 'observe_release';
+      const action = requestShape(request)?.action;
+      const navigation = ['observe_release', 'observe_listing'].includes(action);
       if (navigation) connection.setTimeout(NAVIGATION_BUDGET_MS);
-      try { send(await (navigation ? navigateRelease(request, { signal: controller.signal }) :
-        observeCurrentHostedPage(context, request))); }
+      try {
+        const result = await (action === 'observe_release' ? navigateRelease(request, { signal: controller.signal }) :
+          action === 'observe_listing' ? navigateListing(request, { signal: controller.signal }) :
+            observeCurrentHostedPage(context, request));
+        if (['auth_required', 'access_restricted'].includes(result?.code)) accessStopped = true;
+        if (['rate_limited', 'service_unavailable'].includes(result?.code) &&
+            Number.isSafeInteger(result.cooldown_seconds) && result.cooldown_seconds > 0) {
+          restrictedUntil = Math.max(restrictedUntil, Date.now() + result.cooldown_seconds * 1000);
+        }
+        send(result);
+      }
       finally { busy = false; }
     });
   });

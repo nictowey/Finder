@@ -5,14 +5,17 @@ const { test, before } = require('node:test');
 const { connect } = require('node:net');
 const { stat } = require('node:fs/promises');
 const { randomUUID } = require('node:crypto');
-let observeCurrentHostedPage, createReleaseNavigator, listenHostedReadOnly, privateBridgeDirectory, launchHostedReadOnlyBrowser,
-  collectReleaseMarketplaceDom, collectCartDom;
+let observeCurrentHostedPage, createReleaseNavigator, createListingNavigator,
+  listenHostedReadOnly, privateBridgeDirectory, launchHostedReadOnlyBrowser,
+  collectReleaseMarketplaceDom, collectListingDetailDom, collectCartDom;
 before(async () => {
-  ({ observeCurrentHostedPage, createReleaseNavigator, listenHostedReadOnly, privateBridgeDirectory } =
+  ({ observeCurrentHostedPage, createReleaseNavigator, createListingNavigator,
+    listenHostedReadOnly, privateBridgeDirectory } =
     await import('../scripts/discogs_hosted_readonly.mjs'));
   ({ launchHostedReadOnlyBrowser } = await import('../scripts/discogs_hosted_browser_runtime.mjs'));
   ({ collectReleaseMarketplaceDom } = await import('../scripts/discogs_release_snapshot.mjs'));
   ({ collectCartDom } = await import('../scripts/discogs_cart_inspector.mjs'));
+  ({ collectListingDetailDom } = await import('../scripts/discogs_listing_detail_snapshot.mjs'));
 });
 
 const releaseUrl = 'https://www.discogs.com/sell/release/111';
@@ -20,6 +23,15 @@ const cartUrl = 'https://www.discogs.com/sell/cart/';
 const releaseRequest = { action: 'current_release', release_id: '111' };
 const cartRequest = { action: 'current_cart', listing_id: '222' };
 const navigateRequest = { action: 'observe_release', release_id: '111' };
+const itemUrl = 'https://www.discogs.com/shop/item/222';
+const itemRequest = { action: 'observe_listing', release_id: '111', listing_id: '222' };
+const observedItem = () => ({ schema: 'discogs_listing_detail_dom_v1', source: 'discogs_rendered_listing',
+  status: 'observed', complete: true, release_id: 111, listing_id: '222', url: itemUrl,
+  observed_at: new Date().toISOString(), media: 'M', sleeve: 'NM', seller_percent: 100,
+  feedback: 10020, item: '199.99', currency: null, reported_shipping_text: '$0.00 shipping',
+  seller_comments: 'No skips.', seller_comments_supported: true, available: true,
+  cart_state: 'already_in_cart',
+  purchase_allowed: false });
 const observedRelease = () => ({ source: 'discogs_rendered_release', release_id: 111,
   url: releaseUrl, status: 'observed', complete: true, has_next: false,
   total: 0, rows: [], purchase_allowed: false });
@@ -73,6 +85,36 @@ function navigationFixture({ status = 200, title = 'Marketplace', landed = relea
     { get(target, key) { assert.equal(key, 'newPage'); return target[key]; } });
   return { context, calls };
 }
+function itemFixture({ status = 200, title = 'Listing', landed = itemUrl,
+  result = observedItem(), ready = true } = {}) {
+  const calls = [];
+  const page = new Proxy({
+    goto(url, options) { calls.push(['goto', url, options]); return { status: () => status }; },
+    url: () => landed,
+    title: async () => title,
+    waitForSelector(selector) { calls.push(['ready', selector]); if (!ready) throw Error('unready'); },
+    evaluate(fn, expected) {
+      calls.push(['evaluate', expected]);
+      assert.equal(fn, collectListingDetailDom);
+      assert.deepEqual(expected, { release_id: '111', listing_id: '222' });
+      return structuredClone(result);
+    },
+    close: async () => calls.push(['close']),
+  }, { get(target, key) {
+    if (key === 'then') return undefined;
+    assert.ok(['goto', 'url', 'title', 'waitForSelector', 'evaluate', 'close'].includes(key),
+      `Forbidden listing action: ${String(key)}`);
+    return target[key];
+  } });
+  const context = new Proxy({
+    pages: () => [page],
+    newPage: async () => { calls.push(['newPage']); return page; },
+  }, { get(target, key) {
+    assert.ok(['pages', 'newPage'].includes(key), `Forbidden context action: ${String(key)}`);
+    return target[key];
+  } });
+  return { context, calls };
+}
 function stopped(result, code) {
   assert.equal(result.status, 'blocked'); assert.equal(result.code, code);
   assert.equal(result.source, 'hosted_browser_read_only');
@@ -116,6 +158,57 @@ test('browser read exceptions and spoofed collector identity are sanitized', asy
   stopped(result, 'hosted_read_failed'); assert.ok(!JSON.stringify(result).includes('SECRET_COOKIE'));
   const spoofed = fixture(releaseUrl, { ...observedRelease(), purchase_allowed: true });
   stopped(await observeCurrentHostedPage(spoofed.context, releaseRequest), 'release_observation_unverified');
+});
+
+test('already-open exact item page is read without navigation or cart controls', async () => {
+  const { context, calls } = itemFixture();
+  const result = await observeCurrentHostedPage(context,
+    { action: 'current_listing', release_id: '111', listing_id: '222' });
+  assert.equal(result.status, 'observed');
+  assert.equal(result.observation.item, '199.99');
+  assert.equal(result.observation.currency, null);
+  assert.equal(result.purchase_allowed, false);
+  assert.ok(!calls.some(call => Array.isArray(call) && call[0] === 'goto'));
+  stopped(await observeCurrentHostedPage(context,
+    { action: 'current_listing', release_id: '111', listing_id: '222', add: true }),
+  'unsupported_read_request');
+});
+
+test('one fixed item navigation closes its tab and stops on redirect or access restriction', async () => {
+  let now = 1_000_000;
+  const { context, calls } = itemFixture();
+  const navigate = createListingNavigator(context, { now: () => now });
+  const result = await navigate(itemRequest);
+  assert.equal(result.status, 'observed'); assert.equal(result.purchase_allowed, false);
+  assert.deepEqual(calls[1], ['goto', 'https://www.discogs.com/sell/item/222',
+    { waitUntil: 'domcontentloaded', timeout: 12000 }]);
+  assert.equal(calls.filter(call => call[0] === 'evaluate').length, 1);
+  assert.deepEqual(calls.at(-1), ['close']);
+  stopped(await navigate(itemRequest), 'listing_cooldown');
+  now += 15 * 60_000;
+  assert.equal((await navigate(itemRequest)).status, 'observed');
+  const redirected = itemFixture({ landed: 'https://www.discogs.com/shop/cart/' });
+  stopped(await createListingNavigator(redirected.context)(itemRequest), 'unexpected_redirect');
+  assert.ok(!redirected.calls.some(call => call[0] === 'evaluate'));
+  const denied = itemFixture({ status: 403 });
+  const blocked = createListingNavigator(denied.context);
+  stopped(await blocked(itemRequest), 'access_restricted');
+  stopped(await blocked(itemRequest), 'access_restricted');
+  assert.equal(denied.calls.filter(call => call[0] === 'goto').length, 1);
+});
+
+test('wrong item release and incomplete detail never return a qualified observation', async () => {
+  const mismatch = itemFixture({ result: { ...observedItem(), release_id: 112 } });
+  stopped(await createListingNavigator(mismatch.context)(itemRequest), 'listing_observation_unverified');
+  const incomplete = itemFixture({ result: { ...observedItem(), status: 'incomplete',
+    complete: false, error_code: 'listing_fields_unavailable' } });
+  const result = await createListingNavigator(incomplete.context)(itemRequest);
+  assert.equal(result.status, 'incomplete'); assert.equal(result.code, 'listing_fields_unavailable');
+  assert.ok(!('observation' in result));
+  for (const request of [{ ...itemRequest, url: itemUrl },
+    { action: 'observe_listing', release_id: '111', listing_id: '0222' }]) {
+    stopped(await createListingNavigator(itemFixture().context)(request), 'unsupported_read_request');
+  }
 });
 
 async function sendSocket(path, message) {
@@ -259,4 +352,17 @@ test('owner-only socket dispatches one canonical navigation and refuses immediat
     stopped(await sendSocket(path, JSON.stringify(navigateRequest) + '\n'), 'release_cooldown');
     assert.equal(calls.filter(call => call[0] === 'goto').length, 1);
   } finally { await close(); }
+});
+
+test('socket shares access-denial and rate-limit stops across release and item actions', async () => {
+  for (const [status, code] of [[429, 'rate_limited'], [403, 'access_restricted']]) {
+    const { context, calls } = itemFixture({ status });
+    const path = `/tmp/sniper-test-${randomUUID().replaceAll('-', '')}.sock`;
+    const close = await listenHostedReadOnly(context, path);
+    try {
+      stopped(await sendSocket(path, JSON.stringify(itemRequest) + '\n'), code);
+      stopped(await sendSocket(path, JSON.stringify(navigateRequest) + '\n'), code);
+      assert.equal(calls.filter(call => call[0] === 'newPage').length, 1);
+    } finally { await close(); }
+  }
 });

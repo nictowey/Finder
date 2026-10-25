@@ -10,7 +10,7 @@ import time
 import uuid
 from datetime import UTC, datetime
 
-from finder.discogs_candidate_detail import VerifiedPublicDetail
+from finder.discogs_candidate_detail import VerifiedHostedDetail, VerifiedPublicDetail
 from finder.discogs_cart_claims import CartClaimBlocked
 from finder.discogs_rules import Observation, RulesStore, Target, evaluate
 
@@ -217,16 +217,19 @@ class CandidatePipeline:
         release, ident, sequence, baseline_revision, rules, control, schedule = chosen
         try:
             detail = self.reader(release, ident)
-            if isinstance(detail, VerifiedPublicDetail):
+            if isinstance(detail, (VerifiedPublicDetail, VerifiedHostedDetail)):
                 observation = Observation.model_validate(detail.observation)
                 read_at = datetime.fromisoformat(
                     observation.observed_at.replace("Z", "+00:00")
                 ).timestamp()
+                hosted = isinstance(detail, VerifiedHostedDetail)
+                source = "discogs_rendered_listing" if hosted else "discogs_public_listing"
+                route = f"/sell/item/{ident}" if hosted else f"/marketplace/listings/{ident}"
                 if (
-                    observation.source != "discogs_public_listing"
+                    observation.source != source
                     or detail.requested_release != release
                     or detail.requested_listing != ident
-                    or detail.route != f"/marketplace/listings/{ident}"
+                    or detail.route != route
                     or not 0 <= detail.completed_at - detail.started_at <= MAX_AGE
                     or not 0 <= self.clock() - detail.completed_at <= MAX_AGE
                     or not detail.started_at <= read_at <= detail.completed_at + 1
@@ -244,10 +247,13 @@ class CandidatePipeline:
                 ):
                     raise CandidateStopped("candidate_live_detail_provenance_unverified")
                 detail_evidence = {
-                    "source": "discogs_public_listing",
+                    "source": source,
                     "fixed_route": detail.route,
-                    "reported_shipping": detail.reported_shipping,
-                    "shipping_blocked": detail.shipping_blocked,
+                    "reported_shipping": (
+                        detail.reported_shipping_text if hosted else detail.reported_shipping
+                    ),
+                    "shipping_blocked": None if hosted else detail.shipping_blocked,
+                    "cart_state": detail.cart_state if hosted else "unknown",
                     "delivered_total_verified": False,
                 }
             else:
@@ -279,6 +285,11 @@ class CandidatePipeline:
                         now=datetime.fromtimestamp(self.clock(), UTC),
                         already_owned=release in saved["owned"],
                     )
+                    if isinstance(detail, VerifiedHostedDetail) and detail.cart_state != "addable":
+                        result["eligible_for_review"] = False
+                        result["reasons"].append(
+                            "Listing is already in cart or add state is unknown."
+                        )
                     projection = {
                         "listing": {
                             "listing_id": ident,

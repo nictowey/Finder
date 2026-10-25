@@ -2,11 +2,14 @@
 
 import json
 import shutil
+import socket
 import subprocess
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 import pytest
@@ -15,7 +18,10 @@ from test_discogs_hosted_scheduler import page
 from test_discogs_rules import observation, target
 
 from finder.cloud_app import CloudApp
-from finder.discogs_candidate_detail import PublicKnownListingCandidateReader
+from finder.discogs_candidate_detail import (
+    HostedListingCandidateReader,
+    PublicKnownListingCandidateReader,
+)
 from finder.discogs_candidate_pipeline import CandidatePipeline, CandidateStopped
 from finder.discogs_cart_claims import CartClaimStore
 from finder.discogs_hosted_scheduler import MIN_INTERVAL, HostedReleaseScheduler
@@ -343,6 +349,7 @@ def test_fixed_public_detail_qualifies_only_as_blocked_live_review(setup):
         "fixed_route": "/marketplace/listings/1002",
         "reported_shipping": "5.00",
         "shipping_blocked": False,
+        "cart_state": "unknown",
         "delivered_total_verified": False,
     }
     assert review["evaluation"]["mode"] == "live_read_only"
@@ -401,4 +408,140 @@ def test_public_detail_provenance_failure_stops_without_claim(setup, failure):
     assert len(calls) == (2 if failure in {"stale", "bad_route"} else 1)
     with pytest.raises(CandidateStopped):
         candidates.reserve_rehearsal(123, "1002", KEY)
+    assert claims.get(KEY) is None
+
+
+def hosted_reply(now, *, release=123, listing="1002", **changes):
+    page = {
+        "schema": "discogs_listing_detail_dom_v1",
+        "source": "discogs_rendered_listing",
+        "status": "observed",
+        "complete": True,
+        "release_id": release,
+        "listing_id": listing,
+        "url": f"https://www.discogs.com/shop/item/{listing}",
+        "observed_at": datetime.fromtimestamp(now[0], UTC).isoformat(),
+        "media": "M",
+        "sleeve": "NM",
+        "seller_percent": 100.0,
+        "feedback": 10020,
+        "item": "199.99",
+        "currency": None,
+        "reported_shipping_text": "$0.00 shipping",
+        "seller_comments": "No skips. Both records included.",
+        "seller_comments_supported": True,
+        "available": True,
+        "cart_state": "already_in_cart",
+        "purchase_allowed": False,
+    }
+    page.update(changes)
+    return {
+        "status": "observed",
+        "source": "hosted_browser_read_only",
+        "observation": page,
+        "stop_required": True,
+        "purchase_allowed": False,
+    }
+
+
+def one_private_socket(reply):
+    path = Path("/tmp") / f"sniper-listing-{uuid.uuid4().hex[:12]}.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(path))
+    path.chmod(0o600)
+    listener.listen(1)
+    requests = []
+
+    def serve():
+        try:
+            with listener.accept()[0] as connection:
+                with connection.makefile("rb") as stream:
+                    requests.append(json.loads(stream.readline(1024)))
+                connection.sendall((json.dumps(reply()) + "\n").encode())
+        finally:
+            listener.close()
+            path.unlink(missing_ok=True)
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    return path, requests, thread
+
+
+@pytest.fixture
+def unix_socket_only(monkeypatch):
+    def connect(sock, address):
+        if sock.family != socket.AF_UNIX:
+            raise AssertionError("Offline tests must not open network connections")
+        error = sock.connect_ex(address)
+        if error:
+            raise OSError(error, "Isolated Unix socket connect failed")
+
+    monkeypatch.setattr(socket.socket, "connect", connect)
+
+
+def test_hosted_item_reader_connects_to_candidate_review_but_never_claims_total(
+    setup, unix_socket_only
+):
+    database, now, claims = setup
+    path, requests, thread = one_private_socket(lambda: hosted_reply(now))
+    reader = HostedListingCandidateReader(path, clock=lambda: now[0])
+    candidates, _ = flow(database, now, claims, candidate_reader=reader)
+    assert candidates.review_one()["status"] == "blocked"
+    thread.join(2)
+    assert requests == [{"action": "observe_listing", "release_id": "123", "listing_id": "1002"}]
+    store = RulesStore(database)
+    try:
+        review = json.loads(store.db.execute("SELECT review FROM discogs_candidates").fetchone()[0])
+    finally:
+        store.close()
+    assert review["detail_evidence"] == {
+        "source": "discogs_rendered_listing",
+        "fixed_route": "/sell/item/1002",
+        "reported_shipping": "$0.00 shipping",
+        "shipping_blocked": None,
+        "cart_state": "already_in_cart",
+        "delivered_total_verified": False,
+    }
+    assert review["evaluation"]["total"] is None
+    assert review["evaluation"]["mode"] == "live_read_only"
+    assert not review["evaluation"]["eligible_for_review"]
+    with pytest.raises(CandidateStopped):
+        candidates.reserve_rehearsal(123, "1002", KEY)
+    assert claims.get(KEY) is None
+
+
+@pytest.mark.parametrize("change", ["wrong_release", "stale", "extra_total", "blocked"])
+def test_hosted_item_reader_rejects_unverified_or_blocked_response(setup, change, unix_socket_only):
+    database, now, claims = setup
+
+    def reply():
+        if change == "blocked":
+            return {
+                "status": "blocked",
+                "code": "access_restricted",
+                "source": "hosted_browser_read_only",
+                "stop_required": True,
+                "purchase_allowed": False,
+            }
+        fields = {
+            "release_id": 124 if change == "wrong_release" else 123,
+            "observed_at": datetime.fromtimestamp(now[0] - 301, UTC).isoformat()
+            if change == "stale"
+            else datetime.fromtimestamp(now[0], UTC).isoformat(),
+        }
+        if change == "extra_total":
+            fields["tax"] = "0.00"
+        return hosted_reply(now, **fields)
+
+    path, requests, thread = one_private_socket(reply)
+    candidates, _ = flow(
+        database,
+        now,
+        claims,
+        candidate_reader=HostedListingCandidateReader(path, clock=lambda: now[0]),
+    )
+    assert candidates.review_one()["status"] == "uncertain"
+    thread.join(2)
+    assert len(requests) == 1
+    assert candidates.review_one()["status"] == "idle"
     assert claims.get(KEY) is None

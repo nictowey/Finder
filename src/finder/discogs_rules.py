@@ -73,7 +73,7 @@ class Target(StrictInput):
 
 
 class Observation(StrictInput):
-    source: Literal["synthetic", "discogs_public_listing"]
+    source: Literal["synthetic", "discogs_public_listing", "discogs_rendered_listing"]
     listing_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,80}$")
     release_id: int = Field(gt=0)
     media: str | None = None
@@ -105,7 +105,7 @@ def evaluate(target: Target, observation: Observation, *, now: datetime, already
     """Eligibility is a synthetic rule result, never permission to place an order."""
     reasons = []
     metadata = observation.release_media_metadata
-    if observation.source == "discogs_public_listing":
+    if observation.source in {"discogs_public_listing", "discogs_rendered_listing"}:
         metadata = current_release_media(
             metadata, observation.release_media_provenance, observation.release_id, now=now
         )

@@ -28,6 +28,18 @@ or the browser UID can connect to the socket. Responses are bounded and always c
   the strict collector, and closes the tab. The ID is a positive safe decimal integer;
   callers cannot supply a URL, request options or page script. The current cart tab is
   left open. The command is on demand only; no scheduler is connected.
+- `{"action":"current_listing","release_id":"<decimal ID>","listing_id":"<decimal ID>"}`
+  reads one already-open exact item page. `observe_listing` accepts the same two
+  IDs and opens one temporary tab at `/sell/item/<listing ID>`, allowing only the
+  site's exact `/shop/item/<listing ID>` landing URL. Neither action accepts a
+  caller URL or code. The fixed collector verifies the displayed release and
+  listing, then returns bounded grades, seller feedback, seller comments, item
+  price and displayed shipping. A dollar sign is not accepted as currency
+  evidence; displayed shipping is not a destination quote. Tax, mandatory fees,
+  physical completeness and checkout total remain unknown. An already-in-cart
+  button is recorded separately and cannot qualify as a new addable candidate.
+  These actions have
+  no cart control, order route, recurring worker, or public listener.
 
 The navigation command allows at most one release load per 15 minutes per running
 browser process. It makes no automatic retries. HTTP 429/503 applies the longer of
@@ -37,6 +49,10 @@ Unexpected redirects, timeouts, missing containers, changed pages and collector 
 stop. The collector accepts only a complete single-page snapshot; pagination or partial
 records return an explicit incomplete code, with no rows promoted to a baseline. Client
 disconnect cancels the read and closes the temporary tab. Socket requests are serialized.
+Item-detail navigation has its own 15-minute in-process cooldown and identical
+HTTP denial, challenge, redirect and cancellation stops. The socket stops all
+further requests after an authentication or access restriction from either
+navigation action. These limits do not authorize unattended polling.
 
 ## Verification and limits
 
@@ -71,7 +87,11 @@ export, cart write, or public listener is added.
 
 The host-side reader validates the exact path, owner/group and parent/socket
 modes before connecting. It sends only `observe_release` with a validated exact
-release ID; the browser constructs the canonical URL and enforces fixed actions.
+release ID or `observe_listing` with validated exact release and listing IDs.
+The browser constructs canonical URLs and enforces fixed actions. The optional
+candidate reviewer validates identity, source and time after the detail read,
+then keeps delivered total and pressing evidence unknown. It is not instantiated
+by the active server.
 `deployment/HostedBrowserBridge.Dockerfile` layers only these restricted scripts
 over the verified local read-only browser image, without installing packages or
 changing its profile mount. The browser runner fixes the socket path at `/bridge`.
