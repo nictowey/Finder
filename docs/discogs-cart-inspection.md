@@ -50,14 +50,26 @@ approved one-use read of the already-open hosted cart stopped before yielding ve
 quote evidence. Its grant was consumed and was not retried. The Python adapter returned
 the generic `cart_read_stopped` code, so the specific bridge stop code was not retained;
 the visible cart alone cannot establish which DOM check failed. The adapter now logs only
-fixed, allowlisted stop codes for a future read and accepts the bridge's separate
-`missing_address_and_unknown_final_quote` result as blocked evidence. Neither change
-recovers the consumed read. The durable access stop remains, and no buy target is
-enabled. The local cart's hidden `Plus Applicable Sales Tax` notice leaves the final
-payable total unverified. Destination match, payment reference, selected shipping
-finality and an exact purchase grant are also absent. A true hosted checkout adapter
-requires an allowed final noncommitting quote view that explicitly resolves those
-fields; the enabled submit button cannot be used to discover them.
+fixed, allowlisted stop codes and accepts the bridge's separate
+`missing_address_and_unknown_final_quote` result as blocked evidence. That consumed
+read was not retried. A separately approved scoped grant then succeeded on the
+already-open hosted cart for listing `3526572746`: subtotal $199.99 USD, selected
+shipping $5.85 USD, displayed total $205.84 USD, with a hidden tax notice and no
+visible tax or fee amount. The distinct grant was consumed. This proves the hosted
+reader's item and displayed-money extraction, not a final payable quote or checkout.
+The durable access stop remains, and no buy target is enabled.
+
+The cart showed a shipping address, but the reader deliberately does not return or
+store its personal details. No saved destination or payment reference was supplied
+to this read for comparison, so destination and payment binding remain unverified. The
+hidden `Plus Applicable Sales Tax` notice leaves tax unknown, not zero; the
+collector does not invent a fee amount when none is displayed. The current page
+has an enabled `Place order and pay now` submit control, but no verified separate
+noncommitting final-quote step. Its displayed total and selected shipping method
+are therefore not a validated final payable amount. A live buyer would still need
+an allowed noncommitting quote view or equivalent supported evidence resolving
+tax, fees, destination, payment and final total; the submit button cannot be used
+to discover them during the no-order phase.
 
 ## Verified read-only DOM contract
 
