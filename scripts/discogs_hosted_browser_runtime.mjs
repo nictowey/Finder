@@ -15,7 +15,12 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
     firefoxUserPrefs: { 'signon.rememberSignons': false },
   });
   let closeSocket;
-  try { closeSocket = await listenHostedReadOnly(context, socketPath); }
+  try { closeSocket = await listenHostedReadOnly(context, socketPath,
+    socketPath === '/bridge/sniper-read-only.sock' ? {
+      durableStopPath: '/bridge/access-stopped',
+      operatorAckPath: '/bridge/operator-rocky-ack',
+      operatorUsedPath: '/bridge/operator-rocky-used',
+    } : {}); }
   catch (error) { await context.close(); throw error; }
   return async () => {
     try { await closeSocket(); }

@@ -3,7 +3,9 @@
 const assert = require('node:assert/strict');
 const { test, before } = require('node:test');
 const { connect } = require('node:net');
-const { stat } = require('node:fs/promises');
+const { stat, mkdtemp, writeFile, rm, utimes } = require('node:fs/promises');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
 const { randomUUID } = require('node:crypto');
 let observeCurrentHostedPage, createReleaseNavigator, createListingNavigator,
   listenHostedReadOnly, privateBridgeDirectory, launchHostedReadOnlyBrowser,
@@ -240,6 +242,132 @@ async function sendSocket(path, message) {
     socket.on('error', reject);
   });
 }
+
+function operatorFixture({ url = 'https://www.discogs.com/sell/release/4204639',
+  title = 'Rocky marketplace', changed = false, complete = true, hold = null } = {}) {
+  const calls = [];
+  const page = new Proxy({
+    url() { calls.push('url'); return changed && calls.includes('evaluate') ?
+      'https://www.discogs.com/sell/release/4204640' : url; },
+    title() { calls.push('title'); return title; },
+    async evaluate(fn, id) {
+      calls.push('evaluate');
+      assert.equal(fn, collectReleaseMarketplaceDom); assert.equal(id, '4204639');
+      if (hold) await hold;
+      return { source: 'discogs_rendered_release', release_id: 4204639, url,
+        status: complete ? 'observed' : 'incomplete', complete,
+        has_next: !complete, total: complete ? 2 : null, rows: complete ? [{ listing_id: '1' }, { listing_id: '2' }] : [],
+        purchase_allowed: false };
+    },
+  }, { get(target, key) {
+    assert.ok(['url', 'title', 'evaluate'].includes(key), `Forbidden page action: ${String(key)}`);
+    return target[key];
+  } });
+  const context = new Proxy({ pages() { calls.push('pages'); return [page]; } }, { get(target, key) {
+    assert.equal(key, 'pages', `Forbidden context action: ${String(key)}`); return target[key];
+  } });
+  return { context, calls };
+}
+
+async function operatorSocket(context, directory) {
+  const path = `/tmp/sniper-test-${randomUUID().replaceAll('-', '')}.sock`;
+  const options = { durableStopPath: join(directory, 'access-stopped'),
+    operatorAckPath: join(directory, 'operator-rocky-ack'),
+    operatorUsedPath: join(directory, 'operator-rocky-used') };
+  return { path, options, close: await listenHostedReadOnly(context, path, options) };
+}
+
+test('operator recovery is one-use, preserves stop across restart and never navigates', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-operator-'));
+  const fixture = operatorFixture();
+  const request = JSON.stringify({ action: 'operator_current_release', release_id: '4204639' }) + '\n';
+  try {
+    let socket = await operatorSocket(fixture.context, directory);
+    try {
+      stopped(await sendSocket(socket.path, JSON.stringify(releaseRequest) + '\n'), 'access_restricted');
+      stopped(await sendSocket(socket.path, request), 'operator_acknowledgement_required');
+      assert.deepEqual(fixture.calls, []);
+      await writeFile(socket.options.operatorAckPath,
+        'operator_confirmed_current_release:4204639\n', { mode: 0o600 });
+      const result = await sendSocket(socket.path, request);
+      assert.equal(result.status, 'observed'); assert.equal(result.observation.total, 2);
+      assert.equal(result.purchase_allowed, false);
+      stopped(await sendSocket(socket.path, request), 'operator_recovery_unavailable');
+      stopped(await sendSocket(socket.path, JSON.stringify(releaseRequest) + '\n'), 'access_restricted');
+      assert.deepEqual(fixture.calls, ['pages', 'url', 'url', 'title', 'url', 'evaluate', 'url']);
+    } finally { await socket.close(); }
+    socket = await operatorSocket(fixture.context, directory);
+    try {
+      stopped(await sendSocket(socket.path, request), 'operator_acknowledgement_required');
+      stopped(await sendSocket(socket.path, JSON.stringify(releaseRequest) + '\n'), 'access_restricted');
+    } finally { await socket.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('operator recovery consumes on wrong page, challenge, changed page, and incomplete page', async () => {
+  for (const [config, code] of [
+    [{ url: 'https://www.discogs.com/sell/release/4204640' }, 'exact_current_page_not_unique'],
+    [{ title: 'Just a moment... Cloudflare' }, 'access_restricted'],
+    [{ changed: true }, 'page_changed_during_read'],
+    [{ complete: false }, 'release_observation_unverified'],
+  ]) {
+    const directory = await mkdtemp(join(tmpdir(), 'sniper-operator-'));
+    const fixture = operatorFixture(config);
+    try {
+      const socket = await operatorSocket(fixture.context, directory);
+      try {
+        await writeFile(socket.options.operatorAckPath,
+          'operator_confirmed_current_release:4204639\n', { mode: 0o600 });
+        const request = JSON.stringify({ action: 'operator_current_release', release_id: '4204639' }) + '\n';
+        stopped(await sendSocket(socket.path, request), code);
+        stopped(await sendSocket(socket.path, request), 'operator_recovery_unavailable');
+        assert.ok(!fixture.calls.some(call => ['goto', 'newPage', 'click'].includes(call)));
+      } finally { await socket.close(); }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }
+});
+
+test('concurrent operator requests cannot replay one acknowledgement', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-operator-'));
+  let release;
+  const hold = new Promise(resolve => { release = resolve; });
+  const fixture = operatorFixture({ hold });
+  try {
+    const socket = await operatorSocket(fixture.context, directory);
+    try {
+      await writeFile(socket.options.operatorAckPath,
+        'operator_confirmed_current_release:4204639\n', { mode: 0o600 });
+      const request = JSON.stringify({ action: 'operator_current_release', release_id: '4204639' }) + '\n';
+      const first = sendSocket(socket.path, request);
+      await new Promise(resolve => setImmediate(resolve));
+      stopped(await sendSocket(socket.path, request), 'read_in_progress');
+      release();
+      assert.equal((await first).status, 'observed');
+      assert.equal(fixture.calls.filter(call => call === 'evaluate').length, 1);
+    } finally { release(); await socket.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('operator acknowledgement must be new and exact; extra request fields cannot read', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-operator-'));
+  const fixture = operatorFixture();
+  const ackPath = join(directory, 'operator-rocky-ack');
+  try {
+    await writeFile(ackPath, 'operator_confirmed_current_release:4204639\n', { mode: 0o600 });
+    await utimes(ackPath, new Date(1_000_000), new Date(1_000_000));
+    const socket = await operatorSocket(fixture.context, directory);
+    try {
+      const request = { action: 'operator_current_release', release_id: '4204639' };
+      stopped(await sendSocket(socket.path, JSON.stringify(request) + '\n'),
+        'operator_acknowledgement_required');
+      await writeFile(ackPath, 'operator_confirmed_current_release:4204639\n');
+      stopped(await sendSocket(socket.path, JSON.stringify({ ...request, navigate: true }) + '\n'),
+        'unsupported_operator_recovery');
+      assert.deepEqual(fixture.calls, []);
+      assert.equal((await sendSocket(socket.path, JSON.stringify(request) + '\n')).status, 'observed');
+    } finally { await socket.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 test('Unix socket is owner-only, one fixed JSON request, and has no network listener', async () => {
   const { context } = fixture();
   const path = `/tmp/sniper-test-${randomUUID().replaceAll('-', '')}.sock`;

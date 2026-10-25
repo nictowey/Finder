@@ -3,7 +3,7 @@
  * never logs a session, mutates a cart, accepts an agreement, or exposes Playwright.
  */
 import { createServer } from 'node:net';
-import { chmod, stat, unlink } from 'node:fs/promises';
+import { chmod, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { collectCartDom, inspectCurrentCartDom } from './discogs_cart_inspector.mjs';
 import { collectReleaseMarketplaceDom } from './discogs_release_snapshot.mjs';
 import { collectListingDetailDom, collectListingReadinessDom } from './discogs_listing_detail_snapshot.mjs';
@@ -19,6 +19,7 @@ const MIN_RELEASE_INTERVAL_MS = 15 * 60_000;
 const MAX_RETRY_AFTER_MS = 24 * 60 * 60_000;
 const SHARED_SOCKET = '/bridge/sniper-read-only.sock';
 const SHARED_GROUP = 113;
+const OPERATOR_RELEASE = '4204639';
 
 export function privateBridgeDirectory(directory, uid = process.getuid()) {
   return Boolean(directory?.isDirectory?.() && directory.uid === uid &&
@@ -122,6 +123,38 @@ export async function observeCurrentHostedPage(context, request) {
         !exactUrl(input.action, input.id, observation.url)) return stopped('release_observation_unverified');
     return bounded({ status: observation.status, source: 'hosted_browser_read_only',
       observation, stop_required: true, purchase_allowed: false });
+  } catch { return stopped('hosted_read_failed'); }
+}
+
+/** An operator-confirmed exception for the already-open Rocky marketplace only.
+ * The socket's ordinary access stop remains set before and after this call.
+ */
+async function observeOperatorCurrentRelease(context) {
+  if (!context || typeof context.pages !== 'function') return stopped('browser_context_unavailable');
+  try {
+    const pages = context.pages();
+    if (!Array.isArray(pages) || pages.length > 16) return stopped('browser_pages_unavailable');
+    const matches = pages.filter(page => page && typeof page.url === 'function' &&
+      typeof page.title === 'function' && typeof page.evaluate === 'function' &&
+      exactUrl('current_release', OPERATOR_RELEASE, page.url()));
+    if (matches.length !== 1) return stopped('exact_current_page_not_unique');
+    const page = matches[0], url = page.url();
+    const title = await beforeDeadline(() => page.title());
+    if (page.url() !== url) return stopped('page_changed_during_read');
+    if (/just a moment|attention required|security check|captcha|cloudflare|sign in|log in/iu.test(title)) {
+      return stopped('access_restricted');
+    }
+    const observation = await beforeDeadline(() => page.evaluate(collectReleaseMarketplaceDom, OPERATOR_RELEASE));
+    if (page.url() !== url || !exactUrl('current_release', OPERATOR_RELEASE, observation?.url)) {
+      return stopped('page_changed_during_read');
+    }
+    if (observation?.source !== 'discogs_rendered_release' ||
+        observation.release_id !== Number(OPERATOR_RELEASE) || observation.purchase_allowed !== false ||
+        observation.status !== 'observed' || observation.complete !== true || observation.has_next !== false) {
+      return stopped(observation?.error_code || 'release_observation_unverified');
+    }
+    return bounded({ status: 'observed', source: 'hosted_browser_read_only', observation,
+      stop_required: true, purchase_allowed: false });
   } catch { return stopped('hosted_read_failed'); }
 }
 
@@ -303,7 +336,9 @@ export function createListingNavigator(context, { now = () => Date.now() } = {})
 }
 
 /** Local Unix socket only; the caller must keep it inside a private container. */
-export async function listenHostedReadOnly(context, socketPath) {
+export async function listenHostedReadOnly(context, socketPath, {
+  durableStopPath = null, operatorAckPath = null, operatorUsedPath = null,
+} = {}) {
   const shared = socketPath === SHARED_SOCKET;
   if (typeof socketPath !== 'string' || (!shared && !/^\/tmp\/[a-z][a-z0-9-]{0,47}\.sock$/u.test(socketPath))) {
     throw new TypeError('unsupported_socket_path');
@@ -314,10 +349,25 @@ export async function listenHostedReadOnly(context, socketPath) {
       throw new TypeError('private_bridge_directory_required');
     }
   }
+  if ([durableStopPath, operatorAckPath, operatorUsedPath].some(Boolean) &&
+      (!durableStopPath || !operatorAckPath || !operatorUsedPath)) {
+    throw new TypeError('incomplete_operator_recovery_configuration');
+  }
+  if (durableStopPath) {
+    // The old process is stopped. A missing marker on first upgrade must fail closed.
+    await writeFile(durableStopPath, 'access_restricted\n', { flag: 'wx', mode: 0o600 })
+      .catch(error => { if (error.code !== 'EEXIST') throw error; });
+    const marker = await stat(durableStopPath);
+    if (!marker.isFile() || marker.uid !== process.getuid() || (marker.mode & 0o777) !== 0o600 ||
+        await readFile(durableStopPath, 'utf8') !== 'access_restricted\n') {
+      throw new TypeError('durable_access_stop_required');
+    }
+  }
   let busy = false;
+  const startedAt = Date.now();
   const navigateRelease = createReleaseNavigator(context);
   const navigateListing = createListingNavigator(context);
-  let accessStopped = false;
+  let accessStopped = Boolean(durableStopPath);
   let restrictedUntil = 0;
   const server = createServer(connection => {
     let input = Buffer.alloc(0), done = false;
@@ -341,6 +391,26 @@ export async function listenHostedReadOnly(context, socketPath) {
       let request;
       try { request = JSON.parse(input.subarray(0, newline).toString('utf8')); }
       catch { return send(stopped('unsupported_read_request')); }
+      if (request?.action === 'operator_current_release') {
+        if (!durableStopPath || !accessStopped || busy ||
+            Reflect.ownKeys(request).length !== 2 || request.release_id !== OPERATOR_RELEASE) {
+          return send(stopped('unsupported_operator_recovery'));
+        }
+        busy = true;
+        try {
+          const ack = await stat(operatorAckPath).catch(() => null);
+          if (!ack?.isFile() || ack.uid !== process.getuid() ||
+              (ack.mode & 0o777) !== 0o600 || ack.mtimeMs < startedAt ||
+              await readFile(operatorAckPath, 'utf8') !== `operator_confirmed_current_release:${OPERATOR_RELEASE}\n`) {
+            return send(stopped('operator_acknowledgement_required'));
+          }
+          // Exclusive creation consumes the sole grant before any browser inspection.
+          await writeFile(operatorUsedPath, 'consumed\n', { flag: 'wx', mode: 0o600 });
+          return send(await observeOperatorCurrentRelease(context));
+        } catch {
+          return send(stopped('operator_recovery_unavailable'));
+        } finally { busy = false; }
+      }
       if (accessStopped) return send(stopped('access_restricted'));
       if (Date.now() < restrictedUntil) return send({ ...stopped('rate_limited'),
         cooldown_seconds: Math.ceil((restrictedUntil - Date.now()) / 1000) });

@@ -70,8 +70,20 @@ Subsequent one-time hosted `observe_release` reads confirmed a complete zero-off
 page for 27048621 and seven visible single-page offers for 7609839. They did not
 establish permission or reliability for unattended collection.
 
-The in-process interval and access-stop latch reset after a browser process restart.
-They are safety limits for on-demand tests, not a durable polling policy. No recurring
+The restricted hosted browser runner now requires an owner-only durable
+`/bridge/access-stopped` marker on startup and keeps all ordinary socket reads
+blocked across process restarts. A missing marker is created in the stopped state;
+an invalid marker prevents startup. An operator-confirmed recovery request for only
+release `4204639` can read the already-open page once, without navigation. It
+requires a new owner-only `/bridge/operator-rocky-ack` file created after the browser
+starts and after the owner confirms reopening the verified page. Its exact content is
+`operator_confirmed_current_release:4204639` followed by a newline. Before touching
+the browser, the reader exclusively creates `/bridge/operator-rocky-used`, so replay,
+concurrent requests and restarts fail closed. Wrong page, changed URL, challenge title,
+incomplete marketplace and other uncertainty consume the one use without returning
+listing rows. This is a bounded recovery observation, not a general unlock or
+authorization for unattended polling. A new challenge may require fresh manual
+verification; a solved challenge does not imply lasting access. No recurring
 collection is enabled. Discogs' [API Terms of Use](https://support.discogs.com/hc/en-us/articles/360009334593-API-Terms-of-Use)
 restrict inconsistent automated scraping and circumvention of technical limits. A
 successful one-page read does not establish permission or reliability for unattended
