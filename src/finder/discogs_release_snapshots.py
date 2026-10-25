@@ -107,6 +107,7 @@ class RenderedReleaseSnapshot(StrictInput):
     range_end: int | None = Field(ge=0, le=10000000)
     total: int | None = Field(ge=0, le=10000000)
     page: int | None = Field(ge=1, le=10000000)
+    coverage_pages: int = Field(default=1, ge=1, le=100)
     has_next: bool | None
     rows: list[RenderedListing] = Field(max_length=MAX_ROWS)
     assertions: DOMAssertions
@@ -147,7 +148,7 @@ class RenderedReleaseSnapshot(StrictInput):
                 or self.range_end != len(self.rows)
             ):
                 raise ValueError(
-                    "Complete observations require a stable, fully rendered single page."
+                    "Complete observations require verified coverage of every displayed offer."
                 )
         elif self.status == "observed":
             raise ValueError("Observed status requires an explicitly complete snapshot.")
@@ -164,6 +165,94 @@ class RenderedReleaseSnapshot(StrictInput):
         ):
             raise ValueError("Partial rows require a stable, verified first page with more offers.")
         return self
+
+
+class RenderedReleasePage(StrictInput):
+    """One validated page for offline assembly; this does not fetch another page."""
+
+    source: Literal["discogs_rendered_release"]
+    purchase_allowed: Literal[False]
+    release_id: int = Field(gt=0, le=MAX_ID)
+    url: str = Field(max_length=160)
+    observed_at: str
+    page: int = Field(ge=1, le=100)
+    range_start: int = Field(ge=0, le=MAX_ROWS)
+    range_end: int = Field(ge=0, le=MAX_ROWS)
+    total: int = Field(ge=0, le=MAX_ROWS)
+    has_next: bool
+    rows: list[RenderedListing] = Field(max_length=MAX_ROWS)
+    assertions: DOMAssertions
+
+    @model_validator(mode="after")
+    def verified(self):
+        _timestamp(self.observed_at)
+        expected = f"https://www.discogs.com/sell/release/{self.release_id}"
+        if self.url not in (expected, expected + "/", expected + f"?page={self.page}"):
+            raise ValueError("Page URL must identify the selected release and page.")
+        if self.page > 1 and self.url != expected + f"?page={self.page}":
+            raise ValueError("Later pages need an explicit page URL.")
+        if not all(self.assertions.model_dump().values()):
+            raise ValueError("Every page must have stable identity and pagination assertions.")
+        if (self.total == 0 and (self.range_start, self.range_end, self.page) != (0, 0, 1)) or (
+            self.total > 0 and self.range_start < 1
+        ):
+            raise ValueError("Invalid page range.")
+        if self.range_end - self.range_start + (1 if self.total else 0) != len(self.rows):
+            raise ValueError("Page row count does not match displayed range.")
+        if self.range_end > self.total or self.has_next != (self.range_end < self.total):
+            raise ValueError("Page coverage is inconsistent.")
+        if len({row.listing_id for row in self.rows}) != len(self.rows):
+            raise ValueError("Duplicate listing IDs on page.")
+        return self
+
+
+def assemble_release_pages(release_id: int, pages: list[dict]) -> dict:
+    """Assemble already captured pages only when they cover one exact release without gaps."""
+    if type(release_id) is not int or not 0 < release_id <= MAX_ID or not pages or len(pages) > 100:
+        raise ValueError("A bounded exact-release page set is required.")
+    parsed = [RenderedReleasePage.model_validate(page) for page in pages]
+    first = parsed[0]
+    if first.page != 1 or first.range_start != (1 if first.total else 0):
+        raise ValueError("Page one must start the observation.")
+    rows: list[RenderedListing] = []
+    seen: set[str] = set()
+    for index, page in enumerate(parsed, start=1):
+        if (
+            page.release_id != release_id
+            or page.total != first.total
+            or page.page != index
+            or page.range_start != (len(rows) + 1 if first.total else 0)
+            or page.has_next != (index < len(parsed))
+        ):
+            raise ValueError("Pages must be contiguous, from the same release and complete.")
+        if abs(_timestamp(page.observed_at) - _timestamp(first.observed_at)) > MAX_AGE_SECONDS:
+            raise ValueError("Pages were captured too far apart.")
+        for row in page.rows:
+            if row.listing_id in seen:
+                raise ValueError("Listing repeated across pages.")
+            seen.add(row.listing_id)
+            rows.append(row)
+    if len(rows) != first.total or len(rows) > MAX_ROWS:
+        raise ValueError("Page set does not cover the displayed total within the safety cap.")
+    return RenderedReleaseSnapshot.model_validate(
+        {
+            "source": "discogs_rendered_release",
+            "purchase_allowed": False,
+            "release_id": release_id,
+            "url": f"https://www.discogs.com/sell/release/{release_id}",
+            "observed_at": first.observed_at,
+            "status": "observed",
+            "complete": True,
+            "range_start": first.range_start,
+            "range_end": len(rows),
+            "total": first.total,
+            "page": 1,
+            "coverage_pages": len(parsed),
+            "has_next": False,
+            "rows": [row.model_dump() for row in rows],
+            "assertions": first.assertions.model_dump(),
+        }
+    ).model_dump()
 
 
 def _revision(value):

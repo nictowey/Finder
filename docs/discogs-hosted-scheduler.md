@@ -1,8 +1,12 @@
 # Hosted exact-release scheduler: disabled integration
 
 `HostedReleaseScheduler` is an opt-in, single-read tick around the fixed
-`observe_release` Unix-socket action and `ReleaseSnapshots.ingest`. The app does not
-start a hosted worker, mount a browser socket, or call `tick`. A new rules database
+`observe_release` Unix-socket action and `ReleaseSnapshots.ingest`. The
+`finder-monitor` entry point wires the private socket reader to a durable worker
+loop, but is **not installed or running as a VPS service**. Without `--run` it
+only prints health. Even with `--run` it exits if the schedule is paused, the
+kill switch is active, or the reader is unavailable; it never resumes a schedule.
+The web app does not start a worker or call `tick`. A new rules database
 starts with this schedule paused, the cloud kill switch stopped, and no targets.
 The authenticated cloud `/api/snapshot` and private local rule editor report its
 paused state, next request, per-target due/failure state and last error. `set_paused`
@@ -22,7 +26,12 @@ failures back off up to 24 hours. No error is interpreted as zero listings.
 The snapshot importer checks saved rules, cloud control, scheduler revision and
 lease token in one write transaction. A pause or rules/control/baseline change
 while the page is loading discards the observation. Only a complete rendered
-single-page snapshot can advance the baseline. The existing diff ledger tracks
+snapshot can advance the baseline. An offline `assemble_release_pages` validator
+combines already captured pages only when release identity, page order, displayed
+ranges, total, unique listing IDs and capture times agree, with a 250-row cap.
+Missing or changed pages fail closed. **The current browser bridge still reads
+only page one**; it has no verified multi-page traversal. A 25-of-47 response
+remains incomplete and cannot advance a baseline. The existing diff ledger tracks
 new, disappeared, changed and reappeared listing IDs without treating any change
 as sale or verified pressing. This path never qualifies a delivered total or
 enables purchase.

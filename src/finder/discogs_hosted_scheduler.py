@@ -14,7 +14,11 @@ import uuid
 from pathlib import Path
 
 from finder.discogs_candidate_pipeline import CandidateStopped
-from finder.discogs_release_snapshots import ReleaseSnapshots, RenderedReleaseSnapshot
+from finder.discogs_release_snapshots import (
+    ReleaseSnapshots,
+    RenderedReleaseSnapshot,
+    assemble_release_pages,
+)
 from finder.discogs_rules import RulesStore
 
 MIN_INTERVAL = 15 * 60
@@ -101,7 +105,17 @@ class HostedSocketReader:
                 cooldown,
                 stop=code in {"auth_required", "access_restricted", "unsupported_read_request"},
             )
-        observation = RenderedReleaseSnapshot.model_validate(response.get("observation"))
+        if "pages" in response:
+            if "observation" in response or not isinstance(response["pages"], list):
+                raise HostedReadError("ambiguous_page_response", stop=True)
+            try:
+                observation = RenderedReleaseSnapshot.model_validate(
+                    assemble_release_pages(release, response["pages"])
+                )
+            except ValueError:
+                raise HostedReadError("unverified_page_coverage", stop=True) from None
+        else:
+            observation = RenderedReleaseSnapshot.model_validate(response.get("observation"))
         if observation.release_id != release or not observation.complete:
             raise HostedReadError("incomplete_or_wrong_release", stop=True)
         return observation.model_dump()

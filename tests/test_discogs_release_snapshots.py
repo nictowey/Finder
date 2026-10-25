@@ -362,7 +362,7 @@ def test_out_of_order_and_duplicate_observations_are_rejected(setup):
     with pytest.raises(RuntimeError):
         ingest(engine, observed([clock[0] - 5]), baseline=1)
     assert release_state(engine)["baseline_revision"] == 1
-    assert release_state(engine)["baseline"] == {**initial, "error_code": None}
+    assert release_state(engine)["baseline"] == {**initial, "error_code": None, "coverage_pages": 1}
 
 
 @pytest.mark.parametrize("change", ["stopped", "restarted", "rules", "paused", "owned", "missing"])

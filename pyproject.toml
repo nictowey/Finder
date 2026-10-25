@@ -26,6 +26,7 @@ finder-offline = "finder.offline:main"
 finder-local = "finder.discogs_web:main"
 finder-review = "finder.local_web:main"
 finder-evaluate = "finder.local_evaluation:main"
+finder-monitor = "finder.discogs_hosted_worker:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -238,6 +238,59 @@ def test_socket_client_fixed_action_and_rejects_wrong_or_incomplete_response(mon
     assert all(field in response["observation"]["rows"][0]["fields"] for field in FIELD_NAMES)
 
 
+def test_socket_reader_assembles_only_verified_pages(monkeypatch):
+    now = datetime(2026, 10, 25, tzinfo=UTC).timestamp()
+    first = page(now, (1001,))
+    first.update(page=1, range_start=1, range_end=1, total=2, has_next=True)
+    first = {key: value for key, value in first.items() if key not in {"status", "complete"}}
+    second = {
+        **first,
+        "url": "https://www.discogs.com/sell/release/123?page=2",
+        "page": 2,
+        "range_start": 2,
+        "range_end": 2,
+        "has_next": False,
+        "rows": [listing(1002)],
+    }
+    response = {
+        "status": "observed",
+        "source": "hosted_browser_read_only",
+        "stop_required": True,
+        "purchase_allowed": False,
+        "pages": [first, second],
+    }
+    for pages, valid in (([first, second], True), ([first], False)):
+        response["pages"] = pages
+        path = Path(f"/tmp/sniper-dry-{uuid.uuid4().hex[:12]}.sock")
+        server = socket.socket(socket.AF_UNIX)
+        server.bind(str(path))
+        path.chmod(0o600)
+        server.listen(1)
+        server.settimeout(2)
+
+        def serve(server=server, response=response):
+            connection, _ = server.accept()
+            with connection:
+                connection.recv(512)
+                connection.sendall((json.dumps(response) + "\n").encode())
+            server.close()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        try:
+            monkeypatch.setattr(socket.socket, "connect", LOCAL_SOCKET_CONNECT)
+            reader = HostedSocketReader(path)
+            if valid:
+                assert reader(123)["coverage_pages"] == 2
+            else:
+                with pytest.raises(HostedReadError, match="unverified_page_coverage"):
+                    reader(123)
+        finally:
+            thread.join(timeout=2)
+            server.close()
+            path.unlink(missing_ok=True)
+
+
 def test_socket_reader_rejects_nonprivate_path_without_connecting(tmp_path):
     path = tmp_path / "reader.sock"
     path.write_text("not a socket")
