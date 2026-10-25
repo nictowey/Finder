@@ -106,13 +106,11 @@ There are zero saved hosted targets. The hosted service starts no scheduler or
 candidate worker, and purchasing stays disabled.
 
 This is not an operational auto-buyer. The last bounded hosted item read returned
-`access_restricted`; the browser bridge stopped. The private browser viewer now
-shows a blank Firefox tab, so existing UI evidence cannot distinguish a logged-out
-session from an item-specific block or challenge. Do not restart the browser,
-repeat the item request, solve a challenge, or use another route to evade the
-restriction. A normal user check of sign-in status in that same private viewer
-could distinguish a routine logged-out state; any challenge or access block
-remains a stop condition.
+`access_restricted`; the browser bridge stopped. A later ordinary home-page
+visit in the same private viewer displayed Discogs/Cloudflare security
+verification before account controls appeared, so the hosted sign-in state
+remains unverified. Do not restart the browser, repeat the item request, solve
+the challenge, or use another route to evade the restriction.
 
 Even after ordinary item access is restored, the hosted detail reader does not
 attach trusted exact-release media quantity or physical pressing evidence, and
@@ -120,9 +118,13 @@ the candidate reviewer cannot verify destination shipping, tax, mandatory fees,
 currency, or a final payable total. The observed cart rehearsal is read-only and
 explicitly treats its displayed amount as an unverified quote. There is no
 hosted cart-write adapter, verified final-submit control, purchase authorization
-state, payment handoff, order ledger, or uncertain-order reconciliation. The
-current claim file protects one cart attempt per release in a dry run, not a
-completed order. These gaps cannot be validated by synthetic fixtures alone.
+state, payment handoff, or live order reconciliation. An isolated synthetic
+order-safety module now models an exact-target, expiring, revocable simulation
+grant, final-quote binding, a durable one-copy submission fence, crash recovery,
+and read-only receipt/absence reconciliation. It has no provider adapter and the
+private service does not initialize its ledger or issue grants. The current cart
+claim file protects one cart attempt per release in a dry run, not a completed
+order. These gaps cannot be validated by synthetic fixtures alone.
 
 Before any record purchase, the owner still needs to enter a concrete target
 and maximum delivered price, approve the eventual verified checkout/payment

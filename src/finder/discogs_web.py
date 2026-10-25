@@ -35,7 +35,10 @@ class DiscogsHandler(LocalReviewHandler):
                     **self.server.workspace.snapshot(),
                     "capabilities": {
                         "listing_read_enabled": getattr(self.server, "listing_reader", None)
-                        is not None
+                        is not None,
+                        "order_authorization_configured": False,
+                        "order_submission_enabled": False,
+                        "order_reconciliation_configured": False,
                     },
                     "hosted_schedule": self.server.hosted_schedule.health()
                     if getattr(self.server, "hosted_schedule", None) is not None

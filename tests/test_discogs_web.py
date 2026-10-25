@@ -50,6 +50,12 @@ def test_page_and_snapshot(store):
     status, body = request(store, "/api/snapshot")
     assert status == 200 and json.loads(body)["purchasing_enabled"] is False
     assert json.loads(body)["hosted_schedule"]["paused"] is True
+    assert json.loads(body)["capabilities"] == {
+        "listing_read_enabled": False,
+        "order_authorization_configured": False,
+        "order_submission_enabled": False,
+        "order_reconciliation_configured": False,
+    }
 
 
 def test_local_snapshot_reports_real_stopped_schedule_without_cloud_control(store):
