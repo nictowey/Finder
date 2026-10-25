@@ -58,6 +58,18 @@ test('partial report still rejects wrong identity, bad rows, inconsistent range 
     let reads=0;Object.defineProperty(labels[0],'textContent',{get(){reads++;return reads===1?'1 – 2 of 3':'1 – 2 of 4';}});}});
   blocked(late);assert.equal(late.error_code,'observation_changed');
 });
+test('sanitized loaded-page shape reports 25 of 47 distinct rows without complete coverage', () => {
+  // Structure from a user-opened local Rocky page; IDs and seller fields are synthetic.
+  const nav = pagination.replace('1 – 2 of 2', '1 – 25 of 47')
+    .replace('</nav>', '<a rel="next" href="/sell/release/111?page=2">Next</a></nav>');
+  const rows = Array.from({length: 25}, (_, index) => row(String(1000 + index))).join('');
+  const markup = `${nav}<div id="pjax_container"><table class="mpitems"><thead><tr><th>Item</th></tr></thead><tbody>${rows}</tbody></table></div>${nav}`;
+  const result = read({markup});
+  assert.equal(result.status, 'incomplete'); assert.equal(result.complete, false);
+  assert.deepEqual([result.range_start, result.range_end, result.total], [1, 25, 47]);
+  assert.equal(result.rows.length, 25); assert.equal(new Set(result.rows.map(r => r.listing_id)).size, 25);
+  assert.equal(result.has_next, true); assert.equal(result.purchase_allowed, false);
+});
 test('missing/duplicate/extra listing rows fail closed even when displayed counts match', () => {
   for(const markup of [html().replace(row('333'),''),html().replace('/sell/item/333','/sell/item/222'),html().replace('</tbody>',row('444')+'</tbody>')]) blocked(read({markup}));
 });

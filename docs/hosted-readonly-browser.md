@@ -58,6 +58,20 @@ purchase-qualified. The reader never follows pagination links in this mode. The 
 Rocky one-use read returned only `partial_page_unverified` with no DOM rows retained;
 the new reporting behavior has not been verified live. Client
 disconnect cancels the read and closes the temporary tab. Socket requests are serialized.
+On the user's already-loaded **local** Rocky page, a read-only DOM inspection found
+25 visible `#pjax_container table.mpitems tbody tr` rows, two matching
+`nav.pagination .pagination_total` labels reading `1 – 25 of 47`, a selected
+`select[name="limit"]` value of `25`, and ordinary page-2 links. All 25 rows had
+distinct `a.item_description_title[href^="/sell/item/"]` links and one exact
+release identity link; the page showed USD, EUR, and AUD price currency attributes.
+The inspected structure also had seller profile and feedback links in every row.
+One seller comment was visually clipped, so its full text remains unavailable to
+the strict collector. This was an inspection of a user-opened local tab without
+navigation or requests; it did not read the hosted browser or verify the new code live.
+Partial market coverage and an individual listing's transaction eligibility are
+different questions. A separately rechecked item could someday qualify after exact
+identity, full media, seller, condition, destination total, current rule, and checkout
+evidence; no such live eligibility or order action is enabled here.
 Item-detail navigation has its own 15-minute in-process cooldown and identical
 HTTP denial, challenge, redirect and cancellation stops. The socket stops all
 further requests after an authentication or access restriction from either
