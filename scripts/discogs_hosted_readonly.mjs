@@ -3,7 +3,7 @@
  * never logs a session, mutates a cart, accepts an agreement, or exposes Playwright.
  */
 import { createServer } from 'node:net';
-import { chmod, unlink } from 'node:fs/promises';
+import { chmod, stat, unlink } from 'node:fs/promises';
 import { collectCartDom, inspectCurrentCartDom } from './discogs_cart_inspector.mjs';
 import { collectReleaseMarketplaceDom } from './discogs_release_snapshot.mjs';
 
@@ -16,6 +16,13 @@ const READY_TIMEOUT_MS = 8_000;
 const NAVIGATION_BUDGET_MS = 30_000;
 const MIN_RELEASE_INTERVAL_MS = 15 * 60_000;
 const MAX_RETRY_AFTER_MS = 24 * 60 * 60_000;
+const SHARED_SOCKET = '/bridge/sniper-read-only.sock';
+const SHARED_GROUP = 113;
+
+export function privateBridgeDirectory(directory, uid = process.getuid()) {
+  return Boolean(directory?.isDirectory?.() && directory.uid === uid &&
+    directory.gid === SHARED_GROUP && (directory.mode & 0o7777) === 0o2710);
+}
 
 function stopped(code) {
   return { status: 'blocked', code, source: 'hosted_browser_read_only',
@@ -183,8 +190,15 @@ export function createReleaseNavigator(context, { now = () => Date.now() } = {})
 
 /** Local Unix socket only; the caller must keep it inside a private container. */
 export async function listenHostedReadOnly(context, socketPath) {
-  if (typeof socketPath !== 'string' || !/^\/tmp\/[a-z][a-z0-9-]{0,47}\.sock$/u.test(socketPath)) {
+  const shared = socketPath === SHARED_SOCKET;
+  if (typeof socketPath !== 'string' || (!shared && !/^\/tmp\/[a-z][a-z0-9-]{0,47}\.sock$/u.test(socketPath))) {
     throw new TypeError('unsupported_socket_path');
+  }
+  if (shared) {
+    const directory = await stat('/bridge');
+    if (!privateBridgeDirectory(directory)) {
+      throw new TypeError('private_bridge_directory_required');
+    }
   }
   let busy = false;
   const navigateRelease = createReleaseNavigator(context);
@@ -219,14 +233,24 @@ export async function listenHostedReadOnly(context, socketPath) {
     });
   });
   const previousUmask = process.umask(0o077);
+  let bound = false;
   try {
     await new Promise((resolve, reject) => {
       server.once('error', reject);
-      server.listen(socketPath, () => { server.off('error', reject); resolve(); });
+      server.listen(socketPath, () => { bound = true; server.off('error', reject); resolve(); });
     });
-    await chmod(socketPath, 0o600);
+    if (shared) {
+      const socket = await stat(socketPath);
+      if (!socket.isSocket() || socket.uid !== process.getuid() || socket.gid !== SHARED_GROUP) {
+        throw new TypeError('private_bridge_socket_required');
+      }
+    }
+    await chmod(socketPath, shared ? 0o660 : 0o600);
   } catch (error) {
     server.close();
+    if (bound) await unlink(socketPath).catch(unlinkError => {
+      if (unlinkError.code !== 'ENOENT') throw unlinkError;
+    });
     throw error;
   } finally { process.umask(previousUmask); }
   return async () => {

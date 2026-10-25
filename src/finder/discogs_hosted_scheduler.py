@@ -20,6 +20,8 @@ MIN_INTERVAL = 15 * 60
 LEASE_SECONDS = 120
 MAX_BACKOFF = 24 * 60 * 60
 MAX_RESPONSE = 262_144
+SHARED_SOCKET = Path("/var/lib/sniper/browser-bridge/sniper-read-only.sock")
+SHARED_OWNER = 10001
 
 
 def _cloud_control(store):
@@ -42,11 +44,30 @@ class HostedSocketReader:
     def __init__(self, path):
         self.path = Path(path)
 
+    def ready(self):
+        try:
+            info = self.path.lstat()
+            if not stat.S_ISSOCK(info.st_mode):
+                return False
+            if info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o600:
+                return True
+            if self.path != SHARED_SOCKET:
+                return False
+            parent = self.path.parent.lstat()
+            return (
+                stat.S_ISDIR(parent.st_mode)
+                and parent.st_uid == info.st_uid == SHARED_OWNER
+                and parent.st_gid == info.st_gid == os.getgid()
+                and stat.S_IMODE(parent.st_mode) == 0o2710
+                and stat.S_IMODE(info.st_mode) == 0o660
+            )
+        except OSError:
+            return False
+
     def __call__(self, release):
         if type(release) is not int or not 0 < release <= 9007199254740991:
             raise ValueError("Invalid exact release ID.")
-        info = self.path.lstat()
-        if not stat.S_ISSOCK(info.st_mode) or info.st_mode & 0o077 or info.st_uid != os.getuid():
+        if not self.ready():
             raise HostedReadError("socket_not_private", stop=True)
         request = json.dumps({"action": "observe_release", "release_id": str(release)}) + "\n"
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
@@ -147,6 +168,7 @@ class HostedReleaseScheduler:
                 "lease_until": row[3],
                 "last_error": row[4],
                 "kill_switch": not control or bool(control[0]),
+                "reader_ready": bool(getattr(self.reader, "ready", lambda: False)()),
                 "targets": [
                     dict(
                         zip(

@@ -5,10 +5,10 @@ const { test, before } = require('node:test');
 const { connect } = require('node:net');
 const { stat } = require('node:fs/promises');
 const { randomUUID } = require('node:crypto');
-let observeCurrentHostedPage, createReleaseNavigator, listenHostedReadOnly, launchHostedReadOnlyBrowser,
+let observeCurrentHostedPage, createReleaseNavigator, listenHostedReadOnly, privateBridgeDirectory, launchHostedReadOnlyBrowser,
   collectReleaseMarketplaceDom, collectCartDom;
 before(async () => {
-  ({ observeCurrentHostedPage, createReleaseNavigator, listenHostedReadOnly } =
+  ({ observeCurrentHostedPage, createReleaseNavigator, listenHostedReadOnly, privateBridgeDirectory } =
     await import('../scripts/discogs_hosted_readonly.mjs'));
   ({ launchHostedReadOnlyBrowser } = await import('../scripts/discogs_hosted_browser_runtime.mjs'));
   ({ collectReleaseMarketplaceDom } = await import('../scripts/discogs_release_snapshot.mjs'));
@@ -133,12 +133,22 @@ test('Unix socket is owner-only, one fixed JSON request, and has no network list
   const close = await listenHostedReadOnly(context, path);
   try {
     assert.equal((await stat(path)).mode & 0o777, 0o600);
+    await assert.rejects(listenHostedReadOnly(context, path), /EADDRINUSE/u);
     const result = await sendSocket(path, JSON.stringify(releaseRequest) + '\n');
     assert.equal(result.status, 'observed'); assert.equal(result.purchase_allowed, false);
     stopped(await sendSocket(path, JSON.stringify({ ...releaseRequest, cookies: true }) + '\n'),
       'unsupported_read_request');
     stopped(await sendSocket(path, 'x'.repeat(600) + '\n'), 'request_too_large');
   } finally { await close(); }
+});
+
+test('shared browser socket refuses an absent or untrusted bridge directory', async () => {
+  const directory = { isDirectory: () => true, uid: 10001, gid: 113, mode: 0o42710 };
+  assert.equal(privateBridgeDirectory(directory, 10001), true);
+  assert.equal(privateBridgeDirectory({ ...directory, gid: 10001 }, 10001), false);
+  assert.equal(privateBridgeDirectory({ ...directory, mode: 0o42730 }, 10001), false);
+  await assert.rejects(listenHostedReadOnly(fixture().context,
+    '/bridge/sniper-read-only.sock'), /ENOENT|private_bridge_directory_required/u);
 });
 
 test('staged launcher uses only approved profile and fixed socket, then closes cleanly', async () => {

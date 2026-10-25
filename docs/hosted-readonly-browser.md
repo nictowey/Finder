@@ -46,8 +46,9 @@ controller switch. A one-time `current_release` read of release 27048621 returne
 complete empty page with zero offers and purchasing disabled. The cart read reached its
 existing item and stopped at `final_quote_unverified`. This evidence does not prove
 unattended discovery, any positive-listing path on the VPS, a payable quote, or checkout.
-The `observe_release` navigation command needs its own one-time hosted result before
-it is described as live verified; synthetic tests alone do not prove that path.
+Subsequent one-time hosted `observe_release` reads confirmed a complete zero-offer
+page for 27048621 and seven visible single-page offers for 7609839. They did not
+establish permission or reliability for unattended collection.
 
 The in-process interval and access-stop latch reset after a browser process restart.
 They are safety limits for on-demand tests, not a durable polling policy. No recurring
@@ -55,6 +56,32 @@ collection is enabled. Discogs' [API Terms of Use](https://support.discogs.com/h
 restrict inconsistent automated scraping and circumvention of technical limits. A
 successful one-page read does not establish permission or reliability for unattended
 collection. Do not activate a scheduler or bypass a challenge based on this test.
+
+## Approved private socket handoff (stopped)
+
+The owner approved Sniper code reading the signed-in browser through a restricted
+private connection. A dedicated `/var/lib/sniper/browser-bridge` host directory
+is mounted at `/bridge` in the browser container. It is owned by browser UID
+10001, group `sniper` (GID 113), mode `2710`; only the browser UID can create
+files there. The fixed socket is owned by UID 10001, group 113, mode `0660`.
+The `sniper` group can traverse the directory and connect to that one socket.
+The browser profile remains a separate UID 10001 mode `0700` mount, inaccessible
+to the Sniper service user. No TCP debugger, generic browser command, cookie
+export, cart write, or public listener is added.
+
+The host-side reader validates the exact path, owner/group and parent/socket
+modes before connecting. It sends only `observe_release` with a validated exact
+release ID; the browser constructs the canonical URL and enforces fixed actions.
+The handoff is passive: the scheduler remains paused and its kill switch stopped,
+with no recurring worker.
+
+Discogs' [Terms of Service](https://support.discogs.com/hc/en-us/articles/360009334333-Terms-of-Service)
+exclude collection and use of product listings, descriptions or prices and data
+mining/robots/scraping tools from the personal-use license without express written
+consent. The [API Terms](https://support.discogs.com/hc/en-us/articles/360009334593-API-Terms-of-Use)
+also restrict inconsistent automated access to online properties, but the site
+Terms apply directly to the normal browser-page route. The owner declined a
+support request; no unattended schedule is activated or permission inferred.
 
 Playwright's supported persistent Firefox mechanism is documented in
 [BrowserType.launchPersistentContext](https://playwright.dev/docs/api/class-browsertype#browser-type-launch-persistent-context).

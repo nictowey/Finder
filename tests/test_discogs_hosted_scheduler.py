@@ -1,17 +1,21 @@
 """Disposable state and synthetic pages; no Discogs network or saved session."""
 
 import json
+import os
 import socket
+import stat
 import threading
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from test_cloud_app import ORIGIN, verifier
 from test_discogs_release_snapshots import listing
 from test_discogs_rules import target
 
+from finder import discogs_hosted_scheduler as hosted_module
 from finder.cloud_app import CloudApp
 from finder.discogs_hosted_scheduler import (
     MIN_INTERVAL,
@@ -223,13 +227,40 @@ def test_socket_client_fixed_action_and_rejects_wrong_or_incomplete_response(mon
     thread.start()
     try:
         monkeypatch.setattr(socket.socket, "connect", LOCAL_SOCKET_CONNECT)
-        assert HostedSocketReader(path)(123)["release_id"] == 123
+        reader = HostedSocketReader(path)
+        assert reader.ready() is True
+        assert reader(123)["release_id"] == 123
     finally:
         thread.join(timeout=2)
         server.close()
         path.unlink(missing_ok=True)
     assert json.loads(captured[0]) == {"action": "observe_release", "release_id": "123"}
     assert all(field in response["observation"]["rows"][0]["fields"] for field in FIELD_NAMES)
+
+
+def test_socket_reader_rejects_nonprivate_path_without_connecting(tmp_path):
+    path = tmp_path / "reader.sock"
+    path.write_text("not a socket")
+    reader = HostedSocketReader(path)
+    assert reader.ready() is False
+    with pytest.raises(HostedReadError, match="socket_not_private"):
+        reader(123)
+
+
+def test_shared_socket_requires_fixed_owner_group_and_directory(monkeypatch):
+    path = hosted_module.SHARED_SOCKET
+    socket_info = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=10001, st_gid=os.getgid())
+    directory_info = SimpleNamespace(
+        st_mode=stat.S_IFDIR | 0o2710, st_uid=10001, st_gid=os.getgid()
+    )
+    monkeypatch.setattr(Path, "lstat", lambda self: socket_info if self == path else directory_info)
+    reader = HostedSocketReader(path)
+    assert reader.ready() is True
+    socket_info.st_mode = stat.S_IFSOCK | 0o666
+    assert reader.ready() is False
+    socket_info.st_mode = stat.S_IFSOCK | 0o660
+    directory_info.st_mode = stat.S_IFDIR | 0o2730
+    assert reader.ready() is False
 
 
 def test_socket_to_durable_baseline_is_an_integrated_offline_dry_run(setup, monkeypatch):

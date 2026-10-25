@@ -31,11 +31,11 @@ Tests use disposable SQLite and synthetic pages. One integration test runs the
 real socket client through a private temporary Unix socket into the scheduler
 and durable baseline; it has no Discogs session or network. Other tests exercise
 restart cadence, nonoverlap, pause/revision races, incomplete pages and failure
-backoff. Runtime activation is still blocked: Discogs permission for unattended
-page collection and a permitted cadence are unresolved. The hosted application
-has no access to the logged-in browser socket. Granting its process that access
-would be a separate security change and requires a specific review before any
-socket sharing or worker activation.
+backoff. Runtime activation is still blocked by Discogs' site terms for automated
+listing collection. The owner approved a fixed-read private browser handoff;
+the dedicated group-restricted Unix socket can connect the host-side reader
+without exposing the browser profile. Connection does not start a worker or
+authorize recurring collection.
 
 ## Seller disclosures
 
