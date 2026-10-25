@@ -76,8 +76,10 @@ blocked across process restarts. A missing marker is created in the stopped stat
 an invalid marker prevents startup. An operator-confirmed recovery request for only
 release `4204639` can read the already-open page once, without navigation. It
 requires a new owner-only `/bridge/operator-rocky-ack` file created after the browser
-starts and after the owner confirms reopening the verified page. Its exact content is
-`operator_confirmed_current_release:4204639` followed by a newline. Before touching
+starts and after the owner confirms reopening the verified page. The browser writes a
+fresh private `/bridge/operator-boot` identifier at startup; the acknowledgement's
+content binds `operator_confirmed_current_release:4204639:` to that identifier,
+followed by a newline. A prior boot's acknowledgement is invalid. Before touching
 the browser, the reader exclusively creates `/bridge/operator-rocky-used`, so replay,
 concurrent requests and restarts fail closed. Wrong page, changed URL, challenge title,
 incomplete marketplace and other uncertainty consume the one use without returning

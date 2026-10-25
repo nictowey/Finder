@@ -3,6 +3,7 @@
  * never logs a session, mutates a cart, accepts an agreement, or exposes Playwright.
  */
 import { createServer } from 'node:net';
+import { randomUUID } from 'node:crypto';
 import { chmod, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { collectCartDom, inspectCurrentCartDom } from './discogs_cart_inspector.mjs';
 import { collectReleaseMarketplaceDom } from './discogs_release_snapshot.mjs';
@@ -337,7 +338,7 @@ export function createListingNavigator(context, { now = () => Date.now() } = {})
 
 /** Local Unix socket only; the caller must keep it inside a private container. */
 export async function listenHostedReadOnly(context, socketPath, {
-  durableStopPath = null, operatorAckPath = null, operatorUsedPath = null,
+  durableStopPath = null, operatorBootPath = null, operatorAckPath = null, operatorUsedPath = null,
 } = {}) {
   const shared = socketPath === SHARED_SOCKET;
   if (typeof socketPath !== 'string' || (!shared && !/^\/tmp\/[a-z][a-z0-9-]{0,47}\.sock$/u.test(socketPath))) {
@@ -349,8 +350,8 @@ export async function listenHostedReadOnly(context, socketPath, {
       throw new TypeError('private_bridge_directory_required');
     }
   }
-  if ([durableStopPath, operatorAckPath, operatorUsedPath].some(Boolean) &&
-      (!durableStopPath || !operatorAckPath || !operatorUsedPath)) {
+  if ([durableStopPath, operatorBootPath, operatorAckPath, operatorUsedPath].some(Boolean) &&
+      (!durableStopPath || !operatorBootPath || !operatorAckPath || !operatorUsedPath)) {
     throw new TypeError('incomplete_operator_recovery_configuration');
   }
   if (durableStopPath) {
@@ -363,8 +364,9 @@ export async function listenHostedReadOnly(context, socketPath, {
       throw new TypeError('durable_access_stop_required');
     }
   }
+  const bootId = durableStopPath ? randomUUID() : null;
+  if (operatorBootPath) await writeFile(operatorBootPath, `${bootId}\n`, { mode: 0o600 });
   let busy = false;
-  const startedAt = Date.now();
   const navigateRelease = createReleaseNavigator(context);
   const navigateListing = createListingNavigator(context);
   let accessStopped = Boolean(durableStopPath);
@@ -400,8 +402,9 @@ export async function listenHostedReadOnly(context, socketPath, {
         try {
           const ack = await stat(operatorAckPath).catch(() => null);
           if (!ack?.isFile() || ack.uid !== process.getuid() ||
-              (ack.mode & 0o777) !== 0o600 || ack.mtimeMs < startedAt ||
-              await readFile(operatorAckPath, 'utf8') !== `operator_confirmed_current_release:${OPERATOR_RELEASE}\n`) {
+              (ack.mode & 0o777) !== 0o600 ||
+              await readFile(operatorAckPath, 'utf8') !==
+                `operator_confirmed_current_release:${OPERATOR_RELEASE}:${bootId}\n`) {
             return send(stopped('operator_acknowledgement_required'));
           }
           // Exclusive creation consumes the sole grant before any browser inspection.

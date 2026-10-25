@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const { test, before } = require('node:test');
 const { connect } = require('node:net');
-const { stat, mkdtemp, writeFile, rm, utimes } = require('node:fs/promises');
+const { stat, mkdtemp, writeFile, readFile, rm } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { randomUUID } = require('node:crypto');
@@ -272,9 +272,15 @@ function operatorFixture({ url = 'https://www.discogs.com/sell/release/4204639',
 async function operatorSocket(context, directory) {
   const path = `/tmp/sniper-test-${randomUUID().replaceAll('-', '')}.sock`;
   const options = { durableStopPath: join(directory, 'access-stopped'),
+    operatorBootPath: join(directory, 'operator-boot'),
     operatorAckPath: join(directory, 'operator-rocky-ack'),
     operatorUsedPath: join(directory, 'operator-rocky-used') };
   return { path, options, close: await listenHostedReadOnly(context, path, options) };
+}
+async function writeOperatorAck(socket) {
+  const bootId = (await readFile(socket.options.operatorBootPath, 'utf8')).trim();
+  await writeFile(socket.options.operatorAckPath,
+    `operator_confirmed_current_release:4204639:${bootId}\n`, { mode: 0o600 });
 }
 
 test('operator recovery is one-use, preserves stop across restart and never navigates', async () => {
@@ -287,8 +293,7 @@ test('operator recovery is one-use, preserves stop across restart and never navi
       stopped(await sendSocket(socket.path, JSON.stringify(releaseRequest) + '\n'), 'access_restricted');
       stopped(await sendSocket(socket.path, request), 'operator_acknowledgement_required');
       assert.deepEqual(fixture.calls, []);
-      await writeFile(socket.options.operatorAckPath,
-        'operator_confirmed_current_release:4204639\n', { mode: 0o600 });
+      await writeOperatorAck(socket);
       const result = await sendSocket(socket.path, request);
       assert.equal(result.status, 'observed'); assert.equal(result.observation.total, 2);
       assert.equal(result.purchase_allowed, false);
@@ -316,8 +321,7 @@ test('operator recovery consumes on wrong page, challenge, changed page, and inc
     try {
       const socket = await operatorSocket(fixture.context, directory);
       try {
-        await writeFile(socket.options.operatorAckPath,
-          'operator_confirmed_current_release:4204639\n', { mode: 0o600 });
+        await writeOperatorAck(socket);
         const request = JSON.stringify({ action: 'operator_current_release', release_id: '4204639' }) + '\n';
         stopped(await sendSocket(socket.path, request), code);
         stopped(await sendSocket(socket.path, request), 'operator_recovery_unavailable');
@@ -335,8 +339,7 @@ test('concurrent operator requests cannot replay one acknowledgement', async () 
   try {
     const socket = await operatorSocket(fixture.context, directory);
     try {
-      await writeFile(socket.options.operatorAckPath,
-        'operator_confirmed_current_release:4204639\n', { mode: 0o600 });
+      await writeOperatorAck(socket);
       const request = JSON.stringify({ action: 'operator_current_release', release_id: '4204639' }) + '\n';
       const first = sendSocket(socket.path, request);
       await new Promise(resolve => setImmediate(resolve));
@@ -353,14 +356,14 @@ test('operator acknowledgement must be new and exact; extra request fields canno
   const fixture = operatorFixture();
   const ackPath = join(directory, 'operator-rocky-ack');
   try {
-    await writeFile(ackPath, 'operator_confirmed_current_release:4204639\n', { mode: 0o600 });
-    await utimes(ackPath, new Date(1_000_000), new Date(1_000_000));
+    await writeFile(ackPath, 'operator_confirmed_current_release:4204639:old-boot\n',
+      { mode: 0o600 });
     const socket = await operatorSocket(fixture.context, directory);
     try {
       const request = { action: 'operator_current_release', release_id: '4204639' };
       stopped(await sendSocket(socket.path, JSON.stringify(request) + '\n'),
         'operator_acknowledgement_required');
-      await writeFile(ackPath, 'operator_confirmed_current_release:4204639\n');
+      await writeOperatorAck(socket);
       stopped(await sendSocket(socket.path, JSON.stringify({ ...request, navigate: true }) + '\n'),
         'unsupported_operator_recovery');
       assert.deepEqual(fixture.calls, []);

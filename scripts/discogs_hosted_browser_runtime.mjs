@@ -18,6 +18,7 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
   try { closeSocket = await listenHostedReadOnly(context, socketPath,
     socketPath === '/bridge/sniper-read-only.sock' ? {
       durableStopPath: '/bridge/access-stopped',
+      operatorBootPath: '/bridge/operator-boot',
       operatorAckPath: '/bridge/operator-rocky-ack',
       operatorUsedPath: '/bridge/operator-rocky-used',
     } : {}); }
