@@ -25,7 +25,7 @@ from finder.discogs_candidate_detail import (
 from finder.discogs_candidate_pipeline import CandidatePipeline, CandidateStopped
 from finder.discogs_cart_claims import CartClaimStore
 from finder.discogs_hosted_scheduler import MIN_INTERVAL, HostedReleaseScheduler
-from finder.discogs_listing import ListingReader
+from finder.discogs_listing import ListingReader, ListingReadError
 from finder.discogs_rules import RulesStore
 
 KEY = "123e4567-e89b-42d3-a456-426614174000"
@@ -545,3 +545,21 @@ def test_hosted_item_reader_rejects_unverified_or_blocked_response(setup, change
     assert len(requests) == 1
     assert candidates.review_one()["status"] == "idle"
     assert claims.get(KEY) is None
+
+
+def test_hosted_item_reader_reports_only_known_safe_stop_code(setup, unix_socket_only):
+    _, now, _ = setup
+
+    def reply():
+        return {
+            "status": "blocked",
+            "code": "listing_not_ready",
+            "source": "hosted_browser_read_only",
+            "stop_required": True,
+            "purchase_allowed": False,
+        }
+
+    path, _, thread = one_private_socket(reply)
+    with pytest.raises(ListingReadError, match="listing_not_ready"):
+        HostedListingCandidateReader(path, clock=lambda: now[0])(123, "1002")
+    thread.join(2)

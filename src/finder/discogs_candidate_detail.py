@@ -122,6 +122,34 @@ class HostedListingCandidateReader:
         try:
             reply = json.loads(raw)
             if (
+                type(reply) is dict
+                and reply.get("source") == "hosted_browser_read_only"
+                and reply.get("purchase_allowed") is False
+                and reply.get("stop_required") is True
+                and reply.get("status") in {"blocked", "incomplete"}
+            ):
+                code = reply.get("code")
+                if code in {
+                    "access_restricted",
+                    "auth_required",
+                    "browser_context_unavailable",
+                    "hosted_read_failed",
+                    "http_response_unavailable",
+                    "listing_cooldown",
+                    "listing_not_ready",
+                    "listing_observation_unverified",
+                    "navigation_or_read_failed",
+                    "page_changed_during_read",
+                    "rate_limited",
+                    "read_cancelled",
+                    "read_in_progress",
+                    "request_timed_out",
+                    "service_unavailable",
+                    "unexpected_http_status",
+                    "unexpected_redirect",
+                }:
+                    raise ListingReadError(f"Private hosted listing read stopped: {code}.")
+            if (
                 type(reply) is not dict
                 or reply.get("source") != "hosted_browser_read_only"
                 or reply.get("purchase_allowed") is not False
@@ -143,6 +171,8 @@ class HostedListingCandidateReader:
                 or not started <= timestamp.timestamp() <= completed + 1
             ):
                 raise ValueError("identity_or_time")
+        except ListingReadError:
+            raise
         except (TypeError, ValueError, ValidationError):
             raise ListingReadError("Private hosted listing response was unverified.") from None
         return VerifiedHostedDetail(
