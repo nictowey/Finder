@@ -22,6 +22,14 @@ MAX_BACKOFF = 24 * 60 * 60
 MAX_RESPONSE = 262_144
 
 
+def _cloud_control(store):
+    if not store.db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cloud_control'"
+    ).fetchone():
+        return None
+    return store.db.execute("SELECT killed,revision FROM cloud_control WHERE id=1").fetchone()
+
+
 class HostedReadError(Exception):
     def __init__(self, code, cooldown=0, *, stop=False):
         super().__init__(code)
@@ -131,7 +139,7 @@ class HostedReleaseScheduler:
                 "SELECT release_id,next_due,failures,last_status,last_attempt "
                 "FROM discogs_hosted_due ORDER BY release_id"
             ).fetchall()
-            control = store.db.execute("SELECT killed FROM cloud_control WHERE id=1").fetchone()
+            control = _cloud_control(store)
             return {
                 "paused": bool(row[0]),
                 "revision": row[1],
@@ -164,9 +172,7 @@ class HostedReleaseScheduler:
                     "SELECT paused,revision,next_request,lease_until "
                     "FROM discogs_hosted_schedule WHERE id=1"
                 ).fetchone()
-                control = store.db.execute(
-                    "SELECT killed,revision FROM cloud_control WHERE id=1"
-                ).fetchone()
+                control = _cloud_control(store)
                 if state[0] or not control or control[0] or now < max(state[2], state[3]):
                     return None
                 rules = store.snapshot()

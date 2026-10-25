@@ -106,6 +106,15 @@ def test_unwired_reader_stops_if_schedule_was_resumed(setup):
     assert worker.health()["paused"] is True
 
 
+def test_local_rule_editor_without_cloud_control_reports_stopped(tmp_path):
+    database = tmp_path / "rules.db"
+    RulesStore(database, create=True).close()
+    worker = HostedReleaseScheduler(database, reader=None)
+    assert worker.health()["kill_switch"] is True
+    resume(worker)
+    assert worker.tick()["status"] == "idle"
+
+
 def test_restart_cadence_baseline_new_reappeared_and_duplicate_suppression(setup):
     database, clock = setup
     pages = [(1001,), (1001, 1002), (1001,), (1001, 1002), (1001, 1002)]

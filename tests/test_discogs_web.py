@@ -1,11 +1,13 @@
 import json
 import socket
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from test_discogs_rules import target
 from test_local_web import MemorySocket
 
+from finder.discogs_hosted_scheduler import HostedReleaseScheduler
 from finder.discogs_rules import RulesStore
 from finder.discogs_web import DiscogsHandler, DiscogsServer
 
@@ -48,6 +50,25 @@ def test_page_and_snapshot(store):
     status, body = request(store, "/api/snapshot")
     assert status == 200 and json.loads(body)["purchasing_enabled"] is False
     assert json.loads(body)["hosted_schedule"]["paused"] is True
+
+
+def test_local_snapshot_reports_real_stopped_schedule_without_cloud_control(store):
+    database = Path(store.db.execute("PRAGMA database_list").fetchone()[2])
+    scheduler = HostedReleaseScheduler(database, None)
+    assert scheduler.health()["kill_switch"] is True
+    request_bytes = f"GET /api/snapshot HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\n\r\n"
+    connection = MemorySocket(request_bytes.encode())
+    server = SimpleNamespace(
+        workspace=store,
+        server_port=PORT,
+        origin=ORIGIN,
+        csrf_token="token",
+        listing_reader=None,
+        hosted_schedule=scheduler,
+    )
+    DiscogsHandler(connection, ("127.0.0.1", 1234), server)
+    _, _, body = bytes(connection.output).partition(b"\r\n\r\n")
+    assert json.loads(body)["hosted_schedule"]["kill_switch"] is True
 
 
 def test_sniper_restarts_on_same_loopback_port_without_sharing_listener(store, monkeypatch):
