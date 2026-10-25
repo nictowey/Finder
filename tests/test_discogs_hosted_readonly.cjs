@@ -345,7 +345,8 @@ async function writeCartAck(socket) {
 }
 
 function monitorFixture({ currentId = '28720177', currentTitle = 'Discogs marketplace',
-  trialStatus = 200, hold = null } = {}) {
+  trialStatus = 200, hold = null, currentHold = null,
+  onCurrentEvaluate = () => {}, onTrialGoto = () => {} } = {}) {
   const calls = [];
   const currentUrl = `https://www.discogs.com/sell/release/${currentId}`;
   const snapshot = (id, url) => ({ source: 'discogs_rendered_release', release_id: Number(id),
@@ -356,14 +357,15 @@ function monitorFixture({ currentId = '28720177', currentTitle = 'Discogs market
   const current = {
     url: () => { calls.push('current_url'); return currentUrl; },
     title: async () => { calls.push('current_title'); return currentTitle; },
-    evaluate: async (fn, id) => { calls.push('current_evaluate');
+    evaluate: async (fn, id) => { calls.push('current_evaluate'); onCurrentEvaluate();
       assert.equal(fn, collectReleaseMarketplaceDom); assert.equal(id, currentId);
+      if (currentHold) await currentHold;
       return snapshot(id, currentUrl); },
   };
   const context = { pages: () => [current], newPage: async () => {
     let url = null;
     return {
-      goto: async (next) => { calls.push(['goto', next]); url = next;
+      goto: async (next) => { calls.push(['goto', next]); url = next; onTrialGoto();
         if (hold) await hold;
         return { status: () => trialStatus }; },
       url: () => url,
@@ -382,6 +384,17 @@ async function writeMonitorAck(socket, directory, grantId, releaseId) {
   const bootId = (await readFile(socket.options.operatorBootPath, 'utf8')).trim();
   await writeFile(join(directory, `operator-monitor-grant-${grantId}-ack`),
     `operator_confirmed_monitor_release:${releaseId}:${grantId}:${bootId}\n`, { mode: 0o600 });
+}
+async function waitForMonitorEvent(directory, event, grantId) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const names = (await readdir(directory)).filter(name => name.startsWith('operator-monitor-event-'));
+    for (const name of names) {
+      const record = JSON.parse(await readFile(join(directory, name), 'utf8'));
+      if (record.event === event && record.grant_id === grantId) return record;
+    }
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.fail(`Missing ${event} audit event`);
 }
 async function writeCartGrantAck(socket, grantId = cartGrantId) {
   const bootId = (await readFile(socket.options.operatorBootPath, 'utf8')).trim();
@@ -620,6 +633,89 @@ test('concurrent monitor trials cannot spend the same scoped release twice', asy
       assert.equal(fixture.calls.filter(value => Array.isArray(value) && value[0] === 'goto').length, 1);
     } finally { release(); await socket.close(); }
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('timed-out or disconnected verification cannot activate a late monitor trial', async () => {
+  for (const mode of ['timeout', 'disconnect']) {
+    const directory = await mkdtemp(join(tmpdir(), 'sniper-monitor-'));
+    let release, entered;
+    const currentHold = new Promise(resolve => { release = resolve; });
+    const started = new Promise(resolve => { entered = resolve; });
+    const fixture = monitorFixture({ currentHold, onCurrentEvaluate: () => entered() });
+    const grantId = randomUUID();
+    try {
+      const socket = await operatorSocket(fixture.context, directory,
+        { monitorVerifyTimeoutMs: 30 });
+      try {
+        await writeMonitorAck(socket, directory, grantId, '28720177');
+        const verify = JSON.stringify({ action: 'operator_monitor_verify', grant_id: grantId,
+          release_id: '28720177' }) + '\n';
+        if (mode === 'timeout') {
+          const pending = sendSocket(socket.path, verify);
+          await started;
+          stopped(await pending, 'request_timed_out');
+        } else {
+          const client = connect(socket.path);
+          await new Promise(resolve => client.once('connect', resolve));
+          client.write(verify);
+          await started;
+          const closed = new Promise(resolve => client.once('close', resolve));
+          client.destroy();
+          await closed;
+        }
+        release();
+        const audit = await waitForMonitorEvent(directory, 'verification_stopped', grantId);
+        assert.equal(audit.cause, mode === 'timeout' ? 'request_timed_out' : 'request_disconnected');
+        stopped(await sendSocket(socket.path, JSON.stringify({ action: 'operator_monitor_trial',
+          grant_id: grantId, release_id: '28720177' }) + '\n'), 'monitor_trial_unavailable');
+        assert.ok(!fixture.calls.some(value => Array.isArray(value) && value[0] === 'goto'));
+        assert.ok((await readdir(directory)).includes('access-stopped'));
+      } finally { release(); await socket.close(); }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }
+});
+
+test('timed-out or disconnected trial loses all remaining scoped reads', async () => {
+  for (const mode of ['timeout', 'disconnect']) {
+    const directory = await mkdtemp(join(tmpdir(), 'sniper-monitor-'));
+    let release, entered;
+    const hold = new Promise(resolve => { release = resolve; });
+    const started = new Promise(resolve => { entered = resolve; });
+    const fixture = monitorFixture({ hold, onTrialGoto: () => entered() });
+    const grantId = randomUUID();
+    try {
+      const socket = await operatorSocket(fixture.context, directory,
+        { monitorTrialTimeoutMs: 30 });
+      try {
+        await writeMonitorAck(socket, directory, grantId, '28720177');
+        assert.equal((await sendSocket(socket.path, JSON.stringify({
+          action: 'operator_monitor_verify', grant_id: grantId,
+          release_id: '28720177' }) + '\n')).status, 'verified');
+        const trial = JSON.stringify({ action: 'operator_monitor_trial', grant_id: grantId,
+          release_id: '28720177' }) + '\n';
+        if (mode === 'timeout') {
+          const pending = sendSocket(socket.path, trial);
+          await started;
+          stopped(await pending, 'request_timed_out');
+        } else {
+          const client = connect(socket.path);
+          await new Promise(resolve => client.once('connect', resolve));
+          client.write(trial);
+          await started;
+          const closed = new Promise(resolve => client.once('close', resolve));
+          client.destroy();
+          await closed;
+        }
+        release();
+        const audit = await waitForMonitorEvent(directory, 'trial_stopped', grantId);
+        assert.equal(audit.cause, mode === 'timeout' ? 'request_timed_out' : 'request_disconnected');
+        stopped(await sendSocket(socket.path, JSON.stringify({ action: 'operator_monitor_trial',
+          grant_id: grantId, release_id: '5520534' }) + '\n'), 'monitor_trial_unavailable');
+        assert.equal(fixture.calls.filter(value => Array.isArray(value) && value[0] === 'goto').length, 1);
+        assert.ok((await readdir(directory)).includes('access-stopped'));
+      } finally { release(); await socket.close(); }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }
 });
 
 test('one-use current cart recovery reads exact visible row and preserves global stop', async () => {

@@ -26,7 +26,10 @@ challenge. This procedure does not rewrite that history.
    the whole trial expires after one hour and does not survive browser restart.
    Each release is consumed on its first actual attempt. A cooldown before a
    request leaves that release pending; a denial, incomplete read, redirect,
-   challenge, timeout, page drift or uncertain outcome ends the trial. The fixed
+   challenge, timeout, disconnected caller, page drift or uncertain outcome ends
+   the trial. A timed-out or disconnected verification cannot activate the trial
+   after the caller has gone; an interrupted trial loses its remaining reads.
+   The fixed
    reader may follow validated same-release pagination only. It cannot accept
    arbitrary URLs, cart actions, credentials, code or purchase commands.
 4. **Review required.** Three complete observations produce an audit event and

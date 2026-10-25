@@ -196,7 +196,8 @@ async function observeOperatorCurrentRelease(context) {
 }
 
 /** Verify a user-opened normal release page without navigation or session access. */
-async function verifyCurrentMonitorPage(context, releaseId) {
+async function verifyCurrentMonitorPage(context, releaseId, signal) {
+  if (signal?.aborted) return stopped('read_cancelled');
   if (!context || typeof context.pages !== 'function') return stopped('browser_context_unavailable');
   try {
     const pages = context.pages();
@@ -207,11 +208,13 @@ async function verifyCurrentMonitorPage(context, releaseId) {
     if (matching.length !== 1) return stopped('exact_current_page_not_unique');
     const page = matching[0], url = page.url();
     const title = await beforeDeadline(() => page.title());
+    if (signal?.aborted) return stopped('read_cancelled');
     if (page.url() !== url) return stopped('page_changed_during_read');
     if (/just a moment|attention required|security check|captcha|cloudflare|sign in|log in/iu.test(title)) {
       return restricted('user_opened_challenge_or_login');
     }
     const observation = await beforeDeadline(() => page.evaluate(collectReleaseMarketplaceDom, releaseId));
+    if (signal?.aborted) return stopped('read_cancelled');
     if (page.url() !== url || !exactUrl('current_release', releaseId, observation?.url) ||
         observation?.source !== 'discogs_rendered_release' ||
         observation.release_id !== Number(releaseId) || observation.purchase_allowed !== false ||
@@ -520,7 +523,15 @@ export async function listenHostedReadOnly(context, socketPath, {
   durableStopPath = null, operatorBootPath = null, operatorAckPath = null, operatorUsedPath = null,
   operatorCartAckPath = null, operatorCartUsedPath = null,
   clock = () => Date.now(),
+  monitorVerifyTimeoutMs = READ_TIMEOUT_MS,
+  monitorTrialTimeoutMs = RELEASE_PAGINATION_BUDGET_MS,
 } = {}) {
+  if (!Number.isSafeInteger(monitorVerifyTimeoutMs) || monitorVerifyTimeoutMs < 1 ||
+      monitorVerifyTimeoutMs > READ_TIMEOUT_MS ||
+      !Number.isSafeInteger(monitorTrialTimeoutMs) || monitorTrialTimeoutMs < 1 ||
+      monitorTrialTimeoutMs > RELEASE_PAGINATION_BUDGET_MS) {
+    throw new TypeError('invalid_monitor_timeout');
+  }
   const shared = socketPath === SHARED_SOCKET;
   if (typeof socketPath !== 'string' || (!shared && !/^\/tmp\/[a-z][a-z0-9-]{0,47}\.sock$/u.test(socketPath))) {
     throw new TypeError('unsupported_socket_path');
@@ -563,6 +574,7 @@ export async function listenHostedReadOnly(context, socketPath, {
   let accessStopped = Boolean(durableStopPath);
   let restrictedUntil = 0;
   let monitorTrial = null;
+  let monitorRecoveryBusy = false;
   const monitorDirectory = durableStopPath ? dirname(durableStopPath) : null;
   const monitorAudit = async (grantId, event, releaseId, cause = null) => {
     const allowed = new Set(['verified', 'verification_stopped', 'trial_started', 'trial_observed',
@@ -576,16 +588,35 @@ export async function listenHostedReadOnly(context, socketPath, {
   };
   const server = createServer(connection => {
     let input = Buffer.alloc(0), done = false;
+    let activeMonitorTrial = null;
     const controller = new AbortController();
+    const monitorAbortCause = () => controller.signal.reason === 'request_timed_out' ?
+      'request_timed_out' : controller.signal.reason === 'request_disconnected' ?
+        'request_disconnected' : 'read_cancelled';
     connection.setTimeout(READ_TIMEOUT_MS);
     const send = result => {
       if (done) return;
       done = true;
       connection.end(JSON.stringify(bounded(result)) + '\n');
     };
-    connection.on('timeout', () => { controller.abort(); send(stopped('request_timed_out')); });
-    connection.on('close', () => { done = true; controller.abort(); });
-    connection.on('error', () => { done = true; controller.abort(); });
+    const invalidateActiveTrial = () => {
+      if (activeMonitorTrial && monitorTrial === activeMonitorTrial) monitorTrial = null;
+    };
+    connection.on('timeout', () => {
+      controller.abort('request_timed_out');
+      invalidateActiveTrial();
+      send(stopped('request_timed_out'));
+    });
+    connection.on('close', () => {
+      done = true;
+      controller.abort('request_disconnected');
+      invalidateActiveTrial();
+    });
+    connection.on('error', () => {
+      done = true;
+      controller.abort('request_disconnected');
+      invalidateActiveTrial();
+    });
     connection.on('data', async chunk => {
       if (done) return;
       if (input.length + chunk.length > MAX_REQUEST_BYTES) return send(stopped('request_too_large'));
@@ -607,13 +638,15 @@ export async function listenHostedReadOnly(context, socketPath, {
         const keys = Reflect.ownKeys(request);
         const grantId = Object.getOwnPropertyDescriptor(request, 'grant_id')?.value;
         const releaseId = Object.getOwnPropertyDescriptor(request, 'release_id')?.value;
-        if (!durableStopPath || !accessStopped || busy || keys.length !== 3 ||
+        if (!durableStopPath || !accessStopped || busy || monitorRecoveryBusy || keys.length !== 3 ||
             !keys.includes('grant_id') || !keys.includes('release_id') ||
             typeof grantId !== 'string' || !CART_GRANT_ID.test(grantId) ||
             !MONITOR_TEST_RELEASES.has(releaseId) || monitorTrial) {
           return send(stopped('unsupported_monitor_recovery'));
         }
         busy = true;
+        monitorRecoveryBusy = true;
+        connection.setTimeout(monitorVerifyTimeoutMs);
         try {
           const ackPath = join(monitorDirectory, `operator-monitor-grant-${grantId}-ack`);
           const usedPath = join(monitorDirectory, `operator-monitor-grant-${grantId}-used`);
@@ -626,25 +659,35 @@ export async function listenHostedReadOnly(context, socketPath, {
             return send(stopped('operator_acknowledgement_required'));
           }
           await writeFile(usedPath, 'consumed\n', { flag: 'wx', mode: 0o600 });
-          const verified = await verifyCurrentMonitorPage(context, releaseId);
+          const verified = await verifyCurrentMonitorPage(context, releaseId, controller.signal);
+          if (controller.signal.aborted || done) {
+            await monitorAudit(grantId, 'verification_stopped', releaseId,
+              monitorAbortCause());
+            return send(stopped('read_cancelled'));
+          }
           if (verified.status !== 'verified') {
             await monitorAudit(grantId, 'verification_stopped', releaseId,
               verified.restriction_cause || verified.code);
             return send(verified);
           }
           await monitorAudit(grantId, 'verified', releaseId);
+          if (controller.signal.aborted || done) {
+            await monitorAudit(grantId, 'verification_stopped', releaseId,
+              monitorAbortCause());
+            return send(stopped('read_cancelled'));
+          }
           monitorTrial = { grantId, verifiedRelease: releaseId,
             pending: new Set(MONITOR_TEST_RELEASES),
             expires: clock() + MONITOR_TRIAL_TTL_MS };
           return send(verified);
         } catch { return send(stopped('monitor_recovery_unavailable')); }
-        finally { busy = false; }
+        finally { busy = false; monitorRecoveryBusy = false; }
       }
       if (request?.action === 'operator_monitor_trial') {
         const keys = Reflect.ownKeys(request);
         const grantId = Object.getOwnPropertyDescriptor(request, 'grant_id')?.value;
         const releaseId = Object.getOwnPropertyDescriptor(request, 'release_id')?.value;
-        if (!durableStopPath || !accessStopped || busy || keys.length !== 3 ||
+        if (!durableStopPath || !accessStopped || busy || monitorRecoveryBusy || keys.length !== 3 ||
             !keys.includes('grant_id') || !keys.includes('release_id') ||
             typeof grantId !== 'string' || !CART_GRANT_ID.test(grantId) ||
             !MONITOR_TEST_RELEASES.has(releaseId) || monitorTrial?.grantId !== grantId ||
@@ -652,11 +695,23 @@ export async function listenHostedReadOnly(context, socketPath, {
           return send(stopped('monitor_trial_unavailable'));
         }
         busy = true;
-        connection.setTimeout(RELEASE_PAGINATION_BUDGET_MS);
+        monitorRecoveryBusy = true;
+        activeMonitorTrial = monitorTrial;
+        connection.setTimeout(monitorTrialTimeoutMs);
         try {
           await monitorAudit(grantId, 'trial_started', releaseId);
+          if (controller.signal.aborted || done) {
+            monitorTrial = null;
+            await monitorAudit(grantId, 'trial_stopped', releaseId, monitorAbortCause());
+            return send(stopped('read_cancelled'));
+          }
           const result = await navigateRelease({ action: 'observe_release', release_id: releaseId },
             { signal: controller.signal });
+          if (controller.signal.aborted || done || monitorTrial !== activeMonitorTrial) {
+            monitorTrial = null;
+            await monitorAudit(grantId, 'trial_stopped', releaseId, monitorAbortCause());
+            return send(stopped('read_cancelled'));
+          }
           if (result?.code === 'release_cooldown') return send(result);
           monitorTrial.pending.delete(releaseId);
           if (result.status !== 'observed' || result.purchase_allowed !== false) {
@@ -667,6 +722,11 @@ export async function listenHostedReadOnly(context, socketPath, {
             return send(result);
           }
           await monitorAudit(grantId, 'trial_observed', releaseId);
+          if (controller.signal.aborted || done || monitorTrial !== activeMonitorTrial) {
+            monitorTrial = null;
+            await monitorAudit(grantId, 'trial_stopped', releaseId, monitorAbortCause());
+            return send(stopped('read_cancelled'));
+          }
           if (monitorTrial.pending.size === 0) {
             monitorTrial = null;
             await monitorAudit(grantId, 'trials_complete_review_required', releaseId);
@@ -676,7 +736,7 @@ export async function listenHostedReadOnly(context, socketPath, {
         } catch {
           monitorTrial = null;
           return send(stopped('monitor_trial_unavailable'));
-        } finally { busy = false; }
+        } finally { busy = false; monitorRecoveryBusy = false; activeMonitorTrial = null; }
       }
       if (request?.action === 'operator_current_release') {
         if (!durableStopPath || !accessStopped || busy ||
