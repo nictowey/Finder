@@ -11,6 +11,13 @@ on:
       - 'src/finder/**'
       - 'pyproject.toml'
   workflow_dispatch:
+    inputs:
+      profile:
+        description: "Resource profile (micro is an optional unsupported-runner diagnostic)"
+        required: true
+        type: choice
+        default: standard
+        options: [standard, micro]
 permissions:
   contents: read
 concurrency:
@@ -18,14 +25,11 @@ concurrency:
   cancel-in-progress: false
 jobs:
   isolated-browser:
+    name: isolated-browser (${{ inputs.profile || 'standard' }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        profile: [standard, micro]
     env:
-      FINDER_BROWSER_PROFILE: ${{ matrix.profile }}
+      FINDER_BROWSER_PROFILE: ${{ inputs.profile || 'standard' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

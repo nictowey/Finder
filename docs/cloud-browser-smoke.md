@@ -16,7 +16,9 @@ The Dockerfile-specific context allowlist excludes credentials, local databases,
 and node_modules.
 
 Runtime is non-root UID 10001, read-only root filesystem, network:none, no added capabilities,
-no-new-privileges and private shared memory. CI runs two closed resource profiles:
+no-new-privileges and private shared memory. Push CI requires the standard profile. A separate manual workflow selection can request
+the micro diagnostic; its exact quota is unsupported by the measured runner. Both profiles
+remain closed and fail their checks rather than silently accepting another resource limit:
 - standard: 2 logical CPUs, 2 GiB RAM, no additional swap, 120-second outer deadline;
 - micro: 0.125 logical CPU, 1 GiB RAM, no additional swap, 600-second outer deadline.
 
@@ -66,9 +68,11 @@ The micro profile is a conservative constrained-container experiment for a possi
 AMD VM, not an emulator of Oracle E2.1.Micro or its burst credits. A displayed 1 OCPU in a
 console does not establish a sustained full CPU allocation. The test fixes a 0.125 logical
 CPU quota and does not model bursting. Build/download resources are not constrained by
-that runtime profile. The micro test explicitly requests a 25ms CPU quota per 200ms period;
-this avoids a measured runner rounding of 12.5ms to 13ms at the default 100ms period. The
-validator still requires the exact 0.125 ratio, not an approximate tolerance.
+that runtime profile. The micro test explicitly requests a 25ms CPU quota per 200ms period.
+The measured CI runner instead exposed 26ms per 200ms, just as its default-period attempt
+exposed 13ms per 100ms. Both equal 0.13 CPU, not the requested 0.125. The validator rejected
+both before Firefox launched; no micro capacity or performance result was established.
+The exact-ratio check is retained, not replaced with an approximate tolerance.
 
 Measured container headroom excludes the host operating system, Docker daemon, remote
 view/login services and long-lived session overhead. The tiny synthetic pages do not
@@ -76,6 +80,15 @@ establish real Discogs page memory, network latency, 24/7 stability or performan
 multiple watches. No artificial keepalive/resource load is added. A passing profile is
 only evidence for this exact bounded workload; it is not approval to provision a VM or
 a claim that the free host is adequate.
+
+## Observed result, 2026-10-25 UTC
+
+At commit b3d9649, the standard profile passed the real browser, process-security and
+functional pipeline checks with measured 2 CPU / 2 GiB / zero swap limits. Application
+elapsed time was 2.352 seconds, peak cgroup memory 446,238,720 bytes (about 426 MiB), and
+all memory-pressure and OOM counters were zero. Docker reported exit 0 and no OOM kill.
+The micro profile failed its pre-launch quota check as described above, not an OOM or
+functional browser test. Source: https://github.com/nictowey/Finder/actions/runs/40147789151
 
 ## Verification boundaries
 
