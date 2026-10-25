@@ -5,17 +5,21 @@ import shutil
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime
 
+import httpx
 import pytest
 from test_cloud_app import ORIGIN, verifier
 from test_discogs_hosted_scheduler import page
 from test_discogs_rules import observation, target
 
 from finder.cloud_app import CloudApp
+from finder.discogs_candidate_detail import PublicKnownListingCandidateReader
 from finder.discogs_candidate_pipeline import CandidatePipeline, CandidateStopped
 from finder.discogs_cart_claims import CartClaimStore
 from finder.discogs_hosted_scheduler import MIN_INTERVAL, HostedReleaseScheduler
+from finder.discogs_listing import ListingReader
 from finder.discogs_rules import RulesStore
 
 KEY = "123e4567-e89b-42d3-a456-426614174000"
@@ -288,3 +292,113 @@ def test_pause_between_review_and_claim_commit_stops_with_reserved_slot(setup):
         candidates.reserve_rehearsal(123, "1002", KEY)
     assert claims.get(KEY).state == "reserved"
     assert claims.get(KEY).purchase_allowed is False
+
+
+def public_detail(now, *, reported_release=123, status=200, comments="All vinyl included."):
+    calls = []
+
+    def handle(request):
+        calls.append(str(request.url))
+        if request.url.path == "/marketplace/listings/1002":
+            return httpx.Response(
+                status,
+                headers={"Location": "https://elsewhere.test/"} if status == 302 else None,
+                json={
+                    "id": 1002,
+                    "release": {"id": reported_release},
+                    "status": "For Sale",
+                    "condition": "Mint (M)",
+                    "sleeve_condition": "Near Mint (NM or M-)",
+                    "seller": {"stats": {"rating": "100", "total": 10020}},
+                    "price": {"value": "20.00", "currency": "USD"},
+                    "shipping_price": {"value": "5.00", "currency": "USD"},
+                    "shipping_is_blocked": False,
+                    "comments": comments,
+                },
+            )
+        assert request.url.path == "/releases/123"
+        return httpx.Response(200, json={"id": 123, "formats": [{"name": "Vinyl", "qty": "2"}]})
+
+    reader = ListingReader(transport=httpx.MockTransport(handle), wall_clock=lambda: now[0])
+    return PublicKnownListingCandidateReader(reader=reader, clock=lambda: now[0]), calls
+
+
+def test_fixed_public_detail_qualifies_only_as_blocked_live_review(setup):
+    database, now, claims = setup
+    reader, calls = public_detail(now)
+    candidates, _ = flow(database, now, claims, candidate_reader=reader)
+    result = candidates.review_one()
+    assert result["status"] == "blocked" and result["purchase_allowed"] is False
+    assert calls == [
+        "https://api.discogs.com/marketplace/listings/1002",
+        "https://api.discogs.com/releases/123",
+    ]
+    store = RulesStore(database)
+    try:
+        review = json.loads(store.db.execute("SELECT review FROM discogs_candidates").fetchone()[0])
+    finally:
+        store.close()
+    assert review["detail_evidence"] == {
+        "source": "discogs_public_listing",
+        "fixed_route": "/marketplace/listings/1002",
+        "reported_shipping": "5.00",
+        "shipping_blocked": False,
+        "delivered_total_verified": False,
+    }
+    assert review["evaluation"]["mode"] == "live_read_only"
+    assert review["evaluation"]["total"] is None
+    assert not review["evaluation"]["eligible_for_review"]
+    with pytest.raises(CandidateStopped):
+        candidates.reserve_rehearsal(123, "1002", KEY)
+    assert claims.get(KEY) is None
+
+
+@pytest.mark.parametrize(
+    "comments,reason",
+    [
+        ("No disc 1.", "Playable vinyl set is incomplete"),
+        ("Vinyl is warped.", "Seller comments disclose playable-media damage"),
+        ("No skips. All vinyl included.", "Item, shipping, tax and mandatory fees"),
+    ],
+)
+def test_public_detail_preserves_completeness_damage_and_unknown_total(setup, comments, reason):
+    database, now, claims = setup
+    reader, _ = public_detail(now, comments=comments)
+    candidates, _ = flow(database, now, claims, candidate_reader=reader)
+    assert candidates.review_one()["status"] == "blocked"
+    store = RulesStore(database)
+    try:
+        review = json.loads(store.db.execute("SELECT review FROM discogs_candidates").fetchone()[0])
+    finally:
+        store.close()
+    assert any(reason in text for text in review["evaluation"]["reasons"])
+    assert review["evaluation"]["total"] is None
+    assert claims.get(KEY) is None
+
+
+@pytest.mark.parametrize("failure", ["redirect", "wrong_release", "stale", "bad_route"])
+def test_public_detail_provenance_failure_stops_without_claim(setup, failure):
+    database, now, claims = setup
+    reader, calls = public_detail(
+        now,
+        reported_release=124 if failure == "wrong_release" else 123,
+        status=302 if failure == "redirect" else 200,
+    )
+    if failure in {"stale", "bad_route"}:
+        original = reader
+
+        def reader(release, ident):
+            detail = original(release, ident)
+            return replace(
+                detail,
+                completed_at=now[0] - 301 if failure == "stale" else detail.completed_at,
+                route="/marketplace/listings/other" if failure == "bad_route" else detail.route,
+            )
+
+    candidates, _ = flow(database, now, claims, candidate_reader=reader)
+    assert candidates.review_one()["status"] == "uncertain"
+    assert candidates.review_one()["status"] == "idle"
+    assert len(calls) == (2 if failure in {"stale", "bad_route"} else 1)
+    with pytest.raises(CandidateStopped):
+        candidates.reserve_rehearsal(123, "1002", KEY)
+    assert claims.get(KEY) is None

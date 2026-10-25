@@ -147,7 +147,7 @@ def normalize(payload, requested_id, *, release_metadata=None, release_provenanc
     )
 
 
-def observation(listing):
+def observation(listing, *, now=None):
     """Reported shipping never becomes a verified destination quote."""
     return Observation(
         source="discogs_public_listing",
@@ -159,7 +159,9 @@ def observation(listing):
         feedback=listing["feedback"],
         item=listing["item"],
         currency=listing["currency"],
-        observed_at=datetime.now(UTC).isoformat(),
+        observed_at=(
+            datetime.now(UTC) if now is None else datetime.fromtimestamp(now, UTC)
+        ).isoformat(),
         available=listing["available"],
         pressing_evidence="unknown",
         seller_comments=listing.get("seller_comments"),

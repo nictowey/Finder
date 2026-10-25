@@ -33,9 +33,14 @@ exact release/listing pair. A changed price or saved-rule/control/schedule
 revision creates a new pending review generation; an unchanged snapshot or
 restart does not duplicate a candidate. Two workers cannot claim the same row.
 Interrupted or uncertain reads stay stopped until a distinct fresh event or
-revision explicitly reopens them. The current injected detail reader accepts
-**synthetic observations only**. This is fixture-tested orchestration, not live
-candidate qualification or permission to collect marketplace data.
+revision explicitly reopens them. The optional reviewer accepts synthetic
+observations for the integrated dry run. It can also consume a
+`VerifiedPublicDetail` produced by one fixed official public known-listing API
+read. The adapter validates the requested listing and release identities,
+rejects redirects and stale reads, and records reported shipping separately.
+A public detail never supplies a destination-confirmed shipping, tax, fee or
+physical pressing claim, so it stays blocked for all-in candidate eligibility.
+This is a bounded detail integration, not permission for recurring collection.
 
 The reviewer applies exact-release and observation freshness, release quantity,
 seller-comment damage, media/sleeve grade, seller reputation and all-in
@@ -54,6 +59,16 @@ The private server does **not** construct this pipeline, supply a detail
 reader, expose its bundle as an endpoint, or start a candidate worker. Live
 targets remain empty and polling stays paused. No browser navigation or cart
 mutation is triggered by this dry-run code.
+
+A single read-only official API rehearsal from the local development checkout
+of user-identified DS2 listing `3526572746` on release `7609839` returned the
+matching release, Mint media,
+Near Mint sleeve, a 100% seller rating with 10,020 feedback entries, and a
+USD 199.99 item price. Normalized comments were marked unsupported, and
+shipping was unavailable or blocked. The release catalog reported two vinyl
+records, but completeness could not be confirmed from that response. There was
+no destination-confirmed delivered total. No listing or target was saved,
+and no second live detail read, cart action or order followed.
 
 Tests use disposable SQLite and synthetic pages. One integration test runs the
 real socket client through a private temporary Unix socket into the scheduler

@@ -10,6 +10,7 @@ import time
 import uuid
 from datetime import UTC, datetime
 
+from finder.discogs_candidate_detail import VerifiedPublicDetail
 from finder.discogs_cart_claims import CartClaimBlocked
 from finder.discogs_rules import Observation, RulesStore, Target, evaluate
 
@@ -215,12 +216,46 @@ class CandidatePipeline:
             store.close()
         release, ident, sequence, baseline_revision, rules, control, schedule = chosen
         try:
-            observation = Observation.model_validate(self.reader(release, ident))
-            if (
-                observation.source != "synthetic"
-                or observation.release_id != release
-                or observation.listing_id != ident
-            ):
+            detail = self.reader(release, ident)
+            if isinstance(detail, VerifiedPublicDetail):
+                observation = Observation.model_validate(detail.observation)
+                read_at = datetime.fromisoformat(
+                    observation.observed_at.replace("Z", "+00:00")
+                ).timestamp()
+                if (
+                    observation.source != "discogs_public_listing"
+                    or detail.requested_release != release
+                    or detail.requested_listing != ident
+                    or detail.route != f"/marketplace/listings/{ident}"
+                    or not 0 <= detail.completed_at - detail.started_at <= MAX_AGE
+                    or not 0 <= self.clock() - detail.completed_at <= MAX_AGE
+                    or not detail.started_at <= read_at <= detail.completed_at + 1
+                    or any(
+                        getattr(observation, field) is not None
+                        for field in (
+                            "shipping",
+                            "tax",
+                            "fees",
+                            "destination_country",
+                            "destination_postal",
+                        )
+                    )
+                    or observation.pressing_evidence != "unknown"
+                ):
+                    raise CandidateStopped("candidate_live_detail_provenance_unverified")
+                detail_evidence = {
+                    "source": "discogs_public_listing",
+                    "fixed_route": detail.route,
+                    "reported_shipping": detail.reported_shipping,
+                    "shipping_blocked": detail.shipping_blocked,
+                    "delivered_total_verified": False,
+                }
+            else:
+                observation = Observation.model_validate(detail)
+                if observation.source != "synthetic":
+                    raise CandidateStopped("candidate_identity_or_source_unverified")
+                detail_evidence = {"source": "synthetic", "delivered_total_verified": True}
+            if observation.release_id != release or observation.listing_id != ident:
                 raise CandidateStopped("candidate_identity_or_source_unverified")
             store = RulesStore(self.database)
             try:
@@ -261,6 +296,7 @@ class CandidatePipeline:
                             **result,
                             "rules_revision": rules,
                         },
+                        "detail_evidence": detail_evidence,
                     }
                     state = "review_only" if result["eligible_for_review"] else "blocked"
                     store.db.execute(
