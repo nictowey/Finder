@@ -103,6 +103,8 @@ function clickText(text) {
 (async()=>{
   dom=open();w=dom.window;d=w.document;await settled(w);
   assert.match(d.body.textContent,/Purchasing disabled\. Rules only\. No live discovery\./);
+  assert.match(el('candidate-pipeline-status').textContent,/fixture-tested only/);
+  assert.match(el('candidate-pipeline-status').textContent,/No hosted candidate worker, live checkout, or record purchasing is running/);
   assert.equal(d.querySelectorAll('script').length,1);assert.equal(d.querySelectorAll('script[src],link[href],img,iframe').length,0);
   assert.equal(d.querySelector('script').nonce,'dom-test-nonce');assert.equal(d.querySelector('style').nonce,'dom-test-nonce');
   assert.equal(el('save-target').disabled,false);assert.equal(el('evaluate').disabled,true);

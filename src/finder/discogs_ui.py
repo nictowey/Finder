@@ -150,6 +150,7 @@ Saving the same release updates its rules.</p>
 <button type="button" class="secondary" id="refresh">Refresh</button></div>
 <p class="muted">Load a target to replace the fields on the left. Refresh never replaces your draft.</p>
 <p id="hosted-schedule-status" class="muted">Exact-release browser schedule: checking stopped state.</p>
+<p id="candidate-pipeline-status" class="muted">Candidate checks and one-copy cart rehearsal are fixture-tested only. No hosted candidate worker, live checkout, or record purchasing is running.</p>
 <div id="targets" aria-live="polite"></div></section>
 </div>
 <section id="monitor-panel" class="panel evaluator" aria-labelledby="monitor-title" hidden>

@@ -13,6 +13,7 @@ import time
 import uuid
 from pathlib import Path
 
+from finder.discogs_candidate_pipeline import CandidateStopped
 from finder.discogs_release_snapshots import ReleaseSnapshots, RenderedReleaseSnapshot
 from finder.discogs_rules import RulesStore
 
@@ -109,9 +110,10 @@ class HostedSocketReader:
 class HostedReleaseScheduler:
     """One serialized read per tick; disabled until explicitly resumed and wired."""
 
-    def __init__(self, database, reader, *, clock=time.time, snapshots=None):
+    def __init__(self, database, reader, *, clock=time.time, snapshots=None, candidates=None):
         self.database, self.reader, self.clock = database, reader, clock
         self.snapshots = snapshots or ReleaseSnapshots(database, clock=clock)
+        self.candidates = candidates
         store = RulesStore(database)
         try:
             with store.db:
@@ -276,8 +278,18 @@ class HostedReleaseScheduler:
                 expected_schedule_revision=schedule_revision,
                 expected_schedule_token=token,
             )
+            if self.candidates is not None:
+                self.candidates.capture(
+                    release,
+                    rules_revision=rules_revision,
+                    control_revision=control_revision,
+                    schedule_revision=schedule_revision,
+                    lease_token=token,
+                )
         except HostedReadError as exc:
             error = exc
+        except CandidateStopped:
+            error = HostedReadError("candidate_capture_stopped", stop=True)
         except (OSError, TimeoutError, ValueError, RuntimeError):
             error = HostedReadError("read_or_revision_failed")
         except Exception:
