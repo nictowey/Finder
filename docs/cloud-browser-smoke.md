@@ -66,7 +66,9 @@ The micro profile is a conservative constrained-container experiment for a possi
 AMD VM, not an emulator of Oracle E2.1.Micro or its burst credits. A displayed 1 OCPU in a
 console does not establish a sustained full CPU allocation. The test fixes a 0.125 logical
 CPU quota and does not model bursting. Build/download resources are not constrained by
-that runtime profile.
+that runtime profile. The micro test explicitly requests a 25ms CPU quota per 200ms period;
+this avoids a measured runner rounding of 12.5ms to 13ms at the default 100ms period. The
+validator still requires the exact 0.125 ratio, not an approximate tolerance.
 
 Measured container headroom excludes the host operating system, Docker daemon, remote
 view/login services and long-lived session overhead. The tiny synthetic pages do not

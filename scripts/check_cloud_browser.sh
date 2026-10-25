@@ -3,8 +3,8 @@
 set -euo pipefail
 profile="${FINDER_BROWSER_PROFILE:-standard}"
 case "$profile" in
-  standard) memory=2g; cpus=2; deadline=120 ;;
-  micro) memory=1g; cpus=0.125; deadline=600 ;;
+  standard) memory=2g; cpu_args=(--cpus 2); deadline=120 ;;
+  micro) memory=1g; cpu_args=(--cpu-period 200000 --cpu-quota 25000); deadline=600 ;;
   *) echo 'Unsupported browser resource profile' >&2; exit 64 ;;
 esac
 image="finder-browser-smoke:${GITHUB_RUN_ID:-local}-${profile}-$$"
@@ -17,7 +17,7 @@ run_started=$SECONDS
 set +e
 timeout --signal=TERM --kill-after=10 "$deadline" docker run --name "$container" --init --network none --read-only \
   --cap-drop ALL --security-opt no-new-privileges \
-  --memory "$memory" --memory-swap "$memory" --cpus "$cpus" --pids-limit 256 --shm-size 256m \
+  --memory "$memory" --memory-swap "$memory" "${cpu_args[@]}" --pids-limit 256 --shm-size 256m \
   --env "FINDER_BROWSER_PROFILE=$profile" \
   --tmpfs /tmp:rw,nosuid,size=512m,mode=1777 "$image"
 run_status=$?

@@ -143,3 +143,9 @@ test('no pressure is reported only from measured zero low/high/max event counts'
     assert.equal(f.check().memory_pressure_observed, true);
   }
 });
+
+// Observed CI rounded the default 12.5ms quota up to 13ms; never accept that as 0.125 CPU.
+test('micro rejects the observed rounded default quota', () => {
+  const f = fixture('micro'); f.files.set('cpu.max', '13000 100000\n');
+  assert.throws(f.check, /13000\/100000, expected 0\.125/u);
+});
