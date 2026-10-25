@@ -133,7 +133,7 @@ def _missing_media(text, expected):
     # A denial of missing media is not evidence of missing media. It still cannot
     # qualify without a separately recognized, unambiguous completeness statement.
     checked = re.sub(
-        rf"\b(?:no|not)\s+missing\s+{_MEDIA}(?:\s*{_NUMBER})?\b"
+        rf"\b(?:no|not)\s+missing\s+(?:(?:a|an|one|the)\s+)?{_MEDIA}(?:\s*{_NUMBER})?\b"
         rf"|\bno\s+{_MEDIA}(?:\s+are)?\s+missing\b",
         " ",
         text,
@@ -144,6 +144,8 @@ def _missing_media(text, expected):
         rf"\bmissing\s+{_MEDIA}\b",
         rf"\bmissing\s+{_NUMBER}\s+{_MEDIA}\b",
         rf"\bnot\s+all\s+{_MEDIA}\b",
+        rf"\bnot\s+all\s+(?:{_NUMBER}\s+)?{_MEDIA}\s+(?:are\s+)?(?:included|present|supplied)\b",
+        rf"\b(?:includes?|contains?|only)\s+0\s+{_MEDIA}\b",
         r"\bincomplete\s+(?:vinyl|record|disc|lp)\s+set\b",
         rf"\bno\s*{_NUMBERED}\b",
         rf"\b{_NUMBERED}\s+(?:(?:is|are)\s+)?(?:missing|absent|not\s+(?:included|present|supplied))\b",
@@ -260,7 +262,7 @@ def _unresolved_media_warning(text, expected):
             harmless = re.sub(
                 rf"\b(?:(?:missing|no|without)\s+{_PACKAGING}"
                 rf"|{_PACKAGING}\s+(?:is\s+)?(?:missing|not\s+included)"
-                rf"|(?:no|not)\s+missing\s+{_MEDIA}(?:\s*{_NUMBER})?"
+                rf"|(?:no|not)\s+missing\s+(?:(?:a|an|one|the)\s+)?{_MEDIA}(?:\s*{_NUMBER})?"
                 rf"|no\s+{_MEDIA}(?:\s+are)?\s+missing"
                 r"|without\s+(?:any\s+)?(?:skips|scratches|noise|issues|problems))\b",
                 " ",

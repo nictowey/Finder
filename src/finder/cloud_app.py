@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from finder.discogs_hosted_scheduler import HostedReleaseScheduler
 from finder.discogs_listing import ListingReader, ListingReadError, ReleaseStatsReader, observation
 from finder.discogs_monitor import MonitorLoop, ReleaseMonitor
 from finder.discogs_rules import RulesStore
@@ -128,6 +129,8 @@ class CloudApp:
         self.monitor = ReleaseMonitor(
             self.database, stats_reader=stats_reader, listing_reader=listing_reader
         )
+        # Expose durable status only. No logged-in browser socket is mounted or opened here.
+        self.hosted_schedule = HostedReleaseScheduler(self.database, reader=None)
         self.monitor_loop = MonitorLoop(self.monitor) if start_monitor else None
         if self.monitor_loop:
             self.monitor_loop.start()
@@ -212,6 +215,7 @@ class CloudApp:
                                 "worker_running": self.monitor_loop is not None
                                 and self.monitor_loop.thread.is_alive(),
                             },
+                            "hosted_schedule": self.hosted_schedule.health(),
                         },
                     )
                 if method != "POST":

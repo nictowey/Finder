@@ -11,6 +11,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from finder.discogs_completeness import assess_media_completeness, current_release_media
+from finder.discogs_media_defects import assess_media_defects
 
 GRADES = ("P", "F", "G", "G+", "VG", "VG+", "NM", "M")
 CURRENCIES = ("USD", "EUR", "GBP", "CAD", "AUD")
@@ -114,10 +115,17 @@ def evaluate(target: Target, observation: Observation, *, now: datetime, already
         metadata,
         comments_supported=observation.seller_comments_supported,
     )
+    defects = assess_media_defects(
+        observation.seller_comments, comments_supported=observation.seller_comments_supported
+    )
     if completeness["status"] == "incomplete":
         reasons.append("Playable vinyl set is incomplete; missing records are not acceptable.")
     elif completeness["status"] not in {"reported_complete", "no_disclosed_media_omission"}:
         reasons.append("Playable-media omission check is unknown; a full record set is required.")
+    if defects["status"] == "defective":
+        reasons.append("Seller comments disclose playable-media damage.")
+    elif defects["status"] != "no_disclosed_media_defect":
+        reasons.append("Playable-media damage check is unknown.")
     if now.tzinfo is None:
         raise ValueError("Evaluation clock must include timezone.")
     try:
@@ -166,6 +174,7 @@ def evaluate(target: Target, observation: Observation, *, now: datetime, already
     return {
         "eligible_for_review": not reasons,
         "media_completeness": completeness,
+        "media_defects": defects,
         "reasons": reasons,
         "total": format(total, ".2f") if total is not None else None,
         "purchase_allowed": False,

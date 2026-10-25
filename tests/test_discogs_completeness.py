@@ -85,6 +85,8 @@ def assess(comments, count=2):
         "1 record only",
         "Includes one record",
         "Not all records included",
+        "Not all 2 records included",
+        "Includes 0 records",
         "Incomplete vinyl set",
         "VG+; NO LP 1. Disc 2 only; light marks on remaining vinyl.",
         "Includes both discs. Missing record one.",
@@ -188,7 +190,13 @@ def test_both_is_not_a_report_of_any_other_quantity(count):
 
 @pytest.mark.parametrize(
     "comments",
-    ["No skips on disc1", "No missing records", "No records missing", "Not missing disc 1"],
+    [
+        "No skips on disc1",
+        "No missing records",
+        "No records missing",
+        "Not missing disc 1",
+        "Not missing a record",
+    ],
 )
 def test_negated_defects_do_not_falsely_report_missing_media(comments):
     assert assess(comments)["status"] == "no_disclosed_media_omission"

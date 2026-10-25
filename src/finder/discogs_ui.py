@@ -154,6 +154,7 @@ Saving the same release updates its rules.</p>
 <section id="monitor-panel" class="panel evaluator" aria-labelledby="monitor-title" hidden>
 <h2 id="monitor-title">Cloud monitoring</h2>
 <p id="monitor-status" class="notice"></p>
+<p id="hosted-schedule-status" class="muted"></p>
 <p id="discovery-status" class="muted"></p>
 <div class="actions"><button type="button" id="toggle-monitor">Start cloud reads</button>
 <button type="button" id="monitor-once" class="secondary">Run one due check</button></div>
@@ -372,6 +373,11 @@ function renderMonitor() {
     snapshot.kill_switch !== false ? 'Cloud reads are stopped. Saved targets are intact.' :
     monitor.worker_running !== true ? 'Read adapters are configured; the background worker is not running. Manual due checks only.' :
     'Cloud reads are enabled. Individual listing discovery is not connected. No checkout capability.';
+  const hosted=snapshot?.hosted_schedule;
+  el('hosted-schedule-status').textContent=hosted?.paused === true ?
+    `Exact-release browser schedule: paused; ${Array.isArray(hosted.targets) ? hosted.targets.length : 0} due-state entries. No unattended browser reads.` :
+    hosted?.paused === false ? 'Exact-release schedule saved as resumed; this app has no browser reader or running hosted worker.' :
+    'Exact-release browser schedule status is unavailable or unverified.';
   el('discovery-status').textContent=monitor.discovery_blocker;
   el('toggle-monitor').textContent=snapshot.kill_switch === false ? 'Stop cloud reads' : 'Start cloud reads';
   const rows=el('monitor-rows'); rows.replaceChildren();
@@ -596,6 +602,9 @@ function renderListingResult(data, targetId) {
     completeness?.status === 'reported_complete' ? 'Seller reports complete; not physically verified' :
     completeness?.status === 'no_disclosed_media_omission' ? 'No missing records disclosed; not physically verified' : 'Unknown: blocked');
   detail(facts, 'Expected vinyl count', known(completeness?.expected_media_count));
+  const defects=assessment.media_defects;
+  detail(facts, 'Playable-media damage', defects?.status === 'defective' ? 'Disclosed damage: blocked' :
+    defects?.status === 'no_disclosed_media_defect' ? 'No damage disclosed; not physically verified' : 'Unknown: blocked');
   detail(facts, 'Evaluated all-in total', assessment.total === null ? 'Unknown, not zero' : reportedMoney(assessment.total, listing.currency));
   detail(facts, 'Purchase allowed', 'No. Purchasing is disabled.');
   result.append(facts);

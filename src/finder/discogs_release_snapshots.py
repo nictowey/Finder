@@ -252,6 +252,8 @@ class ReleaseSnapshots:
         expected_rules_revision,
         expected_control_revision,
         expected_baseline_revision,
+        expected_schedule_revision=None,
+        expected_schedule_token=None,
     ):
         """Import one observation with revisions captured before observation, never refreshed.
 
@@ -279,6 +281,13 @@ class ReleaseSnapshots:
                     expected_control_revision,
                     expected_baseline_revision,
                 )
+                if expected_schedule_revision is not None:
+                    _revision(expected_schedule_revision)
+                    schedule = store.db.execute(
+                        "SELECT paused,revision,lease_token FROM discogs_hosted_schedule WHERE id=1"
+                    ).fetchone()
+                    if schedule != (0, expected_schedule_revision, expected_schedule_token):
+                        raise RuntimeError("Hosted schedule changed during observation.")
                 if previous and observed <= previous[3]:
                     raise RuntimeError("Observation is duplicate or out of order.")
                 if (

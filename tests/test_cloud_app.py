@@ -122,7 +122,11 @@ def test_auth_timeout():
 
 
 def test_state_persists_revision_audit_and_kill(app):
-    assert json.loads(call(app, "/api/snapshot")[2])["kill_switch"] is True
+    initial = json.loads(call(app, "/api/snapshot")[2])
+    assert initial["kill_switch"] is True
+    assert initial["hosted_schedule"]["paused"] is True
+    assert initial["hosted_schedule"]["targets"] == []
+    assert initial["hosted_schedule"]["purchase_allowed"] is False
     data = {"target": target().model_dump(), "expected_revision": 0}
     assert call(app, "/api/target", data)[0] == 200
     assert call(app, "/api/target", data)[0] == 409

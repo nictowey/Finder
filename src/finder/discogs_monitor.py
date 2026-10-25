@@ -13,6 +13,7 @@ from decimal import Decimal
 
 from finder.discogs_completeness import assess_media_completeness, current_release_media
 from finder.discogs_listing import ListingReadError, PublicReadBudget, listing_id
+from finder.discogs_media_defects import assess_media_defects
 from finder.discogs_release_snapshots import ReleaseSnapshots
 from finder.discogs_rules import GRADES, RulesStore, Target
 
@@ -41,10 +42,18 @@ def listing_review(target, listing, *, fresh, owned=False, now=None):
         metadata,
         comments_supported=listing.get("seller_comments_supported", False),
     )
+    defects = assess_media_defects(
+        listing.get("seller_comments"),
+        comments_supported=listing.get("seller_comments_supported", False),
+    )
     if completeness["status"] == "incomplete":
         reasons.append("Playable vinyl set is incomplete; missing records are not acceptable.")
     elif completeness["status"] not in {"reported_complete", "no_disclosed_media_omission"}:
         reasons.append("Playable-media omission check is unknown; a full record set is required.")
+    if defects["status"] == "defective":
+        reasons.append("Seller comments disclose playable-media damage.")
+    elif defects["status"] != "no_disclosed_media_defect":
+        reasons.append("Playable-media damage check is unknown.")
     if not fresh:
         reasons.append("Listing snapshot is stale; wait for a successful refresh.")
     if not target.enabled or owned:
@@ -74,6 +83,7 @@ def listing_review(target, listing, *, fresh, owned=False, now=None):
     return {
         "status": "blocked" if reasons else "needs_total",
         "media_completeness": completeness,
+        "media_defects": defects,
         "reasons": reasons
         + [
             "Destination-confirmed shipping, tax and mandatory fees are unknown.",
