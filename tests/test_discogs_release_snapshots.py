@@ -202,6 +202,43 @@ def test_failed_partial_loading_and_racing_preserve_last_success(setup, status, 
     assert ingest(engine, observed(clock), baseline=1)["status"] == "unchanged"
 
 
+def test_verified_partial_rows_are_reportable_but_never_replace_a_baseline(setup):
+    engine, clock, _ = setup
+    ingest(engine, observed(clock, [listing(1001, price="$10")]))
+    baseline = release_state(engine)["baseline"]
+    clock[0] += 1
+    partial = observed(
+        clock,
+        [listing(1002, price="$9")],
+        status="incomplete",
+        complete=False,
+        range_start=1,
+        range_end=1,
+        total=3,
+        has_next=True,
+        error_code="additional_page_required",
+    )
+    result = ingest(engine, partial, baseline=1)
+    assert result["status"] == "preserved"
+    assert release_state(engine)["baseline"] == baseline
+    assert release_state(engine)["fresh"] is False
+    assert engine.snapshot()["changes"] == []
+    assert engine.snapshot()["purchase_allowed"] is False
+
+    for updates in (
+        {"error_code": "loading"},
+        {"has_next": False},
+        {"range_end": 2},
+        {"total": 1},
+        {"assertions": {**partial["assertions"], "stable": False}},
+        {"status": "error"},
+    ):
+        invalid = {**partial, **updates}
+        with pytest.raises(ValueError):
+            ingest(engine, invalid, baseline=1)
+    assert release_state(engine)["baseline"] == baseline
+
+
 def test_failure_without_baseline_does_not_create_empty_success(setup):
     engine, clock, _ = setup
     ingest(engine, observed(clock, [], status="error", complete=False, error_code="blocked"))
@@ -321,7 +358,7 @@ def test_out_of_order_and_duplicate_observations_are_rejected(setup):
     with pytest.raises(RuntimeError):
         ingest(engine, initial, baseline=1)
     clock[0] += 10
-    ingest(engine, observed(clock, status="incomplete", complete=False), baseline=1)
+    ingest(engine, observed(clock, [], status="incomplete", complete=False), baseline=1)
     with pytest.raises(RuntimeError):
         ingest(engine, observed([clock[0] - 5]), baseline=1)
     assert release_state(engine)["baseline_revision"] == 1

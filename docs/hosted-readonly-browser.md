@@ -50,8 +50,13 @@ browser process. It makes no automatic retries. HTTP 429/503 applies the longer 
 that interval or a bounded `Retry-After` (up to 24 hours). HTTP 401/403, recognized
 login or challenge redirects, and challenge titles stop further loads in the process.
 Unexpected redirects, timeouts, missing containers, changed pages and collector errors
-stop. The collector accepts only a complete single-page snapshot; pagination or partial
-records return an explicit incomplete code, with no rows promoted to a baseline. Client
+stop. Only a complete single-page snapshot may become a baseline; pagination or partial
+records return an explicit incomplete code. Individually validated rows from a stable
+first page may be included in a **report-only partial observation** with the displayed
+range and total, but cannot be promoted to a baseline, interpreted as absence, or
+purchase-qualified. The reader never follows pagination links in this mode. The prior
+Rocky one-use read returned only `partial_page_unverified` with no DOM rows retained;
+the new reporting behavior has not been verified live. Client
 disconnect cancels the read and closes the temporary tab. Socket requests are serialized.
 Item-detail navigation has its own 15-minute in-process cooldown and identical
 HTTP denial, challenge, redirect and cancellation stops. The socket stops all

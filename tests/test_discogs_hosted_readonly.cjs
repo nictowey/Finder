@@ -38,6 +38,14 @@ const observedItem = () => ({ schema: 'discogs_listing_detail_dom_v1', source: '
 const observedRelease = () => ({ source: 'discogs_rendered_release', release_id: 111,
   url: releaseUrl, status: 'observed', complete: true, has_next: false,
   total: 0, rows: [], purchase_allowed: false });
+const partialRelease = () => ({ ...observedRelease(), status: 'incomplete', complete: false,
+  page: 1, range_start: 1, range_end: 1, total: 2, has_next: true,
+  rows: [{ listing_id: '222', url: 'https://www.discogs.com/sell/item/222', fields: {
+    price: '$20.00 USD', media: 'Very Good Plus (VG+)', sleeve: 'Very Good Plus (VG+)',
+    seller: 'Synthetic seller', seller_rating: '100.0%', seller_feedback: '100 ratings',
+    shipping: '+$5.00 shipping', seller_description: null } }],
+  assertions: { release_identity: true, listing_container: true, pagination: true, stable: true },
+  error_code: 'additional_page_required' });
 function fixture(url = releaseUrl, response = observedRelease()) {
   const calls = [];
   const page = new Proxy({
@@ -130,6 +138,19 @@ test('fixed current release observation uses only exact open page and unchanged 
   assert.equal(result.status, 'observed'); assert.equal(result.purchase_allowed, false);
   assert.equal(result.observation.total, 0); assert.equal(result.observation.release_id, 111);
   assert.deepEqual(calls, ['pages', 'url', 'url', 'evaluate', 'url']);
+});
+
+test('validated partial current release is report-only, never a complete baseline', async () => {
+  const { context, calls } = fixture(releaseUrl, partialRelease());
+  const result = await observeCurrentHostedPage(context, releaseRequest);
+  assert.equal(result.status, 'incomplete'); assert.equal(result.code, 'additional_page_required');
+  assert.equal(result.observation.rows[0].listing_id, '222');
+  assert.equal(result.observation.complete, false); assert.equal(result.purchase_allowed, false);
+  assert.deepEqual(calls, ['pages', 'url', 'url', 'evaluate', 'url']);
+  const unverified = fixture(releaseUrl, { ...partialRelease(), assertions: {
+    ...partialRelease().assertions, stable: false } });
+  stopped(await observeCurrentHostedPage(unverified.context, releaseRequest),
+    'additional_page_required');
 });
 
 test('item readiness timeout reports bounded structure and latches actual restriction', async () => {
@@ -244,7 +265,8 @@ async function sendSocket(path, message) {
 }
 
 function operatorFixture({ url = 'https://www.discogs.com/sell/release/4204639',
-  title = 'Rocky marketplace', changed = false, complete = true, hold = null } = {}) {
+  title = 'Rocky marketplace', changed = false, complete = true, reportPartial = false,
+  hold = null } = {}) {
   const calls = [];
   const page = new Proxy({
     url() { calls.push('url'); return changed && calls.includes('evaluate') ?
@@ -255,8 +277,12 @@ function operatorFixture({ url = 'https://www.discogs.com/sell/release/4204639',
       assert.equal(fn, collectReleaseMarketplaceDom); assert.equal(id, '4204639');
       if (hold) await hold;
       return { source: 'discogs_rendered_release', release_id: 4204639, url,
-        status: complete ? 'observed' : 'incomplete', complete,
-        has_next: !complete, total: complete ? 2 : null, rows: complete ? [{ listing_id: '1' }, { listing_id: '2' }] : [],
+        status: complete ? 'observed' : 'incomplete', complete, page: 1,
+        has_next: !complete, range_start: 1, range_end: complete || reportPartial ? 2 : null,
+        total: complete ? 2 : reportPartial ? 3 : null,
+        rows: complete || reportPartial ? [{ listing_id: '1' }, { listing_id: '2' }] : [],
+        assertions: { release_identity: true, listing_container: true, pagination: true, stable: true },
+        ...(reportPartial ? { error_code: 'additional_page_required' } : {}),
         purchase_allowed: false };
     },
   }, { get(target, key) {
@@ -329,6 +355,24 @@ test('operator recovery consumes on wrong page, challenge, changed page, and inc
       } finally { await socket.close(); }
     } finally { await rm(directory, { recursive: true, force: true }); }
   }
+});
+
+test('one-use operator recovery reports verified partial rows without unlocking future reads', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-operator-'));
+  const fixture = operatorFixture({ complete: false, reportPartial: true });
+  try {
+    const socket = await operatorSocket(fixture.context, directory);
+    try {
+      await writeOperatorAck(socket);
+      const request = JSON.stringify({ action: 'operator_current_release', release_id: '4204639' }) + '\n';
+      const result = await sendSocket(socket.path, request);
+      assert.equal(result.status, 'incomplete'); assert.equal(result.code, 'additional_page_required');
+      assert.deepEqual(result.observation.rows.map(row => row.listing_id), ['1', '2']);
+      assert.equal(result.observation.complete, false); assert.equal(result.purchase_allowed, false);
+      stopped(await sendSocket(socket.path, request), 'operator_recovery_unavailable');
+      stopped(await sendSocket(socket.path, JSON.stringify(releaseRequest) + '\n'), 'access_restricted');
+    } finally { await socket.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test('concurrent operator requests cannot replay one acknowledgement', async () => {
@@ -455,6 +499,15 @@ test('partial pagination and unready page stop without returning incomplete rows
   const unready = navigationFixture({ ready: false });
   stopped(await createReleaseNavigator(unready.context)(navigateRequest), 'marketplace_not_ready');
   assert.ok(!unready.calls.some(call => call[0] === 'evaluate'));
+});
+
+test('fixed navigation may report verified partial rows but cannot mark them complete', async () => {
+  const { context, calls } = navigationFixture({ result: partialRelease() });
+  const result = await createReleaseNavigator(context)(navigateRequest);
+  assert.equal(result.status, 'incomplete'); assert.equal(result.code, 'additional_page_required');
+  assert.equal(result.observation.rows[0].listing_id, '222');
+  assert.equal(result.observation.complete, false); assert.equal(result.purchase_allowed, false);
+  assert.equal(calls.filter(call => call[0] === 'goto').length, 1);
 });
 
 test('429 honors Retry-After without retrying and 403 or challenge latches access stop', async () => {

@@ -54,7 +54,11 @@ export function collectReleaseMarketplaceDom(expectedReleaseId) {
     const count = /^(\d+)\s*[–-]\s*(\d+)\s+of\s+(\d+)$/u.exec(counts[0]);
     if (!count) return stop('unsupported_pagination_text');
     const [start, end, total] = count.slice(1).map(Number);
-    if (![start, end, total].every(Number.isSafeInteger) || !((total === 0 && start === 0 && end === 0) || (total > 0 && start === 1 && end === total)) || total > 250) return stop('partial_page_unverified');
+    const completeRange = (total === 0 && start === 0 && end === 0) ||
+      (total > 0 && start === 1 && end === total);
+    const partialRange = start === 1 && end > 0 && end < total;
+    if (![start, end, total].every(Number.isSafeInteger) || total > 10_000_000 ||
+        end > 250 || (!completeRange && !partialRange)) return stop('partial_page_unverified');
     const navigations = [...document.querySelectorAll('nav.pagination')];
     if (navigations.length !== 2) return stop('pagination_containers_unavailable');
     const pageSizes = [];
@@ -67,14 +71,15 @@ export function collectReleaseMarketplaceDom(expectedReleaseId) {
       const selected = select?.selectedOptions;
       if (!selected || selected.length !== 1 || !/^[1-9][0-9]{0,2}$/u.test(selected[0].value)) return stop('page_size_unavailable');
       const size = Number(selected[0].value);
-      if (size > 250 || size < total) return stop('additional_page_required');
+      if (size > 250 || size < end) return stop('page_size_unavailable');
       pageSizes.push(size);
-      // The verified single-page/zero-page shape has no pagination actions.
-      if (nav.querySelectorAll('a,button').length) return stop('additional_or_unknown_page_control');
+      // A complete page has no additional navigation. Partial-page controls are
+      // never operated; only the displayed range establishes missing coverage.
+      if (completeRange && nav.querySelectorAll('a,button').length) return stop('additional_or_unknown_page_control');
     }
     if (pageSizes[0] !== pageSizes[1]) return stop('page_sizes_disagree');
     const rawRows = [...table.querySelectorAll('tbody tr')].filter(visible);
-    if (rawRows.length !== total) return stop('row_count_mismatch');
+    if (rawRows.length !== end) return stop('row_count_mismatch');
     const seen = new Set(), rows = [];
     for (const row of rawRows) {
       const title = one(row, "td.item_description a.item_description_title[href^='/sell/item/']");
@@ -140,12 +145,15 @@ export function collectReleaseMarketplaceDom(expectedReleaseId) {
     }
     const finalRows = [...table.querySelectorAll('tbody tr')].filter(visible);
     if (location.href !== initialUrl || countNodes.some((node, index) => !node.isConnected || countText(node) !== counts[index]) ||
-        finalRows.length !== total || finalRows.some((row, index) => {
+        finalRows.length !== end || finalRows.some((row, index) => {
           const title = one(row, "td.item_description a.item_description_title[href^='/sell/item/']");
           return row !== rawRows[index] || title?.getAttribute('href') !== `/sell/item/${rows[index].listing_id}`;
         })) return stop('observation_changed');
-    return { ...base, status: 'observed', complete: true, range_start: start, range_end: end, total,
-      has_next: false, rows, assertions: { release_identity: true, listing_container: true, pagination: true, stable: true },
+    return { ...base, status: completeRange ? 'observed' : 'incomplete',
+      complete: completeRange, range_start: start, range_end: end, total,
+      has_next: !completeRange, rows,
+      assertions: { release_identity: true, listing_container: true, pagination: true, stable: true },
+      ...(partialRange ? { error_code: 'additional_page_required' } : {}),
       purchase_allowed: false };
   } catch { return stop('dom_read_failed'); }
 }

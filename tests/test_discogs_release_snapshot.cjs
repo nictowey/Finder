@@ -36,7 +36,27 @@ test('verified empty shape requires matching zero counts, table header, page siz
   blocked(read({markup:markup.replace(/<nav[^>]*>[\s\S]*?<\/nav>/,'')}));
 });
 test('partial pages, mismatched counts, missing counts and additional pages never complete', () => {
-  for(const markup of [html().replaceAll('1 – 2 of 2','1 – 2 of 3'),html().replace('1 – 2 of 2','1 – 1 of 1'),html().replace(pagination,''),html().replace('</nav>','<a rel="next">Next</a></nav>'),html().replace('</nav>','<button aria-label="Next page">›</button></nav>')]) blocked(read({markup}));
+  const partial = read({ markup: html().replaceAll('1 – 2 of 2', '1 – 2 of 3')
+    .replaceAll('</nav>', '<a rel="next" href="/sell/release/111?page=2">Next</a></nav>') });
+  assert.equal(partial.status, 'incomplete'); assert.equal(partial.complete, false);
+  assert.equal(partial.error_code, 'additional_page_required'); assert.equal(partial.has_next, true);
+  assert.deepEqual([partial.range_start, partial.range_end, partial.total], [1, 2, 3]);
+  assert.deepEqual(partial.rows.map(row => row.listing_id), ['222', '333']);
+  assert.equal(partial.rows[0].fields.price, '$20.00 USD');
+  assert.ok(Object.values(partial.assertions).every(Boolean));
+  assert.equal(partial.purchase_allowed, false);
+  for(const markup of [html().replace('1 – 2 of 2','1 – 1 of 1'),html().replace(pagination,''),html().replace('</nav>','<a rel="next">Next</a></nav>'),html().replace('</nav>','<button aria-label="Next page">›</button></nav>')]) blocked(read({markup}));
+});
+test('partial report still rejects wrong identity, bad rows, inconsistent range and mutation', () => {
+  const markup = html().replaceAll('1 – 2 of 2', '1 – 2 of 3');
+  for (const changed of [markup.replace('/release/111','/release/112'),
+    markup.replace('/sell/item/333','/sell/item/222'),
+    markup.replace('data-currency="USD"','data-currency="?"'),
+    markup.replace(row('333'),''),
+    markup.replace('1 – 2 of 3','2 – 3 of 3')]) blocked(read({markup:changed}));
+  const late=read({markup,alter:w=>{const labels=w.document.querySelectorAll('.pagination_total');
+    let reads=0;Object.defineProperty(labels[0],'textContent',{get(){reads++;return reads===1?'1 – 2 of 3':'1 – 2 of 4';}});}});
+  blocked(late);assert.equal(late.error_code,'observation_changed');
 });
 test('missing/duplicate/extra listing rows fail closed even when displayed counts match', () => {
   for(const markup of [html().replace(row('333'),''),html().replace('/sell/item/333','/sell/item/222'),html().replace('</tbody>',row('444')+'</tbody>')]) blocked(read({markup}));

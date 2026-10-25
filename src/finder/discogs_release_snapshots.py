@@ -151,6 +151,18 @@ class RenderedReleaseSnapshot(StrictInput):
                 )
         elif self.status == "observed":
             raise ValueError("Observed status requires an explicitly complete snapshot.")
+        elif self.rows and (
+            self.status != "incomplete"
+            or self.error_code != "additional_page_required"
+            or not all(self.assertions.model_dump().values())
+            or self.page != 1
+            or self.has_next is not True
+            or self.range_start != 1
+            or self.range_end != len(self.rows)
+            or self.total is None
+            or self.total <= len(self.rows)
+        ):
+            raise ValueError("Partial rows require a stable, verified first page with more offers.")
         return self
 
 

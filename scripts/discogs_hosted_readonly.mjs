@@ -68,6 +68,24 @@ function bounded(result) {
   } catch { return stopped('observation_unserializable'); }
 }
 
+function reportablePartialRelease(observation) {
+  return observation?.status === 'incomplete' && observation.complete === false &&
+    observation.error_code === 'additional_page_required' && observation.has_next === true &&
+    observation.page === 1 && observation.range_start === 1 &&
+    Number.isSafeInteger(observation.range_end) && observation.range_end > 0 &&
+    Number.isSafeInteger(observation.total) && observation.total > observation.range_end &&
+    Array.isArray(observation.rows) && observation.rows.length === observation.range_end &&
+    observation.assertions?.release_identity === true &&
+    observation.assertions?.listing_container === true &&
+    observation.assertions?.pagination === true && observation.assertions?.stable === true;
+}
+
+function partialReleaseReport(observation) {
+  return bounded({ status: 'incomplete', code: 'additional_page_required',
+    source: 'hosted_browser_read_only', observation, stop_required: true,
+    purchase_allowed: false });
+}
+
 async function beforeDeadline(operation) {
   let timer;
   try {
@@ -122,7 +140,11 @@ export async function observeCurrentHostedPage(context, request) {
     if (!observation || observation.source !== 'discogs_rendered_release' ||
         observation.release_id !== Number(input.id) || observation.purchase_allowed !== false ||
         !exactUrl(input.action, input.id, observation.url)) return stopped('release_observation_unverified');
-    return bounded({ status: observation.status, source: 'hosted_browser_read_only',
+    if (reportablePartialRelease(observation)) return partialReleaseReport(observation);
+    if (observation.status !== 'observed' || observation.complete !== true || observation.has_next !== false) {
+      return stopped(observation.error_code || 'incomplete_release_page');
+    }
+    return bounded({ status: 'observed', source: 'hosted_browser_read_only',
       observation, stop_required: true, purchase_allowed: false });
   } catch { return stopped('hosted_read_failed'); }
 }
@@ -150,9 +172,12 @@ async function observeOperatorCurrentRelease(context) {
       return stopped('page_changed_during_read');
     }
     if (observation?.source !== 'discogs_rendered_release' ||
-        observation.release_id !== Number(OPERATOR_RELEASE) || observation.purchase_allowed !== false ||
-        observation.status !== 'observed' || observation.complete !== true || observation.has_next !== false) {
+        observation.release_id !== Number(OPERATOR_RELEASE) || observation.purchase_allowed !== false) {
       return stopped(observation?.error_code || 'release_observation_unverified');
+    }
+    if (reportablePartialRelease(observation)) return partialReleaseReport(observation);
+    if (observation.status !== 'observed' || observation.complete !== true || observation.has_next !== false) {
+      return stopped(observation.error_code || 'release_observation_unverified');
     }
     return bounded({ status: 'observed', source: 'hosted_browser_read_only', observation,
       stop_required: true, purchase_allowed: false });
@@ -233,6 +258,7 @@ export function createReleaseNavigator(context, { now = () => Date.now() } = {})
           observation.release_id !== Number(input.id) || observation.purchase_allowed !== false) {
         return stopped('release_observation_unverified');
       }
+      if (reportablePartialRelease(observation)) return partialReleaseReport(observation);
       if (observation.status !== 'observed' || observation.complete !== true ||
           observation.has_next !== false) {
         return bounded({ ...stopped(observation.error_code || 'incomplete_release_page'),
