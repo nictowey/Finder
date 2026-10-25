@@ -77,6 +77,9 @@ open Rocky release or the exact DS2 cart; they do not resume ordinary reads or
 clear this latch. There is no implemented general operator reset. Returning to
 ordinary unattended reads would require a separately reviewed recovery design
 and site-access basis; installing the new worker does not change either gate.
+An offline, dormant three-release operator-recovery design is described in
+[discogs-monitor-recovery.md](discogs-monitor-recovery.md). It does not clear the
+marker or activate the hosted browser bridge or schedule.
 
 The reviewer applies exact-release and observation freshness, release quantity,
 seller-comment damage, media/sleeve grade, seller reputation and all-in

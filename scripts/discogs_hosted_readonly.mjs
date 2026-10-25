@@ -25,6 +25,9 @@ const SHARED_GROUP = 113;
 const OPERATOR_RELEASE = '4204639';
 const OPERATOR_CART_LISTING = '3526572746';
 const CART_GRANT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const MONITOR_TEST_RELEASES = new Set(['28720177', '5520534', '13053315']);
+const MONITOR_TRIAL_TTL_MS = 60 * 60_000;
+const MONITOR_ACK_TTL_MS = 5 * 60_000;
 
 export function privateBridgeDirectory(directory, uid = process.getuid()) {
   return Boolean(directory?.isDirectory?.() && directory.uid === uid &&
@@ -34,6 +37,10 @@ export function privateBridgeDirectory(directory, uid = process.getuid()) {
 function stopped(code) {
   return { status: 'blocked', code, source: 'hosted_browser_read_only',
     stop_required: true, purchase_allowed: false };
+}
+
+function restricted(cause, code = 'access_restricted') {
+  return { ...stopped(code), restriction_cause: cause };
 }
 
 function requestShape(request) {
@@ -188,6 +195,35 @@ async function observeOperatorCurrentRelease(context) {
   } catch { return stopped('hosted_read_failed'); }
 }
 
+/** Verify a user-opened normal release page without navigation or session access. */
+async function verifyCurrentMonitorPage(context, releaseId) {
+  if (!context || typeof context.pages !== 'function') return stopped('browser_context_unavailable');
+  try {
+    const pages = context.pages();
+    if (!Array.isArray(pages) || pages.length > 16) return stopped('browser_pages_unavailable');
+    const matching = pages.filter(page => page && typeof page.url === 'function' &&
+      typeof page.title === 'function' && typeof page.evaluate === 'function' &&
+      exactUrl('current_release', releaseId, page.url()));
+    if (matching.length !== 1) return stopped('exact_current_page_not_unique');
+    const page = matching[0], url = page.url();
+    const title = await beforeDeadline(() => page.title());
+    if (page.url() !== url) return stopped('page_changed_during_read');
+    if (/just a moment|attention required|security check|captcha|cloudflare|sign in|log in/iu.test(title)) {
+      return restricted('user_opened_challenge_or_login');
+    }
+    const observation = await beforeDeadline(() => page.evaluate(collectReleaseMarketplaceDom, releaseId));
+    if (page.url() !== url || !exactUrl('current_release', releaseId, observation?.url) ||
+        observation?.source !== 'discogs_rendered_release' ||
+        observation.release_id !== Number(releaseId) || observation.purchase_allowed !== false ||
+        !['release_identity', 'listing_container', 'pagination', 'stable'].every(
+          key => observation.assertions?.[key] === true) ||
+        !(observation.status === 'observed' && observation.complete === true ||
+          reportablePartialRelease(observation))) return stopped('normal_page_unverified');
+    return { status: 'verified', source: 'hosted_browser_read_only', release_id: Number(releaseId),
+      complete: observation.complete, stop_required: true, purchase_allowed: false };
+  } catch { return stopped('normal_page_unverified'); }
+}
+
 /** One read of the already-open exact cart. No navigation or control interaction. */
 async function observeOperatorCurrentCart(context) {
   if (!context || typeof context.pages !== 'function') return stopped('browser_context_unavailable');
@@ -269,18 +305,20 @@ export function createReleaseNavigator(context, { now = () => Date.now() } = {})
       }
       if (status === 401 || status === 403) {
         accessStopped = true;
-        return stopped(status === 401 ? 'auth_required' : 'access_restricted');
+        return restricted(status === 401 ? 'http_401' : 'http_403',
+          status === 401 ? 'auth_required' : 'access_restricted');
       }
       if (status !== 200) return stopped('unexpected_http_status');
       const landed = page.url();
       if (!exactUrl(input.action, input.id, landed)) {
         if (/\/(?:login|signin|cdn-cgi)(?:\/|\?|$)/iu.test(landed)) accessStopped = true;
-        return stopped(accessStopped ? 'access_restricted' : 'unexpected_redirect');
+        return accessStopped ? restricted(/\/cdn-cgi(?:\/|\?|$)/iu.test(landed) ?
+          'challenge_redirect' : 'login_redirect') : stopped('unexpected_redirect');
       }
       const title = await page.title();
       if (/just a moment|attention required|security check|captcha|cloudflare/iu.test(title)) {
         accessStopped = true;
-        return stopped('access_restricted');
+        return restricted('challenge_title');
       }
       try {
         await page.waitForSelector('#pjax_container table.mpitems',
@@ -319,7 +357,8 @@ export function createReleaseNavigator(context, { now = () => Date.now() } = {})
           const nextStatus = nextResponse.status();
           if ([401, 403].includes(nextStatus)) {
             accessStopped = true;
-            return stopped(nextStatus === 401 ? 'auth_required' : 'access_restricted');
+            return restricted(nextStatus === 401 ? 'http_401' : 'http_403',
+              nextStatus === 401 ? 'auth_required' : 'access_restricted');
           }
           if ([429, 503].includes(nextStatus)) {
             const retryAfter = typeof nextResponse.headerValue === 'function' ?
@@ -332,12 +371,13 @@ export function createReleaseNavigator(context, { now = () => Date.now() } = {})
           if (nextStatus !== 200) return stopped('unexpected_http_status');
           if (page.url() !== nextUrl || signal?.aborted) {
             if (/\/(?:login|signin|cdn-cgi)(?:\/|\?|$)/iu.test(page.url())) accessStopped = true;
-            return stopped(accessStopped ? 'access_restricted' : 'unexpected_redirect');
+            return accessStopped ? restricted(/\/cdn-cgi(?:\/|\?|$)/iu.test(page.url()) ?
+              'challenge_redirect' : 'login_redirect') : stopped('unexpected_redirect');
           }
           const nextTitle = await page.title();
           if (/just a moment|attention required|security check|captcha|cloudflare/iu.test(nextTitle)) {
             accessStopped = true;
-            return stopped('access_restricted');
+            return restricted('challenge_title');
           }
           try {
             await page.waitForSelector('#pjax_container table.mpitems',
@@ -479,6 +519,7 @@ export function createListingNavigator(context, { now = () => Date.now() } = {})
 export async function listenHostedReadOnly(context, socketPath, {
   durableStopPath = null, operatorBootPath = null, operatorAckPath = null, operatorUsedPath = null,
   operatorCartAckPath = null, operatorCartUsedPath = null,
+  clock = () => Date.now(),
 } = {}) {
   const shared = socketPath === SHARED_SOCKET;
   if (typeof socketPath !== 'string' || (!shared && !/^\/tmp\/[a-z][a-z0-9-]{0,47}\.sock$/u.test(socketPath))) {
@@ -517,10 +558,22 @@ export async function listenHostedReadOnly(context, socketPath, {
   const bootId = durableStopPath ? randomUUID() : null;
   if (operatorBootPath) await writeFile(operatorBootPath, `${bootId}\n`, { mode: 0o600 });
   let busy = false;
-  const navigateRelease = createReleaseNavigator(context);
+  const navigateRelease = createReleaseNavigator(context, { now: clock });
   const navigateListing = createListingNavigator(context);
   let accessStopped = Boolean(durableStopPath);
   let restrictedUntil = 0;
+  let monitorTrial = null;
+  const monitorDirectory = durableStopPath ? dirname(durableStopPath) : null;
+  const monitorAudit = async (grantId, event, releaseId, cause = null) => {
+    const allowed = new Set(['verified', 'verification_stopped', 'trial_started', 'trial_observed',
+      'trial_stopped', 'trials_complete_review_required']);
+    if (!allowed.has(event) || (cause !== null &&
+        !/^[a-z0-9_]{1,48}$/u.test(cause))) throw new TypeError('invalid_monitor_audit');
+    const record = { event, release_id: releaseId, grant_id: grantId, cause,
+      time: new Date(clock()).toISOString(), purchase_allowed: false };
+    await writeFile(join(monitorDirectory, `operator-monitor-event-${randomUUID()}`),
+      JSON.stringify(record) + '\n', { flag: 'wx', mode: 0o600 });
+  };
   const server = createServer(connection => {
     let input = Buffer.alloc(0), done = false;
     const controller = new AbortController();
@@ -543,6 +596,88 @@ export async function listenHostedReadOnly(context, socketPath, {
       let request;
       try { request = JSON.parse(input.subarray(0, newline).toString('utf8')); }
       catch { return send(stopped('unsupported_read_request')); }
+      if (monitorTrial && clock() >= monitorTrial.expires) {
+        try {
+          await monitorAudit(monitorTrial.grantId, 'trial_stopped',
+            monitorTrial.verifiedRelease, 'expired');
+          monitorTrial = null;
+        } catch { return send(stopped('monitor_recovery_unavailable')); }
+      }
+      if (request?.action === 'operator_monitor_verify') {
+        const keys = Reflect.ownKeys(request);
+        const grantId = Object.getOwnPropertyDescriptor(request, 'grant_id')?.value;
+        const releaseId = Object.getOwnPropertyDescriptor(request, 'release_id')?.value;
+        if (!durableStopPath || !accessStopped || busy || keys.length !== 3 ||
+            !keys.includes('grant_id') || !keys.includes('release_id') ||
+            typeof grantId !== 'string' || !CART_GRANT_ID.test(grantId) ||
+            !MONITOR_TEST_RELEASES.has(releaseId) || monitorTrial) {
+          return send(stopped('unsupported_monitor_recovery'));
+        }
+        busy = true;
+        try {
+          const ackPath = join(monitorDirectory, `operator-monitor-grant-${grantId}-ack`);
+          const usedPath = join(monitorDirectory, `operator-monitor-grant-${grantId}-used`);
+          const ack = await lstat(ackPath).catch(() => null);
+          if (!ack?.isFile() || ack.uid !== process.getuid() ||
+              (ack.mode & 0o777) !== 0o600 ||
+              clock() + 1_000 < ack.mtimeMs || clock() - ack.mtimeMs > MONITOR_ACK_TTL_MS ||
+              await readFile(ackPath, 'utf8') !==
+                `operator_confirmed_monitor_release:${releaseId}:${grantId}:${bootId}\n`) {
+            return send(stopped('operator_acknowledgement_required'));
+          }
+          await writeFile(usedPath, 'consumed\n', { flag: 'wx', mode: 0o600 });
+          const verified = await verifyCurrentMonitorPage(context, releaseId);
+          if (verified.status !== 'verified') {
+            await monitorAudit(grantId, 'verification_stopped', releaseId,
+              verified.restriction_cause || verified.code);
+            return send(verified);
+          }
+          await monitorAudit(grantId, 'verified', releaseId);
+          monitorTrial = { grantId, verifiedRelease: releaseId,
+            pending: new Set(MONITOR_TEST_RELEASES),
+            expires: clock() + MONITOR_TRIAL_TTL_MS };
+          return send(verified);
+        } catch { return send(stopped('monitor_recovery_unavailable')); }
+        finally { busy = false; }
+      }
+      if (request?.action === 'operator_monitor_trial') {
+        const keys = Reflect.ownKeys(request);
+        const grantId = Object.getOwnPropertyDescriptor(request, 'grant_id')?.value;
+        const releaseId = Object.getOwnPropertyDescriptor(request, 'release_id')?.value;
+        if (!durableStopPath || !accessStopped || busy || keys.length !== 3 ||
+            !keys.includes('grant_id') || !keys.includes('release_id') ||
+            typeof grantId !== 'string' || !CART_GRANT_ID.test(grantId) ||
+            !MONITOR_TEST_RELEASES.has(releaseId) || monitorTrial?.grantId !== grantId ||
+            !monitorTrial.pending.has(releaseId) || clock() >= monitorTrial.expires) {
+          return send(stopped('monitor_trial_unavailable'));
+        }
+        busy = true;
+        connection.setTimeout(RELEASE_PAGINATION_BUDGET_MS);
+        try {
+          await monitorAudit(grantId, 'trial_started', releaseId);
+          const result = await navigateRelease({ action: 'observe_release', release_id: releaseId },
+            { signal: controller.signal });
+          if (result?.code === 'release_cooldown') return send(result);
+          monitorTrial.pending.delete(releaseId);
+          if (result.status !== 'observed' || result.purchase_allowed !== false) {
+            monitorTrial = null;
+            await monitorAudit(grantId, 'trial_stopped', releaseId,
+              result.restriction_cause || result.code || 'unverified_result');
+            if (['auth_required', 'access_restricted'].includes(result.code)) accessStopped = true;
+            return send(result);
+          }
+          await monitorAudit(grantId, 'trial_observed', releaseId);
+          if (monitorTrial.pending.size === 0) {
+            monitorTrial = null;
+            await monitorAudit(grantId, 'trials_complete_review_required', releaseId);
+            return send({ ...result, recovery_review_required: true });
+          }
+          return send({ ...result, recovery_review_required: true });
+        } catch {
+          monitorTrial = null;
+          return send(stopped('monitor_trial_unavailable'));
+        } finally { busy = false; }
+      }
       if (request?.action === 'operator_current_release') {
         if (!durableStopPath || !accessStopped || busy ||
             Reflect.ownKeys(request).length !== 2 || request.release_id !== OPERATOR_RELEASE) {

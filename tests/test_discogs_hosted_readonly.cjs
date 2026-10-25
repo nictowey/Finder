@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const { test, before } = require('node:test');
 const { connect } = require('node:net');
-const { stat, mkdtemp, writeFile, readFile, rm } = require('node:fs/promises');
+const { stat, mkdtemp, writeFile, readFile, readdir, rm, utimes } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { dirname, join } = require('node:path');
 const { randomUUID } = require('node:crypto');
@@ -323,14 +323,14 @@ function operatorFixture({ url = 'https://www.discogs.com/sell/release/4204639',
   return { context, calls };
 }
 
-async function operatorSocket(context, directory) {
+async function operatorSocket(context, directory, extras = {}) {
   const path = `/tmp/sniper-test-${randomUUID().replaceAll('-', '')}.sock`;
   const options = { durableStopPath: join(directory, 'access-stopped'),
     operatorBootPath: join(directory, 'operator-boot'),
     operatorAckPath: join(directory, 'operator-rocky-ack'),
     operatorUsedPath: join(directory, 'operator-rocky-used'),
     operatorCartAckPath: join(directory, 'operator-cart-ack'),
-    operatorCartUsedPath: join(directory, 'operator-cart-used') };
+    operatorCartUsedPath: join(directory, 'operator-cart-used'), ...extras };
   return { path, options, close: await listenHostedReadOnly(context, path, options) };
 }
 async function writeOperatorAck(socket) {
@@ -342,6 +342,46 @@ async function writeCartAck(socket) {
   const bootId = (await readFile(socket.options.operatorBootPath, 'utf8')).trim();
   await writeFile(socket.options.operatorCartAckPath,
     `operator_confirmed_current_cart:3526572746:${bootId}\n`, { mode: 0o600 });
+}
+
+function monitorFixture({ currentId = '28720177', currentTitle = 'Discogs marketplace',
+  trialStatus = 200, hold = null } = {}) {
+  const calls = [];
+  const currentUrl = `https://www.discogs.com/sell/release/${currentId}`;
+  const snapshot = (id, url) => ({ source: 'discogs_rendered_release', release_id: Number(id),
+    url, observed_at: new Date().toISOString(), status: 'observed', complete: true,
+    page: 1, range_start: 0, range_end: 0, total: 0, has_next: false, rows: [],
+    assertions: { release_identity: true, listing_container: true, pagination: true, stable: true },
+    purchase_allowed: false });
+  const current = {
+    url: () => { calls.push('current_url'); return currentUrl; },
+    title: async () => { calls.push('current_title'); return currentTitle; },
+    evaluate: async (fn, id) => { calls.push('current_evaluate');
+      assert.equal(fn, collectReleaseMarketplaceDom); assert.equal(id, currentId);
+      return snapshot(id, currentUrl); },
+  };
+  const context = { pages: () => [current], newPage: async () => {
+    let url = null;
+    return {
+      goto: async (next) => { calls.push(['goto', next]); url = next;
+        if (hold) await hold;
+        return { status: () => trialStatus }; },
+      url: () => url,
+      title: async () => 'Discogs marketplace',
+      waitForSelector: async () => {},
+      evaluate: async (fn, id) => { calls.push(['trial_evaluate', id]);
+        assert.equal(fn, collectReleaseMarketplaceDom);
+        return snapshot(id, url); },
+      close: async () => { calls.push('trial_close'); },
+    };
+  } };
+  return { context, calls };
+}
+
+async function writeMonitorAck(socket, directory, grantId, releaseId) {
+  const bootId = (await readFile(socket.options.operatorBootPath, 'utf8')).trim();
+  await writeFile(join(directory, `operator-monitor-grant-${grantId}-ack`),
+    `operator_confirmed_monitor_release:${releaseId}:${grantId}:${bootId}\n`, { mode: 0o600 });
 }
 async function writeCartGrantAck(socket, grantId = cartGrantId) {
   const bootId = (await readFile(socket.options.operatorBootPath, 'utf8')).trim();
@@ -385,6 +425,202 @@ function operatorCartFixture({ url = cartUrl, title = 'Shopping Cart', changed =
     { get(target, key) { assert.equal(key, 'pages', `Forbidden context action: ${String(key)}`); return target[key]; } });
   return { context, calls };
 }
+
+test('monitor recovery needs a fresh acknowledged normal page, then three bounded trials and review', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-monitor-'));
+  const fixture = monitorFixture(); let now = Date.now();
+  const grantId = randomUUID();
+  const verify = JSON.stringify({ action: 'operator_monitor_verify', release_id: '28720177',
+    grant_id: grantId }) + '\n';
+  const trial = release_id => JSON.stringify({ action: 'operator_monitor_trial', grant_id: grantId,
+    release_id }) + '\n';
+  try {
+    const socket = await operatorSocket(fixture.context, directory, { clock: () => now });
+    try {
+      stopped(await sendSocket(socket.path, JSON.stringify({ action: 'observe_release',
+        release_id: '28720177' }) + '\n'), 'access_restricted');
+      stopped(await sendSocket(socket.path, verify), 'operator_acknowledgement_required');
+      assert.equal(fixture.calls.length, 0);
+      await writeMonitorAck(socket, directory, grantId, '28720177');
+      now = Date.now();
+      const verified = await sendSocket(socket.path, verify);
+      assert.equal(verified.status, 'verified'); assert.equal(verified.purchase_allowed, false);
+      assert.equal(fixture.calls.filter(value => value === 'current_evaluate').length, 1);
+      assert.equal(fixture.calls.filter(value => Array.isArray(value) && value[0] === 'goto').length, 0);
+      stopped(await sendSocket(socket.path, verify), 'unsupported_monitor_recovery');
+      for (const [index, id] of ['28720177', '5520534', '13053315'].entries()) {
+        if (index > 0) now += 15 * 60_000 + 1;
+        const result = await sendSocket(socket.path, trial(id));
+        assert.equal(result.status, 'observed');
+        assert.equal(result.recovery_review_required, true);
+        assert.equal(result.purchase_allowed, false);
+        if (index === 0) stopped(await sendSocket(socket.path, trial('5520534')),
+          'release_cooldown');
+      }
+      stopped(await sendSocket(socket.path, trial('28720177')), 'monitor_trial_unavailable');
+      stopped(await sendSocket(socket.path, JSON.stringify({ action: 'observe_release',
+        release_id: '28720177' }) + '\n'), 'access_restricted');
+      assert.equal(fixture.calls.filter(value => Array.isArray(value) && value[0] === 'goto').length, 3);
+      const names = await readdir(directory);
+      assert.ok(names.includes('access-stopped'));
+      assert.ok(names.includes(`operator-monitor-grant-${grantId}-used`));
+      const audit = names.filter(name => name.startsWith('operator-monitor-event-'));
+      assert.equal(audit.length, 9);
+      assert.ok((await Promise.all(audit.map(name => readFile(join(directory, name), 'utf8'))))
+        .some(value => JSON.parse(value).event === 'trials_complete_review_required'));
+    } finally { await socket.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('monitor recovery consumes failed verification and preserves the durable stop', async () => {
+  for (const [fixtureOptions, expected] of [
+    [{ currentId: '5520534' }, 'exact_current_page_not_unique'],
+    [{ currentTitle: 'Just a moment... Cloudflare' }, 'access_restricted'],
+  ]) {
+    const directory = await mkdtemp(join(tmpdir(), 'sniper-monitor-'));
+    const fixture = monitorFixture(fixtureOptions), grantId = randomUUID();
+    try {
+      const socket = await operatorSocket(fixture.context, directory);
+      try {
+        await writeMonitorAck(socket, directory, grantId, '28720177');
+        const verify = JSON.stringify({ action: 'operator_monitor_verify', grant_id: grantId,
+          release_id: '28720177' }) + '\n';
+        const result = await sendSocket(socket.path, verify);
+        stopped(result, expected);
+        if (expected === 'access_restricted') {
+          assert.equal(result.restriction_cause, 'user_opened_challenge_or_login');
+        }
+        stopped(await sendSocket(socket.path, verify), 'monitor_recovery_unavailable');
+        stopped(await sendSocket(socket.path, JSON.stringify({ action: 'operator_monitor_trial',
+          grant_id: grantId, release_id: '28720177' }) + '\n'), 'monitor_trial_unavailable');
+        assert.ok((await readdir(directory)).includes('access-stopped'));
+        assert.ok(!fixture.calls.some(value => Array.isArray(value) && value[0] === 'goto'));
+      } finally { await socket.close(); }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }
+});
+
+test('monitor trial stops and records exact future HTTP denial without clearing history', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-monitor-'));
+  const fixture = monitorFixture({ trialStatus: 403 }), grantId = randomUUID();
+  try {
+    const socket = await operatorSocket(fixture.context, directory);
+    try {
+      await writeMonitorAck(socket, directory, grantId, '28720177');
+      assert.equal((await sendSocket(socket.path, JSON.stringify({ action: 'operator_monitor_verify',
+        grant_id: grantId, release_id: '28720177' }) + '\n')).status, 'verified');
+      const result = await sendSocket(socket.path, JSON.stringify({ action: 'operator_monitor_trial',
+        grant_id: grantId, release_id: '28720177' }) + '\n');
+      stopped(result, 'access_restricted'); assert.equal(result.restriction_cause, 'http_403');
+      stopped(await sendSocket(socket.path, JSON.stringify({ action: 'operator_monitor_trial',
+        grant_id: grantId, release_id: '5520534' }) + '\n'), 'monitor_trial_unavailable');
+      const audit = (await readdir(directory)).filter(name => name.startsWith('operator-monitor-event-'));
+      assert.ok((await Promise.all(audit.map(name => readFile(join(directory, name), 'utf8'))))
+        .some(value => JSON.parse(value).cause === 'http_403'));
+      assert.ok((await readdir(directory)).includes('access-stopped'));
+    } finally { await socket.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('monitor acknowledgement expires, rejects stale boots and never authorizes other IDs', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-monitor-'));
+  const fixture = monitorFixture(), grantId = randomUUID();
+  try {
+    const socket = await operatorSocket(fixture.context, directory);
+    try {
+      const ackPath = join(directory, `operator-monitor-grant-${grantId}-ack`);
+      const request = JSON.stringify({ action: 'operator_monitor_verify', grant_id: grantId,
+        release_id: '28720177' }) + '\n';
+      await writeFile(ackPath,
+        `operator_confirmed_monitor_release:28720177:${grantId}:${randomUUID()}\n`,
+        { mode: 0o600 });
+      stopped(await sendSocket(socket.path, request), 'operator_acknowledgement_required');
+      assert.equal(fixture.calls.length, 0);
+      const bootId = (await readFile(socket.options.operatorBootPath, 'utf8')).trim();
+      await writeFile(ackPath,
+        `operator_confirmed_monitor_release:28720177:${grantId}:${bootId}\n`);
+      const stale = new Date(Date.now() - 6 * 60_000);
+      await utimes(ackPath, stale, stale);
+      stopped(await sendSocket(socket.path, request), 'operator_acknowledgement_required');
+      stopped(await sendSocket(socket.path, JSON.stringify({ action: 'operator_monitor_verify',
+        grant_id: grantId, release_id: '4204639' }) + '\n'), 'unsupported_monitor_recovery');
+      stopped(await sendSocket(socket.path, JSON.stringify({ action: 'operator_monitor_verify',
+        grant_id: grantId, release_id: '28720177', extra: true }) + '\n'),
+      'unsupported_monitor_recovery');
+      assert.equal(fixture.calls.length, 0);
+      assert.ok(!(await readdir(directory)).some(name => name.endsWith('-used')));
+    } finally { await socket.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('expired monitor trial is audited and cannot be reused', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-monitor-'));
+  const fixture = monitorFixture(), grantId = randomUUID(); let now = Date.now();
+  try {
+    const socket = await operatorSocket(fixture.context, directory, { clock: () => now });
+    try {
+      await writeMonitorAck(socket, directory, grantId, '28720177');
+      now = Date.now();
+      assert.equal((await sendSocket(socket.path, JSON.stringify({ action: 'operator_monitor_verify',
+        grant_id: grantId, release_id: '28720177' }) + '\n')).status, 'verified');
+      now += 60 * 60_000 + 1;
+      stopped(await sendSocket(socket.path, JSON.stringify({ action: 'operator_monitor_trial',
+        grant_id: grantId, release_id: '28720177' }) + '\n'), 'monitor_trial_unavailable');
+      assert.ok(!fixture.calls.some(value => Array.isArray(value) && value[0] === 'goto'));
+      const audit = (await readdir(directory)).filter(name => name.startsWith('operator-monitor-event-'));
+      assert.ok((await Promise.all(audit.map(name => readFile(join(directory, name), 'utf8'))))
+        .some(value => JSON.parse(value).cause === 'expired'));
+    } finally { await socket.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('browser restart retains the consumed monitor grant and durable stop', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-monitor-'));
+  const fixture = monitorFixture(), grantId = randomUUID();
+  try {
+    const first = await operatorSocket(fixture.context, directory);
+    await writeMonitorAck(first, directory, grantId, '28720177');
+    const verify = JSON.stringify({ action: 'operator_monitor_verify', grant_id: grantId,
+      release_id: '28720177' }) + '\n';
+    assert.equal((await sendSocket(first.path, verify)).status, 'verified');
+    await first.close();
+    const restarted = await operatorSocket(fixture.context, directory);
+    try {
+      stopped(await sendSocket(restarted.path, verify), 'operator_acknowledgement_required');
+      await writeMonitorAck(restarted, directory, grantId, '28720177');
+      stopped(await sendSocket(restarted.path, verify), 'monitor_recovery_unavailable');
+      stopped(await sendSocket(restarted.path, JSON.stringify({ action: 'operator_monitor_trial',
+        grant_id: grantId, release_id: '28720177' }) + '\n'), 'monitor_trial_unavailable');
+      stopped(await sendSocket(restarted.path, JSON.stringify({ action: 'observe_release',
+        release_id: '28720177' }) + '\n'), 'access_restricted');
+      assert.ok((await readdir(directory)).includes(`operator-monitor-grant-${grantId}-used`));
+    } finally { await restarted.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('concurrent monitor trials cannot spend the same scoped release twice', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-monitor-'));
+  let release;
+  const fixture = monitorFixture({ hold: new Promise(resolve => { release = resolve; }) });
+  const grantId = randomUUID();
+  try {
+    const socket = await operatorSocket(fixture.context, directory);
+    try {
+      await writeMonitorAck(socket, directory, grantId, '28720177');
+      assert.equal((await sendSocket(socket.path, JSON.stringify({ action: 'operator_monitor_verify',
+        grant_id: grantId, release_id: '28720177' }) + '\n')).status, 'verified');
+      const request = JSON.stringify({ action: 'operator_monitor_trial', grant_id: grantId,
+        release_id: '28720177' }) + '\n';
+      const first = sendSocket(socket.path, request);
+      await new Promise(resolve => setImmediate(resolve));
+      stopped(await sendSocket(socket.path, request), 'read_in_progress');
+      release();
+      assert.equal((await first).status, 'observed');
+      stopped(await sendSocket(socket.path, request), 'monitor_trial_unavailable');
+      assert.equal(fixture.calls.filter(value => Array.isArray(value) && value[0] === 'goto').length, 1);
+    } finally { release(); await socket.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 test('one-use current cart recovery reads exact visible row and preserves global stop', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'sniper-operator-'));
@@ -764,6 +1000,23 @@ test('429 honors Retry-After without retrying and 403 or challenge latches acces
   const challenge = navigationFixture({ title: 'Just a moment...' });
   stopped(await createReleaseNavigator(challenge.context)(navigateRequest), 'access_restricted');
   assert.ok(!challenge.calls.some(call => call[0] === 'evaluate'));
+});
+
+test('future release access restrictions report only a bounded cause code', async () => {
+  for (const [config, code, cause] of [
+    [{ status: 401 }, 'auth_required', 'http_401'],
+    [{ status: 403 }, 'access_restricted', 'http_403'],
+    [{ landed: 'https://www.discogs.com/cdn-cgi/challenge' }, 'access_restricted',
+      'challenge_redirect'],
+    [{ landed: 'https://www.discogs.com/login' }, 'access_restricted', 'login_redirect'],
+    [{ title: 'Just a moment... Cloudflare' }, 'access_restricted', 'challenge_title'],
+  ]) {
+    const fixture = navigationFixture(config);
+    const result = await createReleaseNavigator(fixture.context)(navigateRequest);
+    stopped(result, code);
+    assert.equal(result.restriction_cause, cause);
+    assert.ok(!JSON.stringify(result).includes('https://'));
+  }
 });
 
 test('cancellation closes navigation tab and concurrent attempt does not overlap', async () => {
