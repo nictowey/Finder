@@ -76,8 +76,15 @@ Near Mint sleeve, a 100% seller rating with 10,020 feedback entries, and a
 USD 199.99 item price. Normalized comments were marked unsupported, and
 shipping was unavailable or blocked. The release catalog reported two vinyl
 records, but completeness could not be confirmed from that response. There was
-no destination-confirmed delivered total. No listing or target was saved,
-and no second live detail read, cart action or order followed.
+no destination-confirmed delivered total. No listing or target was saved.
+Later bounded hosted item-detail reads did not yield a verified observation:
+one returned `listing_not_ready`, and the next diagnostic returned
+`access_restricted` before any DOM structure could be captured. The bridge
+stops further reads on an access restriction. Its safe code does not identify
+whether the cause was HTTP denial, a login redirect, or a challenge. The current
+private Firefox tab was blank when inspected without navigation, so it did not
+resolve that ambiguity. No cart action or order followed. Hosted item-level
+qualification and a final delivered quote remain unverified.
 
 Tests use disposable SQLite and synthetic pages. One integration test runs the
 real socket client through a private temporary Unix socket into the scheduler
@@ -88,6 +95,39 @@ listing collection. The owner approved a fixed-read private browser handoff;
 the dedicated group-restricted Unix socket can connect the host-side reader
 without exposing the browser profile. Connection does not start a worker or
 authorize recurring collection.
+
+## Auto-buyer readiness at the current private test release
+
+The rule editor supports a saved release ID/link, an all-in per-item ceiling,
+separate media and sleeve grades, seller percentage and feedback thresholds,
+and a shipping destination. One-copy claims and contextual rejection of
+disclosed missing or damaged playable media exist in the isolated dry run.
+There are zero saved hosted targets. The hosted service starts no scheduler or
+candidate worker, and purchasing stays disabled.
+
+This is not an operational auto-buyer. The last bounded hosted item read returned
+`access_restricted`; the browser bridge stopped. The private browser viewer now
+shows a blank Firefox tab, so existing UI evidence cannot distinguish a logged-out
+session from an item-specific block or challenge. Do not restart the browser,
+repeat the item request, solve a challenge, or use another route to evade the
+restriction. A normal user check of sign-in status in that same private viewer
+could distinguish a routine logged-out state; any challenge or access block
+remains a stop condition.
+
+Even after ordinary item access is restored, the hosted detail reader does not
+attach trusted exact-release media quantity or physical pressing evidence, and
+the candidate reviewer cannot verify destination shipping, tax, mandatory fees,
+currency, or a final payable total. The observed cart rehearsal is read-only and
+explicitly treats its displayed amount as an unverified quote. There is no
+hosted cart-write adapter, verified final-submit control, purchase authorization
+state, payment handoff, order ledger, or uncertain-order reconciliation. The
+current claim file protects one cart attempt per release in a dry run, not a
+completed order. These gaps cannot be validated by synthetic fixtures alone.
+
+Before any record purchase, the owner still needs to enter a concrete target
+and maximum delivered price, approve the eventual verified checkout/payment
+scope, and have a supported normal-access path that yields an actual final quote.
+No saved setting or passing test currently enables purchase or recurring reads.
 
 ## Seller disclosures
 
