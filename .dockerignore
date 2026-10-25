@@ -5,6 +5,11 @@
 !src/**
 !deployment/
 !deployment/Dockerfile
+!deployment/HostedBrowserBridge.Dockerfile
+!scripts/
+!scripts/discogs_hosted_readonly.mjs
+!scripts/discogs_hosted_browser_runtime.mjs
+!scripts/sniper-browser-bridge-runner.mjs
 **/__pycache__
 **/*.pyc
 **/.env*
