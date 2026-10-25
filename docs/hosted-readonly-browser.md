@@ -72,6 +72,9 @@ export, cart write, or public listener is added.
 The host-side reader validates the exact path, owner/group and parent/socket
 modes before connecting. It sends only `observe_release` with a validated exact
 release ID; the browser constructs the canonical URL and enforces fixed actions.
+`deployment/HostedBrowserBridge.Dockerfile` layers only these restricted scripts
+over the verified local read-only browser image, without installing packages or
+changing its profile mount. The browser runner fixes the socket path at `/bridge`.
 The handoff is passive: the scheduler remains paused and its kill switch stopped,
 with no recurring worker.
 
