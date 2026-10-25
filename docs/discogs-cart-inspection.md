@@ -45,8 +45,14 @@ The result always says `order_submission: unavailable` and `purchase_allowed: fa
 No server-side submit, click, checkbox, payment, navigation or order adapter was added.
 
 The server transport and preflight passed synthetic socket and database tests using
-sanitized amounts matching the observed local cart shape. They have **not** read the
-actual hosted cart: the hosted reader remains access-stopped, and no buy target is
+sanitized amounts matching the observed local cart shape. On October 25, 2026, an
+approved one-use read of the already-open hosted cart stopped before yielding verified
+quote evidence. Its grant was consumed and was not retried. The Python adapter returned
+the generic `cart_read_stopped` code, so the specific bridge stop code was not retained;
+the visible cart alone cannot establish which DOM check failed. The adapter now logs only
+fixed, allowlisted stop codes for a future read and accepts the bridge's separate
+`missing_address_and_unknown_final_quote` result as blocked evidence. Neither change
+recovers the consumed read. The durable access stop remains, and no buy target is
 enabled. The local cart's hidden `Plus Applicable Sales Tax` notice leaves the final
 payable total unverified. Destination match, payment reference, selected shipping
 finality and an exact purchase grant are also absent. A true hosted checkout adapter

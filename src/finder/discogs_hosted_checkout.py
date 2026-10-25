@@ -5,6 +5,7 @@ No order, cart, payment, agreement, navigation, or credential capability exists 
 """
 
 import json
+import logging
 import os
 import re
 import socket
@@ -20,6 +21,38 @@ from finder.discogs_rules import amount
 LISTING_ID = re.compile(r"[1-9][0-9]{0,15}\Z", re.ASCII)
 MONEY = re.compile(r"[0-9]{1,7}(?:\.[0-9]{1,2})?\Z", re.ASCII)
 OPERATOR_CART_LISTING = "3526572746"
+LOGGER = logging.getLogger(__name__)
+# The bridge may return a stop code derived from page inspection. Never log its
+# unchecked value: an unexpected response could otherwise put account text in logs.
+SAFE_CART_STOP_CODES = frozenset(
+    {
+        "access_restricted",
+        "browser_context_unavailable",
+        "browser_pages_unavailable",
+        "cart_read_failed",
+        "cart_read_timeout",
+        "current_url_changed",
+        "current_url_not_allowed",
+        "exact_current_page_not_unique",
+        "expected_listing_not_observed",
+        "hosted_read_failed",
+        "observation_too_large",
+        "observation_unserializable",
+        "operator_acknowledgement_required",
+        "operator_recovery_unavailable",
+        "page_changed_during_read",
+        "read_in_progress",
+        "request_timed_out",
+        "unsupported_address_shape",
+        "unsupported_cart_dom",
+        "unsupported_cart_quantity",
+        "unsupported_checkout_controls",
+        "unsupported_operator_recovery",
+        "unsupported_page_interface",
+        "unsupported_quantity_controls",
+        "unsupported_quote_shape",
+    }
+)
 
 
 class CheckoutStopped(RuntimeError):
@@ -121,8 +154,16 @@ class HostedCartReadOnlyReader:
                 or reply.get("status") != "blocked"
             ):
                 raise CheckoutStopped("cart_response_unverified")
-            if reply.get("code") != "final_quote_unverified":
-                raise CheckoutStopped("cart_read_stopped")
+            code = reply.get("code")
+            if type(code) is not str or code not in {
+                "final_quote_unverified",
+                "missing_address_and_unknown_final_quote",
+            }:
+                safe_code = (
+                    code if type(code) is str and code in SAFE_CART_STOP_CODES else "unknown"
+                )
+                LOGGER.warning("hosted_cart_read_stopped code=%s", safe_code)
+                raise CheckoutStopped(f"cart_read_stopped:{safe_code}")
             observations = reply.get("observations")
             if (
                 type(observations) is not list

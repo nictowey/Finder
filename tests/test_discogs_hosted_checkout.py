@@ -106,7 +106,7 @@ def test_operator_cart_request_is_exact_one_use_action_without_retry(monkeypatch
     [
         ({"purchase_allowed": True}, "cart_response_unverified"),
         ({"status": "observed"}, "cart_response_unverified"),
-        ({"code": "access_restricted"}, "cart_read_stopped"),
+        ({"code": "access_restricted"}, "cart_read_stopped:access_restricted"),
         ({"observations": []}, "cart_identity_unverified"),
         ({"observed_quote": {"source": "visible_cart"}}, "cart_quote_unverified"),
     ],
@@ -116,6 +116,34 @@ def test_unverified_socket_responses_stop(monkeypatch, change, code):
     fake_socket(monkeypatch, reply)
     with pytest.raises(CheckoutStopped, match=f"^{code}$"):
         HostedCartReadOnlyReader()("1002")
+
+
+def test_bridge_missing_address_result_remains_blocked_evidence(monkeypatch):
+    fake_socket(monkeypatch, {**cart_reply(), "code": "missing_address_and_unknown_final_quote"})
+    evidence = HostedCartReadOnlyReader()("1002")
+    assert evidence.displayed_total == ("205.84", "USD")
+    assert evidence.destination_verified is False
+    assert evidence.final_quote_verified is False
+    assert evidence.purchase_allowed is False
+
+
+@pytest.mark.parametrize("unsafe_code", ["private address 123", ["access_restricted"], None])
+def test_cart_stop_log_redacts_untrusted_bridge_code(monkeypatch, caplog, unsafe_code):
+    fake_socket(monkeypatch, {**cart_reply(), "code": unsafe_code})
+    with pytest.raises(CheckoutStopped, match="^cart_read_stopped:unknown$"):
+        HostedCartReadOnlyReader()("1002")
+    assert [record.message for record in caplog.records] == [
+        "hosted_cart_read_stopped code=unknown"
+    ]
+
+
+def test_cart_stop_log_keeps_only_allowlisted_code(monkeypatch, caplog):
+    fake_socket(monkeypatch, {**cart_reply(), "code": "expected_listing_not_observed"})
+    with pytest.raises(CheckoutStopped, match="^cart_read_stopped:expected_listing_not_observed$"):
+        HostedCartReadOnlyReader()("1002")
+    assert [record.message for record in caplog.records] == [
+        "hosted_cart_read_stopped code=expected_listing_not_observed"
+    ]
 
 
 def test_read_requires_private_socket(tmp_path):
