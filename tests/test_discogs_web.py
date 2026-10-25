@@ -47,6 +47,7 @@ def test_page_and_snapshot(store):
     assert b"Sniper / Discogs targets" in body
     status, body = request(store, "/api/snapshot")
     assert status == 200 and json.loads(body)["purchasing_enabled"] is False
+    assert json.loads(body)["hosted_schedule"]["paused"] is True
 
 
 def test_sniper_restarts_on_same_loopback_port_without_sharing_listener(store, monkeypatch):

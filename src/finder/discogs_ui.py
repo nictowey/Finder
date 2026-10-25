@@ -149,12 +149,12 @@ Saving the same release updates its rules.</p>
 <p id="saved-summary" class="muted">Waiting for local state.</p></div>
 <button type="button" class="secondary" id="refresh">Refresh</button></div>
 <p class="muted">Load a target to replace the fields on the left. Refresh never replaces your draft.</p>
+<p id="hosted-schedule-status" class="muted">Exact-release browser schedule: checking stopped state.</p>
 <div id="targets" aria-live="polite"></div></section>
 </div>
 <section id="monitor-panel" class="panel evaluator" aria-labelledby="monitor-title" hidden>
 <h2 id="monitor-title">Cloud monitoring</h2>
 <p id="monitor-status" class="notice"></p>
-<p id="hosted-schedule-status" class="muted"></p>
 <p id="discovery-status" class="muted"></p>
 <div class="actions"><button type="button" id="toggle-monitor">Start cloud reads</button>
 <button type="button" id="monitor-once" class="secondary">Run one due check</button></div>
@@ -285,6 +285,11 @@ function renderSaved() {
   el('targets').replaceChildren();
   const targets = snapshot.targets;
   el('saved-summary').textContent = `${targets.length} saved ${targets.length === 1 ? 'target' : 'targets'} · revision ${snapshot.revision}`;
+  const hosted=snapshot?.hosted_schedule;
+  el('hosted-schedule-status').textContent=hosted?.paused === true ?
+    `Exact-release browser schedule: paused; ${Array.isArray(hosted.targets) ? hosted.targets.length : 0} due-state entries. No unattended browser reads.` :
+    hosted?.paused === false ? 'Exact-release schedule saved as resumed; this app has no browser reader or running hosted worker.' :
+    'Exact-release browser schedule status is unavailable or unverified.';
   if (targets.length === 0) el('targets').append(node('p', 'No targets yet. Add your first set of rules.', 'empty'));
   targets.forEach((target) => {
     const card=node('article', '', 'target');
@@ -373,11 +378,6 @@ function renderMonitor() {
     snapshot.kill_switch !== false ? 'Cloud reads are stopped. Saved targets are intact.' :
     monitor.worker_running !== true ? 'Read adapters are configured; the background worker is not running. Manual due checks only.' :
     'Cloud reads are enabled. Individual listing discovery is not connected. No checkout capability.';
-  const hosted=snapshot?.hosted_schedule;
-  el('hosted-schedule-status').textContent=hosted?.paused === true ?
-    `Exact-release browser schedule: paused; ${Array.isArray(hosted.targets) ? hosted.targets.length : 0} due-state entries. No unattended browser reads.` :
-    hosted?.paused === false ? 'Exact-release schedule saved as resumed; this app has no browser reader or running hosted worker.' :
-    'Exact-release browser schedule status is unavailable or unverified.';
   el('discovery-status').textContent=monitor.discovery_blocker;
   el('toggle-monitor').textContent=snapshot.kill_switch === false ? 'Stop cloud reads' : 'Start cloud reads';
   const rows=el('monitor-rows'); rows.replaceChildren();

@@ -7,6 +7,7 @@ import sys
 from contextlib import nullcontext
 from pathlib import Path
 
+from finder.discogs_hosted_scheduler import HostedReleaseScheduler
 from finder.discogs_listing import ListingReader, ListingReadError, observation
 from finder.discogs_rules import RulesStore
 from finder.discogs_ui import render_page
@@ -36,6 +37,9 @@ class DiscogsHandler(LocalReviewHandler):
                         "listing_read_enabled": getattr(self.server, "listing_reader", None)
                         is not None
                     },
+                    "hosted_schedule": self.server.hosted_schedule.health()
+                    if getattr(self.server, "hosted_schedule", None) is not None
+                    else {"paused": True, "targets": [], "purchase_allowed": False},
                 },
             )
         else:
@@ -144,6 +148,8 @@ def main(argv=None):
             store = RulesStore(Path(database), create=args.init)
             try:
                 with DiscogsServer(store, args.port) as server:
+                    # Status only: no browser socket, worker loop or live reader is configured.
+                    server.hosted_schedule = HostedReleaseScheduler(Path(database), reader=None)
                     server.listing_reader = ListingReader() if args.live_listing_read else None
                     print(f"Sniper private Discogs rules: {server.origin}", flush=True)
                     print(

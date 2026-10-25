@@ -4,8 +4,9 @@
 `observe_release` Unix-socket action and `ReleaseSnapshots.ingest`. The app does not
 start a hosted worker, mount a browser socket, or call `tick`. A new rules database
 starts with this schedule paused, the cloud kill switch stopped, and no targets.
-The authenticated `/api/snapshot` reports its paused state, next request, per-target
-due/failure state and last error. `set_paused` uses an expected revision for explicit
+The authenticated cloud `/api/snapshot` and private local rule editor report its
+paused state, next request, per-target due/failure state and last error. `set_paused`
+uses an expected revision for explicit
 state changes. The existing global kill switch and saved target enabled/owned flags
 also stop reads. No new public control or navigation endpoint was added.
 
