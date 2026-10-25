@@ -5,6 +5,7 @@ The injected reader must provide one already authorized exact-listing observatio
 Uncertain reads are never retried automatically. A review is never purchase permission.
 """
 
+import hashlib
 import json
 import time
 import uuid
@@ -21,6 +22,12 @@ MAX_ID = 9007199254740991
 
 class CandidateStopped(RuntimeError):
     """Sanitized stop code, never a marketplace or credential payload."""
+
+
+def observation_fingerprint(observation: Observation):
+    """Bind a review to the complete normalized observation without storing it."""
+    value = json.dumps(observation.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 class CandidatePipeline:
@@ -308,6 +315,7 @@ class CandidatePipeline:
                             "rules_revision": rules,
                         },
                         "detail_evidence": detail_evidence,
+                        "observation_fingerprint": observation_fingerprint(observation),
                     }
                     state = "review_only" if result["eligible_for_review"] else "blocked"
                     store.db.execute(

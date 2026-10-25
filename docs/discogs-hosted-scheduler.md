@@ -69,6 +69,12 @@ reader, expose its bundle as an endpoint, or start a candidate worker. Live
 targets remain empty and polling stays paused. No browser navigation or cart
 mutation is triggered by this dry-run code.
 
+For a web-only private test release, verify the exact source path and wait up
+to 15 seconds for a successful loopback `/api/snapshot` after restarting the
+web unit. `systemctl is-active` can precede the listener. Roll back the web
+unit if the bounded health check or purchase-disabled assertions fail; do not
+restart the hosted browser as part of that web release.
+
 A single read-only official API rehearsal from the local development checkout
 of user-identified DS2 listing `3526572746` on release `7609839` returned the
 matching release, Mint media,
@@ -108,9 +114,12 @@ candidate worker, and purchasing stays disabled.
 This is not an operational auto-buyer. The last bounded hosted item read returned
 `access_restricted`; the browser bridge stopped. A later ordinary home-page
 visit in the same private viewer displayed Discogs/Cloudflare security
-verification before account controls appeared, so the hosted sign-in state
-remains unverified. Do not restart the browser, repeat the item request, solve
-the challenge, or use another route to evade the restriction.
+verification. A later read-only observation of that viewer showed the ordinary
+home page with signed-in account controls. This does not clear the item-route
+restriction or the browser bridge's stop latch. Do not restart the browser,
+repeat the item request, solve a challenge, or use another route to evade the
+restriction. The owner supplied release `4204639` for a new detection test, but
+no live read was attempted while that stop remains; its offer count is unknown.
 
 Even after ordinary item access is restored, the hosted detail reader does not
 attach trusted exact-release media quantity or physical pressing evidence, and
@@ -121,8 +130,11 @@ hosted cart-write adapter, verified final-submit control, purchase authorization
 state, payment handoff, or live order reconciliation. An isolated synthetic
 order-safety module now models an exact-target, expiring, revocable simulation
 grant, final-quote binding, a durable one-copy submission fence, crash recovery,
-and read-only receipt/absence reconciliation. It has no provider adapter and the
-private service does not initialize its ledger or issue grants. The current cart
+and read-only receipt/absence reconciliation. A fixture-only coordinator now
+binds the saved candidate review and simulated observed-cart claim to that
+ledger and rejects stale, changed, or unknown evidence before its optional
+in-memory synthetic executor. It has no provider adapter and the private service
+does not initialize its ledger or issue grants. The current cart
 claim file protects one cart attempt per release in a dry run, not a completed
 order. These gaps cannot be validated by synthetic fixtures alone.
 

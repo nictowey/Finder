@@ -26,10 +26,24 @@ from finder.discogs_candidate_pipeline import CandidatePipeline, CandidateStoppe
 from finder.discogs_cart_claims import CartClaimStore
 from finder.discogs_hosted_scheduler import MIN_INTERVAL, HostedReleaseScheduler
 from finder.discogs_listing import ListingReader, ListingReadError
+from finder.discogs_order_safety import (
+    OrderSafetyStore,
+    OrderStopped,
+    SimulatedCrash,
+    SyntheticFinalQuote,
+    SyntheticOrderAdapter,
+    SyntheticReceipt,
+    _fingerprint,
+)
+from finder.discogs_purchase_pipeline import OfflinePurchasePipeline
 from finder.discogs_rules import RulesStore
 
 KEY = "123e4567-e89b-42d3-a456-426614174000"
 OTHER = "123e4567-e89b-42d3-a456-426614174001"
+GRANT = "123e4567-e89b-42d3-a456-426614174010"
+DESTINATION = "123e4567-e89b-42d3-a456-426614174011"
+PAYMENT = "123e4567-e89b-42d3-a456-426614174012"
+ORDER = "123e4567-e89b-42d3-a456-426614174013"
 
 
 @pytest.fixture
@@ -87,6 +101,197 @@ def flow(database, now, claims, *, candidate_reader=None):
     assert scheduler.tick()["status"] == "changed"
     assert count(database) == 1
     return candidates, scheduler
+
+
+def synthetic_order_flow(setup, tmp_path, *, executor=None):
+    database, now, claims = setup
+    candidates, scheduler = flow(database, now, claims)
+    assert candidates.review_one()["status"] == "review_only"
+    assert candidates.reserve_rehearsal(123, "1002", KEY)["state"] == "reserved"
+    claims.transition(KEY, "attempting")
+    claims.transition(KEY, "cart_observed")
+    observation = make_observation(now[0])
+    quote = SyntheticFinalQuote.model_validate(
+        {
+            "mode": "synthetic_final_quote",
+            "release_id": 123,
+            "listing_id": "1002",
+            "rules_revision": 1,
+            "item": "40",
+            "shipping": "5",
+            "tax": "5",
+            "fees": "0",
+            "total": "50",
+            "currency": "USD",
+            "destination_country": "US",
+            "destination_postal": "03106",
+            "destination_ref": DESTINATION,
+            "payment_ref": PAYMENT,
+            "observed_at": now[0],
+            "expires_at": now[0] + 120,
+            "quantity": 1,
+            "final_quote_verified": True,
+        }
+    )
+    path = tmp_path / "orders.db"
+    orders = OrderSafetyStore(path, create=True)
+    pipeline = OfflinePurchasePipeline(candidates, orders, executor=executor, clock=lambda: now[0])
+    pipeline.issue_simulated_grant(
+        GRANT, KEY, 123, "1002", observation, "50", DESTINATION, PAYMENT, now[0] + 3600
+    )
+    return database, now, claims, scheduler, path, pipeline, observation, quote
+
+
+def synthetic_receipt(quote, **changes):
+    data = dict(
+        intent_id=KEY,
+        provider_order_id=ORDER,
+        release_id=123,
+        listing_id="1002",
+        total="50.00",
+        currency="USD",
+        quote_fingerprint=_fingerprint(quote.model_dump()),
+        destination_ref=DESTINATION,
+        payment_ref=PAYMENT,
+    )
+    data.update(changes)
+    return SyntheticReceipt(**data)
+
+
+def test_full_synthetic_candidate_to_order_fence_default_executor_is_unavailable(setup, tmp_path):
+    database, now, claims, _, path, pipeline, observation, quote = synthetic_order_flow(
+        setup, tmp_path
+    )
+    assert pipeline.readiness()["executor"] == "unavailable"
+    assert pipeline.readiness()["live_order_submission_enabled"] is False
+    with pytest.raises(ValueError, match="synthetic order stores"):
+        OfflinePurchasePipeline(pipeline.candidates, pipeline.orders, executor=object())
+    assert pipeline.prepare(GRANT, KEY, 123, "1002", observation, quote)["state"] == "prepared"
+    with pytest.raises(OrderStopped, match="executor_unavailable"):
+        pipeline.simulate_attempt(KEY, 123, "1002", observation, quote)
+    assert OrderSafetyStore(path).status(KEY)["state"] == "prepared"
+    assert claims.get(KEY).state == "cart_observed"
+
+
+def test_synthetic_order_handoff_requires_observed_claim(setup, tmp_path):
+    database, now, claims = setup
+    candidates, _ = flow(database, now, claims)
+    assert candidates.review_one()["status"] == "review_only"
+    orders = OrderSafetyStore(tmp_path / "orders.db", create=True)
+    pipeline = OfflinePurchasePipeline(candidates, orders, clock=lambda: now[0])
+    with pytest.raises(OrderStopped, match="candidate_or_observed_cart_unverified"):
+        pipeline.issue_simulated_grant(
+            GRANT,
+            KEY,
+            123,
+            "1002",
+            make_observation(now[0]),
+            "50",
+            DESTINATION,
+            PAYMENT,
+            now[0] + 3600,
+        )
+    assert candidates.reserve_rehearsal(123, "1002", KEY)["state"] == "reserved"
+    with pytest.raises(OrderStopped, match="candidate_or_observed_cart_unverified"):
+        pipeline.issue_simulated_grant(
+            GRANT,
+            KEY,
+            123,
+            "1002",
+            make_observation(now[0]),
+            "50",
+            DESTINATION,
+            PAYMENT,
+            now[0] + 3600,
+        )
+    claims.transition(KEY, "attempting")
+    claims.transition(KEY, "cart_observed")
+    pipeline.issue_simulated_grant(
+        GRANT,
+        KEY,
+        123,
+        "1002",
+        make_observation(now[0]),
+        "50",
+        DESTINATION,
+        PAYMENT,
+        now[0] + 3600,
+    )
+
+
+def test_synthetic_order_handoff_rejects_changed_quote(setup, tmp_path):
+    _, _, _, _, _, ready, observation, quote = synthetic_order_flow(setup, tmp_path)
+    with pytest.raises(OrderStopped, match="quote_identity_destination_or_freshness_unverified"):
+        ready.prepare(
+            GRANT, KEY, 123, "1002", observation, quote.model_copy(update={"tax": "6.00"})
+        )
+    assert ready.orders.status(KEY) is None
+
+
+@pytest.mark.parametrize("change", ["rules", "pause", "owned", "observation", "quote"])
+def test_full_synthetic_handoff_rejects_changed_state_before_executor(setup, tmp_path, change):
+    database, now, _, scheduler, path, pipeline, observation, quote = synthetic_order_flow(
+        setup, tmp_path
+    )
+    pipeline.prepare(GRANT, KEY, 123, "1002", observation, quote)
+    adapter = SyntheticOrderAdapter(submit_result=synthetic_receipt(quote))
+    pipeline.executor = adapter
+    if change == "rules":
+        store = RulesStore(database)
+        updated = store.snapshot()["targets"][0]
+        updated["min_media"] = "M"
+        store.save(updated, 1)
+        store.close()
+    elif change == "pause":
+        scheduler.set_paused(True, expected_revision=1)
+    elif change == "owned":
+        store = RulesStore(database)
+        store.mark_owned(123, True, 1)
+        store.close()
+    elif change == "observation":
+        observation = observation.model_copy(update={"seller_comments": "Another complete copy."})
+    else:
+        quote = quote.model_copy(update={"total": "49.00"})
+    with pytest.raises(OrderStopped):
+        pipeline.simulate_attempt(KEY, 123, "1002", observation, quote)
+    assert adapter.submit_calls == 0
+    assert OrderSafetyStore(path).status(KEY)["state"] == "prepared"
+
+
+def test_full_synthetic_crash_restart_reconciles_without_resubmit(setup, tmp_path):
+    database, now, claims, _, path, pipeline, observation, quote = synthetic_order_flow(
+        setup, tmp_path, executor=SyntheticOrderAdapter(submit_result=SimulatedCrash())
+    )
+    pipeline.prepare(GRANT, KEY, 123, "1002", observation, quote)
+    with pytest.raises(SimulatedCrash):
+        pipeline.simulate_attempt(KEY, 123, "1002", observation, quote)
+    assert OrderSafetyStore(path).status(KEY)["state"] == "submitting"
+    lookup = SyntheticOrderAdapter(lookup_result=synthetic_receipt(quote))
+    reopened = OfflinePurchasePipeline(
+        CandidatePipeline(database, claims=CartClaimStore(claims.path), clock=lambda: now[0]),
+        OrderSafetyStore(path),
+        executor=lookup,
+        clock=lambda: now[0],
+    )
+    with pytest.raises(OrderStopped, match="attempt_already_started_or_missing"):
+        reopened.simulate_attempt(KEY, 123, "1002", observation, quote)
+    assert lookup.submit_calls == 0
+    assert reopened.reconcile(KEY)["state"] == "confirmed"
+    assert lookup.lookup_calls == 1
+
+
+def test_full_synthetic_unknown_outcome_stays_fenced_until_lookup(setup, tmp_path):
+    _, _, _, _, path, pipeline, observation, quote = synthetic_order_flow(setup, tmp_path)
+    adapter = SyntheticOrderAdapter(submit_result=synthetic_receipt(quote, total="51.00"))
+    pipeline.executor = adapter
+    pipeline.prepare(GRANT, KEY, 123, "1002", observation, quote)
+    assert pipeline.simulate_attempt(KEY, 123, "1002", observation, quote)["state"] == "uncertain"
+    assert OrderSafetyStore(path).status(KEY)["requires_reconciliation"] is True
+    with pytest.raises(OrderStopped, match="attempt_already_started_or_missing"):
+        pipeline.simulate_attempt(KEY, 123, "1002", observation, quote)
+    adapter.lookup_result = synthetic_receipt(quote)
+    assert pipeline.reconcile(KEY)["state"] == "confirmed"
+    assert adapter.submit_calls == 1 and adapter.lookup_calls == 1
 
 
 def test_link_to_snapshot_review_one_copy_and_no_order_rehearsal(setup, tmp_path):
