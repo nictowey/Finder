@@ -24,9 +24,10 @@ run_status=$?
 set -e
 # Keep the stopped container just long enough to establish OOM and exit state.
 state="$(docker inspect --format '{{json .State}}' "$container")"
-STATE_JSON="$state" PROFILE="$profile" RUNTIME_SECONDS="$((SECONDS-run_started))" node --input-type=module -e '
+config="$(docker inspect --format '{"nano_cpus":{{.HostConfig.NanoCpus}},"cpu_quota":{{.HostConfig.CpuQuota}},"cpu_period":{{.HostConfig.CpuPeriod}},"memory_bytes":{{.HostConfig.Memory}},"memory_swap_bytes":{{.HostConfig.MemorySwap}}}' "$container")"
+CONFIG_JSON="$config" STATE_JSON="$state" PROFILE="$profile" RUNTIME_SECONDS="$((SECONDS-run_started))" node --input-type=module -e '
 const s=JSON.parse(process.env.STATE_JSON);
-console.log(JSON.stringify({profile:process.env.PROFILE,runtime_wall_seconds:Number(process.env.RUNTIME_SECONDS),container_running:s.Running,container_oom_killed:s.OOMKilled,container_exit_code:s.ExitCode}));
+console.log(JSON.stringify({profile:process.env.PROFILE,docker_limits:JSON.parse(process.env.CONFIG_JSON),runtime_wall_seconds:Number(process.env.RUNTIME_SECONDS),container_running:s.Running,container_oom_killed:s.OOMKilled,container_exit_code:s.ExitCode}));
 if(s.Running!==false || s.OOMKilled!==false || s.ExitCode!==0) process.exit(1);
 '
 [[ "$run_status" == 0 ]]

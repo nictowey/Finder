@@ -72,7 +72,7 @@ export function collectResourceProfile({profile = 'standard', read = path => rea
   const numerator = profile === 'micro' ? 1n : 2n;
   const denominator = profile === 'micro' ? 8n : 1n;
   if (BigInt(quota) * denominator !== BigInt(period) * numerator)
-    reject('failed', 'observed CPU quota differs from the selected profile');
+    reject('failed', `observed CPU quota differs from the selected profile: ${quota}/${period}, expected ${selected.cpus}`);
   const limit = file => {
     const value = readValue(file);
     if (value === 'max') reject('failed', `${file} is unlimited`);
