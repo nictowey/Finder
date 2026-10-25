@@ -32,6 +32,27 @@ relevant observation for this cart, but neither amount is an approved purchase q
 The payment radio was selected, the buyer-policy checkbox was unchecked, and the
 enabled `Place order and pay now` control was a submit button; none was operated.
 
+## Hosted checkout preflight
+
+`finder.discogs_hosted_checkout.HostedCartReadOnlyReader` sends only the existing
+`current_cart` fixed action and expected listing ID to the private in-server browser
+socket. It accepts only the bridge's stopped, read-only result for one exact item.
+`HostedCheckoutPreflight` checks the current candidate/rule revision and durable
+`cart_observed` one-copy claim both before and after that read. It compares the
+displayed total's explicit currency and amount with the saved ceiling. A changed
+candidate, unresolved cart claim, mismatched currency or over-ceiling display stops.
+The result always says `order_submission: unavailable` and `purchase_allowed: false`.
+No server-side submit, click, checkbox, payment, navigation or order adapter was added.
+
+The server transport and preflight passed synthetic socket and database tests using
+sanitized amounts matching the observed local cart shape. They have **not** read the
+actual hosted cart: the hosted reader remains access-stopped, and no buy target is
+enabled. The local cart's hidden `Plus Applicable Sales Tax` notice leaves the final
+payable total unverified. Destination match, payment reference, selected shipping
+finality and an exact purchase grant are also absent. A true hosted checkout adapter
+requires an allowed final noncommitting quote view that explicitly resolves those
+fields; the enabled submit button cannot be used to discover them.
+
 ## Verified read-only DOM contract
 
 Import `inspectCurrentCartDom` and pass an already-authorized Playwright-like page plus an
