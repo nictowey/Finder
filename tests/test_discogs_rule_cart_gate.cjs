@@ -10,9 +10,13 @@ const RELEASE = '111', LISTING_ID = '222';
 const LISTING = `https://www.discogs.com/shop/item/${LISTING_ID}`;
 const CART = 'https://www.discogs.com/sell/cart/';
 const OPTIONS = { expectedReleaseId: RELEASE, expectedListingId: LISTING_ID, expectedRevision: 3, allowAddToCart: true };
-const saved = () => ({ revision: 3, targets: [{ release_id: 111, enabled: true, label: 'Same synthetic album' }],
+const saved = () => ({ revision: 3, targets: [{ release_id: 111, enabled: true, label: 'Same synthetic album',
+  min_media: 'VG+', min_sleeve: 'VG', min_seller_percent: 99, min_feedback: 100,
+  currency: 'USD', max_total: '150.00' }],
   owned: [], kill_switch: false, control_revision: 2 });
-const listing = () => ({ listing: { listing_id: LISTING_ID, release_id: 111, available: true },
+const listing = () => ({ listing: { listing_id: LISTING_ID, release_id: 111, available: true,
+  media: 'VG+', sleeve: 'VG+', seller_percent: 99.5, feedback: 200,
+  currency: 'USD', item: '100.00', shipping_blocked: false },
   evaluation: { media_completeness: { status: 'reported_complete', release_id: 111, expected_media_count: 2, verified: false }, rules_revision: 3, eligible_for_review: false, purchase_allowed: false, reasons: ['Final quote unknown'] } });
 const identity = () => ({ schema: 'discogs_listing_release_dom_v1', code: 'observed', purchase_allowed: false,
   current_url: LISTING, page_listing_id: LISTING_ID, main_count: 1, heading_count: 1, details_count: 1,
@@ -113,6 +117,44 @@ test('same album, master ID, missing release, wrong API listing and availability
     blocked(result); assert.ok(['api_listing_release_mismatch', 'listing_availability_unverified'].includes(result.code));
     assert.equal(state.clicks, 0); assert.equal(state.identities, 0);
   }
+});
+
+test('conditions, seller, currency and item ceiling block before cart preparation', async () => {
+  for (const [change, code] of [
+    [value => { value.media = 'VG'; }, 'media_condition_below_minimum'],
+    [value => { value.sleeve = 'G+'; }, 'sleeve_condition_below_minimum'],
+    [value => { value.seller_percent = 98.9; }, 'seller_rating_below_minimum'],
+    [value => { value.feedback = 99; }, 'seller_feedback_below_minimum'],
+    [value => { value.currency = 'EUR'; }, 'listing_currency_mismatch'],
+    [value => { value.item = null; }, 'item_price_unavailable'],
+    [value => { value.item = '150.01'; }, 'item_above_total_ceiling'],
+    [value => { value.shipping_blocked = true; }, 'shipping_availability_unverified'],
+  ]) {
+    const response = listing(); change(response.listing);
+    const { page, port, state } = fixture({ listing: response });
+    const result = await prepareRuleQualifiedListingCart(page, port, OPTIONS);
+    blocked(result); assert.equal(result.code, code); assert.equal(state.clicks, 0); assert.equal(state.identities, 0);
+  }
+});
+
+test('missing saved rules and same-revision rule changes stop before add', async () => {
+  for (const change of [
+    value => { delete value.targets[0].max_total; },
+    value => { value.targets[0].min_media = 'unknown'; },
+    value => { value.targets[0].min_seller_percent = 101; },
+  ]) {
+    const snapshot = saved(); change(snapshot);
+    const { page, port, state } = fixture({ snapshot });
+    const result = await prepareRuleQualifiedListingCart(page, port, OPTIONS);
+    blocked(result); assert.equal(result.code, 'saved_target_rules_unavailable'); assert.equal(state.clicks, 0);
+  }
+  const { page, port, state } = fixture({ readSnapshot: current => {
+    const snapshot = saved();
+    if (current.snapshots > 1) snapshot.targets[0].max_total = '200.00';
+    return snapshot;
+  } });
+  const result = await prepareRuleQualifiedListingCart(page, port, OPTIONS);
+  blocked(result); assert.equal(result.code, 'saved_target_rules_changed'); assert.equal(state.clicks, 0);
 });
 
 test('missing, paused, duplicated, owned, killed, stale or malformed saved release state is blocked', async () => {

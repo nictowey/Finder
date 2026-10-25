@@ -217,8 +217,9 @@ selection are historical snapshots, not guarantees of current availability or co
 
 `scripts/discogs_rule_cart_gate.mjs` exports
 `prepareRuleQualifiedListingCart(page, authenticatedDataPort, options)`. Its scope is
-**saved-release identity only**, not complete buying-rule qualification. Media/sleeve grade,
-seller thresholds, currency and price ceilings are not enforced by this gate. A matching
+**saved-release identity and pre-cart rule checks**, not complete buying qualification. The
+gate rejects below-minimum media/sleeve grades, seller rating and feedback, mismatched
+currency, item prices above the saved all-in ceiling, and blocked shipping. A matching
 Discogs reference does not independently verify the seller's physical copy. Unknown final
 shipping, tax and fees remain unknown, never zero; `eligible_for_review` is not purchase
 permission. Every result explicitly reports unsupported purchase eligibility and keeps
@@ -269,8 +270,44 @@ cannot trigger a delayed click. Concurrent calls and changed data-port objects s
 same page/port retains a stable wrapper. A failed final recheck consumes the conservative
 low-level attempt latch even when no browser click occurred; report that as blocked-before-add
 and do not create a new wrapper to retry. Uncertain actual clicks likewise cannot be repeated.
-This is not a durable multi-instance purchase guard, a live verified authenticated data
-integration, or autonomous cloud deployment. Existing cloud-only production gates remain.
+This is not by itself a durable multi-instance purchase guard, a live verified authenticated
+data integration, or autonomous cloud deployment. Existing cloud-only production gates remain.
+
+## Read-only no-order rehearsal and durable claim primitive
+
+`scripts/discogs_no_order_rehearsal.mjs` exports `rehearseCurrentCart(page,
+authenticatedDataPort, options)`. It accepts an already-authorized existing cart page,
+read-only `readSnapshot` and `readListing` methods, an exact release ID, exact listing ID,
+saved rules revision, and a UUID idempotency key. The helper rejects stale/changed rules,
+wrong release, insufficient condition or seller evidence, disclosed missing media, and a
+visible cart amount above the target ceiling. It requires one expected cart row and can
+read an optional durable claim. Its return always has `purchase_allowed: false`,
+`stop_required: true`, and `order_submission: disabled`. It has no navigation, cart click,
+checkout, payment, or order method. A visible cart total is explicitly **not** a verified
+delivered final quote: destination, shipping, tax, and fees can change.
+
+`src/finder/discogs_cart_claims.py` provides an isolated SQLite one-copy claim primitive.
+It reserves a release with one UUID idempotency key and records `reserved`, `attempting`,
+`cart_observed`, or `uncertain`. A competing reservation for the release fails across
+process restarts. An interrupted `attempting` or `uncertain` state stays blocked; there is
+no retry, expiry, deletion, payment, or order method. The claim file is created only by
+an explicit `create=True` call. This is a storage primitive, not an authorization check.
+No authenticated adapter currently connects this primitive to the browser gate or private
+service. The no-order rehearsal therefore reports `durable_one_copy_claim_unconfigured`
+unless an owner-authorized read port is provided. Do not infer that a simulated claim
+authorizes a real cart add.
+
+On October 25, 2026, the normal signed-in Chrome release marketplace page for release
+`27048621` loaded without an access challenge and displayed `0–0 of 0` listings. This is
+one current read-only observation. It does not establish a permitted hosted acquisition
+feed or continuous monitoring. The documented marketplace API offers release-level stats
+and lookup of a known listing ID; no verified exact-release new-listing delivery path is
+wired here. Discogs' API terms restrict undocumented API use and inconsistent automated
+scraping. A provider-permitted delivery mechanism remains a prerequisite for hosted
+autonomous acquisition; browser session transfer to the VPS is not configured.
+Relevant official references: [marketplace API](https://www.discogs.com/developers/#page:marketplace),
+[API terms](https://support.discogs.com/hc/en-us/articles/360009334593-API-Terms-of-Use),
+and [Saved Searches](https://support.discogs.com/hc/en-us/articles/26355982507149-Using-Filters-Saved-Searches).
 
 On October 24, 2026 at approximately 21:47 UTC, the exact listing-release collector passed
 an authorized local read-only verification: one visible main, one identity heading and one

@@ -4,8 +4,15 @@ import { prepareCurrentListingCart, CART_PREPARE_TIMEOUT_MS, MAX_CART_PREPARE_TI
 const guardedPages = new WeakMap();
 const DEADLINE = Symbol('identity_gate_deadline');
 const ID = /^[1-9][0-9]{0,15}$/u;
+const GRADES = ['P', 'F', 'G', 'G+', 'VG', 'VG+', 'NM', 'M'];
+const CURRENCIES = ['USD', 'EUR', 'GBP', 'CAD', 'AUD'];
 const validId = value => typeof value === 'string' && ID.test(value) && !/\s/u.test(value) && Number.isSafeInteger(Number(value));
 const revision = value => Number.isSafeInteger(value) && value >= 0;
+const cents = value => {
+  if (typeof value !== 'string' || !/^[0-9]{1,7}(?:\.[0-9]{1,2})?$/u.test(value)) return null;
+  const [whole, fraction = ''] = value.split('.');
+  return Number(whole) * 100 + Number(fraction.padEnd(2, '0'));
+};
 
 function result(code, context = null, preparation = null) {
   return {
@@ -83,7 +90,7 @@ export function collectListingReleaseDom(expected) {
   } catch { return fail('identity_dom_read_failed'); }
 }
 
-function snapshotCode(snapshot, context) {
+export function snapshotCode(snapshot, context) {
   if (!snapshot || !revision(snapshot.revision) || !revision(snapshot.control_revision) ||
       !Array.isArray(snapshot.targets) || snapshot.targets.length > 1_000 ||
       !Array.isArray(snapshot.owned) || snapshot.owned.length > 10_000 ||
@@ -93,9 +100,50 @@ function snapshotCode(snapshot, context) {
   if (context.controlRevision !== undefined && snapshot.control_revision !== context.controlRevision) return 'control_revision_changed';
   const targets = snapshot.targets.filter(target => target && target.release_id === Number(context.input.release));
   if (targets.length !== 1) return 'release_not_uniquely_saved';
-  if (targets[0].enabled !== true) return 'saved_release_paused';
+  const target = targets[0];
+  if (target.enabled !== true) return 'saved_release_paused';
   if (snapshot.owned.includes(Number(context.input.release))) return 'saved_release_owned';
+  if (!GRADES.includes(target.min_media) || !GRADES.includes(target.min_sleeve) ||
+      typeof target.min_seller_percent !== 'number' || !Number.isFinite(target.min_seller_percent) ||
+      target.min_seller_percent < 0 || target.min_seller_percent > 100 ||
+      !Number.isSafeInteger(target.min_feedback) || target.min_feedback < 0 || target.min_feedback > 10_000_000 ||
+      !CURRENCIES.includes(target.currency) || cents(target.max_total) === null) return 'saved_target_rules_unavailable';
+  const rules = [target.min_media, target.min_sleeve, target.min_seller_percent,
+    target.min_feedback, target.currency, target.max_total];
+  if (context.rules && rules.some((value, index) => value !== context.rules[index])) return 'saved_target_rules_changed';
+  context.rules = rules;
+  context.target = target;
   if (context.controlRevision === undefined) context.controlRevision = snapshot.control_revision;
+  return null;
+}
+
+function listingRuleCode(listing, target) {
+  if (!GRADES.includes(listing.media) || GRADES.indexOf(listing.media) < GRADES.indexOf(target.min_media)) return 'media_condition_below_minimum';
+  if (!GRADES.includes(listing.sleeve) || GRADES.indexOf(listing.sleeve) < GRADES.indexOf(target.min_sleeve)) return 'sleeve_condition_below_minimum';
+  if (typeof listing.seller_percent !== 'number' || !Number.isFinite(listing.seller_percent) ||
+      listing.seller_percent < target.min_seller_percent || listing.seller_percent > 100) return 'seller_rating_below_minimum';
+  if (!Number.isSafeInteger(listing.feedback) || listing.feedback < target.min_feedback) return 'seller_feedback_below_minimum';
+  if (listing.currency !== target.currency) return 'listing_currency_mismatch';
+  const item = cents(listing.item);
+  if (item === null) return 'item_price_unavailable';
+  if (item > cents(target.max_total)) return 'item_above_total_ceiling';
+  if (listing.shipping_blocked !== false) return 'shipping_availability_unverified';
+  return null;
+}
+
+export function listingEvidenceCode(response, input, target) {
+  if (!response?.listing || response.listing.listing_id !== input.listing || response.listing.release_id !== Number(input.release)) return 'api_listing_release_mismatch';
+  if (response.listing.available !== true) return 'listing_availability_unverified';
+  if (response.evaluation?.rules_revision !== input.savedRevision) return 'listing_rules_revision_changed';
+  if (response.evaluation.purchase_allowed !== false) return 'listing_evaluation_unavailable';
+  const rulesCode = listingRuleCode(response.listing, target);
+  if (rulesCode) return rulesCode;
+  const completeness = response.evaluation.media_completeness;
+  if (completeness?.status === 'incomplete') return 'record_set_incomplete';
+  if (!completeness || !['reported_complete', 'no_disclosed_media_omission'].includes(completeness.status) ||
+      completeness.release_id !== Number(input.release) || completeness.verified !== false ||
+      !Number.isSafeInteger(completeness.expected_media_count) || completeness.expected_media_count < 1 ||
+      completeness.expected_media_count > 100) return 'record_set_completeness_unverified';
   return null;
 }
 
@@ -104,15 +152,8 @@ async function checkIdentity(context, finalCheck) {
   let code = snapshotCode(await context.read(() => port.readSnapshot()), context);
   if (code) return code;
   const response = await context.read(() => port.readListing({ release_id: Number(input.release), listing: input.listing }));
-  if (!response?.listing || response.listing.listing_id !== input.listing || response.listing.release_id !== Number(input.release)) return 'api_listing_release_mismatch';
-  if (response.listing.available !== true) return 'listing_availability_unverified';
-  if (response.evaluation?.rules_revision !== input.savedRevision) return 'listing_rules_revision_changed';
-  const completeness = response.evaluation.media_completeness;
-  if (completeness?.status === 'incomplete') return 'record_set_incomplete';
-  if (!completeness || !['reported_complete', 'no_disclosed_media_omission'].includes(completeness.status) ||
-      completeness.release_id !== Number(input.release) || completeness.verified !== false ||
-      !Number.isSafeInteger(completeness.expected_media_count) || completeness.expected_media_count < 1 ||
-      completeness.expected_media_count > 100) return 'record_set_completeness_unverified';
+  code = listingEvidenceCode(response, input, context.target);
+  if (code) return code;
   const dom = await context.read(() => page.evaluate(collectListingReleaseDom, {
     expectedReleaseId: input.release, expectedListingId: input.listing,
   }));
