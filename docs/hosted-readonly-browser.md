@@ -68,6 +68,17 @@ The inspected structure also had seller profile and feedback links in every row.
 One seller comment was visually clipped, so its full text remains unavailable to
 the strict collector. This was an inspection of a user-opened local tab without
 navigation or requests; it did not read the hosted browser or verify the new code live.
+The user also opened an existing-cart DS2 item in local Chrome at
+`/shop/item/3526572746`. A read-only DOM inspection confirmed its exact release
+link `/release/7609839`, one visible `span.hifi-grade-chip-display` containing
+Media Mint and Sleeve Near Mint, one `[data-testid="item-details"]` with an
+unclipped `p.break-words.whitespace-pre-line` seller comment, one visible
+disabled `In Cart` button and a second responsive copy that was hidden. The
+item page showed $199.99 and $0.00 shipping, a seller feedback percentage and
+review link. It did not display a final destination tax or payable checkout
+total; the dollar sign alone did not establish a currency code. These are
+local, already-loaded page observations, not hosted item-reader proof. The
+collector's visibility filter should count only the one visible cart control.
 Partial market coverage and an individual listing's transaction eligibility are
 different questions. A separately rechecked item could someday qualify after exact
 identity, full media, seller, condition, destination total, current rule, and checkout
