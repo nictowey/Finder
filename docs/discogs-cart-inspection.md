@@ -19,6 +19,19 @@ controls are **not** proof of readiness or permission. A listing page's shipping
 replace the cart's final destination-specific quote. Subtotal is not final delivered cost;
 an invisible tax row is unknown, never zero.
 
+A later read of a user-opened local cart found one matching item row, a present address
+section, an explicitly selected paid shipping method, and displayed USD subtotal,
+shipping and total. Its hidden responsive rows used the exact notice label
+`Plus Applicable Sales Tax` twice. The collector now recognizes that label without
+reading hidden values and reports tax as unknown. The exact local cart collector
+returned a bounded observation; the quote interpreter still returned
+`final_quote_unverified`, because a displayed total and selected method do not prove
+tax treatment, fees, destination match or a final payable amount. The item page's
+displayed shipping differed from the selected cart method; the cart method is the
+relevant observation for this cart, but neither amount is an approved purchase quote.
+The payment radio was selected, the buyer-policy checkbox was unchecked, and the
+enabled `Place order and pay now` control was a submit button; none was operated.
+
 ## Verified read-only DOM contract
 
 Import `inspectCurrentCartDom` and pass an already-authorized Playwright-like page plus an

@@ -656,6 +656,31 @@ test('displayed numeric amounts are preserved as observations, not final verifie
   assert.ok(result.unresolved_checks.includes('destination_unverified'));
 });
 
+test('responsive deferred-sales-tax notices leave the displayed numeric total unverified', () => {
+  const markup = CART_DOM
+    .replace('<tr class="synthetic_tax" style="display:none"><td>Tax</td><td class="order_summary_value">SECRET_HIDDEN_TAX_VALUE</td></tr>',
+      '<tr class="order_tax_container" style="display:none"><td></td><td class="order_summary_value">SECRET_HIDDEN_TAX_VALUE</td></tr>' +
+      '<tr class="tax_calc_deferred_notice" style="display:none"><td>Plus Applicable Sales Tax</td></tr>' +
+      '<tr class="tax_calc_deferred_notice" style="display:none"><td>Plus Applicable Sales Tax</td></tr>')
+    .replaceAll('To be determined by seller', '$5.85 USD')
+    .replace('$20.00', '$199.99 USD')
+    .replace("You haven't provided a shipping address yet.", 'Synthetic destination configured')
+    .replace('class="order_total"><td>Total</td><td class="order_summary_value">$5.85 USD',
+      'class="order_total"><td>Total</td><td class="order_summary_value">$205.84 USD');
+  const fixture = cartDom(markup);
+  try {
+    const snapshot = fixture.collect();
+    assert.deepEqual(snapshot.tax, { count: 2, visible: false, label: null, value: null });
+    assert.equal(snapshot.missing_address, false);
+    const result = inspectCartDomSnapshot(URL, snapshot, OPTIONS);
+    assertStopped(result); assert.equal(result.code, 'final_quote_unverified');
+    assert.ok(result.observations.includes('tax_hidden_unknown'));
+    assert.equal(result.observed_quote.tax, null);
+    assert.equal(result.observed_quote.total.amount, '205.84');
+    assert.ok(!JSON.stringify(result).includes('SECRET_HIDDEN_TAX_VALUE'));
+  } finally { fixture.close(); }
+});
+
 test('strict displayed-money formats support only matching rule currencies and bounded two-decimal amounts', () => {
   const base = numericCartSnapshot();
   for (const [value, currency, amount] of [

@@ -223,10 +223,11 @@ export function collectCartDom(expectedListingId) {
     result.subtotal = quote(summary?.querySelectorAll('tr.order_subtotal') ?? []);
     result.shipping = quote(summary?.querySelectorAll('td.order_shipping_amount') ?? []);
     result.total = quote(summary?.querySelectorAll('tr.order_total') ?? []);
-    // Read only the generic tax label to find hidden rows; never read their values.
+    // Read only tax/deferred-tax labels to find hidden rows; never read their values.
     const taxRows = [...(summary?.querySelectorAll('tr') ?? [])].filter(row => {
       const label = row.querySelector('td')?.textContent?.trim();
-      return typeof label === 'string' && label.length <= 100 && /^(?:(?:sales )?tax(?:es)?|vat)$/iu.test(label);
+      return typeof label === 'string' && label.length <= 100 &&
+        /^(?:(?:sales )?tax(?:es)?|vat|plus applicable sales tax)$/iu.test(label);
     });
     result.tax = quote(taxRows);
     const buttons = container.querySelectorAll('button.order_button.checkout_v1');
@@ -327,7 +328,7 @@ export function inspectCartDomSnapshot(url, snapshot, options = {}) {
   if (!['subtotal', 'shipping', 'tax', 'total'].every(key => validQuote(snapshot[key]))) {
     return blocked('unsupported_quote_shape', observations);
   }
-  observations.push(snapshot.tax.count === 1 && !snapshot.tax.visible ? 'tax_hidden_unknown' : 'tax_unverified');
+  observations.push(snapshot.tax.count > 0 && !snapshot.tax.visible ? 'tax_hidden_unknown' : 'tax_unverified');
   if (snapshot.final_button_count !== 1 || typeof snapshot.final_button_enabled !== 'boolean' ||
       snapshot.final_button_visible !== true || snapshot.agreement_count !== 1 ||
       snapshot.agreement_visible !== true || snapshot.payment_control_count !== 1 ||
