@@ -17,7 +17,9 @@ const saved = () => ({ revision: 3, targets: [{ release_id: 111, enabled: true, 
 const listing = () => ({ listing: { listing_id: LISTING_ID, release_id: 111, available: true,
   media: 'VG+', sleeve: 'VG+', seller_percent: 99.5, feedback: 200,
   currency: 'USD', item: '100.00', shipping_blocked: false },
-  evaluation: { media_completeness: { status: 'reported_complete', release_id: 111, expected_media_count: 2, verified: false }, rules_revision: 3, eligible_for_review: false, purchase_allowed: false, reasons: ['Final quote unknown'] } });
+  evaluation: { media_completeness: { status: 'reported_complete', release_id: 111, expected_media_count: 2, verified: false },
+    media_defects: { status: 'no_disclosed_media_defect', verified: false, reasons: ['No damage disclosed'] },
+    rules_revision: 3, eligible_for_review: false, purchase_allowed: false, reasons: ['Final quote unknown'] } });
 const identity = () => ({ schema: 'discogs_listing_release_dom_v1', code: 'observed', purchase_allowed: false,
   current_url: LISTING, page_listing_id: LISTING_ID, main_count: 1, heading_count: 1, details_count: 1,
   canonical_count: 1, og_count: 1, heading_release_id: RELEASE, details_release_id: RELEASE,
@@ -84,7 +86,7 @@ function fixture(options = {}) {
 }
 function blocked(result) {
   assert.equal(result.purchase_allowed, false); assert.equal(result.stop_required, true);
-  assert.equal(result.qualification_scope, 'saved_release_identity_and_media_omission_check');
+  assert.equal(result.qualification_scope, 'saved_release_identity_and_media_integrity_check');
   assert.equal(result.purchase_eligibility, 'unsupported');
   assert.ok(!JSON.stringify(result).includes('Same synthetic album'));
   assert.ok(!JSON.stringify(result).includes('SECRET'));
@@ -135,6 +137,35 @@ test('conditions, seller, currency and item ceiling block before cart preparatio
     const result = await prepareRuleQualifiedListingCart(page, port, OPTIONS);
     blocked(result); assert.equal(result.code, code); assert.equal(state.clicks, 0); assert.equal(state.identities, 0);
   }
+});
+
+test('disclosed or unverified playable-media damage blocks before cart preparation', async () => {
+  for (const [state, code] of [
+    ['defective', 'playable_media_damage_disclosed'],
+    ['unknown', 'playable_media_damage_check_unverified'],
+    ['verified', 'playable_media_damage_check_unverified'],
+    ['absent', 'playable_media_damage_check_unverified'],
+  ]) {
+    const response = listing();
+    if (state === 'absent') delete response.evaluation.media_defects;
+    else if (state === 'verified') response.evaluation.media_defects.verified = true;
+    else response.evaluation.media_defects.status = state;
+    const { page, port, state: observed } = fixture({ listing: response });
+    const result = await prepareRuleQualifiedListingCart(page, port, OPTIONS);
+    blocked(result); assert.equal(result.code, code);
+    assert.equal(observed.clicks, 0); assert.equal(observed.identities, 0);
+  }
+});
+
+test('newly disclosed playable-media damage at the final recheck blocks the cart click', async () => {
+  const { page, port, state } = fixture({ readListing(state) {
+    const response = listing();
+    if (state.listings > 1) response.evaluation.media_defects.status = 'defective';
+    return response;
+  } });
+  const result = await prepareRuleQualifiedListingCart(page, port, OPTIONS);
+  blocked(result); assert.equal(result.code, 'playable_media_damage_disclosed');
+  assert.equal(state.identities, 1); assert.equal(state.clicks, 0);
 });
 
 test('missing saved rules and same-revision rule changes stop before add', async () => {

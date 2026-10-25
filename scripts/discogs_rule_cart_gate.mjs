@@ -17,7 +17,7 @@ const cents = value => {
 function result(code, context = null, preparation = null) {
   return {
     ...(preparation ?? { status: 'blocked', code, preparation_state: 'blocked_before_add', cart_inspection: null }),
-    qualification_scope: 'saved_release_identity_and_media_omission_check',
+    qualification_scope: 'saved_release_identity_and_media_integrity_check',
     identity_preflight_passed: context?.preflightPassed === true,
     identity_rechecked_before_click: context?.rechecked === true,
     purchase_eligibility: 'unsupported', stop_required: true, purchase_allowed: false,
@@ -144,6 +144,11 @@ export function listingEvidenceCode(response, input, target) {
       completeness.release_id !== Number(input.release) || completeness.verified !== false ||
       !Number.isSafeInteger(completeness.expected_media_count) || completeness.expected_media_count < 1 ||
       completeness.expected_media_count > 100) return 'record_set_completeness_unverified';
+  const defects = response.evaluation.media_defects;
+  if (defects?.status === 'defective') return 'playable_media_damage_disclosed';
+  if (!defects || defects.status !== 'no_disclosed_media_defect' || defects.verified !== false) {
+    return 'playable_media_damage_check_unverified';
+  }
   return null;
 }
 

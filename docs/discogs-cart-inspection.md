@@ -279,7 +279,8 @@ data integration, or autonomous cloud deployment. Existing cloud-only production
 authenticatedDataPort, options)`. It accepts an already-authorized existing cart page,
 read-only `readSnapshot` and `readListing` methods, an exact release ID, exact listing ID,
 saved rules revision, and a UUID idempotency key. The helper rejects stale/changed rules,
-wrong release, insufficient condition or seller evidence, disclosed missing media, and a
+wrong release, insufficient condition or seller evidence, disclosed missing media, disclosed
+playable-media damage or an unknown damage assessment, and a
 visible cart amount above the target ceiling. It requires one expected cart row and can
 read an optional durable claim. Its return always has `purchase_allowed: false`,
 `stop_required: true`, and `order_submission: disabled`. It has no navigation, cart click,
@@ -302,10 +303,13 @@ On October 25, 2026, the normal signed-in Chrome release marketplace page for re
 one current read-only observation. It does not establish a permitted hosted acquisition
 feed or continuous monitoring. The documented marketplace API offers release-level stats
 and lookup of a known listing ID; no verified exact-release new-listing delivery path is
-wired here. Discogs' API terms restrict undocumented API use and inconsistent automated
-scraping. A provider-permitted delivery mechanism remains a prerequisite for hosted
-autonomous acquisition; browser session transfer to the VPS is not configured.
+wired here. Discogs' service terms restrict collection and use of product listings,
+descriptions and prices, including scraping-like extraction tools, without express written
+consent. The dedicated VPS browser profile and fixed read-only private socket are now
+configured, but recurring acquisition remains paused. A provider-permitted delivery
+mechanism remains a prerequisite for hosted autonomous acquisition.
 Relevant official references: [marketplace API](https://www.discogs.com/developers/#page:marketplace),
+[service terms](https://support.discogs.com/hc/en-us/articles/360009334333-Terms-of-Service),
 [API terms](https://support.discogs.com/hc/en-us/articles/360009334593-API-Terms-of-Use),
 and [Saved Searches](https://support.discogs.com/hc/en-us/articles/26355982507149-Using-Filters-Saved-Searches).
 
@@ -316,13 +320,18 @@ No discrepancy or mutation was reported. This verifies that collector in that lo
 only. The full saved-state/API identity-gated preparation pipeline has not been live-tested
 or connected to a hosted authenticated data transport.
 
-### Complete playable record sets
+### Complete playable record sets and damage assessment
 The rule-qualified preparation gate additionally requires the recomputed assessment to be
 `reported_complete` or `no_disclosed_media_omission` for the exact release, with a bounded
 positive authoritative vinyl count. Ordinary fully read comments need not explicitly state
 that every record is included; absence of a disclosed omission is not physical verification.
 Incomplete sets are rejected regardless of condition grade; unknown or unavailable evidence
 also stops before preparation. This check repeats immediately before the Add to Cart click.
+The same preflight and final recheck require `media_defects.status` to be
+`no_disclosed_media_defect` with `verified: false`. An affirmative playable-media or
+playback defect blocks; absent, unsupported or ambiguous damage evidence also blocks.
+The read-only no-order cart rehearsal uses this shared gate. No text assessment proves
+the physical condition of the record.
 Seller-reported completeness is not independent physical verification. The bare low-level
 helper is not an autonomous entry point. Explicit known-listing reviews can now fetch the
 exact saved release catalog metadata through the shared request budget. Missing, stale or

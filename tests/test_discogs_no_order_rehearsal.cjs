@@ -15,6 +15,7 @@ const listing = () => ({ listing: { listing_id: '222', release_id: 111, availabl
   media: 'VG+', sleeve: 'VG+', seller_percent: 99.5, feedback: 200,
   currency: 'USD', item: '100.00', shipping_blocked: false },
   evaluation: { rules_revision: 3, purchase_allowed: false,
+    media_defects: { status: 'no_disclosed_media_defect', verified: false, reasons: ['No damage disclosed'] },
     media_completeness: { status: 'no_disclosed_media_omission', release_id: 111,
       expected_media_count: 1, verified: false } } });
 const quote = (label, value) => ({ count: 1, visible: true, label, value });
@@ -89,6 +90,8 @@ test('wrong release, rules, grades, seller and completeness stop before cart acc
     [value => { value.listing.media = 'VG'; }, 'media_condition_below_minimum'],
     [value => { value.listing.seller_percent = 98; }, 'seller_rating_below_minimum'],
     [value => { value.evaluation.media_completeness.status = 'incomplete'; }, 'record_set_incomplete'],
+    [value => { value.evaluation.media_defects.status = 'defective'; }, 'playable_media_damage_disclosed'],
+    [value => { value.evaluation.media_defects.status = 'unknown'; }, 'playable_media_damage_check_unverified'],
   ];
   for (const [change, code] of cases) {
     const response = listing(); change(response);
