@@ -48,7 +48,7 @@ _PAGE = r"""<!doctype html>
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>Finder · Discogs targets</title>
+<title>Sniper · Discogs targets</title>
 <style nonce="@@NONCE@@">
 :root { color-scheme:light; --ink:#242b2c; --muted:#59676a; --line:#d8e0dc;
   --accent:#17654f; --paper:#f7f8f4; --tint:#eaf4ed; --error:#9a2538; }
@@ -103,7 +103,7 @@ button.secondary { color:var(--accent); background:white; } button:disabled { op
 </style>
 </head>
 <body><main>
-<header><div><p class="eyebrow">Finder / Discogs targets</p><h1>Your rules. Your limits.</h1>
+<header><div><p class="eyebrow">Sniper / Discogs targets</p><h1>Your rules. Your limits.</h1>
 <p class="muted">Save release targets, test your rules, and optionally read a known listing.</p></div>
 <span class="badge">Private · no purchasing</span></header>
 <div class="notice"><strong>Purchasing disabled. Rules only. No live discovery.</strong>

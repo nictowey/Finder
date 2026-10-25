@@ -1,8 +1,11 @@
-# Private Discogs-only Finder
+# Sniper: private Discogs-only rules
 
 October 24, 2026: the owner approved replacing Finder's local primary interface with a
 private Discogs-only target tool. This branch implements the **rules preparation and
 synthetic dry-run slice plus explicit known-listing read**, not a functioning marketplace sniper.
+The new interface uses the Sniper title; the retained `finder-review` workspace keeps its
+Finder title. Sniper alone opts into loopback port reuse so its listener can restart promptly
+after a closed HTTP connection, while a second live listener still cannot bind the port.
 
 The subsequent cloud continuation adds optional aggregate release availability and scheduled
 rechecks of supplied listing IDs; see [cloud monitoring](discogs-monitor.md). The loopback

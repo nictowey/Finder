@@ -1,4 +1,5 @@
 import json
+import socket
 from types import SimpleNamespace
 
 import pytest
@@ -6,7 +7,9 @@ from test_discogs_rules import target
 from test_local_web import MemorySocket
 
 from finder.discogs_rules import RulesStore
-from finder.discogs_web import DiscogsHandler
+from finder.discogs_web import DiscogsHandler, DiscogsServer
+
+_ORIGINAL_CONNECT = socket.socket.connect
 
 PORT = 18765
 ORIGIN = f"http://127.0.0.1:{PORT}"
@@ -40,8 +43,40 @@ def request(store, path="/", data=None, *, token="token", origin=ORIGIN, host=No
 def test_page_and_snapshot(store):
     status, body = request(store)
     assert status == 200 and b"Purchasing disabled" in body
+    assert b"<title>Sniper \xc2\xb7 Discogs targets</title>" in body
+    assert b"Sniper / Discogs targets" in body
     status, body = request(store, "/api/snapshot")
     assert status == 200 and json.loads(body)["purchasing_enabled"] is False
+
+
+def test_sniper_restarts_on_same_loopback_port_without_sharing_listener(store, monkeypatch):
+    with DiscogsServer(store, 0) as first:
+        address = ("127.0.0.1", first.server_port)
+        with pytest.raises(OSError):
+            DiscogsServer(store, first.server_port)
+
+        def connect_loopback_only(sock, target):
+            assert target == address
+            return _ORIGINAL_CONNECT(sock, target)
+
+        monkeypatch.setattr(socket.socket, "connect", connect_loopback_only)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
+            client.settimeout(2)
+            client.connect(address)
+            client.sendall(
+                f"GET /api/snapshot HTTP/1.1\r\nHost: {address[0]}:{address[1]}\r\n\r\n".encode()
+            )
+            first.handle_request()
+            assert b"200 OK" in client.recv(65536)
+
+    with DiscogsServer(store, address[1]) as restarted:
+        assert restarted.server_address == address
+
+
+def test_original_finder_review_branding_remains():
+    from finder.local_ui import render_page
+
+    assert "<title>Finder \u00b7 Local review</title>" in render_page("token", "nonce")
 
 
 def test_save_conflict_and_unknown_purchase(store):

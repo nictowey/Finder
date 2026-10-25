@@ -95,6 +95,14 @@ environment. The worker never invents `/marketplace/search`, guesses listing IDs
 seller inventories, scrapes protected pages or falls back to email monitoring. The public
 release-statistics endpoint cannot provide per-listing conditions, sellers or delivery costs.
 
+October 25 assessment: the documented native Saved Searches UI can filter an exact Wantlist
+release and request Realtime in-site notifications. Its documentation does not provide a
+machine-readable feed, webhook or hosted listing-enumeration interface. Public release stats
+and a read of an owner-supplied listing ID remain the supported API inputs in this project;
+an aggregate count of zero is not evidence of continuous collection. Independent hosted
+discovery needs a documented permitted delivery interface or written authorization from
+Discogs before integration. This does not resolve delivered totals or a purchase route.
+
 Discogs' documented native Saved Searches support exact Wantlist release, media/sleeve,
 minimum seller rating/feedback and item-price filters, with Realtime site-bell notifications.
 Personal Email can be disabled separately. Those features are a possible no-email discovery

@@ -114,6 +114,10 @@ class DiscogsHandler(LocalReviewHandler):
 
 
 class DiscogsServer(LocalReviewServer):
+    # A stopped server may leave accepted HTTP connections in TIME_WAIT. Reuse
+    # its loopback port on restart without allowing a second live listener.
+    allow_reuse_address = True
+
     def finish_request(self, request, client_address):
         DiscogsHandler(request, client_address, self)
 
@@ -141,7 +145,7 @@ def main(argv=None):
             try:
                 with DiscogsServer(store, args.port) as server:
                     server.listing_reader = ListingReader() if args.live_listing_read else None
-                    print(f"Finder private Discogs rules: {server.origin}", flush=True)
+                    print(f"Sniper private Discogs rules: {server.origin}", flush=True)
                     print(
                         "Purchasing disabled. Explicit known-listing reads enabled."
                         if args.live_listing_read
