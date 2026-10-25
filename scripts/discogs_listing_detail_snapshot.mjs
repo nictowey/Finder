@@ -1,4 +1,30 @@
 /** Fixed, inert read of one visible Discogs item page. No browser APIs or actions. */
+export function collectListingReadinessDom() {
+  const main = document.querySelector('main');
+  const names = selector => [...(main?.querySelectorAll(selector) ?? [])].length;
+  const safe = value => /^[a-z][a-z0-9_-]{0,63}$/u.test(value);
+  const testids = [...new Set([...(main?.querySelectorAll('[data-testid]') ?? [])]
+    .map(node => node.getAttribute('data-testid')).filter(value => value && safe(value)))];
+  const classes = [...new Set([...(main?.querySelectorAll('[class]') ?? [])]
+    .flatMap(node => [...node.classList]).filter(value => value.startsWith('hifi-') && safe(value)))];
+  const soldControl = [...(main?.querySelectorAll('button,a') ?? [])]
+    .some(node => /^(?:sold|unavailable|not available|item sold)$/iu.test(node.textContent.trim()));
+  return {
+    ready_state: ['loading', 'interactive', 'complete'].includes(document.readyState) ?
+      document.readyState : 'unknown',
+    main_count: document.querySelectorAll('main').length,
+    details_count: names('[data-testid="item-details"]'),
+    grade_count: names('span.hifi-grade-chip-display'),
+    release_link_count: names("a[href*='/release/']"),
+    password_input_present: Boolean(document.querySelector('input[type="password"]')),
+    challenge_marker_present: Boolean(document.querySelector(
+      '[id*="captcha"],[class*="captcha"],iframe[src*="challenges.cloudflare.com"],form[action*="/cdn-cgi/"]')),
+    sold_control_present: soldControl,
+    testids: testids.sort().slice(0, 32),
+    hifi_classes: classes.sort().slice(0, 48),
+  };
+}
+
 export function collectListingDetailDom(expected) {
   const base = { schema: 'discogs_listing_detail_dom_v1', source: 'discogs_rendered_listing',
     status: 'incomplete', complete: false, release_id: null, listing_id: null, url: null,

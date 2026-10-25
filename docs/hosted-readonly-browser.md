@@ -31,7 +31,11 @@ or the browser UID can connect to the socket. Responses are bounded and always c
 - `{"action":"current_listing","release_id":"<decimal ID>","listing_id":"<decimal ID>"}`
   reads one already-open exact item page. `observe_listing` accepts the same two
   IDs and opens one temporary tab at `/sell/item/<listing ID>`, allowing only the
-  site's exact `/shop/item/<listing ID>` landing URL. Neither action accepts a
+  site's exact `/shop/item/<listing ID>` landing URL. On an item readiness timeout,
+  the bridge returns only bounded DOM structure counts and fixed class/test IDs;
+  it does not return page text, cookies, or a screenshot. A detected login or
+  challenge marker stops access. These structural hints do not establish whether
+  a listing is sold or a page is merely late to render. Neither action accepts a
   caller URL or code. The fixed collector verifies the displayed release and
   listing, then returns bounded grades, seller feedback, seller comments, item
   price and displayed shipping. A dollar sign is not accepted as currency

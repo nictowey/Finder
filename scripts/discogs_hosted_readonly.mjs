@@ -6,7 +6,7 @@ import { createServer } from 'node:net';
 import { chmod, stat, unlink } from 'node:fs/promises';
 import { collectCartDom, inspectCurrentCartDom } from './discogs_cart_inspector.mjs';
 import { collectReleaseMarketplaceDom } from './discogs_release_snapshot.mjs';
-import { collectListingDetailDom } from './discogs_listing_detail_snapshot.mjs';
+import { collectListingDetailDom, collectListingReadinessDom } from './discogs_listing_detail_snapshot.mjs';
 
 const ID = /^[1-9][0-9]{0,15}$/u;
 const MAX_REQUEST_BYTES = 512;
@@ -269,7 +269,15 @@ export function createListingNavigator(context, { now = () => Date.now() } = {})
           { state: 'attached', timeout: READY_TIMEOUT_MS });
         await page.waitForSelector('main span.hifi-grade-chip-display',
           { state: 'attached', timeout: READY_TIMEOUT_MS });
-      } catch { return stopped('listing_not_ready'); }
+      } catch {
+        const diagnostic = await beforeDeadline(() => page.evaluate(collectListingReadinessDom))
+          .catch(() => null);
+        if (diagnostic?.password_input_present || diagnostic?.challenge_marker_present) {
+          accessStopped = true;
+          return stopped('access_restricted');
+        }
+        return bounded({ ...stopped('listing_not_ready'), diagnostic });
+      }
       if (signal?.aborted) return stopped('read_cancelled');
       const observation = await beforeDeadline(() => page.evaluate(collectListingDetailDom,
         { release_id: input.release, listing_id: input.id }));

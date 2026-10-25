@@ -2,8 +2,8 @@
 const assert = require('node:assert/strict');
 const { test, before } = require('node:test');
 const { JSDOM } = require('jsdom');
-let collectListingDetailDom;
-before(async () => ({ collectListingDetailDom } =
+let collectListingDetailDom, collectListingReadinessDom;
+before(async () => ({ collectListingDetailDom, collectListingReadinessDom } =
   await import('../scripts/discogs_listing_detail_snapshot.mjs')));
 
 const release = '234567', listing = '123456';
@@ -69,4 +69,24 @@ test('query strings and extra requested actions are rejected before data extract
     'invalid_exact_identity');
   assert.equal(collect(html, { release_id: release, listing_id: listing }, `${url}?add=1`).error_code,
     'listing_url_mismatch');
+});
+
+test('readiness diagnostic reports structure and restriction markers without page text', () => {
+  const dom = new JSDOM(html, { url, runScripts: 'outside-only' });
+  Object.defineProperty(dom.window.document, 'readyState', { get: () => 'complete' });
+  const diagnostic = dom.window.eval(`(${collectListingReadinessDom.toString()})`)();
+  assert.equal(diagnostic.main_count, 1);
+  assert.equal(diagnostic.details_count, 1);
+  assert.equal(diagnostic.grade_count, 1);
+  assert.deepEqual([...diagnostic.testids], ['item-details']);
+  assert.equal(diagnostic.challenge_marker_present, false);
+  assert.equal(diagnostic.password_input_present, false);
+  assert.ok(!JSON.stringify(diagnostic).includes('No skips'));
+  dom.window.close();
+  const restricted = new JSDOM('<main><input type="password"><div id="captcha"></div></main>',
+    { url, runScripts: 'outside-only' });
+  const blocked = restricted.window.eval(`(${collectListingReadinessDom.toString()})`)();
+  assert.equal(blocked.password_input_present, true);
+  assert.equal(blocked.challenge_marker_present, true);
+  restricted.window.close();
 });

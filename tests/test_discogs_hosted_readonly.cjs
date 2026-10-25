@@ -7,7 +7,7 @@ const { stat } = require('node:fs/promises');
 const { randomUUID } = require('node:crypto');
 let observeCurrentHostedPage, createReleaseNavigator, createListingNavigator,
   listenHostedReadOnly, privateBridgeDirectory, launchHostedReadOnlyBrowser,
-  collectReleaseMarketplaceDom, collectListingDetailDom, collectCartDom;
+  collectReleaseMarketplaceDom, collectListingDetailDom, collectListingReadinessDom, collectCartDom;
 before(async () => {
   ({ observeCurrentHostedPage, createReleaseNavigator, createListingNavigator,
     listenHostedReadOnly, privateBridgeDirectory } =
@@ -15,7 +15,8 @@ before(async () => {
   ({ launchHostedReadOnlyBrowser } = await import('../scripts/discogs_hosted_browser_runtime.mjs'));
   ({ collectReleaseMarketplaceDom } = await import('../scripts/discogs_release_snapshot.mjs'));
   ({ collectCartDom } = await import('../scripts/discogs_cart_inspector.mjs'));
-  ({ collectListingDetailDom } = await import('../scripts/discogs_listing_detail_snapshot.mjs'));
+  ({ collectListingDetailDom, collectListingReadinessDom } =
+    await import('../scripts/discogs_listing_detail_snapshot.mjs'));
 });
 
 const releaseUrl = 'https://www.discogs.com/sell/release/111';
@@ -86,7 +87,7 @@ function navigationFixture({ status = 200, title = 'Marketplace', landed = relea
   return { context, calls };
 }
 function itemFixture({ status = 200, title = 'Listing', landed = itemUrl,
-  result = observedItem(), ready = true } = {}) {
+  result = observedItem(), ready = true, diagnostic = null } = {}) {
   const calls = [];
   const page = new Proxy({
     goto(url, options) { calls.push(['goto', url, options]); return { status: () => status }; },
@@ -95,6 +96,7 @@ function itemFixture({ status = 200, title = 'Listing', landed = itemUrl,
     waitForSelector(selector) { calls.push(['ready', selector]); if (!ready) throw Error('unready'); },
     evaluate(fn, expected) {
       calls.push(['evaluate', expected]);
+      if (fn === collectListingReadinessDom) return structuredClone(diagnostic);
       assert.equal(fn, collectListingDetailDom);
       assert.deepEqual(expected, { release_id: '111', listing_id: '222' });
       return structuredClone(result);
@@ -126,6 +128,24 @@ test('fixed current release observation uses only exact open page and unchanged 
   assert.equal(result.status, 'observed'); assert.equal(result.purchase_allowed, false);
   assert.equal(result.observation.total, 0); assert.equal(result.observation.release_id, 111);
   assert.deepEqual(calls, ['pages', 'url', 'url', 'evaluate', 'url']);
+});
+
+test('item readiness timeout reports bounded structure and latches actual restriction', async () => {
+  const shape = { ready_state: 'complete', main_count: 1, details_count: 0,
+    grade_count: 0, release_link_count: 1, password_input_present: false,
+    challenge_marker_present: false, sold_control_present: false,
+    testids: ['new-item-panel'], hifi_classes: ['hifi-heading-large'] };
+  const unready = itemFixture({ ready: false, diagnostic: shape });
+  const result = await createListingNavigator(unready.context)(itemRequest);
+  stopped(result, 'listing_not_ready');
+  assert.deepEqual(result.diagnostic, shape);
+  assert.deepEqual(unready.calls.at(-1), ['close']);
+  const restricted = itemFixture({ ready: false, diagnostic: {
+    ...shape, challenge_marker_present: true } });
+  const navigator = createListingNavigator(restricted.context);
+  stopped(await navigator(itemRequest), 'access_restricted');
+  stopped(await navigator(itemRequest), 'access_restricted');
+  assert.equal(restricted.calls.filter(call => call[0] === 'goto').length, 1);
 });
 
 test('unsupported actions, extra fields, wrong page, or duplicated pages never evaluate', async () => {
