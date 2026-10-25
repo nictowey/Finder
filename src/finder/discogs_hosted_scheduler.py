@@ -76,7 +76,7 @@ class HostedSocketReader:
             raise HostedReadError("socket_not_private", stop=True)
         request = json.dumps({"action": "observe_release", "release_id": str(release)}) + "\n"
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            connection.settimeout(35)
+            connection.settimeout(95)
             connection.connect(str(self.path))
             connection.sendall(request.encode())
             with connection.makefile("rb") as stream:

@@ -97,6 +97,33 @@ function navigationFixture({ status = 200, title = 'Marketplace', landed = relea
     { get(target, key) { assert.equal(key, 'newPage'); return target[key]; } });
   return { context, calls };
 }
+function pagedNavigationFixture({ secondTotal = 2, secondId = '333', secondStatus = 200,
+  secondTitle = 'Marketplace', secondLanded = null } = {}) {
+  const calls = []; let current = releaseUrl, index = 0;
+  const first = { ...partialRelease(), observed_at: new Date().toISOString(),
+    next_url: releaseUrl + '?page=2' };
+  const second = { ...first, url: releaseUrl + '?page=2', page: 2,
+    range_start: 2, range_end: 2, total: secondTotal, has_next: false,
+    next_url: undefined, error_code: 'page_fragment',
+    rows: [{ ...first.rows[0], listing_id: secondId,
+      url: `https://www.discogs.com/sell/item/${secondId}` }] };
+  const page = new Proxy({
+    goto(url, options) { calls.push(['goto', url, options]); index++;
+      current = secondLanded && index === 2 ? secondLanded : url;
+      return { status: () => index === 2 ? secondStatus : 200 }; },
+    url: () => current,
+    title: async () => index === 2 ? secondTitle : 'Marketplace',
+    waitForSelector(selector) { calls.push(['ready', selector]); },
+    evaluate(fn, arg) { calls.push(['evaluate', arg]); assert.equal(fn, collectReleaseMarketplaceDom);
+      return structuredClone(index === 1 ? first : second); },
+    close: async () => calls.push(['close']),
+  }, { get(target, key) {
+    if (key === 'then') return undefined;
+    assert.ok(['goto', 'url', 'title', 'waitForSelector', 'evaluate', 'close'].includes(key));
+    return target[key];
+  } });
+  return { context: { newPage: async () => page }, calls };
+}
 function itemFixture({ status = 200, title = 'Listing', landed = itemUrl,
   result = observedItem(), ready = true, diagnostic = null } = {}) {
   const calls = [];
@@ -697,6 +724,28 @@ test('fixed navigation may report verified partial rows but cannot mark them com
   assert.equal(result.observation.rows[0].listing_id, '222');
   assert.equal(result.observation.complete, false); assert.equal(result.purchase_allowed, false);
   assert.equal(calls.filter(call => call[0] === 'goto').length, 1);
+});
+
+test('bounded next-link traversal returns only a complete same-release page set', async () => {
+  const fixture = pagedNavigationFixture();
+  const result = await createReleaseNavigator(fixture.context)(navigateRequest);
+  assert.equal(result.status, 'observed'); assert.equal(result.purchase_allowed, false);
+  assert.deepEqual(result.pages.map(value => [value.page, value.range_start, value.range_end]),
+    [[1, 1, 1], [2, 2, 2]]);
+  assert.deepEqual(fixture.calls.filter(call => call[0] === 'goto').map(call => call[1]),
+    [releaseUrl, releaseUrl + '?page=2']);
+  assert.deepEqual(fixture.calls.at(-1), ['close']);
+  for (const [config, code] of [
+    [{ secondId: '222' }, 'pagination_changed'],
+    [{ secondTotal: 3 }, 'pagination_changed'],
+    [{ secondLanded: 'https://www.discogs.com/sell/release/112?page=2' }, 'unexpected_redirect'],
+    [{ secondStatus: 403 }, 'access_restricted'],
+    [{ secondTitle: 'Just a moment... Cloudflare' }, 'access_restricted'],
+  ]) {
+    const blockedFixture = pagedNavigationFixture(config);
+    stopped(await createReleaseNavigator(blockedFixture.context)(navigateRequest), code);
+    assert.deepEqual(blockedFixture.calls.at(-1), ['close']);
+  }
 });
 
 test('429 honors Retry-After without retrying and 403 or challenge latches access stop', async () => {

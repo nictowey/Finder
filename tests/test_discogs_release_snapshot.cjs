@@ -9,14 +9,14 @@ const URL = 'https://www.discogs.com/sell/release/111';
 const pagination = '<nav class="pagination"><span class="pagination_total">1 – 2 of 2</span><form action="/sell/release/111"><select name="sort"><option value="price">Price</option></select><select name="limit"><option value="25" selected>25</option></select></form></nav>';
 function row(id) { return `<tr><td class="item_description"><a class="item_description_title" href="/sell/item/${id}">Synthetic album</a><a class="item_release_link" href="/release/111">Release</a><p class="item_condition"><span>Very Good Plus (VG+) <span class="has-tooltip">Help</span></span><span class="item_sleeve_condition">Sleeve: Very Good Plus (VG+)</span></p></td><td class="seller_info"><a href="/seller/synthetic/profile">Synthetic seller</a><strong>Seller display</strong><li><strong>100.0%</strong><a class="section_link">100 ratings</a></li><strong>Promo</strong></td><td class="item_price"><span class="price" data-currency="USD">$20.00</span><span class="item_shipping">+$5.00 shipping</span></td></tr>`; }
 function html() { return `${pagination}<div id="pjax_container"><table class="mpitems"><thead><tr><th>Item</th></tr></thead><tbody>${row('222')}${row('333')}</tbody></table></div>${pagination}`; }
-function read({ markup = html(), url = URL, id = '111', alter } = {}) {
+function read({ markup = html(), url = URL, id = '111', page = 1, alter } = {}) {
   const dom = new JSDOM(markup, { url, runScripts: 'outside-only' });
   Object.defineProperty(dom.window.HTMLElement.prototype, 'innerText', { get() { return this.textContent; } });
   dom.window.HTMLElement.prototype.getClientRects = function () { return [{width: 10,height: 10}]; };
   Object.defineProperty(dom.window.document, 'readyState', { value: 'complete', configurable: true });
   if (alter) alter(dom.window);
   const collector = dom.window.eval(`(${collectReleaseMarketplaceDom.toString()})`);
-  const output = JSON.parse(JSON.stringify(collector(id))); dom.window.close(); return output;
+  const output = JSON.parse(JSON.stringify(collector(page === 1 ? id : { id, page }))); dom.window.close(); return output;
 }
 function blocked(result) { assert.equal(result.complete,false);assert.notEqual(result.status,'observed');assert.deepEqual(result.rows,[]);assert.equal(result.purchase_allowed,false); }
 test('serialized collector reads exact release rows and matching complete counts without actions', () => {
@@ -69,6 +69,21 @@ test('sanitized loaded-page shape reports 25 of 47 distinct rows without complet
   assert.deepEqual([result.range_start, result.range_end, result.total], [1, 25, 47]);
   assert.equal(result.rows.length, 25); assert.equal(new Set(result.rows.map(r => r.listing_id)).size, 25);
   assert.equal(result.has_next, true); assert.equal(result.purchase_allowed, false);
+});
+test('bounded next-page identity is read from matching visible controls and later rows stay fragments', () => {
+  const first = read({markup:html().replaceAll('1 – 2 of 2', '1 – 2 of 3')
+    .replaceAll('</nav>', '<a rel="next" href="/sell/release/111?page=2">Next</a></nav>')});
+  assert.equal(first.next_url, URL + '?page=2');
+  const secondNav = pagination.replace('1 – 2 of 2', '3 – 3 of 3');
+  const secondMarkup = `${secondNav}<div id="pjax_container"><table class="mpitems"><thead><tr><th>Item</th></tr></thead><tbody>${row('444')}</tbody></table></div>${secondNav}`;
+  const second = read({markup: secondMarkup, url: URL + '?page=2', page: 2});
+  assert.deepEqual([second.page, second.range_start, second.range_end, second.total], [2, 3, 3, 3]);
+  assert.equal(second.complete, false); assert.equal(second.has_next, false);
+  assert.deepEqual(second.rows.map(value => value.listing_id), ['444']);
+  blocked(read({markup: secondMarkup, url: URL + '?page=2'}));
+  blocked(read({markup: secondMarkup, url: URL + '?page=3', page: 2}));
+  blocked(read({markup: html().replaceAll('1 – 2 of 2', '1 – 2 of 3')
+    .replaceAll('</nav>', '<a rel="next" href="https://other.example/sell/release/111?page=2">Next</a></nav>')}));
 });
 test('missing/duplicate/extra listing rows fail closed even when displayed counts match', () => {
   for(const markup of [html().replace(row('333'),''),html().replace('/sell/item/333','/sell/item/222'),html().replace('</tbody>',row('444')+'</tbody>')]) blocked(read({markup}));

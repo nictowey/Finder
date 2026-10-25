@@ -1,21 +1,27 @@
 /** One read-only observation of an already-authorized rendered release marketplace page.
  * No navigation, network, session, scheduler, cart, notification or purchase capability.
  */
-export function collectReleaseMarketplaceDom(expectedReleaseId) {
+export function collectReleaseMarketplaceDom(expectedReleaseId, expectedPage = 1) {
+  if (expectedReleaseId && typeof expectedReleaseId === 'object' && !Array.isArray(expectedReleaseId)) {
+    expectedPage = expectedReleaseId.page;
+    expectedReleaseId = expectedReleaseId.id;
+  }
   const timestamp = new Date().toISOString();
   const base = { source: 'discogs_rendered_release', release_id: null, url: null,
     observed_at: timestamp, status: 'incomplete', complete: false,
-    range_start: null, range_end: null, total: null, page: 1, has_next: null, rows: [],
+    range_start: null, range_end: null, total: null, page: expectedPage, has_next: null, rows: [],
     assertions: { release_identity: false, listing_container: false, pagination: false, stable: false } };
   const stop = code => ({ ...base, error_code: code, purchase_allowed: false });
   const id = value => typeof value === 'string' && /^[1-9][0-9]{0,15}$/u.test(value) &&
     !/\s/u.test(value) && Number.isSafeInteger(Number(value));
   if (!id(expectedReleaseId)) return stop('invalid_release_id');
+  if (!Number.isSafeInteger(expectedPage) || expectedPage < 1 || expectedPage > 100) return stop('invalid_page');
   base.release_id = Number(expectedReleaseId);
   if (typeof document === 'undefined' || typeof location === 'undefined') return stop('dom_unavailable');
   const expectedUrl = `https://www.discogs.com/sell/release/${expectedReleaseId}`;
   const initialUrl = location.href;
-  if (initialUrl !== expectedUrl && initialUrl !== expectedUrl + '/') return stop('release_url_mismatch');
+  const pageUrl = expectedPage === 1 ? expectedUrl : `${expectedUrl}?page=${expectedPage}`;
+  if (initialUrl !== pageUrl && !(expectedPage === 1 && initialUrl === expectedUrl + '/')) return stop('release_url_mismatch');
   base.url = initialUrl;
   try {
     const visible = element => {
@@ -54,14 +60,15 @@ export function collectReleaseMarketplaceDom(expectedReleaseId) {
     const count = /^(\d+)\s*[–-]\s*(\d+)\s+of\s+(\d+)$/u.exec(counts[0]);
     if (!count) return stop('unsupported_pagination_text');
     const [start, end, total] = count.slice(1).map(Number);
-    const completeRange = (total === 0 && start === 0 && end === 0) ||
-      (total > 0 && start === 1 && end === total);
-    const partialRange = start === 1 && end > 0 && end < total;
+    const completeRange = expectedPage === 1 && ((total === 0 && start === 0 && end === 0) ||
+      (total > 0 && start === 1 && end === total));
+    const pageRows = total === 0 ? 0 : end - start + 1;
+    const partialRange = total > 0 && start > 0 && end >= start && end <= total && !completeRange;
     if (![start, end, total].every(Number.isSafeInteger) || total > 10_000_000 ||
-        end > 250 || (!completeRange && !partialRange)) return stop('partial_page_unverified');
+        pageRows > 250 || (!completeRange && !partialRange)) return stop('partial_page_unverified');
     const navigations = [...document.querySelectorAll('nav.pagination')];
     if (navigations.length !== 2) return stop('pagination_containers_unavailable');
-    const pageSizes = [];
+    const pageSizes = [], nextLinks = [];
     for (const nav of navigations) {
       const forms = nav.querySelectorAll('form');
       const form = forms.length === 1 ? forms[0] : null;
@@ -71,15 +78,22 @@ export function collectReleaseMarketplaceDom(expectedReleaseId) {
       const selected = select?.selectedOptions;
       if (!selected || selected.length !== 1 || !/^[1-9][0-9]{0,2}$/u.test(selected[0].value)) return stop('page_size_unavailable');
       const size = Number(selected[0].value);
-      if (size > 250 || size < end) return stop('page_size_unavailable');
+      if (size > 250 || size < pageRows) return stop('page_size_unavailable');
       pageSizes.push(size);
       // A complete page has no additional navigation. Partial-page controls are
       // never operated; only the displayed range establishes missing coverage.
       if (completeRange && nav.querySelectorAll('a,button').length) return stop('additional_or_unknown_page_control');
+      const next = [...nav.querySelectorAll('a[rel="next"]')];
+      if (next.length > 1) return stop('pagination_next_ambiguous');
+      nextLinks.push(next.length ? next[0].getAttribute('href') : null);
     }
     if (pageSizes[0] !== pageSizes[1]) return stop('page_sizes_disagree');
+    if (nextLinks[0] !== nextLinks[1]) return stop('pagination_next_disagree');
+    const nextHref = `/sell/release/${expectedReleaseId}?page=${expectedPage + 1}`;
+    if (nextLinks[0] && (end >= total || nextLinks[0] !== nextHref)) return stop('pagination_next_unverified');
+    if (end < total && expectedPage >= 100) return stop('pagination_limit');
     const rawRows = [...table.querySelectorAll('tbody tr')].filter(visible);
-    if (rawRows.length !== end) return stop('row_count_mismatch');
+    if (rawRows.length !== pageRows) return stop('row_count_mismatch');
     const seen = new Set(), rows = [];
     for (const row of rawRows) {
       const title = one(row, "td.item_description a.item_description_title[href^='/sell/item/']");
@@ -145,15 +159,16 @@ export function collectReleaseMarketplaceDom(expectedReleaseId) {
     }
     const finalRows = [...table.querySelectorAll('tbody tr')].filter(visible);
     if (location.href !== initialUrl || countNodes.some((node, index) => !node.isConnected || countText(node) !== counts[index]) ||
-        finalRows.length !== end || finalRows.some((row, index) => {
+        finalRows.length !== pageRows || finalRows.some((row, index) => {
           const title = one(row, "td.item_description a.item_description_title[href^='/sell/item/']");
           return row !== rawRows[index] || title?.getAttribute('href') !== `/sell/item/${rows[index].listing_id}`;
         })) return stop('observation_changed');
     return { ...base, status: completeRange ? 'observed' : 'incomplete',
       complete: completeRange, range_start: start, range_end: end, total,
-      has_next: !completeRange, rows,
+      has_next: end < total, rows,
+      ...(nextLinks[0] ? { next_url: expectedUrl + `?page=${expectedPage + 1}` } : {}),
       assertions: { release_identity: true, listing_container: true, pagination: true, stable: true },
-      ...(partialRange ? { error_code: 'additional_page_required' } : {}),
+      ...(partialRange ? { error_code: end < total ? 'additional_page_required' : 'page_fragment' } : {}),
       purchase_allowed: false };
   } catch { return stop('dom_read_failed'); }
 }

@@ -17,6 +17,7 @@ const READ_TIMEOUT_MS = 5_000;
 const NAVIGATION_TIMEOUT_MS = 12_000;
 const READY_TIMEOUT_MS = 8_000;
 const NAVIGATION_BUDGET_MS = 30_000;
+const RELEASE_PAGINATION_BUDGET_MS = 90_000;
 const MIN_RELEASE_INTERVAL_MS = 15 * 60_000;
 const MAX_RETRY_AFTER_MS = 24 * 60 * 60_000;
 const SHARED_SOCKET = '/bridge/sniper-read-only.sock';
@@ -297,7 +298,80 @@ export function createReleaseNavigator(context, { now = () => Date.now() } = {})
           observation.release_id !== Number(input.id) || observation.purchase_allowed !== false) {
         return stopped('release_observation_unverified');
       }
-      if (reportablePartialRelease(observation)) return partialReleaseReport(observation);
+      if (reportablePartialRelease(observation)) {
+        if (observation.total > 250 || !observation.next_url) return partialReleaseReport(observation);
+        const asPage = value => ({ source: value.source, purchase_allowed: false,
+          release_id: value.release_id, url: value.url, observed_at: value.observed_at,
+          page: value.page, range_start: value.range_start, range_end: value.range_end,
+          total: value.total, has_next: value.has_next, rows: value.rows,
+          assertions: value.assertions });
+        const pages = [asPage(observation)], seen = new Set(observation.rows.map(row => row.listing_id));
+        let previous = observation;
+        while (previous.has_next) {
+          const expectedPage = pages.length + 1;
+          const nextUrl = `https://www.discogs.com/sell/release/${input.id}?page=${expectedPage}`;
+          if (expectedPage > 100 || previous.next_url !== nextUrl || signal?.aborted) {
+            return stopped('pagination_next_unverified');
+          }
+          const nextResponse = await page.goto(nextUrl,
+            { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS });
+          if (!nextResponse || typeof nextResponse.status !== 'function') return stopped('http_response_unavailable');
+          const nextStatus = nextResponse.status();
+          if ([401, 403].includes(nextStatus)) {
+            accessStopped = true;
+            return stopped(nextStatus === 401 ? 'auth_required' : 'access_restricted');
+          }
+          if ([429, 503].includes(nextStatus)) {
+            const retryAfter = typeof nextResponse.headerValue === 'function' ?
+              await Promise.resolve(nextResponse.headerValue('retry-after')).catch(() => null) : null;
+            nextAllowedAt = Math.max(nextAllowedAt, now() + Math.max(MIN_RELEASE_INTERVAL_MS,
+              retryAfterMillis(retryAfter)));
+            return { ...stopped(nextStatus === 429 ? 'rate_limited' : 'service_unavailable'),
+              cooldown_seconds: Math.ceil((nextAllowedAt - now()) / 1000) };
+          }
+          if (nextStatus !== 200) return stopped('unexpected_http_status');
+          if (page.url() !== nextUrl || signal?.aborted) {
+            if (/\/(?:login|signin|cdn-cgi)(?:\/|\?|$)/iu.test(page.url())) accessStopped = true;
+            return stopped(accessStopped ? 'access_restricted' : 'unexpected_redirect');
+          }
+          const nextTitle = await page.title();
+          if (/just a moment|attention required|security check|captcha|cloudflare/iu.test(nextTitle)) {
+            accessStopped = true;
+            return stopped('access_restricted');
+          }
+          try {
+            await page.waitForSelector('#pjax_container table.mpitems',
+              { state: 'attached', timeout: READY_TIMEOUT_MS });
+            await page.waitForSelector('nav.pagination .pagination_total',
+              { state: 'attached', timeout: 3_000 });
+          } catch { return stopped('marketplace_not_ready'); }
+          const next = await beforeDeadline(() => page.evaluate(collectReleaseMarketplaceDom,
+            { id: input.id, page: expectedPage }));
+          if (signal?.aborted) return stopped('read_cancelled');
+          if (page.url() !== nextUrl || next?.url !== nextUrl ||
+              next.source !== 'discogs_rendered_release' || next.purchase_allowed !== false ||
+              next.status !== 'incomplete' || next.complete !== false ||
+              next.release_id !== Number(input.id) || next.page !== expectedPage ||
+              next.total !== observation.total || next.range_start !== previous.range_end + 1 ||
+              !Number.isSafeInteger(next.range_end) || next.range_end > next.total ||
+              next.has_next !== (next.range_end < next.total) ||
+              !Array.isArray(next.rows) || next.rows.length !== next.range_end - next.range_start + 1 ||
+              !['release_identity', 'listing_container', 'pagination', 'stable'].every(
+                key => next.assertions?.[key] === true) ||
+              next.rows.some(row => seen.has(row.listing_id) || !ID.test(row.listing_id) ||
+                row.url !== `https://www.discogs.com/sell/item/${row.listing_id}`)) {
+            return stopped('pagination_changed');
+          }
+          for (const row of next.rows) seen.add(row.listing_id);
+          pages.push(asPage(next));
+          previous = next;
+        }
+        if (previous.range_end !== observation.total || seen.size !== observation.total) {
+          return stopped('pagination_incomplete');
+        }
+        return bounded({ status: 'observed', source: 'hosted_browser_read_only', pages,
+          stop_required: true, purchase_allowed: false });
+      }
       if (observation.status !== 'observed' || observation.complete !== true ||
           observation.has_next !== false) {
         return bounded({ ...stopped(observation.error_code || 'incomplete_release_page'),
@@ -526,7 +600,8 @@ export async function listenHostedReadOnly(context, socketPath, {
       busy = true;
       const action = requestShape(request)?.action;
       const navigation = ['observe_release', 'observe_listing'].includes(action);
-      if (navigation) connection.setTimeout(NAVIGATION_BUDGET_MS);
+      if (navigation) connection.setTimeout(action === 'observe_release' ?
+        RELEASE_PAGINATION_BUDGET_MS : NAVIGATION_BUDGET_MS);
       try {
         const result = await (action === 'observe_release' ? navigateRelease(request, { signal: controller.signal }) :
           action === 'observe_listing' ? navigateListing(request, { signal: controller.signal }) :

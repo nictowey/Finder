@@ -29,9 +29,15 @@ while the page is loading discards the observation. Only a complete rendered
 snapshot can advance the baseline. An offline `assemble_release_pages` validator
 combines already captured pages only when release identity, page order, displayed
 ranges, total, unique listing IDs and capture times agree, with a 250-row cap.
-Missing or changed pages fail closed. **The current browser bridge still reads
-only page one**; it has no verified multi-page traversal. A 25-of-47 response
-remains incomplete and cannot advance a baseline. The existing diff ledger tracks
+Missing or changed pages fail closed. The fixed browser navigator now follows
+only matching `rel=next` controls displayed in both pagination bars, with a
+same-release `?page=N` URL, a 100-page/250-offer cap and a 90-second budget.
+It checks HTTP status, challenge titles, release identity, ranges, total and
+duplicate IDs on every page. A missing next control or page drift leaves the
+snapshot incomplete; it never means zero offers. This traversal is tested with
+offline browser fixtures only. The existing 25-of-47 Rocky observation was
+one user-opened page and is **not** a live proof of multi-page traversal or an
+atomic marketplace snapshot. The existing diff ledger tracks
 new, disappeared, changed and reappeared listing IDs without treating any change
 as sale or verified pressing. This path never qualifies a delivered total or
 enables purchase.
@@ -59,6 +65,18 @@ destination total; unknown currency, tax, fees, quantity provenance and physical
 pressing evidence still block eligibility. An already-in-cart control also blocks
 the candidate. Neither reader is wired into a live
 candidate worker or a recurring schedule.
+
+The hosted bridge's `/bridge/access-stopped` file is a **local durable safety
+latch**, created in the stopped state on startup after the earlier access
+restriction. Its presence blocks ordinary socket reads before navigation. It
+does not prove Discogs is currently showing a challenge. Nic later completed
+Cloudflare verification himself, and a scoped current-cart read succeeded, so
+the last observed page was not an ongoing cart challenge. Existing recovery
+controls permit only separately acknowledged, single-use reads of the already
+open Rocky release or the exact DS2 cart; they do not resume ordinary reads or
+clear this latch. There is no implemented general operator reset. Returning to
+ordinary unattended reads would require a separately reviewed recovery design
+and site-access basis; installing the new worker does not change either gate.
 
 The reviewer applies exact-release and observation freshness, release quantity,
 seller-comment damage, media/sleeve grade, seller reputation and all-in
