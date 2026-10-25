@@ -268,7 +268,7 @@ class HostedCheckoutPreflight:
             "claim_state": "cart_observed",
             "evidence": evidence,
             "unverified": (
-                "final_tax_and_fees",
+                "tax_treatment_and_final_payable_total",
                 "destination_match",
                 "payment_reference",
                 "selected_shipping_finality",

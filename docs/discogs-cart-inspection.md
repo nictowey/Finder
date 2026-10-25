@@ -26,7 +26,7 @@ shipping and total. Its hidden responsive rows used the exact notice label
 reading hidden values and reports tax as unknown. The exact local cart collector
 returned a bounded observation; the quote interpreter still returned
 `final_quote_unverified`, because a displayed total and selected method do not prove
-tax treatment, fees, destination match or a final payable amount. The item page's
+tax treatment, destination match or a final payable amount. The item page's
 displayed shipping differed from the selected cart method; the cart method is the
 relevant observation for this cart, but neither amount is an approved purchase quote.
 The payment radio was selected, the buyer-policy checkbox was unchecked, and the
@@ -63,13 +63,21 @@ The cart showed a shipping address, but the reader deliberately does not return 
 store its personal details. No saved destination or payment reference was supplied
 to this read for comparison, so destination and payment binding remain unverified. The
 hidden `Plus Applicable Sales Tax` notice leaves tax unknown, not zero; the
-collector does not invent a fee amount when none is displayed. The current page
+collector does not invent a fee amount when none is displayed. Discogs' [Seller
+Policy](https://support.discogs.com/hc/en-us/articles/14587233205005-Seller-Policy)
+puts its marketplace fee on the seller and prohibits payment-method surcharges;
+seller handling belongs in shipping. This cart shows no separate buyer fee line,
+so an absent fee line is not by itself a checkout blocker. Any new payable charge
+would still need to be included in a fresh final quote. The current page
 has an enabled `Place order and pay now` submit control, but no verified separate
 noncommitting final-quote step. Its displayed total and selected shipping method
 are therefore not a validated final payable amount. A live buyer would still need
 an allowed noncommitting quote view or equivalent supported evidence resolving
-tax, fees, destination, payment and final total; the submit button cannot be used
-to discover them during the no-order phase.
+tax, destination, payment and final total. Discogs' [buyer guide](https://support.discogs.com/hc/en-us/articles/360001573434-How-To-Buy-Music-On-Discogs)
+and [post-order payment guide](https://support.discogs.com/hc/en-us/articles/360007626933-I-Just-Placed-An-Order-How-Do-I-Pay-For-It)
+confirm that `Place order and pay now` creates an order before payment checkout;
+abandoning payment does not undo it. It cannot be used to preview a quote in
+this no-order phase.
 
 ## Verified read-only DOM contract
 
@@ -273,7 +281,8 @@ selection are historical snapshots, not guarantees of current availability or co
 gate rejects below-minimum media/sleeve grades, seller rating and feedback, mismatched
 currency, item prices above the saved all-in ceiling, and blocked shipping. A matching
 Discogs reference does not independently verify the seller's physical copy. Unknown final
-shipping, tax and fees remain unknown, never zero; `eligible_for_review` is not purchase
+shipping and tax remain unknown, never zero; any additional payable charge must be
+included if it appears. `eligible_for_review` is not purchase
 permission. Every result explicitly reports unsupported purchase eligibility and keeps
 `purchase_allowed: false` and `stop_required: true`.
 
@@ -337,7 +346,8 @@ visible cart amount above the target ceiling. It requires one expected cart row 
 read an optional durable claim. Its return always has `purchase_allowed: false`,
 `stop_required: true`, and `order_submission: disabled`. It has no navigation, cart click,
 checkout, payment, or order method. A visible cart total is explicitly **not** a verified
-delivered final quote: destination, shipping, tax, and fees can change.
+delivered final quote: destination, shipping and tax can change, and any newly
+displayed payable charge would need fresh review.
 
 `src/finder/discogs_cart_claims.py` provides an isolated SQLite one-copy claim primitive.
 It reserves a release with one UUID idempotency key and records `reserved`, `attempting`,

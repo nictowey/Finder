@@ -183,6 +183,8 @@ def test_integrated_candidate_claim_and_cart_remain_no_order(candidate_state, mo
     assert result["code"] == "final_payable_quote_unverified"
     assert result["claim_state"] == "cart_observed"
     assert result["evidence"].tax_hidden_unknown
+    assert "tax_treatment_and_final_payable_total" in result["unverified"]
+    assert "final_tax_and_fees" not in result["unverified"]
     assert result["order_submission"] == "unavailable"
     assert result["purchase_allowed"] is False
 
