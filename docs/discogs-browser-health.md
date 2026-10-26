@@ -52,3 +52,11 @@ checkout tab. Correlate pressure or a new OOM event with operator actions and
 process exit, without recording page contents or running a load loop. A rising
 counter alone does not establish which component caused growth. Do not claim
 unattended payment, recovery or monitoring from this diagnostic test.
+
+On October 26, 2026 commit `b3567010676dabf0ea462638368563137051fc2e`
+was installed in the existing private browser service. The ready message and
+initial cgroup memory sample were verified (about 373 MiB of the unchanged
+2 GiB limit). The web service and private HTTPS configuration were unchanged,
+and prior stop/grant file hashes were preserved except the expected new browser
+boot identity. This verifies deployment and initial readiness, not the cause
+of earlier growth or indefinite browser/session health.

@@ -89,6 +89,15 @@ test('disabled by default; no directory, browser or card-data access', async () 
   assert.equal(result.may_initialize_again, false);
 });
 
+test('operator-assisted preparation has a bounded ninety-second ceiling', async () => temporary(async directory => {
+  let item = fixture(directory);
+  assert.equal((await prepareExactGuestCard(item.ports, scope(), { ...item.options, timeoutMs: 90_000 })).form_visible, true);
+  item = fixture(directory);
+  assert.equal((await prepareExactGuestCard(item.ports, scope(), { ...item.options, timeoutMs: 90_001 })).code,
+    'guest_card_scope_or_ports_unverified');
+  assert.deepEqual(item.calls, []);
+}));
+
 test('one exact inspected control is fenced before click; form is only a handoff', async () => temporary(async directory => {
   const item = fixture(directory);
   const result = await prepareExactGuestCard(item.ports, scope(), item.options);

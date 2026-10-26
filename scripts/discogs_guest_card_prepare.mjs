@@ -11,6 +11,7 @@ import { isAbsolute, join } from 'node:path';
 export const GUEST_CARD_URL = 'https://www.discogs.com/marketplace/checkout';
 export const GUEST_CARD_SELECTOR = '[role="link"][data-funding-source="card"][aria-label="Debit or Credit Card"]';
 export const GUEST_CARD_FENCE = 'guest-card-1366950910-init.fence';
+export const GUEST_CARD_MAX_PREPARATION_MS = 90_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const HASH = /^[0-9a-f]{64}$/u;
 const MONEY = /^(?:0|[1-9][0-9]{0,6})\.[0-9]{2}$/u;
@@ -180,7 +181,7 @@ export async function prepareExactGuestCard(ports, scope, {
   if (!number(now) || !exactScope(scope, now / 1000) ||
       !ports || typeof ports.inspectActualControl !== 'function' ||
       typeof ports.clickExactlyOnce !== 'function' ||
-      !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) {
+      !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > GUEST_CARD_MAX_PREPARATION_MS) {
     return stopped('guest_card_scope_or_ports_unverified');
   }
   scope = Object.freeze({ ...scope });
