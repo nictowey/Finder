@@ -48,6 +48,77 @@ function restricted(cause, code = 'access_restricted') {
   return { ...stopped(code), restriction_cause: cause };
 }
 
+/** Fixed, redacted DOM hints. No text, URL, input value, frame contents or control leaves the page. */
+export function collectHostedRestrictionDom() {
+  const empty = { password_input_present: false, challenge_marker_present: false,
+    explicit_denial_present: false };
+  try {
+    const visible = element => {
+      if (!element?.isConnected) return false;
+      for (let node = element; node; node = node.parentElement) {
+        if (node.hidden || node.getAttribute('aria-hidden') === 'true') return false;
+        const style = document.defaultView.getComputedStyle(node);
+        if (style.display === 'none' || ['hidden', 'collapse'].includes(style.visibility) ||
+            style.contentVisibility === 'hidden' || style.opacity === '0') return false;
+      }
+      return [...element.getClientRects()].some(rect => rect.width > 0 && rect.height > 0);
+    };
+    const has = selector => [...document.querySelectorAll(selector)].some(visible);
+    const denial = [...document.querySelectorAll('h1,h2,[role="alert"]')].filter(visible)
+      .some(node => /^(?:sorry[,!]?\s+)?(?:you have been blocked[.!]?|access denied[.!]?|request blocked[.!]?)$/iu
+        .test((node.innerText ?? '').replace(/\s+/gu, ' ').trim()));
+    return {
+      password_input_present: has('input[type="password"]'),
+      challenge_marker_present: has('[id*="captcha" i],[class*="captcha" i],' +
+        'iframe[src*="challenges.cloudflare.com"],form[action*="/cdn-cgi/"]'),
+      explicit_denial_present: denial,
+    };
+  } catch { return empty; }
+}
+
+/** Keep legacy public stop codes; add only a fixed kind/cause, never provider text. */
+export function classifyHostedRestriction({ status = null, title = '', url = '', dom = null } = {}) {
+  const safeTitle = typeof title === 'string' && title.length <= 512 ? title : '';
+  const safeUrl = typeof url === 'string' && url.length <= 2048 ? url : '';
+  const result = (kind, cause, code = 'access_restricted') =>
+    ({ ...restricted(cause, code), restriction_kind: kind });
+  if (dom?.explicit_denial_present === true ||
+      /^(?:sorry[,!]?\s+)?(?:you have been blocked[.!]?|access denied[.!]?|request blocked[.!]?)$/iu.test(safeTitle.trim())) {
+    return result('explicit_access_denied', 'explicit_denial');
+  }
+  if (/\/cdn-cgi(?:\/|\?|$)/iu.test(safeUrl)) return result('human_verification_required', 'challenge_redirect');
+  if (/just a moment|attention required|security check|captcha|cloudflare/iu.test(safeTitle)) {
+    return result('human_verification_required', 'challenge_title');
+  }
+  if (dom?.challenge_marker_present === true) return result('human_verification_required', 'challenge_marker');
+  if (/\/(?:login|signin)(?:\/|\?|$)/iu.test(safeUrl)) return result('login_required', 'login_redirect');
+  if (/\b(?:sign in|log in)\b/iu.test(safeTitle) || dom?.password_input_present === true) {
+    return result('login_required', 'login_marker');
+  }
+  if (status === 403) return result('explicit_access_denied', 'http_403');
+  if (status === 401) return result('login_required', 'http_401', 'auth_required');
+  if (status === 429) return result('rate_limited', 'http_429', 'rate_limited');
+  if (status === 503) return result('service_unavailable', 'http_503', 'service_unavailable');
+  return null;
+}
+
+async function inspectPageRestriction(page, status = null, { inspectDom = false, fallbackDom = null } = {}) {
+  let title;
+  try { title = await beforeDeadline(() => page.title()); }
+  catch (error) {
+    // Definite HTTP/redirect evidence can still stop a failed title read.
+    // Otherwise never turn unavailable access evidence into a normal page.
+    const known = classifyHostedRestriction({ status, url: page.url(), dom: fallbackDom });
+    if (known) return known;
+    throw error;
+  }
+  const first = classifyHostedRestriction({ status, title, url: page.url(), dom: fallbackDom });
+  if (!inspectDom || first && !['rate_limited', 'service_unavailable'].includes(first.code)) return first;
+  const dom = await beforeDeadline(() => page.evaluate(collectHostedRestrictionDom)).catch(() => null);
+  const afterTitle = await beforeDeadline(() => page.title()).catch(() => title);
+  return classifyHostedRestriction({ status, title: afterTitle, url: page.url(), dom }) || first;
+}
+
 function requestShape(request) {
   if (!request || typeof request !== 'object' || Array.isArray(request)) return null;
   const keys = Reflect.ownKeys(request);
@@ -346,37 +417,36 @@ export function createReleaseNavigator(context, { now = () => Date.now() } = {})
       if (signal?.aborted) return stopped('read_cancelled');
       if (!response || typeof response.status !== 'function') return stopped('http_response_unavailable');
       const status = response.status();
+      const restriction = await inspectPageRestriction(page, status,
+        { inspectDom: [429, 503].includes(status) });
+      if (signal?.aborted) return stopped('read_cancelled');
+      if (restriction && !['rate_limited', 'service_unavailable'].includes(restriction.code)) {
+        accessStopped = true;
+        return restriction;
+      }
       if ([429, 503].includes(status)) {
         const retryAfter = typeof response.headerValue === 'function' ?
           await Promise.resolve(response.headerValue('retry-after')).catch(() => null) : null;
         nextAllowedAt = Math.max(nextAllowedAt, now() + Math.max(MIN_RELEASE_INTERVAL_MS,
           retryAfterMillis(retryAfter)));
-        return { ...stopped(status === 429 ? 'rate_limited' : 'service_unavailable'),
+        return { ...restriction,
           cooldown_seconds: Math.ceil((nextAllowedAt - now()) / 1000) };
-      }
-      if (status === 401 || status === 403) {
-        accessStopped = true;
-        return restricted(status === 401 ? 'http_401' : 'http_403',
-          status === 401 ? 'auth_required' : 'access_restricted');
       }
       if (status !== 200) return stopped('unexpected_http_status');
       const landed = page.url();
-      if (!exactUrl(input.action, input.id, landed)) {
-        if (/\/(?:login|signin|cdn-cgi)(?:\/|\?|$)/iu.test(landed)) accessStopped = true;
-        return accessStopped ? restricted(/\/cdn-cgi(?:\/|\?|$)/iu.test(landed) ?
-          'challenge_redirect' : 'login_redirect') : stopped('unexpected_redirect');
-      }
-      const title = await page.title();
-      if (/just a moment|attention required|security check|captcha|cloudflare/iu.test(title)) {
-        accessStopped = true;
-        return restricted('challenge_title');
-      }
+      if (!exactUrl(input.action, input.id, landed)) return stopped('unexpected_redirect');
       try {
         await page.waitForSelector('#pjax_container table.mpitems',
           { state: 'attached', timeout: READY_TIMEOUT_MS });
         await page.waitForSelector('nav.pagination .pagination_total',
           { state: 'attached', timeout: 3_000 });
-      } catch { return stopped('marketplace_not_ready'); }
+      } catch {
+        const delayedRestriction = await inspectPageRestriction(page, null, { inspectDom: true });
+        if (signal?.aborted) return stopped('read_cancelled');
+        if (delayedRestriction) { accessStopped = true; return delayedRestriction; }
+        return { ...stopped('marketplace_not_ready'), restriction_kind: 'unknown_readiness',
+          restriction_cause: 'readiness_unverified' };
+      }
       if (signal?.aborted) return stopped('read_cancelled');
       const observation = await beforeDeadline(() => page.evaluate(collectReleaseMarketplaceDom, input.id));
       if (signal?.aborted) return stopped('read_cancelled');
@@ -407,36 +477,35 @@ export function createReleaseNavigator(context, { now = () => Date.now() } = {})
             { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS });
           if (!nextResponse || typeof nextResponse.status !== 'function') return stopped('http_response_unavailable');
           const nextStatus = nextResponse.status();
-          if ([401, 403].includes(nextStatus)) {
+          const nextRestriction = await inspectPageRestriction(page, nextStatus,
+            { inspectDom: [429, 503].includes(nextStatus) });
+          if (signal?.aborted) return stopped('read_cancelled');
+          if (nextRestriction && !['rate_limited', 'service_unavailable'].includes(nextRestriction.code)) {
             accessStopped = true;
-            return restricted(nextStatus === 401 ? 'http_401' : 'http_403',
-              nextStatus === 401 ? 'auth_required' : 'access_restricted');
+            return nextRestriction;
           }
           if ([429, 503].includes(nextStatus)) {
             const retryAfter = typeof nextResponse.headerValue === 'function' ?
               await Promise.resolve(nextResponse.headerValue('retry-after')).catch(() => null) : null;
             nextAllowedAt = Math.max(nextAllowedAt, now() + Math.max(MIN_RELEASE_INTERVAL_MS,
               retryAfterMillis(retryAfter)));
-            return { ...stopped(nextStatus === 429 ? 'rate_limited' : 'service_unavailable'),
+            return { ...nextRestriction,
               cooldown_seconds: Math.ceil((nextAllowedAt - now()) / 1000) };
           }
           if (nextStatus !== 200) return stopped('unexpected_http_status');
-          if (page.url() !== nextUrl || signal?.aborted) {
-            if (/\/(?:login|signin|cdn-cgi)(?:\/|\?|$)/iu.test(page.url())) accessStopped = true;
-            return accessStopped ? restricted(/\/cdn-cgi(?:\/|\?|$)/iu.test(page.url()) ?
-              'challenge_redirect' : 'login_redirect') : stopped('unexpected_redirect');
-          }
-          const nextTitle = await page.title();
-          if (/just a moment|attention required|security check|captcha|cloudflare/iu.test(nextTitle)) {
-            accessStopped = true;
-            return restricted('challenge_title');
-          }
+          if (page.url() !== nextUrl || signal?.aborted) return stopped('unexpected_redirect');
           try {
             await page.waitForSelector('#pjax_container table.mpitems',
               { state: 'attached', timeout: READY_TIMEOUT_MS });
             await page.waitForSelector('nav.pagination .pagination_total',
               { state: 'attached', timeout: 3_000 });
-          } catch { return stopped('marketplace_not_ready'); }
+          } catch {
+            const delayedRestriction = await inspectPageRestriction(page, null, { inspectDom: true });
+            if (signal?.aborted) return stopped('read_cancelled');
+            if (delayedRestriction) { accessStopped = true; return delayedRestriction; }
+            return { ...stopped('marketplace_not_ready'), restriction_kind: 'unknown_readiness',
+              restriction_cause: 'readiness_unverified' };
+          }
           const next = await beforeDeadline(() => page.evaluate(collectReleaseMarketplaceDom,
             { id: input.id, page: expectedPage }));
           if (signal?.aborted) return stopped('read_cancelled');
@@ -506,29 +575,24 @@ export function createListingNavigator(context, { now = () => Date.now() } = {})
       if (signal?.aborted) return stopped('read_cancelled');
       if (!response || typeof response.status !== 'function') return stopped('http_response_unavailable');
       const status = response.status();
+      const restriction = await inspectPageRestriction(page, status,
+        { inspectDom: [429, 503].includes(status) });
+      if (signal?.aborted) return stopped('read_cancelled');
+      if (restriction && !['rate_limited', 'service_unavailable'].includes(restriction.code)) {
+        accessStopped = true;
+        return restriction;
+      }
       if ([429, 503].includes(status)) {
         const retryAfter = typeof response.headerValue === 'function' ?
           await Promise.resolve(response.headerValue('retry-after')).catch(() => null) : null;
         nextAllowedAt = Math.max(nextAllowedAt, now() + Math.max(MIN_RELEASE_INTERVAL_MS,
           retryAfterMillis(retryAfter)));
-        return { ...stopped(status === 429 ? 'rate_limited' : 'service_unavailable'),
+        return { ...restriction,
           cooldown_seconds: Math.ceil((nextAllowedAt - now()) / 1000) };
-      }
-      if (status === 401 || status === 403) {
-        accessStopped = true;
-        return stopped(status === 401 ? 'auth_required' : 'access_restricted');
       }
       if (status !== 200) return stopped('unexpected_http_status');
       const landed = page.url();
-      if (!exactUrl(input.action, input.id, landed)) {
-        if (/\/(?:login|signin|cdn-cgi)(?:\/|\?|$)/iu.test(landed)) accessStopped = true;
-        return stopped(accessStopped ? 'access_restricted' : 'unexpected_redirect');
-      }
-      const title = await page.title();
-      if (/just a moment|attention required|security check|captcha|cloudflare/iu.test(title)) {
-        accessStopped = true;
-        return stopped('access_restricted');
-      }
+      if (!exactUrl(input.action, input.id, landed)) return stopped('unexpected_redirect');
       try {
         await page.waitForSelector('main [data-testid="item-details"]',
           { state: 'attached', timeout: READY_TIMEOUT_MS });
@@ -537,11 +601,12 @@ export function createListingNavigator(context, { now = () => Date.now() } = {})
       } catch {
         const diagnostic = await beforeDeadline(() => page.evaluate(collectListingReadinessDom))
           .catch(() => null);
-        if (diagnostic?.password_input_present || diagnostic?.challenge_marker_present) {
-          accessStopped = true;
-          return stopped('access_restricted');
-        }
-        return bounded({ ...stopped('listing_not_ready'), diagnostic });
+        const delayedRestriction = await inspectPageRestriction(page, null,
+          { inspectDom: true, fallbackDom: diagnostic });
+        if (signal?.aborted) return stopped('read_cancelled');
+        if (delayedRestriction) { accessStopped = true; return delayedRestriction; }
+        return bounded({ ...stopped('listing_not_ready'), diagnostic,
+          restriction_kind: 'unknown_readiness', restriction_cause: 'readiness_unverified' });
       }
       if (signal?.aborted) return stopped('read_cancelled');
       const observation = await beforeDeadline(() => page.evaluate(collectListingDetailDom,

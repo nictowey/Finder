@@ -1,9 +1,10 @@
 """Durable Discogs order evidence, with no checkout or payment executor.
 
-Discogs creates an order before payment checkout. This ledger therefore fences a
-possible submit before any eventual browser action and never interprets a missing
-lookup as permission to submit again. It does not authorize a purchase, navigate,
-read a browser, click a control, or send a payment.
+Legacy buying documentation describes order creation before payment; the observed
+enhanced checkout's order-creation boundary remains unverified. This ledger fences
+a possible submit before any eventual browser action and never interprets a
+missing lookup as permission to submit again. It does not authorize a purchase,
+navigate, read a browser, click a control, or send a payment.
 """
 
 import os

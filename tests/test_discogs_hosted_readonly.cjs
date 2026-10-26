@@ -9,10 +9,11 @@ const { dirname, join } = require('node:path');
 const { randomUUID } = require('node:crypto');
 let observeCurrentHostedPage, createReleaseNavigator, createListingNavigator,
   listenHostedReadOnly, privateBridgeDirectory, launchHostedReadOnlyBrowser,
+  collectHostedRestrictionDom, classifyHostedRestriction,
   collectReleaseMarketplaceDom, collectListingDetailDom, collectListingReadinessDom, collectCartDom;
 before(async () => {
   ({ observeCurrentHostedPage, createReleaseNavigator, createListingNavigator,
-    listenHostedReadOnly, privateBridgeDirectory } =
+    listenHostedReadOnly, privateBridgeDirectory, collectHostedRestrictionDom, classifyHostedRestriction } =
     await import('../scripts/discogs_hosted_readonly.mjs'));
   ({ launchHostedReadOnlyBrowser } = await import('../scripts/discogs_hosted_browser_runtime.mjs'));
   ({ collectReleaseMarketplaceDom } = await import('../scripts/discogs_release_snapshot.mjs'));
@@ -67,7 +68,7 @@ function fixture(url = releaseUrl, response = observedRelease()) {
   return { context, page, calls };
 }
 function navigationFixture({ status = 200, title = 'Marketplace', landed = releaseUrl,
-  result = observedRelease(), retryAfter = null, ready = true } = {}) {
+  result = observedRelease(), retryAfter = null, ready = true, restrictionDom = null } = {}) {
   const calls = [];
   const page = new Proxy({
     goto(url, options) {
@@ -75,12 +76,13 @@ function navigationFixture({ status = 200, title = 'Marketplace', landed = relea
       return { status: () => status, headerValue: () => Promise.resolve(retryAfter) };
     },
     url: () => landed,
-    title: async () => title,
+    title: async () => typeof title === 'function' ? title() : title,
     waitForSelector(selector) {
       calls.push(['ready', selector]);
       if (!ready) throw new Error('fixture not ready');
     },
     evaluate(fn, id) {
+      if (fn === collectHostedRestrictionDom) { calls.push(['restriction']); return structuredClone(restrictionDom); }
       calls.push(['evaluate', id]);
       assert.equal(fn, collectReleaseMarketplaceDom);
       assert.equal(id, '111');
@@ -98,7 +100,8 @@ function navigationFixture({ status = 200, title = 'Marketplace', landed = relea
   return { context, calls };
 }
 function pagedNavigationFixture({ secondTotal = 2, secondId = '333', secondStatus = 200,
-  secondTitle = 'Marketplace', secondLanded = null, onFirstEvaluate = () => {} } = {}) {
+  secondTitle = 'Marketplace', secondLanded = null, onFirstEvaluate = () => {},
+  secondRestrictionDom = null, secondReady = true } = {}) {
   const calls = []; let current = releaseUrl, index = 0;
   const first = { ...partialRelease(), observed_at: new Date().toISOString(),
     next_url: releaseUrl + '?page=2' };
@@ -113,8 +116,11 @@ function pagedNavigationFixture({ secondTotal = 2, secondId = '333', secondStatu
       return { status: () => index === 2 ? secondStatus : 200 }; },
     url: () => current,
     title: async () => index === 2 ? secondTitle : 'Marketplace',
-    waitForSelector(selector) { calls.push(['ready', selector]); },
-    evaluate(fn, arg) { calls.push(['evaluate', arg]); assert.equal(fn, collectReleaseMarketplaceDom);
+    waitForSelector(selector) { calls.push(['ready', selector]);
+      if (index === 2 && !secondReady) throw Error('unready'); },
+    evaluate(fn, arg) {
+      if (fn === collectHostedRestrictionDom) { calls.push(['restriction']); return structuredClone(secondRestrictionDom); }
+      calls.push(['evaluate', arg]); assert.equal(fn, collectReleaseMarketplaceDom);
       if (index === 1) onFirstEvaluate();
       return structuredClone(index === 1 ? first : second); },
     close: async () => calls.push(['close']),
@@ -126,14 +132,15 @@ function pagedNavigationFixture({ secondTotal = 2, secondId = '333', secondStatu
   return { context: { newPage: async () => page }, calls };
 }
 function itemFixture({ status = 200, title = 'Listing', landed = itemUrl,
-  result = observedItem(), ready = true, diagnostic = null } = {}) {
+  result = observedItem(), ready = true, diagnostic = null, restrictionDom = null } = {}) {
   const calls = [];
   const page = new Proxy({
     goto(url, options) { calls.push(['goto', url, options]); return { status: () => status }; },
     url: () => landed,
-    title: async () => title,
+    title: async () => typeof title === 'function' ? title() : title,
     waitForSelector(selector) { calls.push(['ready', selector]); if (!ready) throw Error('unready'); },
     evaluate(fn, expected) {
+      if (fn === collectHostedRestrictionDom) { calls.push(['restriction']); return structuredClone(restrictionDom); }
       calls.push(['evaluate', expected]);
       if (fn === collectListingReadinessDom) return structuredClone(diagnostic);
       assert.equal(fn, collectListingDetailDom);
@@ -1596,5 +1603,147 @@ test('socket shares access-denial and rate-limit stops across release and item a
       stopped(await sendSocket(path, JSON.stringify(navigateRequest) + '\n'), code);
       assert.equal(calls.filter(call => call[0] === 'newPage').length, 1);
     } finally { await close(); }
+  }
+});
+
+test('shared classifier exposes fixed kinds and causes without provider text or URLs', () => {
+  const cases = [
+    [{ status: 401 }, 'auth_required', 'login_required', 'http_401'],
+    [{ status: 403 }, 'access_restricted', 'explicit_access_denied', 'http_403'],
+    [{ status: 503 }, 'service_unavailable', 'service_unavailable', 'http_503'],
+    [{ status: 429 }, 'rate_limited', 'rate_limited', 'http_429'],
+    [{ status: 503, title: 'Just a moment... Cloudflare' },
+      'access_restricted', 'human_verification_required', 'challenge_title'],
+    [{ status: 429, dom: { challenge_marker_present: true } },
+      'access_restricted', 'human_verification_required', 'challenge_marker'],
+    [{ url: 'https://www.discogs.com/login?secret=never-echo' },
+      'access_restricted', 'login_required', 'login_redirect'],
+    [{ title: 'Sign in to Discogs' }, 'access_restricted', 'login_required', 'login_marker'],
+    [{ dom: { password_input_present: true } },
+      'access_restricted', 'login_required', 'login_marker'],
+    [{ title: 'You have been blocked.' },
+      'access_restricted', 'explicit_access_denied', 'explicit_denial'],
+    [{ status: 403, dom: { challenge_marker_present: true, password_input_present: true } },
+      'access_restricted', 'human_verification_required', 'challenge_marker'],
+  ];
+  for (const [input, code, kind, cause] of cases) {
+    const result = classifyHostedRestriction({ title: 'SECRET PROVIDER TEXT', ...input });
+    stopped(result, code);
+    assert.equal(result.restriction_kind, kind); assert.equal(result.restriction_cause, cause);
+    assert.equal(JSON.stringify(result).includes('SECRET'), false);
+    assert.equal(JSON.stringify(result).includes('https://'), false);
+    assert.equal(JSON.stringify(result).includes('never-echo'), false);
+  }
+  assert.equal(classifyHostedRestriction({ status: 200, title: 'Marketplace',
+    dom: { challenge_marker_present: 'true', password_input_present: 1 } }), null);
+});
+
+test('restriction DOM probe returns booleans only and ignores hidden challenge widgets', () => {
+  const { JSDOM } = require('jsdom');
+  const probes = [
+    ['<h1>You have been blocked.</h1>', 'explicit_denial_present'],
+    ['<input type="password" value="SECRET PASSWORD">', 'password_input_present'],
+    ['<iframe src="https://challenges.cloudflare.com/SECRET"></iframe>', 'challenge_marker_present'],
+    ['<div class="CAPTCHA">Verification</div>', 'challenge_marker_present'],
+    ['<div hidden><div class="captcha">Hidden widget</div></div>', null],
+    ['<p>SECRET STREET ADDRESS</p><script>SECRET SESSION</script>', null],
+  ];
+  for (const [html, expected] of probes) {
+    const dom = new JSDOM(`<!doctype html><body>${html}</body>`, { runScripts: 'outside-only' });
+    try {
+      dom.window.Element.prototype.getClientRects = () => [{ width: 100, height: 20 }];
+      Object.defineProperty(dom.window.HTMLElement.prototype, 'innerText', {
+        get() { return this.textContent; }, configurable: true });
+      dom.window.fetch = () => { throw Error('Forbidden network'); };
+      dom.window.HTMLElement.prototype.click = () => { throw Error('Forbidden click'); };
+      const result = JSON.parse(JSON.stringify(dom.window.eval(`(${collectHostedRestrictionDom.toString()})()`)));
+      assert.deepEqual(Object.keys(result).sort(),
+        ['challenge_marker_present', 'explicit_denial_present', 'password_input_present']);
+      assert.equal(Object.values(result).every(value => typeof value === 'boolean'), true);
+      assert.equal(Object.values(result).filter(Boolean).length, expected ? 1 : 0);
+      if (expected) assert.equal(result[expected], true);
+      assert.equal(JSON.stringify(result).includes('SECRET'), false);
+    } finally { dom.window.close(); }
+  }
+});
+
+test('delayed same-URL release challenge or login is classified after readiness timeout and latched', async () => {
+  for (const [config, kind, cause] of [
+    [{ restrictionDom: { challenge_marker_present: true } }, 'human_verification_required', 'challenge_marker'],
+    [{ restrictionDom: { password_input_present: true } }, 'login_required', 'login_marker'],
+    [{ restrictionDom: { explicit_denial_present: true } }, 'explicit_access_denied', 'explicit_denial'],
+    [{ title: (() => { let n = 0; return () => ++n === 1 ? 'Marketplace' : 'Sign in to Discogs'; })() },
+      'login_required', 'login_marker'],
+  ]) {
+    const f = navigationFixture({ ready: false, ...config });
+    const navigate = createReleaseNavigator(f.context);
+    const result = await navigate(navigateRequest);
+    stopped(result, 'access_restricted');
+    assert.equal(result.restriction_kind, kind); assert.equal(result.restriction_cause, cause);
+    stopped(await navigate(navigateRequest), 'access_restricted');
+    assert.equal(f.calls.filter(call => call[0] === 'goto').length, 1);
+    assert.equal(f.calls.some(call => call[0] === 'evaluate'), false);
+  }
+  const f = navigationFixture({ ready: false });
+  const unknown = await createReleaseNavigator(f.context)(navigateRequest);
+  stopped(unknown, 'marketplace_not_ready');
+  assert.equal(unknown.restriction_kind, 'unknown_readiness');
+});
+
+test('DOM challenge beats HTTP429 and503 without retry for release and item navigation', async () => {
+  for (const status of [429, 503]) {
+    for (const [make, request] of [[navigationFixture, navigateRequest], [itemFixture, itemRequest]]) {
+      const f = make({ status, restrictionDom: { challenge_marker_present: true } });
+      const navigate = make === navigationFixture ? createReleaseNavigator(f.context) :
+        createListingNavigator(f.context);
+      const result = await navigate(request);
+      stopped(result, 'access_restricted');
+      assert.equal(result.restriction_kind, 'human_verification_required');
+      stopped(await navigate(request), 'access_restricted');
+      assert.equal(f.calls.filter(call => call[0] === 'goto').length, 1);
+      assert.equal(f.calls.some(call => call[0] === 'ready'), false);
+      assert.deepEqual(f.calls.at(-1), ['close']);
+    }
+  }
+});
+
+test('pagination uses the same challenge classifier and never requests a further page', async () => {
+  const f = pagedNavigationFixture({ secondStatus: 503,
+    secondRestrictionDom: { challenge_marker_present: true } });
+  const result = await createReleaseNavigator(f.context)(navigateRequest);
+  stopped(result, 'access_restricted');
+  assert.equal(result.restriction_kind, 'human_verification_required');
+  assert.equal(f.calls.filter(call => call[0] === 'goto').length, 2);
+  assert.equal(f.calls.filter(call => call[0] === 'evaluate').length, 1);
+});
+
+test('item denial and delayed login retain distinct causes with compatible public stops', async () => {
+  const denied = await createListingNavigator(itemFixture({ status: 403 }).context)(itemRequest);
+  stopped(denied, 'access_restricted');
+  assert.equal(denied.restriction_cause, 'http_403');
+  assert.equal(denied.restriction_kind, 'explicit_access_denied');
+  const f = itemFixture({ ready: false, diagnostic: { password_input_present: true } });
+  const result = await createListingNavigator(f.context)(itemRequest);
+  stopped(result, 'access_restricted');
+  assert.equal(result.restriction_cause, 'login_marker');
+  assert.equal(result.restriction_kind, 'login_required');
+});
+
+test('missing title evidence cannot qualify a page or hide a definite HTTP denial', async () => {
+  for (const status of [200, 403]) {
+    let observations = 0, navigations = 0;
+    const page = { goto: async () => { navigations++; return { status: () => status }; },
+      url: () => releaseUrl, title: async () => { throw Error('SECRET TITLE FAILURE'); },
+      waitForSelector: async () => {}, close: async () => {},
+      evaluate: async () => { observations++; return observedRelease(); } };
+    const navigator = createReleaseNavigator({ newPage: async () => page });
+    const result = await navigator(navigateRequest);
+    stopped(result, status === 403 ? 'access_restricted' : 'navigation_or_read_failed');
+    assert.equal(observations, 0); assert.equal(JSON.stringify(result).includes('SECRET'), false);
+    if (status === 403) {
+      assert.equal(result.restriction_cause, 'http_403');
+      stopped(await navigator(navigateRequest), 'access_restricted');
+      assert.equal(navigations, 1);
+    }
   }
 });

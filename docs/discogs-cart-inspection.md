@@ -549,6 +549,37 @@ model, not a promise that enhanced checkout can create an unpaid order alone.
 No payment control, hidden legacy control or alternate payment path was used
 to resolve that unknown.
 
+### Subsequent guest-card and order-history inspection
+
+A later non-mutating observation found the normal Purchases page accessible,
+after an earlier request had displayed a verification challenge. The agent did
+not interact with the challenge, reset browser state, or retry that request. The
+displayed filters were **Not Archived** and **All** statuses, with zero results
+and `No orders found.` This verifies only that displayed history view; archived
+orders and the enhanced checkout's eventual committing boundary remain unknown.
+
+Normal Back navigation returned to the existing enhanced review. Firefox
+Inspector showed an enabled card-funding link (`role="link"`,
+`data-funding-source="card"`, `aria-label="Debit or Credit Card"`,
+`aria-disabled="false"`) and an empty `card-fields-container`. Its attached
+JavaScript click handler includes SDK tracking labelled `ORDER_CREATED_BY` /
+`BUTTON_CLICK`. That tracking is not a Discogs order ID, receipt, or proof of
+merchant order creation. It also does not establish that the click only reveals
+inputs. No card control was activated, so no rendered guest fields or live
+commit semantics are claimed. Payment details, SDK identifiers and full address
+contents were not retained.
+
+PayPal's [guest-checkout help](https://www.paypal.com/us/cshelp/article/how-do-i-accept-cards-with-checkout-using-the-guest-checkout-option--help307)
+documents card payment without PayPal login, subject to eligibility. Its
+[standard integration guide](https://developer.paypal.com/platforms/checkout/standard/integrate)
+describes an inline Debit or Credit Card form or guest popup. These support the
+possibility of an independently offered guest flow; they do not verify this
+merchant's handler, final quote or current access eligibility. A sign-in block
+does not establish an account limitation or a blanket denial of all card
+payments. Any restriction encountered in an independently offered flow still
+requires stopping, and the observed card option does not authorize a payment
+method change or resolve manual-payment order creation.
+
 ## Private readiness display and recorded access status
 
 The private web UI separates the offline-tested, disabled legacy helper from
