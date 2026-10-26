@@ -577,3 +577,46 @@ state and normal dismissal is supported, record the reviewed observations, and
 qualify the actual server DOM/destination/frame association without inferring
 missing fields. Another initialization is not permitted merely because these
 offline fixtures passed.
+
+
+### Live disposition checkpoint after 5ba29e6
+
+Exact revision `5ba29e6ea2247c9c9839493c8b8de5813e905063` passed all required
+remote checks: Discogs smoke, isolated PostgreSQL feedback, and sandbox validation
+(the production job was intentionally skipped). The existing form was observed
+with blank email, card, expiry/security-code and billing inputs. A first coordinate
+click landed on noncommitting page space after the viewport moved; it did not
+close the form. The close control was re-observed at its current position, clicked
+once there, and the subsequent screen confirmed the normal guest form disappeared
+while the merchant checkout remained. No card entry, Pay, approval or capture
+occurred. No provider initialization was repeated.
+
+The blank observation time was `1793040670.238`; verified dismissal/form-absence
+was `1793040702.485`. Normal account navigation opened Purchases. Selecting
+Archived All left Status All and Show 50; at `1793040743.371` the canonical
+`/sell/purchases?archived=A&status=All&limit=50` view displayed both `0 - 0 of 0`
+and `No orders found`, with no pagination or challenge. This is a fresh complete
+merchant-history observation, not proof of provider draft cancellation or backend
+order timing.
+
+The CI-passed metadata helper was staged only on the container's existing writable
+`/tmp` mount, without restarting Firefox or weakening the read-only root filesystem.
+An initial `docker cp` staging operation failed because the root filesystem is
+read-only; no helper or audit write executed in that failed stage. Normal archive
+extraction as the existing browser UID into `/tmp` succeeded. The helper then
+appended `guest-checkout-000011.json`, disposition hash
+`27c067fd52d21684e22431380169b44d834ef1bae394bec1a313721baf74388f`.
+The successful record `guest-checkout-000010.json` retained its exact original
+hash `1cdc66a4ef7ecfe21ed525580687375cf41496b102d173e144caa3f27501849c`.
+The inspector reports 11 records, `reviewed_form_disposition`, ordinary
+`init_allowed:false` and disposition-only `no_submit_init_allowed:true`. This
+last flag is not authority to initialize: a new exact authorization, later
+complete order-history read and actual checkout evidence are still required.
+
+Firefox remained on `sniper-browser-view:health-b356701`, started at
+`2026-10-26T13:42:00.456306403Z`, with no restart or OOM. The new browser image
+and preparation listener have not been activated. Its trusted local issuer and
+approved destination digest are still unconfigured; current hosted DOM/frame
+continuity has not yet been qualified by that code. These are implementation and
+live-evidence gates, not a new request for broad purchase permission. No new
+order, payment or live server initialization was attempted in this checkpoint.
