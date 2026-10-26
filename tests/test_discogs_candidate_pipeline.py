@@ -555,6 +555,7 @@ def test_fixed_public_detail_qualifies_only_as_blocked_live_review(setup):
         "reported_shipping": "5.00",
         "shipping_blocked": False,
         "cart_state": "unknown",
+        "seller_handle": None,
         "delivered_total_verified": False,
     }
     assert review["evaluation"]["mode"] == "live_read_only"
@@ -630,6 +631,7 @@ def hosted_reply(now, *, release=123, listing="1002", **changes):
         "sleeve": "NM",
         "seller_percent": 100.0,
         "feedback": 10020,
+        "seller_handle": "Synthetic_1",
         "item": "199.99",
         "currency": None,
         "reported_shipping_text": "$0.00 shipping",
@@ -705,6 +707,7 @@ def test_hosted_item_reader_connects_to_candidate_review_but_never_claims_total(
         "reported_shipping": "$0.00 shipping",
         "shipping_blocked": None,
         "cart_state": "already_in_cart",
+        "seller_handle": "Synthetic_1",
         "delivered_total_verified": False,
     }
     assert review["evaluation"]["total"] is None

@@ -23,6 +23,7 @@ test('serialized collector reads exact release rows and matching complete counts
   const result=read();assert.equal(result.complete,true);assert.equal(result.release_id,111);assert.equal(result.total,2);
   assert.deepEqual(result.rows.map(r=>r.listing_id),['222','333']);assert.equal(result.rows[0].fields.price,'$20.00 USD');
   assert.equal(result.rows[0].fields.seller,'Synthetic seller');assert.equal(result.rows[0].fields.media,'Very Good Plus (VG+)' );
+  assert.equal(result.rows[0].fields.seller_handle, 'synthetic');
   assert.equal(result.has_next,false);assert.equal(result.purchase_allowed,false);assert.ok(Object.values(result.assertions).every(Boolean));
 });
 test('strict release URL and ID prevent collecting another release or query-filtered page', () => {

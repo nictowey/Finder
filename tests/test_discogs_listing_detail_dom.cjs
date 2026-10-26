@@ -12,6 +12,7 @@ const html = `<!doctype html><html><head><link rel="canonical" href="${url}"></h
 <main><a class="hifi-heading-link-large" href="https://www.discogs.com/release/${release}">Synthetic album</a>
 <span class="hifi-grade-chip-display"><span>Media</span><span>Mint</span><span>|</span><span>Sleeve</span><span>Near Mint</span></span>
 <div data-testid="item-details"><p class="break-words whitespace-pre-line">No skips. Both discs included.</p></div>
+<a href="/seller/Synthetic_1/profile">Synthetic seller</a>
 <p class="hifi-body-kind-heavy">100.0%</p>
 <a href="https://www.discogs.com/sell/seller_feedback/Synthetic">View all 10,020 reviews</a>
 <h2 class="hifi-heading-large">$199.99</h2><div><p>$0.00</p><p>shipping</p></div>
@@ -42,6 +43,7 @@ test('fixed detail collector reads only exact visible item facts with unknown pa
   assert.equal(result.listing_id, listing);
   assert.equal(result.media, 'M'); assert.equal(result.sleeve, 'NM');
   assert.equal(result.seller_percent, 100); assert.equal(result.feedback, 10020);
+  assert.equal(result.seller_handle, 'Synthetic_1');
   assert.equal(result.item, '199.99'); assert.equal(result.currency, null);
   assert.equal(result.reported_shipping_text, '$0.00 shipping');
   assert.equal(result.seller_comments, 'No skips. Both discs included.');
@@ -49,6 +51,20 @@ test('fixed detail collector reads only exact visible item facts with unknown pa
   assert.equal(result.available, true); assert.equal(result.purchase_allowed, false);
   assert.equal(result.cart_state, 'already_in_cart');
   assert.ok(!('tax' in result) && !('destination' in result));
+});
+
+test('seller identity comes only from one bounded visible profile href', () => {
+  assert.equal(collect(html.replace('/seller/Synthetic_1/profile', '/seller/Other/profile'))
+    .seller_handle, 'Other');
+  for (const markup of [html.replace('/seller/Synthetic_1/profile', '/seller/Synthetic_1/profile?x=1'),
+    html.replace('/seller/Synthetic_1/profile', '/seller/Other Name/profile'),
+    html.replace('<a href="/seller/Synthetic_1/profile">Synthetic seller</a>', ''),
+    html.replace('<a href="/seller/Synthetic_1/profile">Synthetic seller</a>',
+      '<a href="/seller/Synthetic_1/profile">One</a><a href="/seller/Other/profile">Two</a>')]) {
+    const result = collect(markup);
+    assert.equal(result.seller_handle, null);
+    assert.equal(result.purchase_allowed, false);
+  }
 });
 
 test('Generic sleeve is preserved as a distinct disclosed value, not a grade', () => {

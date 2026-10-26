@@ -45,6 +45,7 @@ class VerifiedHostedDetail:
     completed_at: float
     reported_shipping_text: str | None
     cart_state: Literal["addable", "already_in_cart", "unknown"]
+    seller_handle: str | None = None
 
 
 class HostedDetailPayload(StrictInput):
@@ -60,6 +61,7 @@ class HostedDetailPayload(StrictInput):
     sleeve: str | None
     seller_percent: float | None = Field(ge=0, le=100)
     feedback: int | None = Field(ge=0)
+    seller_handle: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
     item: str | None
     currency: None
     reported_shipping_text: str | None = Field(max_length=80)
@@ -199,6 +201,7 @@ class HostedListingCandidateReader:
             completed_at=completed,
             reported_shipping_text=page.reported_shipping_text,
             cart_state=page.cart_state,
+            seller_handle=page.seller_handle,
         )
 
 

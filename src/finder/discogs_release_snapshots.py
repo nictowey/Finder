@@ -28,6 +28,7 @@ FIELD_NAMES = (
     "media",
     "sleeve",
     "seller",
+    "seller_handle",
     "seller_rating",
     "seller_feedback",
     "shipping",
@@ -59,6 +60,7 @@ class DisplayedFields(StrictInput):
     media: str | None = Field(max_length=160)
     sleeve: str | None = Field(max_length=160)
     seller: str | None = Field(max_length=120)
+    seller_handle: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
     seller_rating: str | None = Field(max_length=160)
     seller_feedback: str | None = Field(max_length=160)
     shipping: str | None = Field(max_length=240)

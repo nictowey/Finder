@@ -29,7 +29,7 @@ export function collectListingDetailDom(expected) {
   const base = { schema: 'discogs_listing_detail_dom_v1', source: 'discogs_rendered_listing',
     status: 'incomplete', complete: false, release_id: null, listing_id: null, url: null,
     observed_at: new Date().toISOString(), media: null, sleeve: null, seller_percent: null,
-    feedback: null, item: null, currency: null, reported_shipping_text: null,
+    feedback: null, seller_handle: null, item: null, currency: null, reported_shipping_text: null,
     seller_comments: null, seller_comments_supported: false, available: false,
     cart_state: 'unknown',
     purchase_allowed: false };
@@ -85,6 +85,15 @@ export function collectListingDetailDom(expected) {
     base.media = grades[parts[1]] ?? null;
     base.sleeve = parts[4] === 'Generic' ? 'Generic' : grades[parts[4]] ?? null;
     const details = one(main, '[data-testid="item-details"]');
+    // The profile href is an identity hint, never a substitute for a fresh
+    // release/listing check. Missing or ambiguous links remain unknown.
+    const sellerLinks = [...main.querySelectorAll("a[href^='/seller/'][href$='/profile']")]
+      .filter(visible);
+    if (sellerLinks.length === 1) {
+      const sellerHref = sellerLinks[0].getAttribute('href');
+      const sellerMatch = /^\/seller\/([A-Za-z0-9_-]{1,64})\/profile$/u.exec(sellerHref ?? '');
+      if (sellerMatch) base.seller_handle = sellerMatch[1];
+    }
     const comment = details && one(details, 'p.break-words.whitespace-pre-line');
     if (comment && comment.children.length === 0) {
       const style = document.defaultView.getComputedStyle(comment);

@@ -261,6 +261,7 @@ class CandidatePipeline:
                     ),
                     "shipping_blocked": None if hosted else detail.shipping_blocked,
                     "cart_state": detail.cart_state if hosted else "unknown",
+                    "seller_handle": detail.seller_handle if hosted else None,
                     "delivered_total_verified": False,
                 }
             else:

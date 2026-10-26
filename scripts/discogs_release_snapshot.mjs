@@ -130,6 +130,8 @@ export function collectReleaseMarketplaceDom(expectedReleaseId, expectedPage = 1
       const sellerCell = one(row, 'td.seller_info');
       // Exact profile selector is verified before this collector is used live.
       const sellerNode = sellerCell && one(sellerCell, "a[href^='/seller/'][href$='/profile']");
+      const sellerMatch = /^\/seller\/([A-Za-z0-9_-]{1,64})\/profile$/u.exec(
+        sellerNode?.getAttribute('href') ?? '');
       const feedbackNode = sellerCell && one(sellerCell, 'a.section_link');
       const ratingContainer = feedbackNode?.closest('li');
       const ratings = ratingContainer && sellerCell.contains(ratingContainer) ?
@@ -148,6 +150,7 @@ export function collectReleaseMarketplaceDom(expectedReleaseId, expectedPage = 1
       const fields = {
         price: priceText && /^[A-Z]{3}$/u.test(currency ?? '') ? `${priceText} ${currency}` : null,
         media: media || null, sleeve, seller: text(sellerNode, 120),
+        seller_handle: sellerMatch?.[1] ?? null,
         seller_rating: ratings.length === 1 ? text(ratings[0]) : null,
         seller_feedback: text(feedbackNode),
         shipping: text(one(row, 'span.item_shipping'), 240),
