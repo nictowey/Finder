@@ -112,8 +112,8 @@ class Observation(StrictInput):
         return None if value is None else amount(value)
 
 
-def evaluate(target: Target, observation: Observation, *, now: datetime, already_owned=False):
-    """Eligibility is a synthetic rule result, never permission to place an order."""
+def _listing_assessment(target, observation, *, now, already_owned, confirmed_pressing):
+    """Shared item filters; quote and action scope are assessed by the caller."""
     reasons = []
     metadata = observation.release_media_metadata
     if observation.source in {"discogs_public_listing", "discogs_rendered_listing"}:
@@ -153,10 +153,12 @@ def evaluate(target: Target, observation: Observation, *, now: datetime, already
         reasons.append("Listing is not available.")
     if observation.release_id != target.release_id:
         reasons.append("Discogs release ID differs.")
-    if observation.pressing_evidence != "confirmed":
+    if confirmed_pressing and observation.pressing_evidence != "confirmed":
         reasons.append(
             "Pressing evidence is unknown or conflicting; release ID alone is insufficient."
         )
+    elif observation.pressing_evidence == "conflicting":
+        reasons.append("Pressing evidence conflicts with the selected release.")
     for field in ("media", "sleeve"):
         value = getattr(observation, field)
         if field == "sleeve" and value == "Generic" and target.allow_generic_sleeve:
@@ -173,6 +175,76 @@ def evaluate(target: Target, observation: Observation, *, now: datetime, already
         observation.feedback is None or observation.feedback < target.min_feedback
     ):
         reasons.append("Seller feedback count is unknown or below minimum.")
+    return reasons, completeness, defects
+
+
+def evaluate_pre_cart(target: Target, observation: Observation, *, now, already_owned=False):
+    """Assess a reversible quote inspection, never purchase qualification.
+
+    The fixed hosted reader has already checked the item's marketplace release
+    association. Unknown physical pressing evidence and destination charges may
+    be investigated in the cart; conflicting evidence and disclosed item defects
+    still block. An explicit scoped cart authorization is required separately.
+    """
+    reasons, completeness, defects = _listing_assessment(
+        target, observation, now=now, already_owned=already_owned, confirmed_pressing=False
+    )
+    if observation.source != "discogs_rendered_listing":
+        reasons.append("Cart inspection requires a verified hosted item observation.")
+    if observation.item is None:
+        reasons.append("Current item price is unknown.")
+    if observation.currency is not None and observation.currency != target.currency:
+        reasons.append("Known item currency differs; no automatic conversion.")
+    if any(
+        getattr(observation, field) is not None
+        and getattr(observation, field) != getattr(target, field)
+        for field in ("destination_country", "destination_postal")
+    ):
+        reasons.append("Known shipping destination differs.")
+    if (
+        observation.currency == target.currency
+        and observation.item is not None
+        and Decimal(observation.item) > Decimal(target.max_total)
+    ):
+        reasons.append("Item price alone exceeds your all-in maximum.")
+    elif observation.currency == target.currency and sum(
+        (
+            Decimal(value)
+            for field in ("item", "shipping", "tax", "fees")
+            if (value := getattr(observation, field)) is not None
+        ),
+        Decimal(0),
+    ) > Decimal(target.max_total):
+        reasons.append("Known cost components already exceed your all-in maximum.")
+    unresolved = [
+        field
+        for field in ("currency", "shipping", "tax", "fees")
+        if getattr(observation, field) is None
+    ]
+    if observation.pressing_evidence != "confirmed":
+        unresolved.append("physical_pressing")
+    if (
+        observation.destination_country != target.destination_country
+        or observation.destination_postal != target.destination_postal
+    ):
+        unresolved.append("destination")
+    return {
+        "eligible_for_cart_inspection": not reasons,
+        "media_completeness": completeness,
+        "media_defects": defects,
+        "reasons": reasons,
+        "quote_unresolved": [*unresolved, "final_payable_total"],
+        "final_quote_verified": False,
+        "purchase_allowed": False,
+        "mode": "hosted_cart_inspection_only",
+    }
+
+
+def evaluate(target: Target, observation: Observation, *, now: datetime, already_owned=False):
+    """Eligibility is a synthetic rule result, never permission to place an order."""
+    reasons, completeness, defects = _listing_assessment(
+        target, observation, now=now, already_owned=already_owned, confirmed_pressing=True
+    )
     if (
         observation.destination_country != target.destination_country
         or observation.destination_postal != target.destination_postal

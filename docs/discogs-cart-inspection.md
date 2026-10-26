@@ -199,15 +199,29 @@ and its cart outcome remains unverified.
 The dormant host-side coordinator additionally requires matching persisted
 candidate, snapshot, rule, seller and detail evidence before a durable claim can
 reach an adapter. A synthetic or public observation wrapped as hosted detail is
-rejected before any claim. Current hosted item observations still lack the
-verified currency, pressing and delivered costs required by the existing
-qualification model, so the coordinator reports
-`hosted_pre_cart_qualification_unavailable`. A separate pre-cart review policy
-and trusted fixed browser recheck must be implemented before enabling a real
-cart adapter; this guard does not claim a working hosted add path.
+rejected before any claim. A separate `evaluate_pre_cart` verdict applies the
+current grade, seller, completeness, damage, availability, freshness and one-copy
+rules. Unknown currency, destination charges or physical pressing evidence can
+remain unresolved for this reversible quote inspection only. Known currency or
+destination conflicts, and known same-currency costs already over the ceiling,
+still block. No amounts are filled with zero to manufacture eligibility.
 
-Unknown authenticated shapes, a different listing, ambiguous links or cart contents, unknown
-final costs and access errors remain stops. Normal UI automation is not permission to
+Cart preparation also requires an immutable, exact `cart_quote_inspection`
+authorization bound to the listing, release, seller, rule revision, observation
+fingerprint and idempotency key, valid for at most five minutes. It is a scope
+contract for an already-authorized caller, not an authentication mechanism or
+grant issuer. It is checked before the claim, at the adapter boundary and after
+reconciliation. Changed or expired scope leaves an uncertain durable claim that
+cannot automatically retry. The persisted pre-cart verdict is separate from
+the existing final review and cannot pass final checkout or order guards.
+
+No live hosted cart adapter or grant is enabled by this implementation. Offline
+intercepted tests prove one adapter invocation and durable reconciliation; the
+actual hosted cart addition and final quote remain unverified.
+
+Unknown authenticated shapes, a different listing, ambiguous links or cart contents and
+access errors remain stops. Unknown final costs still block purchase qualification.
+Normal UI automation is not permission to
 retry a denied protected-browser route. Synthetic tests establish state-machine behavior;
 they do not establish that the actual hosted browser runtime is configured or working.
 

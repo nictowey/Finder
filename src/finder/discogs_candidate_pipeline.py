@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 
 from finder.discogs_candidate_detail import VerifiedHostedDetail, VerifiedPublicDetail
 from finder.discogs_cart_claims import CartClaimBlocked
-from finder.discogs_rules import Observation, RulesStore, Target, evaluate
+from finder.discogs_rules import Observation, RulesStore, Target, evaluate, evaluate_pre_cart
 
 MAX_AGE = 300
 MAX_ROWS = 500
@@ -298,6 +298,17 @@ class CandidatePipeline:
                         result["reasons"].append(
                             "Listing is already in cart or add state is unknown."
                         )
+                    cart_result = None
+                    if isinstance(detail, VerifiedHostedDetail):
+                        cart_result = evaluate_pre_cart(
+                            Target.model_validate(target),
+                            observation,
+                            now=datetime.fromtimestamp(self.clock(), UTC),
+                            already_owned=release in saved["owned"],
+                        )
+                        if detail.cart_state != "addable":
+                            cart_result["eligible_for_cart_inspection"] = False
+                            cart_result["reasons"].append("Listing cannot be added to cart.")
                     projection = {
                         "listing": {
                             "listing_id": ident,
@@ -315,6 +326,11 @@ class CandidatePipeline:
                             **result,
                             "rules_revision": rules,
                         },
+                        "cart_inspection_evaluation": (
+                            {**cart_result, "rules_revision": rules}
+                            if cart_result is not None
+                            else None
+                        ),
                         "detail_evidence": detail_evidence,
                         "observation_fingerprint": observation_fingerprint(observation),
                     }
@@ -434,4 +450,115 @@ class CandidatePipeline:
         # A concurrent rule/pause change can leave a conservative reserved slot,
         # but it can never turn a stale review into a cart or order action.
         self.review_bundle(release, ident, key)
+        return claim.response()
+
+    def cart_review_bundle(self, release, ident, key):
+        """Read a fresh hosted pre-cart verdict; never promote it to final eligibility."""
+        if self.claims is None:
+            raise CandidateStopped("claim_store_unconfigured")
+        store = RulesStore(self.database)
+        try:
+            with store.db:
+                store.db.execute("BEGIN IMMEDIATE")
+                saved, control, running, baseline, _, page = self._guard(store, release)
+                row = store.db.execute(
+                    "SELECT sequence,baseline_revision,rules_revision,control_revision,"
+                    "schedule_revision,state,reviewed_at,review FROM discogs_candidates "
+                    "WHERE release_id=? AND listing_id=?",
+                    (release, ident),
+                ).fetchone()
+                if (
+                    not row
+                    or row[5] not in {"blocked", "review_only"}
+                    or row[1] != baseline[0]
+                    or row[2] != saved["revision"]
+                    or row[3] != control[1]
+                    or row[4] != running[1]
+                    or row[6] is None
+                    or not 0 <= self.clock() - row[6] <= MAX_AGE
+                    or not any(item["listing_id"] == ident for item in page["rows"])
+                ):
+                    raise CandidateStopped("candidate_cart_review_stale_or_blocked")
+                review = json.loads(row[7]) if row[7] else None
+                verdict = (
+                    review.get("cart_inspection_evaluation") if isinstance(review, dict) else None
+                )
+                evidence = review.get("detail_evidence") if isinstance(review, dict) else None
+                if (
+                    not isinstance(verdict, dict)
+                    or not isinstance(evidence, dict)
+                    or verdict.get("eligible_for_cart_inspection") is not True
+                    or verdict.get("purchase_allowed") is not False
+                    or verdict.get("rules_revision") != saved["revision"]
+                    or evidence.get("source") != "discogs_rendered_listing"
+                    or evidence.get("cart_state") != "addable"
+                ):
+                    raise CandidateStopped("candidate_cart_review_unverified")
+                claim = self.claims.get(key)
+                if (
+                    claim is None
+                    or claim.release_id != release
+                    or claim.listing_id != ident
+                    or claim.rules_revision != saved["revision"]
+                ):
+                    raise CandidateStopped("one_copy_claim_unverified")
+                return {
+                    "snapshot": {**saved, "kill_switch": False, "control_revision": control[1]},
+                    "listing": review,
+                    "claim": claim.response(),
+                    "candidate_sequence": row[0],
+                    "purchase_allowed": False,
+                }
+        finally:
+            store.close()
+
+    def reserve_cart_inspection(self, release, ident, key, *, seller_handle, fingerprint):
+        """Reserve one copy for reversible quote inspection only."""
+        if self.claims is None:
+            raise CandidateStopped("claim_store_unconfigured")
+        store = RulesStore(self.database)
+        try:
+            with store.db:
+                store.db.execute("BEGIN IMMEDIATE")
+                saved, control, running, baseline, _, page = self._guard(store, release)
+                row = store.db.execute(
+                    "SELECT baseline_revision,rules_revision,control_revision,schedule_revision,"
+                    "reviewed_at,review,state FROM discogs_candidates "
+                    "WHERE release_id=? AND listing_id=?",
+                    (release, ident),
+                ).fetchone()
+                review = json.loads(row[5]) if row and row[5] else None
+                verdict = (
+                    review.get("cart_inspection_evaluation") if isinstance(review, dict) else None
+                )
+                evidence = review.get("detail_evidence") if isinstance(review, dict) else None
+                if (
+                    not row
+                    or row[6] not in {"blocked", "review_only"}
+                    or row[0] != baseline[0]
+                    or row[1] != saved["revision"]
+                    or row[2] != control[1]
+                    or row[3] != running[1]
+                    or row[4] is None
+                    or not 0 <= self.clock() - row[4] <= MAX_AGE
+                    or not any(item["listing_id"] == ident for item in page["rows"])
+                    or not isinstance(verdict, dict)
+                    or not isinstance(evidence, dict)
+                    or verdict.get("eligible_for_cart_inspection") is not True
+                    or verdict.get("purchase_allowed") is not False
+                    or verdict.get("rules_revision") != saved["revision"]
+                    or evidence.get("source") != "discogs_rendered_listing"
+                    or evidence.get("cart_state") != "addable"
+                    or evidence.get("seller_handle") != seller_handle
+                    or review.get("observation_fingerprint") != fingerprint
+                ):
+                    raise CandidateStopped("candidate_cart_review_stale_or_blocked")
+                revision = saved["revision"]
+        finally:
+            store.close()
+        try:
+            claim = self.claims.reserve(release, ident, revision, key)
+        except CartClaimBlocked as error:
+            raise CandidateStopped(str(error)) from None
+        self.cart_review_bundle(release, ident, key)
         return claim.response()
