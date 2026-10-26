@@ -53,14 +53,25 @@ test('fixed detail collector reads only exact visible item facts with unknown pa
   assert.ok(!('tax' in result) && !('destination' in result));
 });
 
-test('seller identity comes only from one bounded visible profile href', () => {
+test('seller identity accepts only unambiguous same-origin profile links', () => {
   assert.equal(collect(html.replace('/seller/Synthetic_1/profile', '/seller/Other/profile'))
     .seller_handle, 'Other');
+  assert.equal(collect(html.replace('/seller/Synthetic_1/profile',
+    'https://www.discogs.com/seller/Synthetic_1/profile')).seller_handle, 'Synthetic_1');
+  assert.equal(collect(html.replace('<a href="/seller/Synthetic_1/profile">Synthetic seller</a>',
+    '<a href="/seller/Synthetic_1/profile">Seller</a>' +
+    '<a href="https://www.discogs.com/seller/Synthetic_1/profile">Seller again</a>'))
+    .seller_handle, 'Synthetic_1');
   for (const markup of [html.replace('/seller/Synthetic_1/profile', '/seller/Synthetic_1/profile?x=1'),
+    html.replace('/seller/Synthetic_1/profile',
+      'https://other.example/seller/Synthetic_1/profile'),
     html.replace('/seller/Synthetic_1/profile', '/seller/Other Name/profile'),
     html.replace('<a href="/seller/Synthetic_1/profile">Synthetic seller</a>', ''),
     html.replace('<a href="/seller/Synthetic_1/profile">Synthetic seller</a>',
-      '<a href="/seller/Synthetic_1/profile">One</a><a href="/seller/Other/profile">Two</a>')]) {
+      '<a href="/seller/Synthetic_1/profile">One</a><a href="/seller/Other/profile">Two</a>'),
+    html.replace('<a href="/seller/Synthetic_1/profile">Synthetic seller</a>',
+      '<a href="/seller/Synthetic_1/profile">One</a>' +
+      '<a href="https://other.example/seller/Synthetic_1/profile">Untrusted</a>')]) {
     const result = collect(markup);
     assert.equal(result.seller_handle, null);
     assert.equal(result.purchase_allowed, false);

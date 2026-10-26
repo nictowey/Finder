@@ -87,12 +87,16 @@ export function collectListingDetailDom(expected) {
     const details = one(main, '[data-testid="item-details"]');
     // The profile href is an identity hint, never a substitute for a fresh
     // release/listing check. Missing or ambiguous links remain unknown.
-    const sellerLinks = [...main.querySelectorAll("a[href^='/seller/'][href$='/profile']")]
-      .filter(visible);
-    if (sellerLinks.length === 1) {
-      const sellerHref = sellerLinks[0].getAttribute('href');
-      const sellerMatch = /^\/seller\/([A-Za-z0-9_-]{1,64})\/profile$/u.exec(sellerHref ?? '');
-      if (sellerMatch) base.seller_handle = sellerMatch[1];
+    const sellerHrefs = [...main.querySelectorAll('a[href]')].filter(visible)
+      .map(link => link.getAttribute('href'))
+      .filter(href => href?.includes('/seller/') && href.includes('/profile'));
+    const sellerMatches = sellerHrefs.map(href =>
+      /^(?:\/seller\/|https:\/\/www\.discogs\.com\/seller\/)([A-Za-z0-9_-]{1,64})\/profile$/u.exec(href));
+    // The rendered item uses an absolute same-origin link. Repeated links to
+    // the same seller are harmless; malformed or conflicting profiles are not.
+    if (sellerMatches.length && sellerMatches.every(match =>
+      match && match[1] === sellerMatches[0]?.[1])) {
+      base.seller_handle = sellerMatches[0][1];
     }
     const comment = details && one(details, 'p.break-words.whitespace-pre-line');
     if (comment && comment.children.length === 0) {
