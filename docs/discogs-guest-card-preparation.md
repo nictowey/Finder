@@ -382,7 +382,12 @@ This path is supervised CUA development tooling, not autonomous server checkout.
 On October 26, 2026, revision
 `12ab704eeff8a31d22632f176838f98766a65cb2` passed its exact CI and independent
 review. Staged server hashes matched; the serialized actor was installed without
-module dependencies or a browser restart. Fresh All/All history showed zero
+module dependencies or a browser restart. The exported function source hash was
+`a49c89eb700cf6773dc0ca15882feb8afd9f1b0ff04cd678eb62b43458f88e9a`;
+its whitespace-only installation form had hash
+`41a5ecec9ba283f0756798a8855b451162ec4b70a958bf9a8d65e5b5aa3804fe`
+and 8,280 characters. The installed runtime's length and diagnostic checksum
+matched that copy. Fresh All/All history showed zero
 orders before the test. Normal item/release links verified item `1366950910`
 and release `3422100`. The current cart and fresh merchant checkout showed
 one item from seller `Mailman21842`, item $0.10 plus
@@ -437,7 +442,9 @@ complete All/All merchant history showing zero orders. A new immutable review
 must link the successful claim/outcome and this disposition before another
 exact-scope no-submit claim may run. A challenge, order, incomplete history or
 uncertain disposition stops it. No user card standby or test purchase is needed.
-The current `guest_form_visible` guard remains in force.
+The current `guest_form_visible` guard remains in force. There is no enabled
+form-dismissal disposition input yet; a zero-order view alone cannot mint
+another claim through the current CLI.
 
 The captured checkout source distinguishes a creation transaction ID from the
 merchant order ID returned after approval/capture. That supports treating an
