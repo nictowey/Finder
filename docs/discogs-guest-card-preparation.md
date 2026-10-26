@@ -949,3 +949,39 @@ format and type checking). Negative cases cover private getters, mixed/hidden
 or non-USD cells, unknown classes/attributes, malformed schemas and bounds.
 Independent review accepted the final scope. These results verify the diagnostic
 code offline; they do not yet establish the actual layout or repair its selectors.
+
+
+### Captured nonlegacy cart repair (October 26)
+
+The bounded actual capture at revision `1ea2be8` established both root causes:
+there were no `form.legacy` or `address` elements, although one ordinary form
+owned the exact item row, Go to Checkout button and selected shipping control.
+One visible nested-DIV shipping-address wrapper was inside the merchant container.
+The existing subtotal/shipping/total selectors already matched the displayed
+explicit USD amounts. The redacted structural capture is retained in
+`tests/fixtures/discogs_cart_layout_1ea2be8.json`; private lines and deeper line
+markup were not captured. Address values and deeper markup in tests are synthetic.
+
+The batch repair derives the owner form from the unique container and checks the
+row, shipping select and Go button associations together. Split, duplicate,
+detached or changed controls stop. The read-only public collector classifies
+legacy commitment versus V2 navigation and leaves V2 address state unknown.
+The separate hosted collector privately normalizes only bounded visible address
+lines, omitting the observed heading and plain “Change your address” link without
+reading its href. Unknown controls/links, ambiguous wrappers and changes during
+hashing stop. Only a private matching destination binding can authorize the
+noncommitting preflight navigation; an unknown public address flag cannot.
+
+All item/release/seller/count, explicit money, shipping, ledger and document
+continuity checks remain required. Cart grades stay unknown until independently
+verified on the fresh checkout. Displayed aggregate amounts do not prove final
+tax or payment readiness. No card initialization or payment is part of this
+repair. A new bounded server preflight is still required to verify the actual
+private line layout and end-to-end navigation; offline fixtures do not prove it.
+
+The integrated batch passed 263 focused cart/checkout tests, 3,885 Python tests
+plus 41 subtests, 110 app tests, lint, format and type checks. Independent review
+accepted the repair and the bounded three-phase preflight plan. Four older
+synthetic legacy snapshots now explicitly declare their control kind; their
+quote/claim expectations were not relaxed. These checks establish offline
+compatibility, not live navigation or purchase readiness.

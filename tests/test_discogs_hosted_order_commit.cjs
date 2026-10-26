@@ -25,6 +25,7 @@ const cartDom = () => ({ schema: 'discogs_cart_dom_v1', code: 'observed', purcha
   shipping_methods: { selector_count: 1, visible: true, options_over_limit: false,
     option_count: 1, selected_index: 0,
     options: [{ selected: true, disabled: false, label: 'Standard shipping' }] },
+  checkout_control_kind: 'legacy_place_order',
   final_button_count: 1, final_button_visible: true, final_button_enabled: true,
   agreement_count: 1, agreement_visible: true,
   payment_control_count: 1, payment_control_visible: true });

@@ -188,6 +188,22 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
   const fields = document.querySelectorAll('#card-fields-container');
   out.existing_form = [...fields].some(node => node.childElementCount > 0 && visible(node));
   const rows = cart ? document.querySelectorAll('tr.order_row') : named(document, 'li', '_checkout-sell-item__list-item_');
+  const cartBinding = () => {
+    const controls = document.querySelectorAll('button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]');
+    const containers = document.querySelectorAll('[id^="cart-order-"].order_container');
+    const selects = document.querySelectorAll('.order_shipping_fields select.shipping_method[name="shipping_method"]');
+    if (controls.length !== 1 || containers.length !== 1 || selects.length !== 1 || rows.length !== 1) return null;
+    const button = controls[0], container = containers[0], select = selects[0], form = button.form;
+    const summaries = container.querySelectorAll('.order_summary');
+    if (!form || !form.isConnected || form.ownerDocument !== document || container.closest('form') !== form ||
+        select.form !== form || !form.contains(container) || !form.contains(rows[0]) || !form.contains(button) || !form.contains(select) ||
+        !container.contains(rows[0]) || !container.contains(button) || !container.contains(select) ||
+        summaries.length !== 1 || !form.contains(summaries[0]) || !visible(container) || !visible(rows[0]) || !visible(select) ||
+        !visible(button) || button.disabled || button.matches(':disabled') || button.getAttribute('aria-disabled') === 'true' ||
+        button.type !== 'submit' || button.value !== 'Go to Checkout' || text(button) !== 'Go to Checkout') return null;
+    return { button, container, select, form };
+  };
+  const initialCartBinding = cart ? cartBinding() : null;
   out.item_row_count = Math.min(rows.length, 2);
   if (rows.length === 1 && visible(rows[0])) {
     const row = rows[0];
@@ -233,58 +249,99 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
     declarations.includes('You have 1 item in your cart from 1 seller.') :
     declarations.filter(value => /^Items \([0-9]+\)$/u.test(value)).length === 1 && declarations.includes('Items (1)');
   let addresses;
-  if (cart) addresses = [...document.querySelectorAll('[id^="shipping_address_"] address')];
+  if (cart) addresses = initialCartBinding ? [...document.querySelectorAll('[id^="shipping_address_"]')].filter(visible) : [];
   else {
     const containers = named(document, 'div', '_ships-to-address__container_');
     const content = containers.length === 1 ? named(containers[0], 'div', '_ships-to-address__content_') : [];
     addresses = content.length === 1 ? [...content[0].querySelectorAll('address')] : [];
   }
   out.address_container_count = Math.min(addresses.length, 2);
-  if (addresses.length === 1 && visible(addresses[0])) {
+  if (addresses.length === 1 && visible(addresses[0]) && (!cart || initialCartBinding.container.contains(addresses[0]))) {
     const address = addresses[0], initialNodes = [...address.childNodes];
     const normalized = value => value.normalize('NFC').replace(/\s+/gu, ' ').trim();
     const readAddressLines = () => {
+      if (cart) {
+        // Actual 1ea2be8 capture: visible shipping-prefix DIV, header H2,
+        // nested content DIVs; no ADDRESS element. Values below remain private.
+        // Line semantics/bounds use synthetic normalization fixtures, not a
+        // claim that the redacted capture disclosed any private line values.
+        const lines = [], nodes = []; let line = '', length = 0;
+        const flush = () => { const value = normalized(line); if (value) lines.push(value); line = ''; };
+        const walk = (node, depth) => {
+          if (depth > 8 || nodes.length >= 80) throw new Error('unsupported');
+          nodes.push(node);
+          if (node.nodeType === 3) {
+            const raw = node.nodeValue || ''; length += raw.length;
+            if (raw.length > 600 || length > 1_200) throw new Error('unsupported');
+            line += raw; return;
+          }
+          if (node.nodeType !== 1) throw new Error('unsupported');
+          if (!rendered(node)) return;
+          if (node.tagName === 'H2' && text(node) === 'Your Shipping Address' &&
+              [...node.childNodes].every(child => child.nodeType === 3)) return;
+          if (node.tagName === 'A' && [...node.childNodes].every(child => child.nodeType === 3) &&
+              (text(node) === 'Change your address' || node.matches('a.edit_shipping_address') && text(node) === 'Edit')) return;
+          if (node.tagName === 'BR') { if (node.childNodes.length) throw new Error('unsupported'); flush(); return; }
+          // ADDRESS remains a supported semantic container for existing offline
+          // fixtures; the captured cart path requires only DIV/P/SPAN/BR.
+          if (!['DIV', 'P', 'SPAN', 'ADDRESS'].includes(node.tagName) || !visible(node)) throw new Error('unsupported');
+          const block = ['DIV', 'P', 'ADDRESS'].includes(node.tagName) || node.tagName === 'SPAN' && node.parentElement?.tagName === 'ADDRESS';
+          if (block) flush();
+          [...node.childNodes].forEach(child => walk(child, depth + 1));
+          if (block) flush();
+        };
+        try {
+          walk(address, 0); flush();
+          return { lines, nodes };
+        } catch { return null; }
+      }
       const children = [...address.children];
       if (children.length >= 4 && children.length <= 6 && children.every(node => node.tagName === 'SPAN' &&
-          node.children.length === 0 && visible(node) && (cart || [...node.classList].some(token => token.startsWith('_ships-to-address__line_')))) &&
+          node.children.length === 0 && visible(node) && [...node.classList].some(token => token.startsWith('_ships-to-address__line_'))) &&
           [...address.childNodes].every(node => node.nodeType === 1 || node.nodeType === 3 && !normalized(node.nodeValue || ''))) {
-        return children.map(node => normalized(text(node)));
+        return { lines: children.map(node => normalized(text(node))), nodes: [...address.childNodes] };
       }
-      // Semantic legacy ADDRESS text/BR flow, not an assumed account layout.
-      // Unknown tags, hidden breaks, empty lines and oversized data fail closed.
-      if (!cart || !visible(address) || [...address.childNodes].some(node => node.nodeType !== 3 &&
-          (node.nodeType !== 1 || node.tagName !== 'BR' || !rendered(node) || node.childNodes.length))) return null;
-      const lines = []; let line = '';
-      for (const node of address.childNodes) {
-        if (node.nodeType === 3) line += node.nodeValue || '';
-        else { lines.push(normalized(line)); line = ''; }
-      }
-      if (normalized(line)) lines.push(normalized(line));
-      return lines;
+      // The checkout keeps its separately source-derived direct-SPAN grammar.
+      return null;
     };
-    const lines = readAddressLines();
+    const initialAddress = readAddressLines(), lines = initialAddress?.lines;
     out.address_line_count = lines && lines.length <= 6 ? lines.length : null;
     out.address_present = !!lines && lines.length >= 4 && lines.length <= 6 &&
       lines.every(line => line.length > 0 && line.length <= 160) && lines.join('\n').length <= 600;
     if (out.address_present) {
       const addressText = lines.join('\n'), addressDigest = await digest(addressText);
-      const currentLines = readAddressLines();
+      const currentAddress = readAddressLines(), currentLines = currentAddress?.lines;
+      const currentBinding = cart ? cartBinding() : null;
       if (address.childNodes.length !== initialNodes.length || [...address.childNodes].some((node, index) => node !== initialNodes[index]) ||
-          !currentLines || currentLines.join('\n') !== addressText) { out.address_present = false; return out; }
+          !currentLines || currentLines.join('\n') !== addressText || currentAddress.nodes.length !== initialAddress.nodes.length ||
+          currentAddress.nodes.some((node, index) => node !== initialAddress.nodes[index]) ||
+          cart && (!currentBinding || Object.keys(initialCartBinding).some(key => initialCartBinding[key] !== currentBinding[key]) ||
+            [...document.querySelectorAll('[id^="shipping_address_"]')].filter(visible).length !== 1 || !currentBinding.container.contains(address))) {
+        out.address_present = false; return out;
+      }
       out.destination = addressDigest === approvedDestinationDigest;
       if (privateDestinationSnapshot) out.private_destination_snapshot = addressDigest;
     }
   }
 
-  if (cart) {
-    const controls = document.querySelectorAll('button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]');
-    const button = controls[0];
-    out.go = controls.length === 1 && visible(button) && !button.disabled && !button.matches(':disabled') &&
-      button.getAttribute('aria-disabled') !== 'true' && button.type === 'submit' &&
-      button.value === 'Go to Checkout' && text(button) === 'Go to Checkout' &&
-      button.closest('form.legacy') !== null;
-  }
+  if (cart) out.go = !!cartBinding();
   return out;
+}
+
+/** Same-document final form association recheck on the bound visible Go handle. */
+function revalidateHostedGoFormDom(element) {
+  const controls = document.querySelectorAll('button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]');
+  const containers = document.querySelectorAll('[id^="cart-order-"].order_container');
+  const rows = document.querySelectorAll('tr.order_row');
+  const selects = document.querySelectorAll('.order_shipping_fields select.shipping_method[name="shipping_method"]');
+  if (!element.isConnected || element.ownerDocument !== document || controls.length !== 1 || controls[0] !== element ||
+      containers.length !== 1 || rows.length !== 1 || selects.length !== 1 || !element.form) return false;
+  const form = element.form, container = containers[0], select = selects[0];
+  return form.isConnected && form.ownerDocument === document && container.closest('form') === form && select.form === form &&
+    [container, rows[0], element, select].every(node => form.contains(node)) &&
+    [rows[0], element, select].every(node => container.contains(node)) && container.querySelectorAll('.order_summary').length === 1 &&
+    !element.disabled && !element.matches(':disabled') && element.getAttribute('aria-disabled') !== 'true' &&
+    element.type === 'submit' && element.value === 'Go to Checkout';
 }
 
 /** Exact observed provider URL, with private query parameters discarded. */
@@ -440,9 +497,12 @@ export async function prepareHostedGuestForm(context, request, options = {}) {
       const selectedLabel = selectedCartShippingLabel(raw);
       if (cartShippingLabel && selectedLabel !== cartShippingLabel) fail('cart_document_changed');
       if (stable(await detailRead()) !== stable(detail)) fail('listing_detail_changed');
+      // V2 leaves the raw private-address warning unknown. Only this current
+      // supplemental address/digest observation establishes the destination.
       if (raw.code !== 'observed' || raw.form_count !== 1 || raw.order_container_count !== 1 || raw.item_row_count !== 1 ||
           raw.listing_matches_expected !== true || raw.canonical_listing_href !== '/sell/item/1366950910' ||
-          !dom.go || raw.quantity_control_count !== 0 || raw.missing_address !== false ||
+          !dom.go || raw.quantity_control_count !== 0 || raw.checkout_control_kind !== 'v2_go_to_checkout' ||
+          raw.missing_address !== null || dom.address_present !== true || dom.destination !== true ||
           raw.subtotal?.value !== '$0.10 USD' || raw.shipping?.value !== '$4.95 USD' || raw.total?.value !== '$5.05 USD' ||
           !selectedLabel) fail('cart_scope_unverified');
       cartShippingLabel = selectedLabel;
@@ -454,9 +514,7 @@ export async function prepareHostedGuestForm(context, request, options = {}) {
     if (!go) fail('checkout_control_unverified');
     await cartRead();
     if (await bounded(() => ledgerHead(directory, request)) !== head) fail('ledger_changed');
-    if (!await bounded(() => go.evaluate(element => element.isConnected && element.ownerDocument === document &&
-      document.querySelectorAll('button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]').length === 1 &&
-      document.querySelector('button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]') === element))) fail('checkout_control_changed');
+    if (!await bounded(() => go.evaluate(revalidateHostedGoFormDom))) fail('checkout_control_changed');
     await bounded(() => {
       check(); navigationIssued = true;
       return go.click({ timeout: Math.max(1, deadline - Date.now()), noWaitAfter: true });
@@ -1095,7 +1153,8 @@ export async function preflightHostedGuestCheckout(context, request, options = {
       if (cartTitle && parsed.full_caption_digest !== cartTitle.full_caption_digest) fail('cart_document_changed');
       if (raw.code !== 'observed' || raw.form_count !== 1 || raw.order_container_count !== 1 || raw.item_row_count !== 1 ||
           raw.listing_matches_expected !== true || raw.canonical_listing_href !== '/sell/item/1366950910' || !dom.listing || !dom.go ||
-          raw.quantity_control_count !== 0 || raw.missing_address !== false || raw.subtotal?.value !== '$0.10 USD' ||
+          raw.quantity_control_count !== 0 || raw.checkout_control_kind !== 'v2_go_to_checkout' || raw.missing_address !== null ||
+          dom.address_present !== true || dom.destination !== true || raw.subtotal?.value !== '$0.10 USD' ||
           raw.shipping?.value !== '$4.95 USD' || raw.total?.value !== '$5.05 USD' ||
           !selectedLabel) fail('cart_scope_unverified');
       if (stable(await detailRead()) !== stable(detail)) fail('listing_detail_changed');
@@ -1105,9 +1164,7 @@ export async function preflightHostedGuestCheckout(context, request, options = {
     await cartRead(); const go = await read(() => page.$(HOSTED_GO_SELECTOR));
     if (!go) fail('checkout_control_unverified');
     await cartRead(); await ledgerGuard();
-    if (!await read(() => go.evaluate(element => element.isConnected && element.ownerDocument === document &&
-      document.querySelectorAll('button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]').length === 1 &&
-      document.querySelector('button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]') === element))) fail('checkout_control_changed');
+    if (!await read(() => go.evaluate(revalidateHostedGoFormDom))) fail('checkout_control_changed');
     // A document navigation response distinguishes normal navigation from a
     // same-document URL edit. This fixed wait is registered before the click.
     const navigation = track(() => page.waitForNavigation({ url: GUEST_CARD_URL, waitUntil: 'load', timeout: Math.max(1, deadline - Date.now()) }));

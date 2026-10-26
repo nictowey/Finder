@@ -1307,3 +1307,162 @@ test('shipping option shape requires exactly one selected total and a matching b
     assert.equal((await execute()).code, 'cart_scope_unverified'); assert.deepEqual([b.effects.go, b.effects.card], [0, 0]);
   });
 });
+
+// Structure comes from redacted hosted layout 1ea2be8 (nonlegacy owner form,
+// prefix DIV/header H2/nested content DIVs; zero ADDRESS). Private line values
+// and deeper line/BR semantics here are SYNTHETIC normalization fixtures.
+const nestedPrivateCart = cartMarkup.replace('<form class="legacy">', '<form>')
+  .replace(`<address>${addressMarkup}</address>`, `<div><h2>Your Shipping Address</h2></div><div><div>${ADDRESS.join('<br>')}</div></div>`);
+
+test('synthetic complete preflight follows captured nonlegacy form and DIV summary/address layout without initialization', async () => {
+  const cart = nestedPrivateCart.replace('<a class="edit_shipping_address">Edit</a>', '<a>Change your address</a>')
+    .replace('<table class="order_summary">', '<div class="order_summary"><table>')
+    .replace('</table>\n<div class="order_shipping_fields">', '</table></div>\n<div class="order_shipping_fields">');
+  await preflightFixture(async ({ b, execute, f }) => {
+    const result = await execute(); assert.equal(result.code, 'cart_checkout_preflight_observed', json(result));
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]); assert.equal((await records(f.directory)).length, 0);
+    assert.equal(result.destination_match, true); assert.equal(result.initialization_allowed, false);
+  }, { cart });
+});
+
+test('V2 unknown raw address flag cannot authorize Go without the independent current private binding', async () => {
+  for (const mode of ['unknown_private_address', 'fabricated_missing_false', 'wrong_control_kind']) {
+    await preflightFixture(async ({ b, execute }) => {
+      if (mode === 'unknown_private_address') b.state.merchant.window.document.querySelector('[id^="shipping_address_"]').innerHTML = '<section>UNKNOWN_PRIVATE_ADDRESS</section>';
+      else {
+        const evaluate = b.page.evaluate;
+        b.page.evaluate = async (fn, arg) => {
+          const snapshot = await evaluate(fn, arg);
+          if (fn.name === 'collectCartDom') {
+            if (mode === 'fabricated_missing_false') snapshot.missing_address = false;
+            else snapshot.checkout_control_kind = 'v1_order_submission';
+          }
+          return snapshot;
+        };
+      }
+      const result = await execute(); assert.equal(result.status, 'blocked', mode);
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+      assert.ok(!json(result).includes('UNKNOWN_PRIVATE_ADDRESS'));
+    }, { cart: nestedPrivateCart });
+  }
+});
+
+test('captured nonlegacy owner form and nested prefix DIV address normalize synthetic private lines and ignore hidden editor wrappers', async () => {
+  const b = browser({ cart: nestedPrivateCart });
+  const isolated = await import('../scripts/discogs_hosted_guest_prepare.mjs?nonlegacy-probe=' + randomUUID());
+  const probeCurrent = grant => isolated.probeCurrentGuestPreparationEvidence(b.context, grant.request, { authorization: grant.authorization });
+  const document = b.state.merchant.window.document;
+  for (let i = 0; i < 2; i++) {
+    const editor = document.createElement('div'); editor.id = 'shipping_address_hidden_' + i; editor.hidden = true;
+    editor.innerHTML = '<form><input value="PRIVATE_EDITOR"><div>PRIVATE_EDITOR</div></form>';
+    Object.defineProperty(editor, 'textContent', { get() { throw new Error('HIDDEN_EDITOR_READ'); } });
+    Object.defineProperty(editor.querySelector('input'), 'value', { get() { throw new Error('HIDDEN_VALUE_READ'); } });
+    document.body.append(editor);
+  }
+  try {
+    const dom = await b.page.evaluate(port.collectHostedGuestDom, { stage: 'cart', approvedDestinationDigest: sha(ADDRESS.join('\n')) });
+    assert.equal(document.querySelectorAll('form.legacy').length, 0); assert.equal(document.querySelectorAll('address').length, 0);
+    assert.equal(dom.go, true); assert.equal(dom.address_container_count, 1); assert.equal(dom.address_line_count, 4);
+    assert.equal(dom.address_present, true); assert.equal(dom.destination, true);
+    const grant = readonlyGrant(), first = await probeCurrent(grant), bound = await probeCurrent(confirmation(grant, first));
+    assert.equal(first.address_present, true); assert.equal(bound.code, 'approved_saved_destination_bound');
+    for (const secret of [...ADDRESS.filter(value => value !== 'US'), 'PRIVATE_EDITOR', sha(ADDRESS.join('\n'))]) assert.ok(!json(bound).includes(secret));
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  } finally { b.close(); }
+});
+
+test('supplemental cart binding rejects cross-form controls, detached summary, ambiguous container and multiple visible address wrappers', async () => {
+  for (const mode of ['go_form', 'shipping_form', 'summary_outside', 'duplicate_container', 'duplicate_address', 'address_outside']) {
+    const b = browser({ cart: nestedPrivateCart }), document = b.state.merchant.window.document;
+    const other = document.createElement('form'); other.id = 'synthetic-other-form'; document.body.append(other);
+    if (mode === 'go_form') document.querySelector('button').setAttribute('form', other.id);
+    if (mode === 'shipping_form') document.querySelector('select').setAttribute('form', other.id);
+    if (mode === 'summary_outside') other.append(document.querySelector('.order_summary'));
+    if (mode === 'duplicate_container') document.body.append(document.querySelector('.order_container').cloneNode(false));
+    if (mode === 'duplicate_address') document.querySelector('.order_container').append(document.querySelector('[id^="shipping_address_"]').cloneNode(true));
+    if (mode === 'address_outside') other.append(document.querySelector('[id^="shipping_address_"]'));
+    try {
+      const snapshot = await b.page.evaluate(port.collectHostedGuestDom, { stage: 'cart', approvedDestinationDigest: sha(ADDRESS.join('\n')) });
+      assert.equal(snapshot.address_present, false, mode); assert.equal(snapshot.destination, false, mode);
+      if (!['duplicate_address', 'address_outside'].includes(mode)) assert.equal(snapshot.go, false, mode);
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    } finally { b.close(); }
+  }
+});
+
+test('bounded nested address walk rejects visible controls, unknown elements, extra lines and changed values without exporting private text', async () => {
+  for (const fragment of ['<input value="PRIVATE">', '<form><input></form>', '<textarea>PRIVATE</textarea>', '<section>PRIVATE</section>', '<a>PRIVATE</a>', '<div>EXTRA_PRIVATE_LINE</div>'.repeat(3)]) {
+    const b = browser({ cart: nestedPrivateCart }), document = b.state.merchant.window.document;
+    document.querySelector('[id^="shipping_address_"]').insertAdjacentHTML('beforeend', fragment);
+    try {
+      const snapshot = await b.page.evaluate(port.collectHostedGuestDom, { stage: 'cart', approvedDestinationDigest: sha(ADDRESS.join('\n')) });
+      assert.equal(snapshot.address_present, false, fragment); assert.equal(snapshot.destination, false, fragment);
+      assert.ok(!json(snapshot).includes('PRIVATE'));
+    } finally { b.close(); }
+  }
+  for (const change of ['content', 'same_text_node', 'form']) {
+    const b = browser({ cart: nestedPrivateCart });
+    try {
+      const document = b.state.merchant.window.document, address = document.querySelector('[id^="shipping_address_"]');
+      let calls = 0;
+      Object.defineProperty(b.state.merchant.window, 'crypto', { value: { subtle: { digest: async (...args) => {
+        const result = await webcrypto.subtle.digest(...args);
+        if (++calls === 2) {
+          const line = address.querySelector('div + div > div').firstChild;
+          if (change === 'content') line.nodeValue = 'CHANGED_PRIVATE_LINE';
+          if (change === 'same_text_node') line.replaceWith(line.cloneNode());
+          if (change === 'form') {
+            const other = document.createElement('form'); other.id = 'changed-owner-form'; document.body.append(other);
+            document.querySelector('button').setAttribute('form', other.id);
+          }
+        }
+        return result;
+      } } } });
+      const snapshot = await b.page.evaluate(port.collectHostedGuestDom, { stage: 'cart', approvedDestinationDigest: sha(ADDRESS.join('\n')), privateDestinationSnapshot: true });
+      assert.equal(snapshot.address_present, false, change); assert.equal(snapshot.destination, false, change);
+      assert.ok(!Object.hasOwn(snapshot, 'private_destination_snapshot')); assert.ok(!json(snapshot).includes('CHANGED_PRIVATE_LINE'));
+    } finally { b.close(); }
+  }
+});
+
+test('nested nonlegacy cart confirmation binds only the same current document and unchanged private lines', async () => {
+  const isolated = await import('../scripts/discogs_hosted_guest_prepare.mjs?nonlegacy-confirm=' + randomUUID());
+  for (const change of ['document', 'address']) {
+    const b = browser({ cart: nestedPrivateCart }), grant = readonlyGrant();
+    const probeCurrent = grant => isolated.probeCurrentGuestPreparationEvidence(b.context, grant.request, { authorization: grant.authorization });
+    try {
+      const first = await probeCurrent(grant); assert.equal(first.status, 'observed');
+      if (change === 'document') b.state.merchant = dom(nestedPrivateCart, CART);
+      else b.state.merchant.window.document.querySelector('[id^="shipping_address_"] div + div > div').firstChild.nodeValue = 'CHANGED_PRIVATE_LINE';
+      const result = await probeCurrent(confirmation(grant, first));
+      assert.equal(result.code, change === 'document' ? 'probe_document_changed' : 'saved_destination_snapshot_changed');
+      assert.notEqual(result.destination_binding_available, true); assert.ok(!json(result).includes('CHANGED_PRIVATE_LINE'));
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    } finally { if (change === 'document') b.state.merchant.window.close(); b.close(); }
+  }
+});
+
+test('observed plain Change your address label is excluded from synthetic nested private lines while unknown links reject', async () => {
+  // Public label observed in the actual cart at21:49; private values and deeper
+  // line markup remain synthetic, derived from the redacted1ea2be8 structure.
+  for (const [link, allowed] of [
+    ['<a>Change your address</a>', true],
+    ['<a>Change another address</a>', false],
+    ['<a><span>Change your address</span></a>', false],
+    ['<a>Edit</a>', false],
+  ]) {
+    const cart = nestedPrivateCart.replace('<a class="edit_shipping_address">Edit</a>', link);
+    const b = browser({ cart });
+    for (const anchor of b.state.merchant.window.document.querySelectorAll('[id^="shipping_address_"] a')) {
+      const getAttribute = anchor.getAttribute.bind(anchor);
+      anchor.getAttribute = name => { if (name === 'href') throw new Error('ADDRESS_LINK_HREF_MUST_NOT_BE_READ'); return getAttribute(name); };
+    }
+    try {
+      const snapshot = await b.page.evaluate(port.collectHostedGuestDom, { stage: 'cart', approvedDestinationDigest: sha(ADDRESS.join('\n')) });
+      assert.equal(snapshot.address_present, allowed, link); assert.equal(snapshot.destination, allowed, link);
+      assert.equal(snapshot.address_line_count, allowed ? 4 : null, link);
+      for (const secret of ADDRESS.filter(value => value !== 'US')) assert.ok(!json(snapshot).includes(secret));
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    } finally { b.close(); }
+  }
+});

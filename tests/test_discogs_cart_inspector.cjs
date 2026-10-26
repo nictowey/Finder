@@ -3,6 +3,8 @@
 const assert = require('node:assert/strict');
 const { test, before } = require('node:test');
 const { JSDOM } = require('jsdom');
+const { readFileSync } = require('node:fs');
+const { join } = require('node:path');
 
 let inspectCartText, inspectCurrentCart, collectCartDom, inspectCartDomSnapshot, inspectCurrentCartDom, MAX_CART_TEXT_LENGTH, CART_READ_TIMEOUT_MS;
 before(async () => {
@@ -288,6 +290,23 @@ const CART_DOM = `<!doctype html><html><body>
     <button class="order_button checkout_v1">Place order and pay now</button>
   </div></form></body></html>`;
 
+// Synthetic extension of the captured V2 form/summary shape. Address content
+// remains the separate synthetic warning from CART_DOM, never captured data.
+const V2_CART_DOM = CART_DOM.replace('<form class="legacy">', '<form id="owner-form" class="current">')
+  .replace('<div id="shipping_address_synthetic"><p>You haven\'t provided a shipping address yet.</p>\n' +
+    '      <a class="edit_shipping_address">Set up your shipping information</a></div>',
+  '<div id="shipping_address_synthetic"><p>PRIVATE_SYNTHETIC_ADDRESS</p></div>')
+  .replace('    <input type="checkbox" class="agree_terms" name="agree_terms">\n' +
+    '    <input type="radio" class="payment_method" name="payment_method" value="SECRET_PAYMENT_VALUE">\n' +
+    '    <button class="order_button checkout_v1">Place order and pay now</button>',
+  '    <div class="order_shipping_fields"><select class="shipping_method" name="shipping_method">' +
+    '<option selected>Economy - Media Mail</option></select></div>\n' +
+    '    <button class="order_button checkout_v2" name="Action.ProceedCommerceCheckout" ' +
+    'type="submit" value="Go to Checkout">Go to Checkout</button>')
+  .replace('$20.00', '$0.10 USD')
+  .replace('To be determined by seller', '$4.95 USD')
+  .replace('To be determined by seller', '$5.05 USD');
+
 function cartDom(html = CART_DOM, url = URL) {
   const dom = new JSDOM(html, { url, runScripts: 'outside-only' });
   // jsdom has no layout. Only fixtures supply layout; production uses real rects.
@@ -368,10 +387,12 @@ test('serialized DOM collector observes exact listing link, unknown tax and enab
   } finally { fixture.close(); }
 });
 
-test('duplicate checkout forms, detached containers, multiple order containers and extra rows fail closed', () => {
+test('unrelated forms and owner form class are irrelevant; detached/multiple merchant structures fail', () => {
   for (const [html, code] of [
-    [CART_DOM.replace('</body>', '<form class="legacy"></form></body>'), 'unsupported_cart_dom'],
-    [CART_DOM.replace('class="legacy"', 'class="changed"'), 'unsupported_cart_dom'],
+    [CART_DOM.replace('</body>', '<form class="legacy"></form></body>'), 'missing_address_and_unknown_final_quote'],
+    [CART_DOM.replace('class="legacy"', 'class="changed"'), 'missing_address_and_unknown_final_quote'],
+    [CART_DOM.replace('<form class="legacy"><div id="cart-order-synthetic"',
+      '<form class="legacy"></form><div id="cart-order-synthetic"'), 'unsupported_cart_dom'],
     [CART_DOM.replace('</body>', '<div id="cart-order-other" class="order_container"></div></body>'), 'unsupported_cart_dom'],
     [CART_DOM.replace('</tbody></table>', '<tr class="order_row"><td>Second synthetic item</td></tr></tbody></table>'), 'unsupported_cart_quantity'],
     [CART_DOM.replace('class="order_row"', 'class="changed_row"'), 'unsupported_cart_quantity'],
@@ -381,6 +402,68 @@ test('duplicate checkout forms, detached containers, multiple order containers a
       const result = inspectCartDomSnapshot(URL, fixture.collect(), OPTIONS);
       assertStopped(result);
       assert.equal(result.code, code);
+    } finally { fixture.close(); }
+  }
+});
+
+test('captured layout motivates class-independent same-form V2 observation', () => {
+  const capture = JSON.parse(readFileSync(join(__dirname,
+    'fixtures/discogs_cart_layout_1ea2be8.json'), 'utf8'));
+  const gate = capture.cart_layout.collector_gate;
+  assert.equal(gate.form_count, 0); // Old form.legacy gate failed on the real page.
+  assert.equal(gate.order_container_count, 1);
+  assert.equal(gate.go_count, 1); assert.equal(gate.shipping_select_count, 1);
+  assert.equal(gate.go_form_present, true); assert.equal(gate.go_form_legacy, false);
+  assert.equal(gate.go_form_contains_row, true);
+  assert.equal(gate.shipping_form_same_as_go, true);
+
+  const fixture = cartDom(V2_CART_DOM);
+  try {
+    const snapshot = fixture.collect();
+    assert.equal(snapshot.form_count, 1); // Unique owner form, independent of class.
+    assert.equal(snapshot.checkout_control_kind, 'v2_go_to_checkout');
+    assert.equal(snapshot.item_row_count, 1);
+    assert.equal(snapshot.missing_address, null);
+    assert.equal(snapshot.final_button_count, 0);
+    const result = inspectCartDomSnapshot(URL, snapshot, OPTIONS);
+    assertStopped(result);
+    assert.equal(result.code, 'final_quote_unverified');
+    assert.ok(result.observations.includes('checkout_navigation_observed_not_order_control'));
+    assert.ok(result.observations.includes('shipping_address_unverified'));
+    assert.ok(result.observations.includes('tax_hidden_unknown'));
+    assert.deepEqual(result.observed_quote.subtotal, { amount: '0.10', currency: 'USD' });
+    assert.deepEqual(result.observed_quote.shipping, { amount: '4.95', currency: 'USD' });
+    assert.deepEqual(result.observed_quote.total, { amount: '5.05', currency: 'USD' });
+    assert.equal(result.observed_quote.tax, null);
+    assert.equal(result.observed_shipping_method.selected_label, 'Economy - Media Mail');
+    assert.equal(result.purchase_allowed, false);
+    assert.equal(JSON.stringify(snapshot).includes('PRIVATE_SYNTHETIC_ADDRESS'), false);
+    assert.equal(JSON.stringify(result).includes('PRIVATE_SYNTHETIC_ADDRESS'), false);
+  } finally { fixture.close(); }
+});
+
+test('V2 rejects split, wrong-form, duplicate and detached merchant controls without money reads', () => {
+  for (const html of [
+    V2_CART_DOM.replace('name="Action.ProceedCommerceCheckout"',
+      'name="Action.ProceedCommerceCheckout" form="other-form"')
+      .replace('</body>', '<form id="other-form"></form></body>'),
+    V2_CART_DOM.replace('name="shipping_method"', 'name="shipping_method" form="other-form"')
+      .replace('</body>', '<form id="other-form"></form></body>'),
+    V2_CART_DOM.replace('</body>', '<button class="order_button checkout_v2" ' +
+      'name="Action.ProceedCommerceCheckout" type="submit" value="Go to Checkout">' +
+      'Go to Checkout</button></body>'),
+    V2_CART_DOM.replace('<div class="order_shipping_fields">',
+      '</div></form><div class="order_shipping_fields">'),
+    V2_CART_DOM.replace('</body>', '<table><tr class="order_row"><td>Second merchant</td></tr></table></body>'),
+  ]) {
+    const fixture = cartDom(html);
+    try {
+      const snapshot = fixture.collect();
+      assert.equal(snapshot.purchase_allowed, false);
+      assert.equal(snapshot.observed_quote, undefined);
+      const result = inspectCartDomSnapshot(URL, snapshot, OPTIONS);
+      assertStopped(result);
+      assert.equal(result.observed_quote, undefined);
     } finally { fixture.close(); }
   }
 });

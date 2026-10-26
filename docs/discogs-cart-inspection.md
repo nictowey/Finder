@@ -96,7 +96,9 @@ const result = await inspectCurrentCartDom(page, { expectedListingId: '123456' }
 
 Observed generic selectors, without hardcoded seller identifiers:
 
-- Seller scope: `form.legacy [id^='cart-order-'].order_container`.
+- Seller scope: the unique `[id^='cart-order-'].order_container` and its actual owner form.
+  The form's class is not an identity signal; item, Go control and shipping select must
+  belong to that same form and container.
 - Item rows: `tr.order_row`; listing link: `a.item_link[href^='/sell/item/']`.
 - Address warning: `[id^='shipping_address_']` and `a.edit_shipping_address`.
 - Summary: `.order_summary`, first cell labels and `td.order_summary_value`;
@@ -104,7 +106,9 @@ Observed generic selectors, without hardcoded seller identifiers:
 - Shipping method: `.order_shipping_fields select.shipping_method[name='shipping_method']`,
   reading `selectedIndex` and each option's current `selected` property, never its value.
 - Agreement: `input.agree_terms[name='agree_terms']`.
-- Final control: `button.order_button.checkout_v1`, never clicked.
+- Controls are explicitly classified: `button.order_button.checkout_v1` is the legacy
+  committing control; the exact V2 `Action.ProceedCommerceCheckout` button is navigation.
+  This reader never clicks either. V2 destination state remains unknown here.
 
 Exact current cart URLs accept both `/sell/cart` and `/sell/cart/` forms. Strict URL and
 option validation precede reading; post-read URL checks reject navigation. Ambiguous/missing

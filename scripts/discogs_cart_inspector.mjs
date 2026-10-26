@@ -183,16 +183,33 @@ export function collectCartDom(expectedListingId) {
       value = value.replace(/\s+/gu, ' ').trim();
       return value.length <= limit ? value : null;
     };
-    const forms = document.querySelectorAll('form.legacy');
     const containers = document.querySelectorAll("[id^='cart-order-'].order_container");
+    const container = containers.length === 1 ? containers[0] : null;
+    const orderForm = container?.closest('form') ?? null;
+    const legacyButtons = document.querySelectorAll('button.order_button.checkout_v1');
+    const goButtons = document.querySelectorAll('button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]');
+    const methods = document.querySelectorAll('.order_shipping_fields select.shipping_method[name="shipping_method"]');
     const result = {
       schema: 'discogs_cart_dom_v1', code: 'observed', purchase_allowed: false,
-      form_count: count(forms), order_container_count: count(containers),
+      form_count: orderForm ? 1 : 0, order_container_count: count(containers),
     };
-    if (forms.length !== 1 || containers.length !== 1 ||
-        containers[0].closest('form.legacy') !== forms[0] || !visible(containers[0])) return result;
-    const container = containers[0];
+    if (!orderForm || !container || !orderForm.contains(container) || !visible(container)) return result;
+    // Retain legacy read-only diagnostics even when its final control is
+    // missing or malformed; the classifier below will block that control.
+    const legacy = goButtons.length === 0 && [...legacyButtons].every(button =>
+      container.contains(button) && button.form === orderForm);
+    const v2 = goButtons.length === 1 && legacyButtons.length === 0 && methods.length === 1 &&
+      container.contains(goButtons[0]) && goButtons[0].form === orderForm &&
+      container.contains(methods[0]) && methods[0].form === orderForm &&
+      visible(goButtons[0]) && goButtons[0].type === 'submit' &&
+      goButtons[0].value === 'Go to Checkout' && text(goButtons[0]) === 'Go to Checkout';
+    if (!legacy && !v2) return result;
+    if (v2 && methods.length !== 1 || methods.length === 1 &&
+        (!container.contains(methods[0]) || methods[0].form !== orderForm)) return result;
+    result.checkout_control_kind = v2 ? 'v2_go_to_checkout' : 'legacy_place_order';
     const rows = container.querySelectorAll('tr.order_row');
+    if (rows.length !== 1 || document.querySelectorAll('tr.order_row').length !== 1 ||
+        !orderForm.contains(rows[0]) || !visible(rows[0])) return result;
     const links = rows.length === 1 ? rows[0].querySelectorAll("a.item_link[href^='/sell/item/']") : [];
     const href = links.length === 1 && visible(links[0]) ? links[0].getAttribute('href') : null;
     const canonical = typeof href === 'string' && /^\/sell\/item\/[1-9][0-9]{0,15}$/u.test(href) &&
@@ -205,13 +222,17 @@ export function collectCartDom(expectedListingId) {
     result.quantity_control_count = count(container.querySelectorAll('tr.order_row input, tr.order_row select'));
     const addresses = [...container.querySelectorAll("[id^='shipping_address_']")].filter(visible);
     result.address_container_count = count(addresses);
-    result.missing_address = addresses.length === 1 &&
+    // V2 contains private address text with a different edit structure. Do
+    // not read that text or infer destination from the wrapper's presence.
+    result.missing_address = v2 ? null : addresses.length === 1 &&
       (text(addresses[0], 500)?.includes("You haven't provided a shipping address yet.") ?? false);
-    result.edit_shipping_address_present = addresses.length === 1 &&
+    result.edit_shipping_address_present = v2 ? false : addresses.length === 1 &&
       [...addresses[0].querySelectorAll('a.edit_shipping_address')].some(visible);
     const summaries = container.querySelectorAll('.order_summary');
     result.summary_count = count(summaries);
     const summary = summaries.length === 1 ? summaries[0] : null;
+    if (!summary || document.querySelectorAll('.order_summary').length !== 1 ||
+        !orderForm.contains(summary) || !visible(summary)) return result;
     const quote = nodes => {
       const row = nodes.length === 1 ? nodes[0].closest('tr') : null;
       const values = row?.querySelectorAll('td.order_summary_value') ?? [];
@@ -241,7 +262,10 @@ export function collectCartDom(expectedListingId) {
     const payments = container.querySelectorAll('input.payment_method[name="payment_method"]');
     result.payment_control_count = count(payments);
     result.payment_control_visible = payments.length === 1 && visible(payments[0]);
-    const methods = container.querySelectorAll('.order_shipping_fields select.shipping_method[name="shipping_method"]');
+    result.navigation_button_count = count(goButtons);
+    result.navigation_button_visible = goButtons.length === 1 && visible(goButtons[0]);
+    result.navigation_button_enabled = goButtons.length === 1 && !goButtons[0].disabled &&
+      !goButtons[0].matches(':disabled') && goButtons[0].getAttribute('aria-disabled') !== 'true';
     const shownMethod = methods.length === 1 && visible(methods[0]);
     const methodOptions = shownMethod ? methods[0].options : [];
     result.shipping_methods = {
@@ -318,9 +342,15 @@ export function inspectCartDomSnapshot(url, snapshot, options = {}) {
   observations.push('expected_listing_link_observed', 'single_cart_row_observed');
   if (snapshot.quantity_control_count !== 0) return blocked('unsupported_quantity_controls', observations);
   observations.push('quantity_controls_absent_not_verification');
-  if (snapshot.address_container_count !== 1 || snapshot.edit_shipping_address_present !== true ||
-      typeof snapshot.missing_address !== 'boolean') return blocked('unsupported_address_shape', observations);
-  observations.push(snapshot.missing_address ? 'shipping_address_missing' : 'address_warning_absent_destination_unverified');
+  if (snapshot.checkout_control_kind === 'v2_go_to_checkout') {
+    if (snapshot.address_container_count !== 1 || snapshot.missing_address !== null ||
+        snapshot.edit_shipping_address_present !== false) return blocked('unsupported_address_shape', observations);
+    observations.push('shipping_address_unverified');
+  } else {
+    if (snapshot.address_container_count !== 1 || snapshot.edit_shipping_address_present !== true ||
+        typeof snapshot.missing_address !== 'boolean') return blocked('unsupported_address_shape', observations);
+    observations.push(snapshot.missing_address ? 'shipping_address_missing' : 'address_warning_absent_destination_unverified');
+  }
   if (snapshot.summary_count !== 1) return blocked('unsupported_quote_shape', observations);
   const validQuote = quote => quote && Number.isInteger(quote.count) && quote.count >= 0 && quote.count <= 2 &&
     typeof quote.visible === 'boolean' && ['label', 'value'].every(key => quote[key] === null ||
@@ -329,12 +359,19 @@ export function inspectCartDomSnapshot(url, snapshot, options = {}) {
     return blocked('unsupported_quote_shape', observations);
   }
   observations.push(snapshot.tax.count > 0 && !snapshot.tax.visible ? 'tax_hidden_unknown' : 'tax_unverified');
-  if (snapshot.final_button_count !== 1 || typeof snapshot.final_button_enabled !== 'boolean' ||
-      snapshot.final_button_visible !== true || snapshot.agreement_count !== 1 ||
-      snapshot.agreement_visible !== true || snapshot.payment_control_count !== 1 ||
-      typeof snapshot.payment_control_visible !== 'boolean') return blocked('unsupported_checkout_controls', observations);
-  observations.push(snapshot.final_button_enabled ? 'final_button_enabled_not_permission' : 'final_button_disabled');
-  observations.push('agreement_control_observed', 'payment_control_observed');
+  if (snapshot.checkout_control_kind === 'v2_go_to_checkout') {
+    if (snapshot.navigation_button_count !== 1 || snapshot.navigation_button_visible !== true ||
+        typeof snapshot.navigation_button_enabled !== 'boolean' ||
+        snapshot.final_button_count !== 0) return blocked('unsupported_checkout_controls', observations);
+    observations.push('checkout_navigation_observed_not_order_control');
+  } else if (snapshot.checkout_control_kind === 'legacy_place_order') {
+    if (snapshot.final_button_count !== 1 || typeof snapshot.final_button_enabled !== 'boolean' ||
+        snapshot.final_button_visible !== true || snapshot.agreement_count !== 1 ||
+        snapshot.agreement_visible !== true || snapshot.payment_control_count !== 1 ||
+        typeof snapshot.payment_control_visible !== 'boolean') return blocked('unsupported_checkout_controls', observations);
+    observations.push(snapshot.final_button_enabled ? 'final_button_enabled_not_permission' : 'final_button_disabled');
+    observations.push('agreement_control_observed', 'payment_control_observed');
+  } else return blocked('unsupported_checkout_controls', observations);
   const shipping = snapshot.shipping, total = snapshot.total;
   if (shipping.count !== 1 || !shipping.visible || shipping.label !== 'Shipping' ||
       total.count !== 1 || !total.visible || total.label !== 'Total') {

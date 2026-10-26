@@ -27,6 +27,7 @@ const identity = () => ({ schema: 'discogs_listing_release_dom_v1', code: 'obser
 function cart() {
   const quote = (label, value) => ({ count: 1, visible: true, label, value });
   return { schema: 'discogs_cart_dom_v1', code: 'observed', purchase_allowed: false,
+    checkout_control_kind: 'legacy_place_order',
     form_count: 1, order_container_count: 1, item_row_count: 1, listing_link_count: 1,
     canonical_listing_href: `/sell/item/${LISTING_ID}`, listing_matches_expected: true, quantity_control_count: 0,
     address_container_count: 1, missing_address: true, edit_shipping_address_present: true, summary_count: 1,
