@@ -104,11 +104,13 @@ export function snapshotCode(snapshot, context) {
   if (target.enabled !== true) return 'saved_release_paused';
   if (snapshot.owned.includes(Number(context.input.release))) return 'saved_release_owned';
   if (!GRADES.includes(target.min_media) || !GRADES.includes(target.min_sleeve) ||
+      ![undefined, false, true].includes(target.allow_generic_sleeve) ||
       typeof target.min_seller_percent !== 'number' || !Number.isFinite(target.min_seller_percent) ||
       target.min_seller_percent < 0 || target.min_seller_percent > 100 ||
       !Number.isSafeInteger(target.min_feedback) || target.min_feedback < 0 || target.min_feedback > 10_000_000 ||
       !CURRENCIES.includes(target.currency) || cents(target.max_total) === null) return 'saved_target_rules_unavailable';
-  const rules = [target.min_media, target.min_sleeve, target.min_seller_percent,
+  const rules = [target.min_media, target.min_sleeve, target.allow_generic_sleeve === true,
+    target.min_seller_percent,
     target.min_feedback, target.currency, target.max_total];
   if (context.rules && rules.some((value, index) => value !== context.rules[index])) return 'saved_target_rules_changed';
   context.rules = rules;
@@ -119,10 +121,16 @@ export function snapshotCode(snapshot, context) {
 
 function listingRuleCode(listing, target) {
   if (!GRADES.includes(listing.media) || GRADES.indexOf(listing.media) < GRADES.indexOf(target.min_media)) return 'media_condition_below_minimum';
-  if (!GRADES.includes(listing.sleeve) || GRADES.indexOf(listing.sleeve) < GRADES.indexOf(target.min_sleeve)) return 'sleeve_condition_below_minimum';
-  if (typeof listing.seller_percent !== 'number' || !Number.isFinite(listing.seller_percent) ||
-      listing.seller_percent < target.min_seller_percent || listing.seller_percent > 100) return 'seller_rating_below_minimum';
-  if (!Number.isSafeInteger(listing.feedback) || listing.feedback < target.min_feedback) return 'seller_feedback_below_minimum';
+  if (!(listing.sleeve === 'Generic' && target.allow_generic_sleeve === true) &&
+      (!GRADES.includes(listing.sleeve) || GRADES.indexOf(listing.sleeve) < GRADES.indexOf(target.min_sleeve))) return 'sleeve_condition_below_minimum';
+  if (listing.seller_percent != null &&
+      (typeof listing.seller_percent !== 'number' || !Number.isFinite(listing.seller_percent) ||
+        listing.seller_percent < 0 || listing.seller_percent > 100)) return 'seller_rating_below_minimum';
+  if (target.min_seller_percent > 0 &&
+      (listing.seller_percent == null || listing.seller_percent < target.min_seller_percent)) return 'seller_rating_below_minimum';
+  if (listing.feedback != null && (!Number.isSafeInteger(listing.feedback) || listing.feedback < 0)) return 'seller_feedback_below_minimum';
+  if (target.min_feedback > 0 &&
+      (listing.feedback == null || listing.feedback < target.min_feedback)) return 'seller_feedback_below_minimum';
   if (listing.currency !== target.currency) return 'listing_currency_mismatch';
   const item = cents(listing.item);
   if (item === null) return 'item_price_unavailable';

@@ -104,6 +104,21 @@ test('saved/API/page identities are checked twice and unknown final costs never 
   assert.ok(state.calls.lastIndexOf('snapshot') < state.calls.indexOf('click'));
 });
 
+test('Generic sleeve needs an explicit per-release option; zero seller gates impose no rating requirement', async () => {
+  const item=listing();item.listing.sleeve='Generic';
+  item.listing.seller_percent=null;item.listing.feedback=null;
+  const denied=fixture({listing:item});
+  const rejected=await prepareRuleQualifiedListingCart(denied.page, denied.port, OPTIONS);
+  blocked(rejected);assert.equal(rejected.code,'sleeve_condition_below_minimum');
+  assert.equal(denied.state.clicks,0);
+  const rules=saved();rules.targets[0].allow_generic_sleeve=true;
+  rules.targets[0].min_seller_percent=0;rules.targets[0].min_feedback=0;
+  const optedIn=fixture({listing:item,snapshot:rules});
+  const reviewed=await prepareRuleQualifiedListingCart(optedIn.page, optedIn.port, OPTIONS);
+  blocked(reviewed);assert.equal(reviewed.code,'cart_observed_after_add');
+  assert.equal(optedIn.state.clicks,1);
+});
+
 test('same album, master ID, missing release, wrong API listing and availability cannot satisfy exact identity', async () => {
   for (const change of [
     response => { response.listing.release_id = 112; response.listing.title = 'Same synthetic album'; },
