@@ -4,9 +4,11 @@ import httpx
 import pytest
 from test_discogs_rules import target
 
+from finder.discogs_completeness import RELEASE_MEDIA_TTL
 from finder.discogs_listing import (
     ListingReader,
     ListingReadError,
+    PublicReadBudget,
     listing_id,
     normalize,
     observation,
@@ -164,3 +166,133 @@ def test_bad_response(body):
         ListingReader(
             transport=httpx.MockTransport(lambda r: httpx.Response(200, content=body))
         ).read(123)
+
+
+def test_release_media_uses_exact_public_route_shared_budget_and_cached_projection():
+    rate = [10.0]
+    wall = [1_000_000_000.0]
+    paths = []
+    claims = []
+    release = {"id": 123, "formats": [{"name": "Vinyl", "qty": "2"}], "secret": "discard"}
+
+    def handle(request):
+        paths.append(str(request.url))
+        assert request.method == "GET"
+        assert "authorization" not in request.headers and "cookie" not in request.headers
+        return httpx.Response(200, json=release)
+
+    budget = PublicReadBudget(
+        clock=lambda: rate[0],
+        sleep=lambda seconds: rate.__setitem__(0, rate[0] + seconds),
+        claim=lambda: claims.append("claim") or 0,
+    )
+    reader = ListingReader(
+        transport=httpx.MockTransport(handle),
+        clock=lambda: rate[0],
+        wall_clock=lambda: wall[0],
+    )
+    first = reader.read_release_media("https://www.discogs.com/release/123-Example", budget=budget)
+    assert first == (
+        {"id": 123, "formats": [{"name": "Vinyl", "qty": "2"}]},
+        {
+            "source": "discogs_release_api",
+            "release_id": 123,
+            "fetched_at": datetime.fromtimestamp(wall[0], UTC).isoformat(),
+        },
+    )
+    assert paths == ["https://api.discogs.com/releases/123"]
+    assert claims == ["claim"]
+    first[0]["formats"][0]["qty"] = "1"
+    first[1]["source"] = "seller"
+    second = reader.read_release_media(123, budget=budget)
+    assert second[0]["formats"][0]["qty"] == "2"
+    assert second[1]["source"] == "discogs_release_api"
+    assert paths == ["https://api.discogs.com/releases/123"] and claims == ["claim"]
+
+
+@pytest.mark.parametrize("value", [True, 0, -1, "../orders", "https://evil.test/releases/123"])
+def test_release_media_invalid_identity_never_requests(value):
+    calls = []
+    reader = ListingReader(
+        transport=httpx.MockTransport(lambda request: calls.append(request) or httpx.Response(200))
+    )
+    with pytest.raises(ValueError):
+        reader.read_release_media(value)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"id": 124, "formats": [{"name": "Vinyl", "qty": "2"}]},
+        {"id": 123, "formats": [{"name": "CD", "qty": "1"}]},
+        {"id": 123, "formats": [{"name": "Vinyl", "qty": "unknown"}]},
+        [123],
+    ],
+)
+def test_release_media_wrong_identity_or_unsupported_format_is_not_cached(body):
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200, json=body)
+
+    rate = [10.0]
+    reader = ListingReader(
+        transport=httpx.MockTransport(handle),
+        clock=lambda: rate[0],
+    )
+    assert reader.read_release_media(123) is None
+    assert reader._media_cache == {}
+    rate[0] += 3
+    assert reader.read_release_media(123) is None
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("status", [403, 429, 500])
+def test_release_media_failure_returns_none_without_cache(status):
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(status, json={"message": "not retained"})
+
+    reader = ListingReader(transport=httpx.MockTransport(handle))
+    assert reader.read_release_media(123) is None
+    assert len(calls) == 1 and reader._media_cache == {}
+
+
+def test_release_media_expired_cache_is_not_reused_after_refresh_failure():
+    wall = [1_000_000_000.0]
+    rate = [10.0]
+    responses = [200, 500]
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(
+            responses.pop(0), json={"id": 123, "formats": [{"name": "Vinyl", "qty": "2"}]}
+        )
+
+    reader = ListingReader(
+        transport=httpx.MockTransport(handle),
+        clock=lambda: rate[0],
+        wall_clock=lambda: wall[0],
+    )
+    assert reader.read_release_media(123) is not None
+    wall[0] += RELEASE_MEDIA_TTL
+    rate[0] += 3
+    assert reader.read_release_media(123) is None
+    assert len(calls) == 2 and reader._media_cache == {}
+
+
+def test_plain_scheduled_listing_read_still_makes_only_one_get():
+    paths = []
+
+    def handle(request):
+        paths.append(request.url.path)
+        return httpx.Response(200, json=payload())
+
+    reader = ListingReader(transport=httpx.MockTransport(handle))
+    assert reader.read(123)["release_media_metadata"] is None
+    assert paths == ["/marketplace/listings/123"]

@@ -10,12 +10,13 @@ import socket
 import stat
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, ValidationError
 
+from finder.discogs_completeness import current_release_media
 from finder.discogs_listing import ListingReader, ListingReadError, listing_id, observation
 from finder.discogs_rules import Observation, StrictInput, release_id
 
@@ -75,8 +76,10 @@ class HostedDetailPayload(StrictInput):
 class HostedListingCandidateReader:
     """One exact fixed-action read through the existing private browser socket."""
 
-    def __init__(self, path=HOSTED_SOCKET, *, clock=time.time):
-        self.path, self.clock = Path(path), clock
+    def __init__(self, path=HOSTED_SOCKET, *, clock=time.time, catalog=None):
+        if catalog is not None and type(catalog) is not ListingReader:
+            raise ValueError("Use the fixed public release catalog reader.")
+        self.path, self.clock, self.catalog = Path(path), clock, catalog
 
     def _private(self):
         try:
@@ -177,6 +180,18 @@ class HostedListingCandidateReader:
             raise
         except (TypeError, ValueError, ValidationError):
             raise ListingReadError("Private hosted listing response was unverified.") from None
+        # Item-page format summaries are not authoritative playable quantities.
+        # A separately configured, fixed public catalog reader may attach only
+        # fresh exact-release formats. It cannot supply currency or a quote.
+        metadata = provenance = None
+        if self.catalog is not None:
+            catalog = self.catalog.read_release_media(release)
+            completed = self.clock()
+            if catalog is not None:
+                metadata = current_release_media(
+                    *catalog, release, now=datetime.fromtimestamp(completed, UTC)
+                )
+                provenance = dict(catalog[1]) if metadata is not None else None
         return VerifiedHostedDetail(
             observation=Observation(
                 source="discogs_rendered_listing",
@@ -193,6 +208,8 @@ class HostedListingCandidateReader:
                 pressing_evidence="unknown",
                 seller_comments=page.seller_comments,
                 seller_comments_supported=page.seller_comments_supported,
+                release_media_metadata=metadata,
+                release_media_provenance=provenance,
             ),
             requested_release=release,
             requested_listing=str(ident),

@@ -163,9 +163,26 @@ normally before the acknowledgement. Existing access-stop and trial history
 remain. The first permitted live read consumed its grant and stopped with
 `listing_seller_identity_unverified`: Firefox Inspector showed an absolute
 `https://www.discogs.com/seller/Mailman21842/profile` link, while the deployed
-collector accepted only relative links. The local collector now accepts that
+collector accepted only relative links. The corrected collector accepts that
 observed same-origin shape and repeated links only when every seller agrees.
-A fresh live read of the corrected deployed collector remains unverified.
+After CI and deployment, a separately approved fresh one-use read on October 26
+verified the exact item, release and seller, with supported seller comments and
+grade, feedback, price and displayed-shipping fields. Its grant was consumed and
+the original stop retained. That browser response left currency, authoritative
+release quantity and the final delivered quote unknown. A subsequent standalone
+public catalog read returned one Vinyl record for the exact release; the combined
+hosted enrichment path is fixture-tested, not live-proven. Neither observation
+qualifies the item for a cart write or purchase.
+
+The host-side detail reader can optionally receive the existing `ListingReader`
+as `catalog=`. After a verified item response, it attaches only fresh exact-release
+`/releases/{id}` Vinyl quantities and bounded catalog provenance. The shared
+request budget and metadata cache still apply. This is explicit enrichment;
+the default reader makes no additional request, and an invalid item response
+never triggers the catalog read. Item-page format summaries do not supply this
+quantity. Currency is still unknown: the inspected current page had no
+`data-currency` attribute, and a dollar sign cannot establish an ISO currency.
+Neither catalog quantity nor displayed shipping supplies a payable quote.
 
 ## Approved private socket handoff (stopped)
 

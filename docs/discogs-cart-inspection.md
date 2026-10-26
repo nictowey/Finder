@@ -190,6 +190,22 @@ used: foreign origins, ports, credentials, encoded paths, query changes and frag
 The same raw href must remain unchanged at the pre-click recheck, even if switching between
 the otherwise allowed relative and absolute forms.
 
+An October 26 inspection of the already-rendered hosted item in Firefox Inspector
+confirmed the same absolute link form and `data-tracking="add_to_cart"`. Inspector
+found two DOM text matches; the adapter still requires exactly one visible
+matching link. This verifies the link structure only; no hosted add was clicked
+and its cart outcome remains unverified.
+
+The dormant host-side coordinator additionally requires matching persisted
+candidate, snapshot, rule, seller and detail evidence before a durable claim can
+reach an adapter. A synthetic or public observation wrapped as hosted detail is
+rejected before any claim. Current hosted item observations still lack the
+verified currency, pressing and delivered costs required by the existing
+qualification model, so the coordinator reports
+`hosted_pre_cart_qualification_unavailable`. A separate pre-cart review policy
+and trusted fixed browser recheck must be implemented before enabling a real
+cart adapter; this guard does not claim a working hosted add path.
+
 Unknown authenticated shapes, a different listing, ambiguous links or cart contents, unknown
 final costs and access errors remain stops. Normal UI automation is not permission to
 retry a denied protected-browser route. Synthetic tests establish state-machine behavior;

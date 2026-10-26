@@ -239,6 +239,39 @@ class ListingReader:
         ident = listing_id(value)
         return normalize(self._request(f"/marketplace/listings/{ident}", budget=budget), ident)
 
+    def read_release_media(self, release, *, budget=None):
+        """Read bounded, exact-release public catalog quantity or return None.
+
+        Invalid release identities still raise ValueError before any request. A valid
+        identity with an unavailable or unsupported catalog response cannot establish
+        a playable-media count. Return copies so callers cannot alter the TTL cache.
+        """
+        ident = release_id(release)
+        with self._cache_lock:
+            cached = self._media_cache.get(ident)
+            if cached and current_release_media(*cached, ident, now=self._now()):
+                self._media_cache.move_to_end(ident)
+                return project_release_media(cached[0], ident), dict(cached[1])
+            self._media_cache.pop(ident, None)
+        try:
+            raw = self._request(f"/releases/{ident}", budget=budget, wait=True)
+            metadata = project_release_media(raw, ident)
+            if metadata is None:
+                return None
+            provenance = {
+                "source": "discogs_release_api",
+                "release_id": ident,
+                "fetched_at": self._now().isoformat(),
+            }
+            with self._cache_lock:
+                self._media_cache[ident] = (metadata, provenance)
+                self._media_cache.move_to_end(ident)
+                while len(self._media_cache) > 100:
+                    self._media_cache.popitem(last=False)
+            return project_release_media(metadata, ident), dict(provenance)
+        except ListingReadError:
+            return None
+
     def read_for_release(self, value, configured_release_id, *, budget=None):
         """Explicit known-listing review only: at most one additional catalog GET.
 
@@ -250,32 +283,9 @@ class ListingReader:
         listing = normalize(payload, ident)
         if listing["release_id"] != release:
             return listing
-        with self._cache_lock:
-            cached = self._media_cache.get(release)
-            if cached and current_release_media(*cached, release, now=self._now()):
-                self._media_cache.move_to_end(release)
-            else:
-                self._media_cache.pop(release, None)
-                cached = None
+        cached = self.read_release_media(release, budget=budget)
         if cached is None:
-            try:
-                raw = self._request(f"/releases/{release}", budget=budget, wait=True)
-                metadata = project_release_media(raw, release)
-                if metadata is None:
-                    return listing
-                provenance = {
-                    "source": "discogs_release_api",
-                    "release_id": release,
-                    "fetched_at": self._now().isoformat(),
-                }
-                cached = (metadata, provenance)
-                with self._cache_lock:
-                    self._media_cache[release] = cached
-                    self._media_cache.move_to_end(release)
-                    while len(self._media_cache) > 100:
-                        self._media_cache.popitem(last=False)
-            except ListingReadError:
-                return listing
+            return listing
         return normalize(
             payload,
             ident,
