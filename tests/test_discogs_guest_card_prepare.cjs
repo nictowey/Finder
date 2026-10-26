@@ -2,15 +2,18 @@
 // Offline injected ports only. No browser, credentials, merchant or payment I/O.
 const assert = require('node:assert/strict');
 const { test, before } = require('node:test');
-const { mkdtemp, readFile, stat, chmod, rm, symlink } = require('node:fs/promises');
+const { mkdtemp, readFile, writeFile, stat, chmod, rm, symlink } = require('node:fs/promises');
+const { createHash } = require('node:crypto');
 const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { spawnSync } = require('node:child_process');
 let prepareExactGuestCard, GUEST_CARD_URL, GUEST_CARD_SELECTOR, GUEST_CARD_FENCE,
-  validateGuestCardInspection, revalidateGuestCardClick;
+  validateGuestCardInspection, revalidateGuestCardClick, guestCardScopeDigest,
+  GUEST_CARD_RECOVERY_REVIEW, GUEST_CARD_RECOVERY_FENCE;
 before(async () => ({ prepareExactGuestCard, GUEST_CARD_URL, GUEST_CARD_SELECTOR, GUEST_CARD_FENCE,
-  validateGuestCardInspection, revalidateGuestCardClick } =
+  validateGuestCardInspection, revalidateGuestCardClick, guestCardScopeDigest,
+  GUEST_CARD_RECOVERY_REVIEW, GUEST_CARD_RECOVERY_FENCE } =
   await import('../scripts/discogs_guest_card_prepare.mjs')));
 const NOW = 1_800_000_000_000;
 const UUID = '123e4567-e89b-42d3-a456-426614174000';
@@ -41,7 +44,8 @@ function inspection() {
       aria_label: 'Debit or Credit Card', aria_disabled: 'false', control_ref: UUID },
     evidence: evidence() };
 }
-function fixture(directory, { inspectHook = null, clickHook = null } = {}) {
+function fixture(directory, { inspectHook = null, clickHook = null,
+  expectedScope = scope(), currentTime = NOW } = {}) {
   const calls = [], signals = [];
   let reads = 0;
   const ports = {
@@ -55,23 +59,24 @@ function fixture(directory, { inspectHook = null, clickHook = null } = {}) {
       assert.equal(binding.url, GUEST_CARD_URL);
       assert.equal(binding.selector, GUEST_CARD_SELECTOR);
       assert.equal(binding.control_ref, UUID);
-      assert.equal(binding.intent_id, UUID);
+      assert.equal(binding.intent_id, expectedScope.intent_id);
       assert.match(binding.scope_digest, /^[0-9a-f]{64}$/u);
       assert.match(binding.inspection_fingerprint, /^[0-9a-f]{64}$/u);
       assert.ok(Object.isFrozen(binding) && Object.isFrozen(binding.expected_scope));
-      assert.deepEqual(binding.expected_scope, scope());
+      assert.deepEqual(binding.expected_scope, expectedScope);
       // Actual persistent fence must exist and be fully readable before effect.
       const marker = JSON.parse(await readFile(join(directory, GUEST_CARD_FENCE), 'utf8'));
       assert.equal(marker.state, 'initialization_outcome_unknown');
       assert.equal(marker.listing_id, '1366950910');
       assert.equal((await stat(join(directory, GUEST_CARD_FENCE))).mode & 0o777, 0o600);
-      if (!clickHook) assert.equal(revalidateGuestCardClick(binding, inspection(), { now: NOW / 1000 }), true);
+      if (!clickHook) assert.equal(revalidateGuestCardClick(binding, inspection(),
+        { now: currentTime / 1000 }), true);
       return clickHook ? clickHook(binding, options) :
         { schema: 'discogs_guest_card_click_v1', outcome: 'guest_form_visible' };
     },
   };
   return { ports, calls, signals, options: { enablePreparation: true,
-    fenceDirectory: directory, clock: () => NOW } };
+    fenceDirectory: directory, clock: () => currentTime } };
 }
 async function temporary(fn) {
   const directory = await mkdtemp(join(tmpdir(), 'sniper-guest-init-'));
@@ -367,3 +372,162 @@ test('real process crash after durable fence is blocked across process restart',
   assert.equal(result.code, 'guest_card_initialization_already_fenced');
   assert.deepEqual(item.calls, []);
 }));
+
+async function recoveryFixture(directory) {
+  const initial = fixture(directory, { clickHook: async () =>
+    ({ schema: 'discogs_guest_card_click_v1', outcome: 'unknown' }) });
+  assert.equal((await prepareExactGuestCard(initial.ports, scope(), initial.options)).code,
+    'guest_card_initialization_uncertain');
+  const originalBytes = await readFile(join(directory, GUEST_CARD_FENCE));
+  const old = JSON.parse(originalBytes.toString('utf8'));
+  const retryScope = { ...scope(), intent_id: OTHER,
+    issued_at: NOW / 1000 + 10, expires_at: NOW / 1000 + 130 };
+  const review = { schema: 'discogs_guest_card_recovery_review_v1',
+    source: 'operator_reviewed_normal_discogs_ui', authorization_ref: UUID,
+    original_fence_sha256: createHash('sha256').update(originalBytes).digest('hex'),
+    original_intent_id: old.intent_id, original_scope_digest: old.scope_digest,
+    retry_intent_id: retryScope.intent_id,
+    retry_scope_digest: guestCardScopeDigest(retryScope, { now: NOW / 1000 + 20 }),
+    release_id: 3422100, listing_id: '1366950910', seller: 'Mailman21842', quantity: 1,
+    currency: 'USD', max_total: '5.05', terminal_error_code: 'SESSION_EXPIRED',
+    guest_form_opened: false, card_data_entered: false, approval_invoked: false,
+    capture_invoked: false, failure_observed_at: NOW / 1000 + 1,
+    order_history_url: 'https://www.discogs.com/sell/purchases?archived=A&status=All&limit=50',
+    order_history_archived: 'All', order_history_status: 'All', order_history_count: 0,
+    order_history_complete: true, order_history_observed_at: NOW / 1000 + 2,
+    reviewed_at: NOW / 1000 + 3, expires_at: NOW / 1000 + 100, max_additional_attempts: 1 };
+  const make = options => fixture(directory, { expectedScope: retryScope,
+    currentTime: NOW + 20_000, ...options });
+  return { originalBytes, retryScope, review, make };
+}
+
+test('explicit one-use recovery preserves original and fixed immutable audit records', async () => temporary(async directory => {
+  const setup = await recoveryFixture(directory);
+  const noReview = setup.make();
+  assert.equal((await prepareExactGuestCard(noReview.ports, setup.retryScope,
+    noReview.options)).code, 'guest_card_initialization_already_fenced');
+  assert.deepEqual(noReview.calls, []);
+  const item = setup.make();
+  const result = await prepareExactGuestCard(item.ports, setup.retryScope,
+    { ...item.options, recoveryReview: setup.review });
+  assert.equal(result.status, 'handoff_required');
+  assert.deepEqual(await readFile(join(directory, GUEST_CARD_FENCE)), setup.originalBytes);
+  const reviewedBytes = await readFile(join(directory, GUEST_CARD_RECOVERY_REVIEW));
+  const spentBytes = await readFile(join(directory, GUEST_CARD_RECOVERY_FENCE));
+  const spent = JSON.parse(spentBytes.toString('utf8'));
+  assert.equal(spent.attempt, 1);
+  assert.equal(spent.original_fence_sha256, setup.review.original_fence_sha256);
+  assert.equal(spent.reconciliation_sha256, createHash('sha256').update(reviewedBytes).digest('hex'));
+  for (const name of [GUEST_CARD_RECOVERY_REVIEW, GUEST_CARD_RECOVERY_FENCE]) {
+    assert.equal((await stat(join(directory, name))).mode & 0o777, 0o600);
+  }
+  const nextScope = { ...setup.retryScope, intent_id: '123e4567-e89b-42d3-a456-426614174002' };
+  const newReview = { ...setup.review, retry_intent_id: nextScope.intent_id,
+    retry_scope_digest: guestCardScopeDigest(nextScope, { now: NOW / 1000 + 20 }) };
+  const next = fixture(directory, { expectedScope: nextScope, currentTime: NOW + 20_000 });
+  assert.equal((await prepareExactGuestCard(next.ports, nextScope,
+    { ...next.options, recoveryReview: newReview })).code, 'guest_card_recovery_already_fenced');
+  assert.deepEqual(next.calls, []);
+  assert.deepEqual(await readFile(join(directory, GUEST_CARD_RECOVERY_REVIEW)), reviewedBytes);
+  assert.deepEqual(await readFile(join(directory, GUEST_CARD_RECOVERY_FENCE)), spentBytes);
+}));
+
+test('recovery rejects incomplete, stale, mismatched or potentially committed evidence', async () => {
+  for (const patch of [{ original_fence_sha256: 'c'.repeat(64) },
+    { authorization_ref: OTHER },
+    { original_intent_id: OTHER }, { retry_scope_digest: 'c'.repeat(64) },
+    { terminal_error_code: 'UNKNOWN' }, { guest_form_opened: true },
+    { card_data_entered: true }, { approval_invoked: true }, { capture_invoked: true },
+    { order_history_archived: 'Not Archived' }, { order_history_status: 'Invoice Sent' },
+    { order_history_count: 1 }, { order_history_complete: false },
+    { order_history_observed_at: NOW / 1000 - 301 }, { expires_at: NOW / 1000 + 19 },
+    { max_additional_attempts: 2 }, { listing_id: '999' }]) await temporary(async directory => {
+    const setup = await recoveryFixture(directory), item = setup.make();
+    const result = await prepareExactGuestCard(item.ports, setup.retryScope,
+      { ...item.options, recoveryReview: { ...setup.review, ...patch } });
+    assert.equal(result.code, 'guest_card_recovery_unverified', JSON.stringify(patch));
+    assert.deepEqual(item.calls, []);
+    assert.deepEqual(await readFile(join(directory, GUEST_CARD_FENCE)), setup.originalBytes);
+    await assert.rejects(stat(join(directory, GUEST_CARD_RECOVERY_REVIEW)), { code: 'ENOENT' });
+  });
+});
+
+test('recovery history age at 299 seconds bounds operator wait and prevents dispatch after expiry', async () => temporary(async directory => {
+  const setup = await recoveryFixture(directory);
+  const initial = NOW + 301_000;
+  let now = initial;
+  const retryScope = { ...setup.retryScope, issued_at: initial / 1000 - 1,
+    expires_at: initial / 1000 + 120 };
+  const review = { ...setup.review,
+    retry_scope_digest: guestCardScopeDigest(retryScope, { now: initial / 1000 }),
+    reviewed_at: initial / 1000, expires_at: initial / 1000 + 100 };
+  assert.equal(initial / 1000 - review.order_history_observed_at, 299);
+  const historyDeadline = (review.order_history_observed_at + 300) * 1000;
+  const item = fixture(directory, { expectedScope: retryScope, currentTime: initial,
+    inspectHook: async (value, reads, options) => {
+      assert.equal(options.deadline, historyDeadline);
+      value.evidence.observed_at = initial / 1000;
+      value.evidence.expires_at = initial / 1000 + 120;
+      if (reads === 3) {
+        await new Promise(resolve => setImmediate(resolve));
+        now += 1001; // Operator wait crosses the independent reconciliation deadline.
+      }
+      return value;
+    } });
+  const result = await prepareExactGuestCard(item.ports, retryScope,
+    { ...item.options, clock: () => now, recoveryReview: review });
+  assert.equal(result.code, 'guest_card_initialization_uncertain');
+  assert.ok(!item.calls.includes('click'));
+  assert.ok((await stat(join(directory, GUEST_CARD_RECOVERY_FENCE))).isFile());
+}));
+
+test('competing recovery workers cannot spend more than the fixed single retry', async () => temporary(async directory => {
+  const setup = await recoveryFixture(directory), a = setup.make(), b = setup.make();
+  const results = await Promise.all([a, b].map(item => prepareExactGuestCard(item.ports,
+    setup.retryScope, { ...item.options, recoveryReview: setup.review })));
+  assert.equal(results.filter(result => result.status === 'handoff_required').length, 1);
+  assert.equal([...a.calls, ...b.calls].filter(call => call === 'click').length, 1);
+  assert.deepEqual(await readFile(join(directory, GUEST_CARD_FENCE)), setup.originalBytes);
+}));
+
+test('recovery rechecks original and reconciliation hashes after final inspection', async () => {
+  for (const name of [GUEST_CARD_FENCE, GUEST_CARD_RECOVERY_REVIEW]) await temporary(async directory => {
+    const setup = await recoveryFixture(directory);
+    const item = setup.make({ inspectHook: async (value, reads) => {
+      if (reads === 3) await writeFile(join(directory, name), '{}\n');
+      return value;
+    } });
+    const result = await prepareExactGuestCard(item.ports, setup.retryScope,
+      { ...item.options, recoveryReview: setup.review });
+    assert.equal(result.code, 'guest_card_initialization_uncertain');
+    assert.ok(!item.calls.includes('click'));
+    assert.ok((await stat(join(directory, GUEST_CARD_RECOVERY_FENCE))).isFile());
+  });
+});
+
+test('recovery crash or disconnected outcome never enables another attempt after restart', async () => {
+  for (const crash of [true, false]) await temporary(async directory => {
+    const setup = await recoveryFixture(directory);
+    if (crash) {
+      const moduleUrl = pathToFileURL(resolve('scripts/discogs_guest_card_prepare.mjs')).href;
+      const source = `import {prepareExactGuestCard} from ${JSON.stringify(moduleUrl)};
+        const scope=${JSON.stringify(setup.retryScope)}; const value=${JSON.stringify(inspection())};let reads=0;
+        await prepareExactGuestCard({inspectActualControl:async()=>{if(++reads===3)process.exit(42);return value;},
+          clickExactlyOnce:async()=>{process.exit(99);}},scope,{enablePreparation:true,
+          fenceDirectory:${JSON.stringify(directory)},recoveryReview:${JSON.stringify(setup.review)},clock:()=>${NOW + 20_000}});`;
+      const child = spawnSync(process.execPath, ['--input-type=module', '-e', source], { timeout: 5000 });
+      assert.equal(child.status, 42, child.stderr.toString());
+    } else {
+      const controller = new AbortController();
+      const item = setup.make({ clickHook: async () => { controller.abort(); throw new Error('disconnected'); } });
+      assert.equal((await prepareExactGuestCard(item.ports, setup.retryScope,
+        { ...item.options, recoveryReview: setup.review, signal: controller.signal })).code,
+      'guest_card_initialization_uncertain');
+    }
+    const fresh = setup.make();
+    assert.equal((await prepareExactGuestCard(fresh.ports, setup.retryScope,
+      { ...fresh.options, recoveryReview: setup.review })).code, 'guest_card_recovery_already_fenced');
+    assert.deepEqual(fresh.calls, []);
+    assert.deepEqual(await readFile(join(directory, GUEST_CARD_FENCE)), setup.originalBytes);
+  });
+});

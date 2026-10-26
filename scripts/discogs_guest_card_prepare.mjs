@@ -11,6 +11,8 @@ import { isAbsolute, join } from 'node:path';
 export const GUEST_CARD_URL = 'https://www.discogs.com/marketplace/checkout';
 export const GUEST_CARD_SELECTOR = '[role="link"][data-funding-source="card"][aria-label="Debit or Credit Card"]';
 export const GUEST_CARD_FENCE = 'guest-card-1366950910-init.fence';
+export const GUEST_CARD_RECOVERY_REVIEW = 'guest-card-1366950910-recovery-review.json';
+export const GUEST_CARD_RECOVERY_FENCE = 'guest-card-1366950910-recovery-attempt-1.fence';
 export const GUEST_CARD_MAX_PREPARATION_MS = 90_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const HASH = /^[0-9a-f]{64}$/u;
@@ -29,6 +31,13 @@ const EVIDENCE_KEYS = ['source', 'release_id', 'listing_id', 'seller', 'quantity
   'terms_verified', 'observed_at', 'expires_at'];
 const CONTROL_KEYS = ['count', 'visible', 'enabled', 'role', 'funding_source',
   'aria_label', 'aria_disabled', 'control_ref'];
+const RECOVERY_KEYS = ['schema', 'source', 'authorization_ref', 'original_fence_sha256',
+  'original_intent_id', 'original_scope_digest', 'retry_intent_id', 'retry_scope_digest',
+  'release_id', 'listing_id', 'seller', 'quantity', 'currency', 'max_total',
+  'terminal_error_code', 'guest_form_opened', 'card_data_entered', 'approval_invoked',
+  'capture_invoked', 'failure_observed_at', 'order_history_url', 'order_history_archived',
+  'order_history_status', 'order_history_count', 'order_history_complete',
+  'order_history_observed_at', 'reviewed_at', 'expires_at', 'max_additional_attempts'];
 
 function record(value, keys) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
@@ -61,6 +70,11 @@ function exactScope(scope, now) {
     number(scope.issued_at) && number(scope.expires_at) &&
     scope.issued_at <= now && now < scope.expires_at &&
     scope.expires_at - scope.issued_at > 0 && scope.expires_at - scope.issued_at <= 300;
+}
+
+/** Pure digest for the operator's exact immutable retry scope, not authorization. */
+export function guestCardScopeDigest(scope, { now = Date.now() / 1000 } = {}) {
+  return number(now) && exactScope(scope, now) ? digest(scope) : null;
 }
 function inspect(value, scope, now) {
   if (!record(value, ['schema', 'url', 'access', 'control', 'evidence']) ||
@@ -145,21 +159,70 @@ async function privateDirectory(directory) {
   if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid() ||
       (info.mode & 0o7777) !== 0o700) throw new Error('private_directory_required');
 }
-async function persistFence(directory, scope, now) {
+async function persistRecord(directory, filename, value) {
   await privateDirectory(directory);
   const parent = await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try {
-    const file = await open(join(directory, GUEST_CARD_FENCE),
+    const file = await open(join(directory, filename),
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    const content = JSON.stringify(value) + '\n';
     try {
-      await file.writeFile(JSON.stringify({ schema: 'discogs_guest_card_init_fence_v1',
-        intent_id: scope.intent_id, scope_digest: digest(scope), created_at: now,
-        release_id: scope.release_id, listing_id: scope.listing_id,
-        state: 'initialization_outcome_unknown' }) + '\n');
+      await file.writeFile(content);
       await file.sync();
     } finally { await file.close(); }
     await parent.sync();
+    return createHash('sha256').update(content).digest('hex');
   } finally { await parent.close(); }
+}
+async function persistFence(directory, scope, now) {
+  return persistRecord(directory, GUEST_CARD_FENCE, {
+    schema: 'discogs_guest_card_init_fence_v1', intent_id: scope.intent_id,
+    scope_digest: digest(scope), created_at: now, release_id: scope.release_id,
+    listing_id: scope.listing_id, state: 'initialization_outcome_unknown',
+  });
+}
+
+async function ownerRecord(directory, filename, maxBytes = 4096) {
+  await privateDirectory(directory);
+  const file = await open(join(directory, filename), constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const info = await file.stat();
+    if (!info.isFile() || info.uid !== process.getuid() ||
+        (info.mode & 0o7777) !== 0o600 || info.size > maxBytes) throw new Error('invalid_record');
+    const bytes = await file.readFile();
+    if (bytes.length > maxBytes) throw new Error('invalid_record');
+    return { value: JSON.parse(bytes.toString('utf8')),
+      hash: createHash('sha256').update(bytes).digest('hex') };
+  } finally { await file.close(); }
+}
+function recoveryMatches(review, original, scope, now) {
+  const old = original.value;
+  return record(old, ['schema', 'intent_id', 'scope_digest', 'created_at', 'release_id',
+    'listing_id', 'state']) && old.schema === 'discogs_guest_card_init_fence_v1' &&
+    uuid(old.intent_id) && hash(old.scope_digest) && number(old.created_at) &&
+    old.release_id === 3422100 && old.listing_id === '1366950910' &&
+    old.state === 'initialization_outcome_unknown' && record(review, RECOVERY_KEYS) &&
+    review.schema === 'discogs_guest_card_recovery_review_v1' &&
+    review.source === 'operator_reviewed_normal_discogs_ui' &&
+    review.authorization_ref === scope.approval_ref &&
+    review.original_fence_sha256 === original.hash &&
+    review.original_intent_id === old.intent_id && review.original_scope_digest === old.scope_digest &&
+    review.retry_intent_id === scope.intent_id && review.retry_scope_digest === digest(scope) &&
+    review.release_id === scope.release_id && review.listing_id === scope.listing_id &&
+    review.seller === scope.seller && review.quantity === 1 && review.currency === 'USD' &&
+    review.max_total === '5.05' && review.terminal_error_code === 'SESSION_EXPIRED' &&
+    review.guest_form_opened === false && review.card_data_entered === false &&
+    review.approval_invoked === false && review.capture_invoked === false &&
+    review.order_history_url === 'https://www.discogs.com/sell/purchases?archived=A&status=All&limit=50' &&
+    review.order_history_archived === 'All' && review.order_history_status === 'All' &&
+    review.order_history_count === 0 && review.order_history_complete === true &&
+    review.max_additional_attempts === 1 && number(review.failure_observed_at) &&
+    number(review.order_history_observed_at) && number(review.reviewed_at) && number(review.expires_at) &&
+    old.created_at <= review.failure_observed_at &&
+    review.failure_observed_at <= review.order_history_observed_at &&
+    review.order_history_observed_at <= review.reviewed_at && review.reviewed_at <= now &&
+    now - review.order_history_observed_at <= 300 && now < review.expires_at &&
+    review.expires_at - review.reviewed_at <= 300 && review.expires_at <= scope.expires_at;
 }
 
 /** Local-only injected ports; caller owns authorized UI and evidence producers.
@@ -171,10 +234,16 @@ async function persistFence(directory, scope, now) {
  * Its response may attest only that a guest form is visibly open, not an order.
  * A preexisting owner0700 fence directory is required. No listener or directory
  * is installed here; live filesystem/port wiring requires separate review.
+ * recoveryReview is a separately authorized operator reconciliation, not an
+ * automatic retry decision. It permits only the fixed first-recovery slot after
+ * SESSION_EXPIRED and complete current all-status/all-archive zero-order review,
+ * with no form/card/approval/capture. Original bytes are never rewritten. The
+ * immutable review itself consumes that exceptional slot if execution crashes
+ * before the additional attempt fence is written. No further recovery exists.
  */
 export async function prepareExactGuestCard(ports, scope, {
   enablePreparation = false, fenceDirectory = null, signal = null,
-  clock = () => Date.now(), timeoutMs = 30_000,
+  clock = () => Date.now(), timeoutMs = 30_000, recoveryReview = null,
 } = {}) {
   if (enablePreparation !== true) return stopped('guest_card_preparation_disabled');
   const now = clock();
@@ -185,12 +254,16 @@ export async function prepareExactGuestCard(ports, scope, {
     return stopped('guest_card_scope_or_ports_unverified');
   }
   scope = Object.freeze({ ...scope });
+  if (recoveryReview !== null) {
+    if (!record(recoveryReview, RECOVERY_KEYS)) return stopped('guest_card_recovery_unverified');
+    recoveryReview = Object.freeze({ ...recoveryReview });
+  }
   const controller = new AbortController();
   const onAbort = () => controller.abort('cancelled');
   if (signal?.aborted) return stopped('guest_card_cancelled');
   signal?.addEventListener('abort', onAbort, { once: true });
   let deadline = Math.min(now + timeoutMs, scope.expires_at * 1000);
-  let fenced = false, inspection;
+  let fenced = false, inspection, original = null, recoveryHashes = null;
   const live = () => !controller.signal.aborted && number(clock()) && clock() < deadline &&
     exactScope(scope, clock() / 1000);
   const checked = async operation => {
@@ -216,26 +289,64 @@ export async function prepareExactGuestCard(ports, scope, {
     deadline = Math.min(deadline, parsed.expiresAt);
     return parsed;
   };
+  const recoveryCurrent = async () => {
+    if (!original) return;
+    const old = await checked(() => ownerRecord(fenceDirectory, GUEST_CARD_FENCE));
+    const review = await checked(() => ownerRecord(fenceDirectory, GUEST_CARD_RECOVERY_REVIEW));
+    const spent = await checked(() => ownerRecord(fenceDirectory, GUEST_CARD_RECOVERY_FENCE));
+    if (old.hash !== original.hash || review.hash !== recoveryHashes.review ||
+        spent.hash !== recoveryHashes.spent ||
+        !recoveryMatches(review.value, old, scope, clock() / 1000)) throw new Error('recovery_changed');
+  };
   try {
     await checked(() => privateDirectory(fenceDirectory));
     const existing = await checked(() => lstat(join(fenceDirectory, GUEST_CARD_FENCE)).catch(error => {
       if (error.code === 'ENOENT') return null;
       throw error;
     }));
-    if (existing) return stopped('guest_card_initialization_already_fenced', true);
+    if (existing) {
+      if (!recoveryReview) return stopped('guest_card_initialization_already_fenced', true);
+      original = await checked(() => ownerRecord(fenceDirectory, GUEST_CARD_FENCE));
+      if (!recoveryMatches(recoveryReview, original, scope, clock() / 1000)) {
+        return stopped('guest_card_recovery_unverified', true);
+      }
+      deadline = Math.min(deadline, recoveryReview.expires_at * 1000,
+        (recoveryReview.order_history_observed_at + 300) * 1000);
+      for (const name of [GUEST_CARD_RECOVERY_REVIEW, GUEST_CARD_RECOVERY_FENCE]) {
+        if (await checked(() => lstat(join(fenceDirectory, name)).catch(error => {
+          if (error.code === 'ENOENT') return null;
+          throw error;
+        }))) return stopped('guest_card_recovery_already_fenced', true);
+      }
+    } else if (recoveryReview) return stopped('guest_card_recovery_unverified');
     inspection = await read();
     const second = await read();
     if (second.fingerprint !== inspection.fingerprint) return stopped('guest_card_context_changed');
     // Mark uncertainty before awaiting filesystem operations. A partial write or
     // timeout can still leave a permanent slot; never infer safe retry from it.
     fenced = true;
-    try { await checked(() => persistFence(fenceDirectory, scope, clock() / 1000)); }
+    try {
+      if (original) {
+        const reviewHash = await checked(() => persistRecord(fenceDirectory,
+          GUEST_CARD_RECOVERY_REVIEW, recoveryReview));
+        const spentHash = await checked(() => persistRecord(fenceDirectory, GUEST_CARD_RECOVERY_FENCE, {
+          schema: 'discogs_guest_card_recovery_attempt_v1', attempt: 1,
+          original_fence_sha256: original.hash, reconciliation_sha256: reviewHash,
+          intent_id: scope.intent_id, scope_digest: digest(scope),
+          created_at: clock() / 1000, state: 'initialization_outcome_unknown',
+        }));
+        recoveryHashes = { review: reviewHash, spent: spentHash };
+        await recoveryCurrent();
+      } else await checked(() => persistFence(fenceDirectory, scope, clock() / 1000));
+    }
     catch (error) {
-      if (error.code === 'EEXIST') return stopped('guest_card_initialization_already_fenced', true);
+      if (error.code === 'EEXIST') return stopped(original ? 'guest_card_recovery_already_fenced' :
+        'guest_card_initialization_already_fenced', true);
       throw error;
     }
     const final = await read();
     if (final.fingerprint !== inspection.fingerprint) return stopped('guest_card_initialization_uncertain', true);
+    await recoveryCurrent();
     if (!live()) throw new Error('cancelled');
     const response = await checked(() => ports.clickExactlyOnce(Object.freeze({
       url: GUEST_CARD_URL, selector: GUEST_CARD_SELECTOR, control_ref: final.ref,
