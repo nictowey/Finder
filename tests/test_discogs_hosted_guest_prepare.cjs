@@ -685,21 +685,30 @@ test('a new module boot cannot consume an opaque reference retained only in the 
 test('confirmation pending DOM read crossing either reference or visual-ack expiry never creates binding', async () => {
   for (const boundary of ['reference', 'ack']) {
     const actualNow = Date.now;
-    let clock = actualNow(), confirming = false, advanced = false;
+    let clock = actualNow(), confirming = false, advanced = false, boundaryExpiresAt;
     Date.now = () => clock;
     const b = browser({ beforeEvaluate: async () => {
       if (confirming && !advanced) {
         advanced = true;
+        const pendingAt = clock;
+        assert.ok(clock < boundaryExpiresAt, 'the boundary is still valid before the pending DOM read');
         await Promise.resolve(); // The request was valid when the pending read began.
-        clock += 20;
+        // Leave a real one-second scheduling margin before the production
+        // timer, then cross only the clamped expiry, not the 1500ms read budget.
+        clock += 1200;
+        assert.ok(clock >= boundaryExpiresAt);
+        assert.ok(clock < pendingAt + 1500);
       }
     } });
     const grant = readonlyGrant();
     try {
       const first = await probe(b, grant);
-      clock += boundary === 'reference' ? 299990 : 59990;
+      assert.equal(first.status, 'observed');
+      const referenceExpiresAt = clock + 300000;
+      clock += boundary === 'reference' ? 299000 : 59000;
       const next = confirmation(grant, first);
-      if (boundary === 'ack') next.authorization.destination_ack.observed_at -= 59.99;
+      if (boundary === 'ack') next.authorization.destination_ack.observed_at -= 59;
+      boundaryExpiresAt = boundary === 'reference' ? referenceExpiresAt : (next.authorization.destination_ack.observed_at + 60) * 1000;
       confirming = true;
       const result = await probe(b, next);
       assert.equal(advanced, true);
