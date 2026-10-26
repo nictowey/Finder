@@ -765,3 +765,19 @@ No live calls, policy-slot reuse, card initialization or payment were performed
 for this title repair. Its next live verification requires a separately reviewed
 bounded read-only job. The ordinary-reader stop and all historical audit/receipt
 records must remain intact.
+
+
+The semantic title code revision `454cce09562554b267ab529dfb2c1356f62aed48`
+passed exact CI and independent review. All 52 targeted tests and required full
+project gates passed. Image `sniper-browser-view:title-454cce0` started at
+`2026-10-26T20:04:16.027233155Z`; deployed module SHA256 matched
+`ae25bb91b22b039fb9c9d2ee54beebfe11ea000359bc9ac7ff0f78900c66fbf0`.
+The original stop, successful outcome/disposition hashes, both old policies and
+all four spent qualification receipts were preserved. No OOM was observed.
+
+A separately reviewed exact-KC read-only job was staged before startup, expires
+`2026-10-26T20:34:12.978Z`, and has both slots unconsumed. This staging avoids a
+second installation restart for an issuer that pins its job at startup. It grants
+no preparation or transaction action. No site request or qualification read was
+made after this deployment; actual title qualification remains pending the next
+bounded check. Cart title qualification still requires its own grounded evidence.
