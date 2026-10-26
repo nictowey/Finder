@@ -704,4 +704,21 @@ A subsequent live check requires a new reviewed, bounded read-only job, preservi
 all old receipts; it must not reuse either spent phase. The proposed first read
 would verify the corrected condition output and classify the detail failure.
 It must stop on a restriction and cannot navigate, initialize a form or submit
-payment. No such additional job has been created or executed by this parser fix.
+payment. No additional qualification read was executed by this parser fix.
+
+
+After exact CI passed, image `sniper-browser-view:parser-5e8fd29` was installed
+as a two-file delta from the previously verified image. It started at
+`2026-10-26T19:38:00.371319963Z`; both deployed source hashes matched the
+reviewed commit. The private socket/policy remained mode 0600, the historical
+access stop and successful outcome/disposition hashes were unchanged, and no
+OOM occurred. The prior spent policy was archived with both use receipts intact.
+
+Independent review accepted one new exact-KC read-only job and one normal load of
+the previously verified same-item `/sell/item/1366950910` route, stopping on any
+challenge, denial, redirect or continued blank page. Because the issuer pins the
+job at startup, the new bounded policy was staged with the parser restart. Its
+expiry is `2026-10-26T20:07:56.158Z`; both inspect and confirm slots were verified
+unconsumed. No site navigation or qualification read ran after this restart, and
+no initializer/payment authority was enabled. Ephemeral old document/address
+bindings were invalidated by restart; that restart is not evidence of SDK dismissal.
