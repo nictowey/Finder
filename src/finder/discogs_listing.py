@@ -28,6 +28,7 @@ GRADE_NAMES = {
     "Very Good Plus (VG+)": "VG+",
     "Near Mint (NM or M-)": "NM",
     "Mint (M)": "M",
+    "Generic": "Generic",
 }
 
 

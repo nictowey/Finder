@@ -47,6 +47,7 @@ class Target(StrictInput):
     label: str = Field(default="", max_length=120)
     min_media: Literal["P", "F", "G", "G+", "VG", "VG+", "NM", "M"]
     min_sleeve: Literal["P", "F", "G", "G+", "VG", "VG+", "NM", "M"]
+    allow_generic_sleeve: bool = False
     min_seller_percent: float = Field(ge=0, le=100)
     min_feedback: int = Field(ge=0, le=10000000)
     max_total: str
@@ -158,6 +159,8 @@ def evaluate(target: Target, observation: Observation, *, now: datetime, already
         )
     for field in ("media", "sleeve"):
         value = getattr(observation, field)
+        if field == "sleeve" and value == "Generic" and target.allow_generic_sleeve:
+            continue
         if value not in GRADES or GRADES.index(value) < GRADES.index(
             getattr(target, "min_" + field)
         ):

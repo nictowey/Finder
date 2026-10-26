@@ -83,7 +83,7 @@ export function collectListingDetailDom(expected) {
     const grades = { Poor: 'P', Fair: 'F', Good: 'G', 'Good Plus': 'G+',
       'Very Good': 'VG', 'Very Good Plus': 'VG+', 'Near Mint': 'NM', Mint: 'M' };
     base.media = grades[parts[1]] ?? null;
-    base.sleeve = grades[parts[4]] ?? null;
+    base.sleeve = parts[4] === 'Generic' ? 'Generic' : grades[parts[4]] ?? null;
     const details = one(main, '[data-testid="item-details"]');
     const comment = details && one(details, 'p.break-words.whitespace-pre-line');
     if (comment && comment.children.length === 0) {

@@ -128,6 +128,8 @@ Saving the same release updates its rules.</p>
 <label>Minimum sleeve grade<select id="min-sleeve" name="min_sleeve">
 <option>P</option><option>F</option><option>G</option><option>G+</option><option>VG</option><option selected>VG+</option><option>NM</option><option>M</option>
 </select></label>
+<label class="check full"><input id="allow-generic-sleeve" name="allow_generic_sleeve" type="checkbox">
+<span>Allow a Generic sleeve for this release<small>Generic is separate from the minimum sleeve grade and is rejected unless checked.</small></span></label>
 <label>Minimum seller positive %<input id="min-seller-percent" name="min_seller_percent" type="number" required min="0" max="100" step="0.01" value="99" inputmode="decimal"><small>Use 0 for no rating requirement.</small></label>
 <label>Minimum feedback count<input id="min-feedback" name="min_feedback" type="number" required min="0" max="10000000" step="1" value="100" inputmode="numeric"><small>Use 0 for no feedback-count requirement.</small></label>
 <label>Maximum total<input id="max-total" name="max_total" type="text" required inputmode="decimal" maxlength="10"
@@ -330,6 +332,7 @@ function renderSaved() {
     card.append(node('h3', target.label || `Release ${target.release_id}`), node('p', `Discogs release ${target.release_id} · reference only`, 'muted'));
     const facts=document.createElement('dl');
     detail(facts, 'Minimum grades', `Media ${target.min_media ?? 'unknown'} / sleeve ${target.min_sleeve ?? 'unknown'}`);
+    detail(facts, 'Generic sleeve', target.allow_generic_sleeve === true ? 'Allowed for this release' : 'Rejected');
     detail(facts, 'Seller threshold', `${target.min_seller_percent ?? 'unknown'}% positive · ${target.min_feedback ?? 'unknown'} feedback`);
     detail(facts, 'Maximum total', `${target.max_total ?? 'unknown'} ${target.currency ?? ''}`);
     detail(facts, 'Destination', target.destination_postal ?
@@ -345,6 +348,7 @@ function renderSaved() {
         'min-seller-percent':'min_seller_percent', 'min-feedback':'min_feedback', 'max-total':'max_total',
         currency:'currency', 'destination-country':'destination_country', 'destination-postal':'destination_postal'};
       Object.entries(fields).forEach(([id, field]) => { el(id).value = target[field] ?? ''; });
+      el('allow-generic-sleeve').checked=target.allow_generic_sleeve === true;
       el('enabled').checked=target.enabled !== false;
       syncDestinationRequirement();
       el('draft-note').textContent = `Editing rules for release ${target.release_id}. Saving updates that release; changing the ID saves a different target.`;
@@ -558,7 +562,8 @@ function targetFromForm() {
   const postal=value('destination-postal');
   const active=el('enabled').checked;
   const target={release_id:value('release-id'), label:value('label'), min_media:value('min-media'),
-    min_sleeve:value('min-sleeve'), min_seller_percent:Number(value('min-seller-percent')),
+    min_sleeve:value('min-sleeve'), allow_generic_sleeve:el('allow-generic-sleeve').checked,
+    min_seller_percent:Number(value('min-seller-percent')),
     min_feedback:Number(value('min-feedback')), max_total:value('max-total'), currency:value('currency'),
     destination_country:postal ? value('destination-country').toUpperCase() : null,
     destination_postal:postal || null, enabled:active};

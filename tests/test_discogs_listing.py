@@ -148,6 +148,16 @@ def test_identity_currency_and_shipping_blocked():
     assert observation(listing).shipping is None
 
 
+def test_public_listing_preserves_generic_sleeve_without_treating_it_as_grade():
+    data = payload()
+    data["sleeve_condition"] = "Generic"
+    listing = normalize(data, 123)
+    assert listing["sleeve"] == "Generic"
+    assert not evaluate(target(), observation(listing), now=datetime.now(UTC))[
+        "eligible_for_review"
+    ]
+
+
 @pytest.mark.parametrize("body", [b"bad json", b"[]", b"{}", b"x" * 262145])
 def test_bad_response(body):
     with pytest.raises(ListingReadError):

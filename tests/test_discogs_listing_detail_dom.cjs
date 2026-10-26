@@ -51,6 +51,14 @@ test('fixed detail collector reads only exact visible item facts with unknown pa
   assert.ok(!('tax' in result) && !('destination' in result));
 });
 
+test('Generic sleeve is preserved as a distinct disclosed value, not a grade', () => {
+  const result = collect(html.replace('<span>Near Mint</span>', '<span>Generic</span>'));
+  assert.equal(result.status, 'observed');
+  assert.equal(result.complete, true);
+  assert.equal(result.sleeve, 'Generic');
+  assert.equal(result.purchase_allowed, false);
+});
+
 test('wrong release, changed listing URL, ambiguous grades and missing details fail closed', () => {
   assert.equal(collect(html, { release_id: '234568', listing_id: listing }).error_code,
     'listing_release_mismatch');

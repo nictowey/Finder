@@ -352,12 +352,20 @@ function clickText(text) {
   const nights=saved.targets.find(row=>row.release_id===28720177);
   assert.equal(nights.enabled,false);assert.equal(nights.max_total,'10.00');
   assert.equal(nights.min_media,'VG+');assert.equal(nights.min_sleeve,'VG+');
+  assert.equal(nights.allow_generic_sleeve,false);
   assert.equal(nights.min_seller_percent,0);assert.equal(nights.min_feedback,0);
   assert.equal(nights.destination_country,null);assert.equal(nights.destination_postal,null);
   const loadNights=[...el('targets').querySelectorAll('button')]
     .find(button=>button.textContent==='Load these rules into the form' && button.closest('article')?.textContent.includes('28720177'));
   assert.ok(loadNights);loadNights.click();assert.equal(el('max-total').value,'10.00');
   assert.equal(el('enabled').checked,false);assert.equal(el('destination-postal').required,false);
+  assert.equal(el('allow-generic-sleeve').checked,false);
+  // A different paused release may opt in to Generic without changing 56 Nights.
+  fill({'release-id':'3422100','max-total':'10.00','min-media':'P','min-sleeve':'P'});
+  el('allow-generic-sleeve').checked=true;
+  submit('target-form');await settled(w);
+  assert.equal(saved.targets.find(row=>row.release_id===3422100).allow_generic_sleeve,true);
+  assert.equal(saved.targets.find(row=>row.release_id===28720177).allow_generic_sleeve,false);
   saved.capabilities={listing_read_enabled:'true'};el('refresh').click();await settled(w);assert.equal(el('read-listing').disabled,true);
   delete saved.capabilities;el('refresh').click();await settled(w);assert.equal(el('read-listing').disabled,true);
   assert.ok(requestTimeouts.includes(25000));assert.ok(requestTimeouts.includes(10000));

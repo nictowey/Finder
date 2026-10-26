@@ -83,6 +83,22 @@ def test_zero_seller_threshold_means_no_rating_or_feedback_gate():
     assert "Item, shipping, tax and mandatory fees must all be known." in unknown_total["reasons"]
 
 
+def test_generic_sleeve_is_a_separate_opt_in_not_a_grade():
+    generic = observation(sleeve="Generic")
+    assert not evaluate(target(min_sleeve="P"), generic, now=NOW)["eligible_for_review"]
+    allowed = target(min_sleeve="VG+", allow_generic_sleeve=True)
+    accepted = evaluate(allowed, generic, now=NOW)
+    assert accepted["eligible_for_review"]
+    assert accepted["purchase_allowed"] is False
+    assert not evaluate(allowed, observation(media="Generic"), now=NOW)["eligible_for_review"]
+    assert not evaluate(allowed, observation(sleeve="No Cover"), now=NOW)["eligible_for_review"]
+    assert not evaluate(allowed, observation(sleeve="Generic", tax=None), now=NOW)[
+        "eligible_for_review"
+    ]
+    with pytest.raises(ValidationError):
+        target(allow_generic_sleeve="true")
+
+
 @pytest.mark.parametrize(
     "changes",
     [
