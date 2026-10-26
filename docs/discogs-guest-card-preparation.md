@@ -327,9 +327,9 @@ metadata JSON document on stdin, then exits. It accepts the exact scope,
 current readiness, fresh All/All reconciliation, normal Cart-to-new-Checkout
 provenance and current inspection. It performs no browser or payment operation.
 Only after the existing locked ledger has fsynced linked ready/review/attempt
-records may it return `checkout_claim_granted`; the original checkout observation
-still limits that permit to 20 seconds. There are no intermediate navigation
-ACKs or terminal-ready process to keep alive.
+records may it return `checkout_claim_granted`. Human-readiness claims retain
+their original 20-second permit. There are no intermediate navigation ACKs or
+terminal-ready process to keep alive.
 
 `--record-claim-outcome` records one outcome bound to the exact claim hash,
 intent, ready reference and scope. It cannot replace an outcome or renew click
@@ -345,6 +345,37 @@ The claim explicitly reports human payment readiness false and card entry,
 payment and final submission disabled. The same original checkout observation,
 transaction checks and pending-attempt rules still apply. Failures report only
 fixed, allowlisted stop reasons, with no exception text or account data.
+
+For no-submit diagnostics, the backend now returns staged authority marked
+`requires_execution_revalidation`, with the original fixed job/scope/history
+and evidence expiry. It still rejects initial checkout observations older than
+20 seconds. The self-contained `makeCurrentCheckoutCuaActor` must then capture
+the supported viewer itself, timestamping before either capture await, and bind
+the model's exact current-screen proof to that one-use observation. The actor
+checks its age is at most 20 seconds immediately before clicking. Capture cannot
+renew the job deadline; there is no terminal round trip between that capture
+and click. Scope, quote, destination, terms and control bindings must match.
+Consumption precedes the awaited effect; cancellation or uncertainty prevents
+retry. A same-runtime reservation prevents constructing a second actor for the
+same claim or request. Lost runtime state is not permission to reconstruct it.
+
+The live no-submit run on revision `42aaf2f` reached fresh merchant checkout,
+but did not initialize the guest form. One input-producer error was reproduced:
+giving a quote observed 17.227 seconds earlier the job's `now + 300` expiry made
+its lifetime 317.227 seconds. The validator correctly rejected it. Bounding the
+producer expiry by `min(scope expiry, observation + 300)` fixes the input without
+changing its observation time; the regression preserves that rejection.
+The corrected claim `b9c5a24a65a8fdb738b4876fbd3dd534d4fcd449d15caef27d6e8861c866c4df`
+was granted, but the actor guard ran 22.887 seconds after observation and returned
+`expired_before_effect`, `clicked:false`. Its conservative unknown outcome is
+retained. This is not evidence of form initialization, order creation or payment.
+
+An unknown may be reconciled for another no-submit claim only with a typed,
+hash-bound proof of that original definitive no-effect result, matching the old
+request and the old outcome's timing, plus newer complete All/All order history.
+A later expired-grant probe, timeout or exception does not establish no effect.
+The new review retains that proof; no old claim, outcome or fence is replaced.
+This path is supervised CUA development tooling, not autonomous server checkout.
 
 At this checkpoint the web and browser services were active, with no restart or
 OOM since their 13:42 start; browser memory was 850.7 MiB of 2 GiB. Monitoring

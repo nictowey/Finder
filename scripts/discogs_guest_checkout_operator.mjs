@@ -117,8 +117,11 @@ export function buildOperatorAck(request, templates, operatorProof) {
 
 const CLAIM_KEYS = ['type', 'ready_ref', 'scope', 'userReady', 'priorFailure', 'expected_latest_hash', 'provenance', 'inspection'];
 const TEST_CLAIM_KEYS = CLAIM_KEYS.filter(key => key !== 'userReady').concat('testAuthorization');
+const RESOLVED_TEST_CLAIM_KEYS = TEST_CLAIM_KEYS.concat('priorNoDispatch');
 const TEST_AUTH_KEYS = ['source', 'approval_ref', 'scope_digest', 'attempt_id', 'authorized_at', 'issued_at', 'expires_at',
   'card_entry_allowed', 'payment_allowed', 'final_submission_allowed'];
+const NO_DISPATCH_KEYS = ['source', 'previous_claim_sha256', 'previous_outcome_sha256', 'request_id', 'actor_result',
+  'clicked', 'observed_at', 'card_data_entered', 'pay_invoked', 'approval_invoked', 'capture_invoked'];
 const CLAIM_PROVENANCE_KEYS = ['source', 'navigation', 'scope_digest', 'cart_document_ref', 'checkout_document_ref',
   'cart_observed_at', 'checkout_observed_at', 'cart_scope_verified', 'go_to_checkout_verified',
   'history_restore', 'resubmission_prompt', 'extra_agreement_required'];
@@ -129,23 +132,44 @@ const FAILURE_KEYS = ['source', 'last_error_code', 'release_id', 'listing_id', '
 const OUTCOMES = ['guest_form_visible', 'SESSION_EXPIRED', 'unknown', 'access_restricted'];
 const CLAIM_STOP_REASONS = new Map([
   ...['authorization_unverified', 'test_authorization_unverified', 'scope_or_quote_unverified', 'provenance_unverified',
-    'reconciliation_required', 'prior_attempt_unresolved', 'ready_replayed', 'claim_expired', 'claim_changed',
+    'reconciliation_required', 'prior_attempt_unresolved', 'prior_no_dispatch_unverified', 'ready_replayed', 'claim_expired', 'claim_changed',
     'legacy_changed', 'operator_ledger_changed'].map(value => [value, value]),
   ['invalid_legacy_chain', 'legacy_changed'],
 ]);
 
-function requireResolvedPreviousAttempt(state) {
+function requireResolvedPreviousAttempt(state, definitiveNoDispatch = false) {
   const index = state.records.findLastIndex(item => item.value.kind === 'attempt');
   if (index < 0) return;
   const outcome = state.records[index + 1]?.value;
-  if (outcome?.kind !== 'outcome' || outcome.payload.outcome !== 'SESSION_EXPIRED') {
+  if (outcome?.kind !== 'outcome' || !(outcome.payload.outcome === 'SESSION_EXPIRED' ||
+      definitiveNoDispatch && outcome.payload.outcome === 'unknown')) {
     throw new Error('prior_attempt_unresolved');
   }
 }
 
+function validatePriorNoDispatch(proof, state, prior) {
+  const index = state.records.findLastIndex(item => item.value.kind === 'attempt');
+  const attempt = state.records[index], outcome = state.records[index + 1], permit = attempt?.value.payload.permit;
+  if (!shape(proof, NO_DISPATCH_KEYS) || proof.source !== 'operator_reviewed_supported_cua_no_dispatch' ||
+      proof.actor_result !== 'expired_before_effect' || proof.clicked !== false ||
+      ['card_data_entered', 'pay_invoked', 'approval_invoked', 'capture_invoked'].some(key => proof[key] !== false) ||
+      attempt?.value.payload.mode !== 'current_checkout_claim' || outcome?.value.kind !== 'outcome' ||
+      outcome.value.payload.outcome !== 'unknown' || proof.previous_claim_sha256 !== attempt.hash ||
+      proof.previous_outcome_sha256 !== outcome.hash || !uuid(proof.request_id) || proof.request_id !== permit?.request_id ||
+      !num(permit?.deadline) || !num(proof.observed_at) || proof.observed_at > Date.now() / 1000 ||
+      proof.observed_at * 1000 < permit.deadline || proof.observed_at < attempt.value.recorded_at ||
+      !num(outcome.value.payload.observed_at) || proof.observed_at > outcome.value.payload.observed_at ||
+      proof.observed_at > outcome.value.recorded_at ||
+      prior.order_history_observed_at <= Math.max(proof.observed_at, state.records.at(-1).value.recorded_at)) {
+    throw new Error('prior_no_dispatch_unverified');
+  }
+  return true;
+}
+
 function validateCurrentClaim(value, state, anchor) {
   const now = Date.now() / 1000;
-  if (!metadataOnly(value) || !(shape(value, CLAIM_KEYS) || shape(value, TEST_CLAIM_KEYS)) || value.type !== 'claim_current_checkout' ||
+  if (!metadataOnly(value) || !(shape(value, CLAIM_KEYS) || shape(value, TEST_CLAIM_KEYS) ||
+      shape(value, RESOLVED_TEST_CLAIM_KEYS)) || value.type !== 'claim_current_checkout' ||
       !uuid(value.ready_ref) || value.expected_latest_hash !== state.head) throw new Error('authorization_unverified');
   const { scope, userReady: ready, priorFailure: prior, provenance: p, inspection } = value;
   const scopeHash = guestCardScopeDigest(scope), parsed = validateGuestCardInspection(inspection, scope);
@@ -196,11 +220,13 @@ function validateCurrentClaim(value, state, anchor) {
     if (kind === 'attempt') lastEffectAt = Math.max(lastEffectAt, recorded_at);
     if (kind === 'outcome') lastEffectAt = Math.max(lastEffectAt, payload.observed_at || 0);
   }
-  requireResolvedPreviousAttempt(state);
-  if (prior.failure_observed_at < lastEffectAt || prior.order_history_observed_at <
+  const definitiveNoDispatch = Object.hasOwn(value, 'priorNoDispatch') ? validatePriorNoDispatch(value.priorNoDispatch, state, prior) : false;
+  requireResolvedPreviousAttempt(state, definitiveNoDispatch);
+  if (!definitiveNoDispatch && prior.failure_observed_at < lastEffectAt || prior.order_history_observed_at <
       (state.records.at(-1)?.value.recorded_at || lastEffectAt)) throw new Error('reconciliation_required');
   const deadline = Math.min(scope.expires_at * 1000, authorizationExpiresAt * 1000, prior.expires_at * 1000,
-    (prior.order_history_observed_at + 300) * 1000, parsed.expires_at * 1000, (p.checkout_observed_at + 20) * 1000);
+    (prior.order_history_observed_at + 300) * 1000, parsed.expires_at * 1000,
+    ...(test ? [] : [(p.checkout_observed_at + 20) * 1000]));
   if (Date.now() >= deadline) throw new Error('claim_expired');
   return { scopeHash, parsed, deadline };
 }
@@ -257,6 +283,7 @@ export async function runCurrentCheckoutClaim({ mode = 'claim', directory = '/st
       failure_observed_at: value.priorFailure.failure_observed_at, history_observed_at: value.priorFailure.order_history_observed_at });
     check(); const reviewHash = await append(directory, state, anchor, 'review', { ...base, mode: 'current_checkout_claim',
       latest_prior_hash: value.expected_latest_hash, legacy_files: anchor.manifest, provenance,
+      ...(value.priorNoDispatch ? { priorNoDispatch: { ...value.priorNoDispatch } } : {}),
       failure_observed_at: value.priorFailure.failure_observed_at, history_observed_at: value.priorFailure.order_history_observed_at,
       no_card: true, no_pay: true, no_approval: true, no_capture: true });
     check(); const claimHash = await append(directory, state, anchor, 'attempt', { ...base, mode: 'current_checkout_claim',
@@ -268,7 +295,8 @@ export async function runCurrentCheckoutClaim({ mode = 'claim', directory = '/st
     check(); await emit({ type: 'checkout_claim_granted', claim_sha256: claimHash, permit,
       order_status: 'unverified', payment_status: 'unverified', autonomous_checkout: false,
       ...(value.testAuthorization ? { human_payment_ready: false, card_entry_allowed: false,
-        payment_allowed: false, final_submission_allowed: false } : {}) }); return 0;
+        payment_allowed: false, final_submission_allowed: false, requires_execution_revalidation: true,
+        expected_scope: { ...scope } } : {}) }); return 0;
   } catch (error) {
     await emit({ type: 'claim_stopped', code: 'claim_blocked_or_uncertain',
       stop_reason: CLAIM_STOP_REASONS.get(error?.message) || 'unknown_internal_stop',

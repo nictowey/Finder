@@ -546,6 +546,12 @@ test('no-submit test authorization is distinct from human readiness and records 
   const claim = noSubmitAuthorization(await currentClaim(directory));
   const result = await oneShot(directory, claim);
   assert.equal(result.message.type, 'checkout_claim_granted');
+  assert.equal(result.message.requires_execution_revalidation, true);
+  assert.deepEqual(result.message.expected_scope, claim.scope);
+  assert.equal(result.message.permit.deadline, Math.min(claim.scope.expires_at * 1000,
+    claim.testAuthorization.expires_at * 1000, claim.priorFailure.expires_at * 1000,
+    (claim.priorFailure.order_history_observed_at + 300) * 1000, claim.inspection.evidence.expires_at * 1000));
+  assert.ok(result.message.permit.deadline > (claim.inspection.evidence.observed_at + 20) * 1000);
   for (const key of ['human_payment_ready', 'card_entry_allowed', 'payment_allowed', 'final_submission_allowed']) {
     assert.equal(result.message[key], false);
   }
@@ -586,4 +592,113 @@ test('one-shot failure reasons are fixed allowlisted labels and never echo arbit
   claim.inspection.evidence.total = '5.06';
   assert.equal((await oneShot(directory, claim)).message.stop_reason, 'scope_or_quote_unverified');
   assert.equal((await audits(directory)).length, 0);
+}));
+
+async function seedExpiredNoEffectUnknown(directory) {
+  const claim = await currentClaim(directory);
+  claim.userReady.expires_at = Date.now() / 1000 + 0.35;
+  const granted = await oneShot(directory, claim); assert.equal(granted.message.type, 'checkout_claim_granted');
+  await new Promise(resolve => setTimeout(resolve, Math.max(1, granted.message.permit.deadline - Date.now() + 5)));
+  const actorObserved = Date.now() / 1000;
+  assert.equal((await oneShot(directory, outcomeFor(claim, granted.message, 'unknown'), { mode: 'outcome' })).code, 0);
+  const proof = { source: 'operator_reviewed_supported_cua_no_dispatch',
+    previous_claim_sha256: granted.message.claim_sha256,
+    previous_outcome_sha256: hash(await readFile(join(directory, 'guest-checkout-000004.json'))),
+    request_id: granted.message.permit.request_id, actor_result: 'expired_before_effect', clicked: false,
+    observed_at: actorObserved, card_data_entered: false, pay_invoked: false, approval_invoked: false, capture_invoked: false };
+  return { claim, granted: granted.message, proof };
+}
+
+test('definitive no-dispatch proof permits only a new no-submit claim, retaining all prior bytes and original quote expiry', async () => stateFixture(async directory => {
+  const old = await seedExpiredNoEffectUnknown(directory);
+  const names = (await readdir(directory)).sort(), before = await Promise.all(names.map(name => readFile(join(directory, name))));
+  const claim = noSubmitAuthorization(await currentClaim(directory)); claim.priorNoDispatch = old.proof;
+  // The actual old SESSION_EXPIRED observation stays historical, never invented anew.
+  claim.priorFailure.failure_observed_at = old.claim.priorFailure.failure_observed_at;
+  claim.inspection.evidence.expires_at = Date.now() / 1000 + 30;
+  const result = await oneShot(directory, claim);
+  assert.equal(result.message.type, 'checkout_claim_granted');
+  assert.equal(result.message.requires_execution_revalidation, true);
+  assert.deepEqual(result.message.expected_scope, claim.scope);
+  assert.equal(result.message.permit.deadline, claim.inspection.evidence.expires_at * 1000);
+  const records = await audits(directory); assert.equal(records.length, 7);
+  assert.deepEqual(records[5].payload.priorNoDispatch, old.proof);
+  for (let i = 0; i < names.length; i++) assert.deepEqual(await readFile(join(directory, names[i])), before[i]);
+  const another = noSubmitAuthorization(await currentClaim(directory)); another.priorNoDispatch = old.proof;
+  assert.equal((await oneShot(directory, another)).message.type, 'claim_stopped');
+  assert.equal((await audits(directory)).length, 7);
+}));
+
+test('unknown resolution rejects wrong hashes, request, times, flags, generic errors and stale order reconciliation', async () => stateFixture(async directory => {
+  const old = await seedExpiredNoEffectUnknown(directory);
+  for (const alter of [
+    value => { value.priorNoDispatch.previous_claim_sha256 = 'a'.repeat(64); },
+    value => { value.priorNoDispatch.previous_outcome_sha256 = 'b'.repeat(64); },
+    value => { value.priorNoDispatch.request_id = randomUUID(); },
+    value => { value.priorNoDispatch.actor_result = 'timeout'; },
+    value => { value.priorNoDispatch.clicked = true; },
+    value => { value.priorNoDispatch.card_data_entered = true; },
+    value => { value.priorNoDispatch.pay_invoked = true; },
+    value => { value.priorNoDispatch.approval_invoked = true; },
+    value => { value.priorNoDispatch.capture_invoked = true; },
+    value => { value.priorNoDispatch.observed_at = old.granted.permit.deadline / 1000 - 0.001; },
+    value => { value.priorNoDispatch.observed_at = Date.now() / 1000 + 60; },
+    value => { value.priorFailure.failure_observed_at = old.claim.priorFailure.failure_observed_at;
+      value.priorFailure.order_history_observed_at = old.proof.observed_at - 0.001; },
+    value => { value.priorNoDispatch.extra = 'SYNTHETIC_UNSUPPORTED'; },
+  ]) {
+    const claim = noSubmitAuthorization(await currentClaim(directory)); claim.priorNoDispatch = { ...old.proof }; alter(claim);
+    const result = await oneShot(directory, claim);
+    assert.equal(result.message.type, 'claim_stopped');
+    assert.equal(result.message.stop_reason, 'prior_no_dispatch_unverified');
+    assert.equal((await audits(directory)).length, 4);
+  }
+  const human = await currentClaim(directory); human.priorNoDispatch = old.proof;
+  assert.equal((await oneShot(directory, human)).message.stop_reason, 'authorization_unverified');
+  assert.equal((await audits(directory)).length, 4);
+}));
+
+test('two concurrent no-dispatch resolution claims can consume the reconciled history only once', async () => stateFixture(async directory => {
+  const old = await seedExpiredNoEffectUnknown(directory);
+  const a = noSubmitAuthorization(await currentClaim(directory)), b = noSubmitAuthorization(await currentClaim(directory));
+  a.priorNoDispatch = old.proof; b.priorNoDispatch = old.proof;
+  const results = await Promise.all([oneShot(directory, a), oneShot(directory, b)]);
+  assert.equal(results.filter(value => value.message.type === 'checkout_claim_granted').length, 1);
+  assert.equal((await audits(directory)).length, 7);
+  const legacy = client(directory);
+  try {
+    const start = startFor(await legacy.next()); legacy.send(start);
+    assert.equal((await legacy.next()).type, 'stopped'); await legacy.exited;
+    assert.ok(!legacy.output.join('').includes('operator_action'));
+  } finally { await legacy.close(); }
+}));
+
+test('317.227-second producer quote interval is rejected until expiry is clamped without refreshing observation', () => {
+  const start = startFor({ latest_hash: 'f'.repeat(64) }, { ttl: 300 });
+  const now = start.scope.issued_at, observedAt = now - 17.227;
+  const templates = operator.prepareOperatorAckTemplates(start, refs());
+  const inspection = { schema: 'discogs_guest_card_inspection_v1', url: helper.GUEST_CARD_URL,
+    access: 'normal', control: templates.card_control,
+    evidence: { ...templates.checkout.evidence, observed_at: observedAt, expires_at: start.scope.expires_at } };
+  assert.equal((inspection.evidence.expires_at - observedAt).toFixed(3), '317.227');
+  assert.equal(helper.validateGuestCardInspection(inspection, start.scope, { now }), null);
+  inspection.evidence.expires_at = Math.min(start.scope.expires_at, observedAt + 300);
+  assert.equal(inspection.evidence.observed_at, observedAt);
+  assert.equal(inspection.evidence.expires_at, observedAt + 300);
+  assert.ok(helper.validateGuestCardInspection(inspection, start.scope, { now }));
+});
+
+test('a later expired-grant probe cannot resolve an earlier unknown action', async () => stateFixture(async directory => {
+  const old = await seedExpiredNoEffectUnknown(directory);
+  const unknown = (await audits(directory))[3];
+  await new Promise(resolve => setTimeout(resolve, 5));
+  const claim = noSubmitAuthorization(await currentClaim(directory));
+  claim.priorNoDispatch = { ...old.proof,
+    observed_at: Math.max(unknown.payload.observed_at, unknown.recorded_at) + 0.001 };
+  assert.ok(claim.priorNoDispatch.observed_at < Date.now() / 1000);
+  assert.ok(claim.priorNoDispatch.observed_at * 1000 >= old.granted.permit.deadline);
+  const result = await oneShot(directory, claim);
+  assert.equal(result.message.type, 'claim_stopped');
+  assert.equal(result.message.stop_reason, 'prior_no_dispatch_unverified');
+  assert.equal((await audits(directory)).length, 4);
 }));
