@@ -419,6 +419,7 @@ async function writeCartGrantAck(socket, grantId = cartGrantId) {
 function cartSnapshot() {
   const quote = (count, visible, label, value) => ({ count, visible, label, value });
   return { schema: 'discogs_cart_dom_v1', code: 'observed', purchase_allowed: false,
+    checkout_control_kind: 'legacy_place_order',
     form_count: 1, order_container_count: 1, item_row_count: 1, listing_link_count: 1,
     canonical_listing_href: '/sell/item/3526572746', listing_matches_expected: true,
     quantity_control_count: 0, address_container_count: 1, edit_shipping_address_present: true,
