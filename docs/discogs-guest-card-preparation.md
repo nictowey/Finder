@@ -196,10 +196,12 @@ no-action waiting state. The next live UI run remains unverified; this is not
 autonomous checkout.
 The four ports are `openCartViaVisibleControl`, `inspectCurrentCart`,
 `clickGoToCheckout` and `inspectFreshCheckout`. A scope-bound explicit human-ready
-token is required before any navigation and is valid for at most 180 seconds.
-The installed operator path carries one 90-second maximum across all phases,
-without restarting the window before guest initialization, and clamps it to the earlier evidence,
-scope and readiness expiry. Each mutating port must call the supplied
+token is required before any navigation. The current helper/CLI freezes one human
+availability deadline of at most 300 seconds, bounded by approval, readiness,
+review and order-history expiry. Each stage has at most 120 seconds within that
+same availability window; guest initialization is additionally bounded by the
+checkout observation plus 20 seconds. CUA arming uses the availability deadline,
+not the first stage's deadline. Each mutating port must call the supplied
 `revalidateBeforeDispatch()` immediately before its effect after any await;
 revocation, expiry or cancellation makes that guard fail and aborts its signal.
 The coordinator rejects Back/history-restored documents and returns only fresh
@@ -267,6 +269,31 @@ path. No new live initialization has run. There is no automatic retry loop or by
 unresolved outcome. After mouse-only positioning, all UI reads and agent input
 freeze for human card entry. Neither harness is a production payment adapter.
 
+`prepareOperatorAckTemplates` precomputes only serializable, unattested metadata;
+it consumes no readiness and performs no file or UI action. `buildOperatorAck`
+binds the current request to those unchanged templates and requires fresh
+operator proof for that stage. Precomputation does not attest a future screen or
+permit reuse of an earlier observation.
+
+### Local CUA/CLI timing measurement — synthetic only
+
+A local fixture staged at approximately Unix time `1793034105.666` was exercised
+through the real CLI and supported CUA, sequentially. The BEGIN request followed
+14.295 seconds later; the run reported 52,272 ms elapsed, exit zero and four audit
+records. Three actual fixture clicks produced these observations:
+
+| Fixture stage | Observed Unix time | ACK proof age | Generated ACK bytes |
+| --- | --- | --- | --- |
+| Cart | `1793034126.118` | 7,734 ms | 2,118 |
+| Checkout | `1793034138.444` | 7,472 ms | 2,428 |
+| Blank guest form | `1793034151.341` | 6,585 ms | 430 |
+
+The fixture's guest-click DOM mark was `1793034151151` ms, 12.707 seconds after
+the quote observation. This measures actual CUA/CLI round trips against
+synthetic local state, with no Discogs request or new live readiness. It is not
+hosted-page timing, a full run of the exact CUA adapter factory, or proof of live
+checkout, order creation or payment.
+
 At this checkpoint the web and browser services were active, with no restart or
 OOM since their 13:42 start; browser memory was 850.7 MiB of 2 GiB. Monitoring
 remained inactive. These health observations do not verify checkout or payment.
@@ -280,8 +307,10 @@ component; it must not be recorded as confirmed zero tax. Preparation may use
 the explicit merchant aggregate, but provider amount and terms still require
 verification before any final payment.
 
-For the operator-assisted test, the default deadline remains 30 seconds and the
-maximum is 90 seconds, bounded further by the exact approval/evidence expiry.
+The earlier one-off preparation tests used a 30-second default and 90-second
+maximum, bounded by their approval/evidence expiry. Those historical limits do
+not describe the current staged helper/CLI's availability and stage deadlines
+above.
 The private operator transport has no browser, network or payment access. A
 fresh operator revalidation precedes its sole CUA click, and the durable record
 is retained on timeout or uncertainty. This is test evidence, not an enabled

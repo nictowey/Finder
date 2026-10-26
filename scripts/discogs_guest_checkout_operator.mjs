@@ -26,6 +26,95 @@ const shape = (value, keys) => value && typeof value === 'object' && !Array.isAr
   Object.keys(value).sort().join('|') === [...keys].sort().join('|');
 const encoded = value => JSON.stringify(value) + '\n';
 
+const BINDING_KEYS = ['intent_id', 'ready_ref', 'scope_digest', 'request_id', 'stage', 'deadline', 'from_document_ref'];
+const PROOF_KEYS = ['observed_at', 'exact_scope', 'quote', 'destination', 'terms', 'no_card', 'normal'];
+const TEMPLATE_KEYS = ['schema', 'scope', 'ready_ref', 'scope_digest', 'availability_deadline', 'refs', 'cart', 'checkout', 'card_control'];
+function metadataOnly(value, seen = new Set()) {
+  if (value === null || ['string', 'boolean'].includes(typeof value) || num(value)) return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value) || seen.has(value) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return false;
+  seen.add(value);
+  return Reflect.ownKeys(value).every(key => typeof key === 'string' &&
+    Object.getOwnPropertyDescriptor(value, key).enumerable &&
+    Object.hasOwn(Object.getOwnPropertyDescriptor(value, key), 'value') && metadataOnly(value[key], seen));
+}
+function templatesFor(scope, readyRef, availabilityDeadline, refs) {
+  const scopeHash = guestCardScopeDigest(scope, { now: scope?.issued_at });
+  if (!scopeHash || !uuid(readyRef) || !shape(refs, ['cart', 'checkout', 'shipping', 'go', 'card']) ||
+      !Object.values(refs).every(uuid) || refs.cart === refs.checkout || !num(availabilityDeadline) ||
+      availabilityDeadline > scope.expires_at * 1000 || availabilityDeadline <= scope.issued_at * 1000) {
+    throw new Error('operator_templates_unverified');
+  }
+  const evidence = { source: 'trusted_current_checkout', release_id: scope.release_id, listing_id: scope.listing_id,
+    seller: scope.seller, quantity: 1, item_count: 1, seller_count: 1, rules_revision: scope.rules_revision,
+    rules_current: true, criteria_satisfied: true, already_owned: false, existing_order: false,
+    uncertain_prior_action: false, duplicate_guard_verified: true, approval_ref: scope.approval_ref,
+    authorization_current: true, authorization_revoked: false, currency: 'USD', item: '0.10', shipping: '4.95',
+    tax: null, tax_verified: false, fees: null, fees_verified: false, total: '5.05',
+    amount_basis: 'explicit_merchant_checkout_total', preparation_quote_verified: true,
+    final_payment_quote_verified: false, deferred_total_notice: false, shipping_selection_verified: true,
+    quote_fingerprint: scope.quote_fingerprint, destination_ref: scope.destination_ref, destination_verified: true,
+    terms_fingerprint: scope.terms_fingerprint, terms_verified: true, observed_at: null,
+    expires_at: availabilityDeadline / 1000 };
+  const page = cart => ({ schema: 'discogs_guest_session_page_v1', source: 'operator_verified_current_screen',
+    url: cart ? 'https://www.discogs.com/sell/cart/' : GUEST_CARD_URL,
+    document_ref: cart ? refs.cart : refs.checkout, access: 'normal', history_restore: false,
+    resubmission_prompt: false, extra_agreement_required: false, selected_shipping_ref: refs.shipping,
+    selected_shipping_label: 'Economy - Media Mail', go_to_checkout: cart ? {
+      action_kind: 'normal_go_to_checkout', label: 'Go to Checkout', count: 1, visible: true, enabled: true,
+      control_ref: refs.go } : null, evidence: { ...evidence } });
+  return { schema: 'discogs_guest_operator_templates_v1', scope: { ...scope }, ready_ref: readyRef,
+    scope_digest: scopeHash, availability_deadline: availabilityDeadline, refs: { ...refs },
+    cart: page(true), checkout: page(false), card_control: { count: 1, visible: true, enabled: true,
+      role: 'link', funding_source: 'card', aria_label: 'Debit or Credit Card', aria_disabled: 'false', control_ref: refs.card } };
+}
+
+/** Pure, serializable un-attested metadata. No readiness, file or UI effect. */
+export function prepareOperatorAckTemplates(start, refs) {
+  if (!metadataOnly(start) || !metadataOnly(refs) ||
+      !shape(start, ['type', 'ready_ref', 'scope', 'userReady', 'priorFailure', 'expected_latest_hash']) ||
+      start.type !== 'start' || !hash(start.expected_latest_hash)) throw new Error('operator_templates_unverified');
+  return templatesFor(start.scope, start.ready_ref, Math.min(start.scope?.expires_at * 1000,
+    start.userReady?.expires_at * 1000, start.priorFailure?.expires_at * 1000,
+    (start.priorFailure?.order_history_observed_at + 300) * 1000), refs);
+}
+
+/** Pure ACK builder; every true flag is a fresh operator attestation, not an inference. */
+export function buildOperatorAck(request, templates, operatorProof) {
+  if (![request, templates, operatorProof].every(value => metadataOnly(value)) || !shape(templates, TEMPLATE_KEYS)) {
+    throw new Error('operator_ack_unverified');
+  }
+  const expected = templatesFor(templates.scope, templates.ready_ref, templates.availability_deadline, templates.refs);
+  if (encoded(expected) !== encoded(templates)) throw new Error('operator_templates_changed');
+  const guest = request.stage === 'open_guest_card', go = request.stage === 'go_to_checkout';
+  const extras = guest ? ['control_ref', 'inspection_fingerprint'] : go ? ['control_ref', 'cart_fingerprint'] : [];
+  const now = Date.now() / 1000;
+  if (!shape(request, ['type', ...BINDING_KEYS, ...extras]) || request.type !== 'operator_action' ||
+      !['open_cart', 'go_to_checkout', 'open_guest_card'].includes(request.stage) || !uuid(request.request_id) ||
+      request.intent_id !== templates.scope.intent_id || request.ready_ref !== templates.ready_ref ||
+      request.scope_digest !== templates.scope_digest || !num(request.deadline) || Date.now() >= request.deadline ||
+      request.deadline > templates.availability_deadline ||
+      !shape(operatorProof, [...PROOF_KEYS, ...(guest ? ['outcome'] : [])]) ||
+      !PROOF_KEYS.filter(key => key !== 'observed_at').every(key => operatorProof[key] === true) ||
+      !num(operatorProof.observed_at) || operatorProof.observed_at > now || now - operatorProof.observed_at > 20 ||
+      request.stage === 'open_cart' && request.from_document_ref !== null ||
+      go && (request.from_document_ref !== templates.refs.cart || request.control_ref !== templates.refs.go || !hash(request.cart_fingerprint)) ||
+      guest && (request.from_document_ref !== templates.refs.checkout || request.control_ref !== templates.refs.card || !hash(request.inspection_fingerprint))) {
+    throw new Error('operator_ack_unverified');
+  }
+  const base = { type: 'operator_ack', ...Object.fromEntries(BINDING_KEYS.map(key => [key, request[key]])) };
+  const page = value => ({ ...value, evidence: { ...value.evidence, observed_at: operatorProof.observed_at } });
+  if (request.stage === 'open_cart') return { ...base, navigation: {
+    action: 'visible_cart_control', document_ref: templates.refs.cart }, cart: page(templates.cart) };
+  if (go) return { ...base, transition: { action: 'normal_go_to_checkout', control_ref: request.control_ref,
+    from_document_ref: templates.refs.cart, to_document_ref: templates.refs.checkout,
+    cart_fingerprint: request.cart_fingerprint }, checkout: page(templates.checkout), card_control: { ...templates.card_control } };
+  if (!['guest_form_visible', 'SESSION_EXPIRED', 'unknown', 'access_restricted'].includes(operatorProof.outcome)) {
+    throw new Error('operator_outcome_unverified');
+  }
+  return { ...base, outcome: operatorProof.outcome, observed_at: operatorProof.observed_at };
+}
+
 async function privateDirectory(directory) {
   const info = await lstat(directory);
   if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid() ||
@@ -155,23 +244,24 @@ export async function runGuestCheckoutOperator({ directory = '/state', input = p
       throw new Error('operator_ledger_changed');
     }
   };
-  const envelope = (stage, requestId, from = null) => ({ intent_id: scope.intent_id,
-    ready_ref: start.ready_ref, scope_digest: scopeHash, request_id: requestId, stage, deadline,
+  const envelope = (stage, requestId, from, stageDeadline) => ({ intent_id: scope.intent_id,
+    ready_ref: start.ready_ref, scope_digest: scopeHash, request_id: requestId, stage, deadline: stageDeadline,
     from_document_ref: from });
-  const exchange = async (stage, from, keys, guard = null, control = {}) => {
+  const exchange = async (stage, from, keys, guard = null, control = {}, maximumDeadline = Infinity) => {
     check(); if (guard && !guard()) throw new Error('operator_stopped');
     await verifyAnchors(); check(); if (guard && !guard()) throw new Error('operator_stopped');
-    const binding = envelope(stage, randomUUID(), from);
-    await emit({ type: 'operator_action', ...binding, ...control }); check();
+    const binding = envelope(stage, randomUUID(), from, Math.min(deadline, Date.now() + 120_000, maximumDeadline));
+    const checkStage = () => { check(); if (Date.now() >= binding.deadline) throw new Error('operator_stage_expired'); };
+    checkStage(); await emit({ type: 'operator_action', ...binding, ...control }); checkStage();
     let timer;
     try {
       const ack = await Promise.race([receive(), new Promise((_, reject) => {
-        timer = setTimeout(() => { abort.abort('timed_out'); reject(new Error('operator_stopped')); }, Math.max(1, deadline - Date.now()));
+        timer = setTimeout(() => { abort.abort('timed_out'); reject(new Error('operator_stopped')); }, Math.max(1, binding.deadline - Date.now()));
       })]);
-      check();
+      checkStage();
       if (!shape(ack, ['type', ...Object.keys(binding), ...keys]) || ack.type !== 'operator_ack' ||
           Object.keys(binding).some(key => ack[key] !== binding[key])) throw new Error('operator_ack_unverified');
-      await verifyAnchors(); check();
+      await verifyAnchors(); checkStage();
       return ack;
     } finally { clearTimeout(timer); }
   };
@@ -195,7 +285,7 @@ export async function runGuestCheckoutOperator({ directory = '/state', input = p
     if (!(num(prior.failure_observed_at) && prior.failure_observed_at >= lastEffectAt &&
         num(prior.order_history_observed_at) && prior.order_history_observed_at >=
           (state.records.at(-1)?.value.recorded_at || lastEffectAt))) throw new Error('reconciliation_required');
-    deadline = Math.min(Date.now() + 90_000, scope.expires_at * 1000, ready.expires_at * 1000,
+    deadline = Math.min(scope.expires_at * 1000, ready.expires_at * 1000,
       prior.expires_at * 1000, (prior.order_history_observed_at + 300) * 1000);
     let cartAck, checkoutAck, readyConsumed = false;
     const base = () => ({ intent_id: scope.intent_id, ready_ref: start.ready_ref, scope_digest: scopeHash });
@@ -243,13 +333,16 @@ export async function runGuestCheckoutOperator({ directory = '/state', input = p
       failure_observed_at: prior.failure_observed_at, history_observed_at: prior.order_history_observed_at,
       no_card: true, no_pay: true, no_approval: true, no_capture: true, provenance: fresh.provenance });
     check(); await verifyAnchors(); check();
+    const guestDeadline = Math.min(deadline, Date.now() + 120_000,
+      (checkoutAck.checkout.evidence.observed_at + 20) * 1000);
+    if (Date.now() >= guestDeadline) throw new Error('guest_observation_expired');
     attemptHash = await append(directory, state, anchor, 'attempt', { ...base(), review_sha256: reviewHash,
-      control_ref: parsed.control_ref, inspection_fingerprint: parsed.inspection_fingerprint, deadline });
+      control_ref: parsed.control_ref, inspection_fingerprint: parsed.inspection_fingerprint, deadline: guestDeadline });
     check(); await verifyAnchors(); check();
     if (!revalidateGuestCardClick(binding, inspection)) throw new Error('guest_control_changed');
     const ack = await exchange('open_guest_card', fresh.provenance.checkout_document_ref,
       ['outcome', 'observed_at'], null,
-      { control_ref: parsed.control_ref, inspection_fingerprint: parsed.inspection_fingerprint });
+      { control_ref: parsed.control_ref, inspection_fingerprint: parsed.inspection_fingerprint }, guestDeadline);
     if (!['guest_form_visible', 'SESSION_EXPIRED', 'unknown', 'access_restricted'].includes(ack.outcome) ||
         !num(ack.observed_at) || ack.observed_at > Date.now() / 1000 ||
         ack.observed_at < state.records.at(-1).value.recorded_at) throw new Error('outcome_unverified');

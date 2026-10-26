@@ -31,9 +31,9 @@ test('binding real supported viewer causes no observation or input before fresh 
   await assert.rejects(s.api.observe(), /not_live/);
   assert.deepEqual(s.effects, []);
   s.api.arm(s.binding); assert.equal(s.api.status().next_stage, 'open_cart');
-  const long = setup(); long.api.arm({ ...long.binding, deadline: NOW + 180000 });
+  const long = setup(); long.api.arm({ ...long.binding, deadline: NOW + 300000 });
   assert.equal(long.api.status().armed, true);
-  const expired = setup(); assert.throws(() => expired.api.arm({ ...expired.binding, deadline: NOW + 180001 }));
+  const expired = setup(); assert.throws(() => expired.api.arm({ ...expired.binding, deadline: NOW + 300001 }));
   assert.deepEqual(expired.effects, []);
 });
 test('actual adapter calls only ordered supported mouse actions and observations', async () => {

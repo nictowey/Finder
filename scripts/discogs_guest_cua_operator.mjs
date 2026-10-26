@@ -46,7 +46,7 @@ export function makeCuaGuestOperator(view, { clock = () => Date.now() } = {}) {
     arm(value) {
       if (context || frozen || !exact(value, ['intent_id', 'ready_ref', 'scope_digest', 'deadline']) ||
           !uuid.test(value.intent_id) || !uuid.test(value.ready_ref) || !hash.test(value.scope_digest) ||
-          !Number.isFinite(value.deadline) || !(clock() < value.deadline && value.deadline - clock() <= 180000)) {
+          !Number.isFinite(value.deadline) || !(clock() < value.deadline && value.deadline - clock() <= 300000)) {
         throw new Error('fresh_operator_binding_required');
       }
       context = Object.freeze({ ...value }); reason = 'armed';

@@ -806,7 +806,7 @@ test('fresh coordinator records a consistent DOM or operator-screen observation 
 test('fresh current scoped human readiness is required before any navigation', async () => {
   for (const patch of [null, { ready: false }, { source: 'standing_permission' },
     { scope_digest: 'c'.repeat(64) }, { expires_at: NOW / 1000 },
-    { observed_at: NOW / 1000 - 181, expires_at: NOW / 1000 + 1 }]) {
+    { observed_at: NOW / 1000 - 301, expires_at: NOW / 1000 + 1 }]) {
     const item = freshSessionFixture();
     const token = patch === null ? null : { ...item.userReady, ...patch };
     const result = await prepareFreshGuestCheckoutSession(item.ports, item.currentScope,
@@ -816,31 +816,38 @@ test('fresh current scoped human readiness is required before any navigation', a
   }
 });
 
-test('fresh coordinator permits 90 seconds total without resetting between normal actions', async () => {
+test('fresh coordinator permits 300 seconds total without resetting human availability', async () => {
   for (const late of [false, true]) {
     let now = NOW;
     const item = freshSessionFixture({
       openHook: (proof, options) => {
-        assert.equal(options.deadline, NOW + 90_000); now += 40_000; return proof;
+        assert.equal(options.deadline, NOW + 300_000); now += 140_000; return proof;
       },
       goHook: (proof, options) => {
-        assert.equal(options.deadline, NOW + 90_000); now += 40_000; return proof;
+        assert.equal(options.deadline, NOW + 300_000); now += 140_000; return proof;
       },
-      checkoutHook: value => { if (late) now += 10_001; return value; },
+      cartHook: value => ({ ...value, evidence: { ...value.evidence, expires_at: NOW / 1000 + 300 } }),
+      checkoutHook: value => { if (late) now += 20_001;
+        return { ...value, evidence: { ...value.evidence, expires_at: NOW / 1000 + 300 } }; },
     });
+    item.currentScope.expires_at = NOW / 1000 + 300;
+    item.userReady.scope_digest = guestCardScopeDigest(item.currentScope, { now: NOW / 1000 });
     item.userReady.observed_at = NOW / 1000;
-    item.userReady.expires_at = NOW / 1000 + 180;
+    item.userReady.expires_at = NOW / 1000 + 300;
+    item.priorFailure.order_history_observed_at = NOW / 1000;
+    item.priorFailure.reviewed_at = NOW / 1000;
+    item.priorFailure.expires_at = NOW / 1000 + 300;
     const result = await prepareFreshGuestCheckoutSession(item.ports, item.currentScope,
-      { ...item.options, clock: () => now, timeoutMs: 90_000 });
+      { ...item.options, clock: () => now, timeoutMs: 300_000 });
     if (late) assert.equal(result.code, 'fresh_checkout_preparation_stopped');
     else {
       assert.equal(result.status, 'prepared_review_only');
-      assert.equal(result.provenance.expires_at, NOW / 1000 + 90);
+      assert.equal(result.provenance.expires_at, NOW / 1000 + 300);
     }
   }
   const item = freshSessionFixture();
   const invalid = await prepareFreshGuestCheckoutSession(item.ports, item.currentScope,
-    { ...item.options, timeoutMs: 90_001 });
+    { ...item.options, timeoutMs: 300_001 });
   assert.equal(invalid.code, 'fresh_checkout_preconditions_unverified');
   assert.deepEqual(item.calls, []);
 });

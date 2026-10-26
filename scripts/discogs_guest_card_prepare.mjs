@@ -513,7 +513,7 @@ export async function prepareFreshGuestCheckoutSession(ports, scope, {
       userReady.source !== 'explicit_current_user_ready' || userReady.ready !== true ||
       userReady.scope_digest !== digest(scope) || !number(userReady.observed_at) ||
       !number(userReady.expires_at) || !(userReady.observed_at <= now && now < userReady.expires_at) ||
-      userReady.expires_at - userReady.observed_at > 180 || !record(priorFailure, FAILURE_KEYS) ||
+      userReady.expires_at - userReady.observed_at > 300 || !record(priorFailure, FAILURE_KEYS) ||
       priorFailure.source !== 'operator_reviewed_normal_discogs_ui' ||
       priorFailure.last_error_code !== 'SESSION_EXPIRED' ||
       ['release_id', 'listing_id', 'seller', 'quantity', 'currency', 'max_total'].some(key => priorFailure[key] !== scope[key]) ||
@@ -526,7 +526,7 @@ export async function prepareFreshGuestCheckoutSession(ports, scope, {
         priorFailure.order_history_observed_at <= priorFailure.reviewed_at && priorFailure.reviewed_at <= now &&
         now - priorFailure.order_history_observed_at < 300 && now < priorFailure.expires_at &&
         priorFailure.expires_at - priorFailure.reviewed_at <= 300) ||
-      !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 90_000 ||
+      !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000 ||
       !ports || ['openCartViaVisibleControl', 'inspectCurrentCart', 'clickGoToCheckout', 'inspectFreshCheckout']
         .some(key => typeof ports[key] !== 'function')) return stop('fresh_checkout_preconditions_unverified');
   scope = Object.freeze({ ...scope }); priorFailure = Object.freeze({ ...priorFailure });
