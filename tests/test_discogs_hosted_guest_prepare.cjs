@@ -109,7 +109,7 @@ function browser({ cart = cartMarkup, checkout = summary, detail = detailMarkup,
       assert.ok(options.timeout > 0 && options.timeout <= 30_000); assert.equal(options.polling, 'raf');
       for (let poll = 0; poll < 2; poll++) {
         if (await evaluate('merchant', fn, arg)) return {};
-        if (onWaitPoll) await onWaitPoll({ state, poll, effects });
+        if (onWaitPoll) await onWaitPoll({ state, poll, effects, fn, arg });
       }
       throw Object.assign(new Error('synthetic DOM did not settle'), { name: 'TimeoutError' });
     },
@@ -1752,4 +1752,118 @@ test('original absolute deadline still applies when checkout data arrives late',
       Date.now = () => actualNow() + 31_000;
     } });
   } finally { Date.now = actualNow; }
+});
+
+test('readonly qualification waits only in the same document and reports ready only after actual complete state', async () => {
+  const isolated = await import('../scripts/discogs_hosted_guest_prepare.mjs?cart-ready=' + randomUUID());
+  let delayed = false;
+  const b = browser({ onWaitPoll: ({ state, fn }) => {
+    assert.equal(fn.name, 'hostedDocumentReadyDom'); delayed = true;
+    Object.defineProperty(state.merchant.window.document, 'readyState', { value: 'complete', configurable: true });
+  } });
+  Object.defineProperty(b.state.merchant.window.document, 'readyState', { value: 'interactive', configurable: true });
+  try {
+    const grant = readonlyGrant();
+    const result = await isolated.probeCurrentGuestPreparationEvidence(b.context, grant.request, { authorization: grant.authorization });
+    assert.equal(result.code, 'current_dom_evidence_only');
+    assert.equal(result.observed.page_ready, true); assert.equal(delayed, true);
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  } finally { b.close(); }
+});
+
+test('visible full cart with uncompleted document never receives a qualification reference', async () => {
+  const isolated = await import('../scripts/discogs_hosted_guest_prepare.mjs?cart-ready=' + randomUUID());
+  const b = browser({ cart: nestedPrivateCart });
+  Object.defineProperty(b.state.merchant.window.document, 'readyState', { value: 'interactive', configurable: true });
+  try {
+    const grant = readonlyGrant();
+    const call = () => isolated.probeCurrentGuestPreparationEvidence(b.context, grant.request, { authorization: grant.authorization });
+    const result = await call();
+    assert.equal(result.code, 'page_not_ready'); assert.equal(result.status, 'blocked');
+    assert.equal(Object.hasOwn(result, 'document_ref'), false);
+    assert.equal((await call()).code, 'probe_job_replayed');
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  } finally { b.close(); }
+});
+
+test('confirmed cart becoming incomplete settles under the same deadline before one Go and fully revalidates', async () => {
+  let waited = false;
+  await preflightFixture(async ({ b, execute }) => {
+    Object.defineProperty(b.state.merchant.window.document, 'readyState', { value: 'interactive', configurable: true });
+    assert.equal((await execute()).code, 'cart_checkout_preflight_observed'); assert.equal(waited, true);
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]);
+  }, { cart: nestedPrivateCart, onWaitPoll: ({ state, fn, arg }) => {
+    assert.equal(fn.name, 'hostedDocumentReadyDom'); assert.equal(arg, CART); waited = true;
+    Object.defineProperty(state.merchant.window.document, 'readyState', { value: 'complete', configurable: true });
+  } });
+});
+
+test('cart price quantity or address changing while loading cannot reach Go after settlement', async () => {
+  for (const mode of ['price', 'quantity', 'destination']) await preflightFixture(async ({ b, execute }) => {
+    Object.defineProperty(b.state.merchant.window.document, 'readyState', { value: 'interactive', configurable: true });
+    const result = await execute(); assert.equal(result.status, 'blocked');
+    assert.equal(result.scope_diagnostic.page_ready, true);
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  }, { onWaitPoll: ({ state }) => {
+    const d = state.merchant.window.document;
+    if (mode === 'price') d.querySelector('tr.order_total td.order_summary_value').textContent = '$5.06 USD';
+    if (mode === 'quantity') d.querySelector('h1').textContent = 'You have 2 items in your cart from 1 seller.';
+    if (mode === 'destination') d.querySelector('address span').textContent = 'Another private destination';
+    Object.defineProperty(d, 'readyState', { value: 'complete', configurable: true });
+  } });
+});
+
+test('cart wait timeout or changed URL or replacement document cannot dispatch Go', async () => {
+  for (const mode of ['timeout', 'url', 'document']) await preflightFixture(async ({ b, execute }) => {
+    Object.defineProperty(b.state.merchant.window.document, 'readyState', { value: 'interactive', configurable: true });
+    const result = await execute();
+    assert.equal(result.code, mode === 'timeout' ? 'page_not_ready' : 'cart_document_changed');
+    assert.equal(result.checkout_navigation_issued, false);
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  }, { onWaitPoll: ({ state }) => {
+    if (mode === 'url') state.merchant.window.history.pushState({}, '', '/marketplace/checkout');
+    if (mode === 'document') state.merchant = dom(cartMarkup, CART);
+  } });
+});
+
+test('cancellation while waiting for complete cart drains observation and cannot later Go', async () => {
+  const entered = deferred(), finish = deferred();
+  await preflightFixture(async ({ b, execute, isolated }) => {
+    Object.defineProperty(b.state.merchant.window.document, 'readyState', { value: 'interactive', configurable: true });
+    const controller = new AbortController(), running = execute(controller.signal); await entered.promise; controller.abort();
+    assert.equal((await running).code, 'cancelled');
+    let drained = false; const settlement = isolated.waitForHostedGuestPreparationSettlement(b.context).then(() => { drained = true; });
+    await eventLoopTurn(); assert.equal(drained, false); finish.resolve(); await settlement;
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  }, { onWaitPoll: async ({ state }) => {
+    entered.resolve(); await finish.promise;
+    Object.defineProperty(state.merchant.window.document, 'readyState', { value: 'complete', configurable: true });
+  } });
+});
+
+test('cart settlement cannot renew the original deadline or permit incomplete state at final effect', async () => {
+  const actualNow = Date.now;
+  try {
+    await preflightFixture(async ({ b, execute }) => {
+      Object.defineProperty(b.state.merchant.window.document, 'readyState', { value: 'interactive', configurable: true });
+      assert.equal((await execute()).code, 'deadline_expired');
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    }, { onWaitPoll: ({ state }) => {
+      Object.defineProperty(state.merchant.window.document, 'readyState', { value: 'complete', configurable: true });
+      Date.now = () => actualNow() + 31_000;
+    } });
+  } finally { Date.now = actualNow; }
+  await preflightFixture(async ({ b, execute }) => {
+    const original = b.page.$;
+    b.page.$ = async selector => {
+      const go = await original(selector), evaluate = go.evaluate;
+      go.evaluate = async fn => {
+        Object.defineProperty(b.state.merchant.window.document, 'readyState', { value: 'interactive', configurable: true });
+        return evaluate(fn);
+      };
+      return go;
+    };
+    assert.equal((await execute()).code, 'checkout_control_changed');
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  });
 });

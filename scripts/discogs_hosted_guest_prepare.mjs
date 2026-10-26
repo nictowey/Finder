@@ -410,8 +410,18 @@ export function hostedCheckoutDataSettledDom() {
   return addresses.length > 0;
 }
 
+/** Wait only for the existing fixed document's load state. A redirect or access
+ * restriction settles the wait so the caller can stop with its exact guard.
+ */
+export function hostedDocumentReadyDom(expectedUrl) {
+  return location.href !== expectedUrl || document.readyState === 'complete' ||
+    /just a moment|attention required|security check|captcha|cloudflare|sign in|log in/iu.test(document.title) ||
+    !!document.querySelector('input[type="password"],form[action*="/cdn-cgi/"],iframe[src*="challenges.cloudflare.com"],[id*="captcha" i],[class*="captcha" i]');
+}
+
 /** Same-document final form association recheck on the bound visible Go handle. */
 function revalidateHostedGoFormDom(element) {
+  if (document.readyState !== 'complete') return false;
   const rendered = node => {
     if (!node?.isConnected) return false;
     for (let current = node; current; current = current.parentElement) {
@@ -1052,6 +1062,14 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
       if (page.url() !== CART || !await read(() => page.evaluate(expected => document === expected, documentHandle))) fail('probe_document_changed');
       return { ...snapshot, initialization_allowed: false, card_entry_allowed: false, payment_allowed: false, final_submission_allowed: false };
     }
+    try {
+      await read(() => page.waitForFunction(hostedDocumentReadyDom, url,
+        { timeout: Math.max(1, deadline - Date.now()), polling: 'raf' }));
+    } catch (error) {
+      if (error?.name === 'TimeoutError') fail('page_not_ready');
+      throw error;
+    }
+    if (page.url() !== url || !await read(() => page.evaluate(expected => document === expected, documentHandle))) fail('probe_document_changed');
     const inspectorPage = {
       url: () => retainContextTask(context, Promise.resolve().then(() => {
         if (signal?.aborted) fail('cancelled');
@@ -1069,6 +1087,7 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
     const dom = await read(() => page.evaluate(collectHostedGuestDom, {
       stage: cart ? 'cart' : 'checkout', privateDestinationSnapshot: true }));
     if (dom.access !== 'normal' || summary?.code === 'access_restricted') fail('access_restricted');
+    if (!dom.ready) fail('page_not_ready');
     if (confirming && (!job.private_destination_snapshot || !dom.address_present)) fail('saved_destination_unverified');
     if (confirming && dom.private_destination_snapshot !== job.private_destination_snapshot) fail('saved_destination_snapshot_changed');
     const detailPages = pages.filter(candidate => ['https://www.discogs.com/sell/item/1366950910',
@@ -1083,6 +1102,7 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
     const cartCaption = cart && title?.ready === true && detail?.status === 'observed' ?
       parseCapturedCartCaption(dom.cart_caption, title.title_core) : null;
     const observed = {
+      page_ready: dom.ready === true,
       summary_supported: cart ? cartDom?.code === 'observed' && cartDom.form_count === 1 && cartDom.order_container_count === 1 && cartDom.summary_count === 1 : summary?.status === 'observed',
       seller_matches: cart ? detail?.seller_handle === authorization.seller && dom.listing === true : summary?.status === 'observed' && summary.seller_handle === authorization.seller,
       exact_preparation_amounts: cart ? cartDom?.subtotal?.value === '$0.10 USD' && cartDom?.shipping?.value === '$4.95 USD' && cartDom?.total?.value === '$5.05 USD' :
@@ -1138,6 +1158,7 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
     const finalSnapshot = await read(() => page.evaluate(collectHostedGuestDom, {
       stage: cart ? 'cart' : 'checkout', privateDestinationSnapshot: true }));
     if (finalSnapshot.access !== 'normal') fail('access_restricted');
+    if (!finalSnapshot.ready) fail('page_not_ready');
     if (finalSnapshot.private_destination_snapshot !== dom.private_destination_snapshot) fail('saved_destination_snapshot_changed');
     if (page.url() !== url || !await read(() => page.evaluate(expected => document === expected, documentHandle))) fail('probe_document_changed');
     // A document ref is an opaque observation handle, not destination approval.
@@ -1240,7 +1261,7 @@ export async function preflightHostedGuestCheckout(context, request, options = {
     const detail = await detailRead(); let cartTitle, cartShippingLabel;
     const basic = (dom, stage) => {
       diagnostics = { scope_diagnostic: { schema: 'checkout_scope_predicates_v1', stage,
-        quantity_matches: dom.quantity === true, destination_matches: dom.destination === true,
+        page_ready: dom.ready === true, quantity_matches: dom.quantity === true, destination_matches: dom.destination === true,
         address_present: dom.address_present === true, address_container_count: dom.address_container_count,
         address_line_count: dom.address_line_count } };
       if (dom.access !== 'normal') fail('access_restricted');
@@ -1270,6 +1291,14 @@ export async function preflightHostedGuestCheckout(context, request, options = {
       cartShippingLabel = selectedLabel;
       cartTitle = parsed; // Cart grades remain unknown; no row-text inference.
     };
+    try {
+      await read(() => page.waitForFunction(hostedDocumentReadyDom, CART,
+        { timeout: Math.max(1, deadline - Date.now()), polling: 'raf' }));
+    } catch (error) {
+      if (error?.name === 'TimeoutError') fail('page_not_ready');
+      throw error;
+    }
+    // cartRead revalidates the bound document and every field after settlement.
     await cartRead(); const go = await read(() => page.$(HOSTED_GO_SELECTOR));
     if (!go) fail('checkout_control_unverified');
     await cartRead(); await ledgerGuard();

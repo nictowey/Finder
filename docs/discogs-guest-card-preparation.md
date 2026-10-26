@@ -1115,3 +1115,35 @@ type checking. Independent review accepted it. A synthetic-address replay of the
 actual country labels fails equivalence on `f02749d` and passes on the repair;
 `CA` remains a mismatch on both. The original live quantity failure is still
 classified as a timing inference, not retrospectively proven by these tests.
+
+### Cart document readiness (October 26, late UTC)
+
+After `b069958` passed CI and loaded-checkout qualification returned no missing
+fields, the next reviewed server transition test stopped before Go with
+`page_not_ready`. Quantity and destination matched and the address structure was
+present. The exact failing predicate requires `document.readyState ===
+'complete'`; neither the actual earlier state token nor the delaying resource was
+exported. A visible full page is not proof its load event has completed. The
+spent three-phase job and 62-file preservation baseline remain unchanged.
+
+The repair does not accept `interactive` or fabricate completion. Both read-only
+qualification and the preflight wait for the same fixed document's complete
+state, within their existing 1.5-second and 30-second absolute budgets. Redirect
+or restriction detection exits the wait into the existing strict stop checks.
+After waiting, document identity and all cart fields are read again; the final
+bound Go control also requires a complete document. Qualification cannot return
+an opaque destination reference while its current or final DOM is unready, and
+successful observations explicitly report `page_ready:true`.
+
+The redacted failure facts are retained in
+`tests/fixtures/discogs_cart_readiness_b069958.json`. Delayed `interactive` to
+`complete` regression timing is synthetic; wrong price, quantity, destination,
+changed URL/document, cancellation, timeout and expiry remain stops. A real
+post-navigation pass is still required. No readiness fix authorizes replay of a
+spent job, another initialization or payment.
+
+The minimal readiness batch passed 91 preparation tests, 17 IPC tests, the exact
+525-test CI Node list, 3,885 Python tests plus 41 subtests, 110 app tests,
+lint/format and type checking. Independent review accepted the unchanged
+readiness threshold, absolute deadlines and same-document/effect guards. These
+are offline results; a fresh bounded live transition remains a separate gate.

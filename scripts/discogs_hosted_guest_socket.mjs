@@ -23,7 +23,7 @@ export function createHostedContextLease() {
   };
 }
 
-const OBSERVED = new Set(['summary_supported', 'seller_matches', 'exact_preparation_amounts',
+const OBSERVED = new Set(['page_ready', 'summary_supported', 'seller_matches', 'exact_preparation_amounts',
   'quantity_declaration', 'destination_match', 'listing_detail_supported', 'title_continuity',
   'condition_continuity', 'item_price_continuity', 'provider_frame_associated',
   'card_control_unique_visible_enabled', 'existing_guest_form']);
@@ -229,7 +229,7 @@ function safeResult(value, { captureAllowed = false, preflightAllowed = false } 
     const diagnostic = value.scope_diagnostic;
     result.scope_diagnostic = { schema: 'checkout_scope_predicates_v1' };
     if (['cart', 'checkout'].includes(diagnostic.stage)) result.scope_diagnostic.stage = diagnostic.stage;
-    for (const key of ['quantity_matches', 'destination_matches', 'address_present']) {
+    for (const key of ['page_ready', 'quantity_matches', 'destination_matches', 'address_present']) {
       if (typeof diagnostic[key] === 'boolean') result.scope_diagnostic[key] = diagnostic[key];
     }
     if ([0, 1, 2].includes(diagnostic.address_container_count)) result.scope_diagnostic.address_container_count = diagnostic.address_container_count;
