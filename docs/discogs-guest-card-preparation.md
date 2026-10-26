@@ -191,12 +191,14 @@ After `SESSION_EXPIRED`, preparation must start from the normal cart and create
 a fresh checkout through `Go to Checkout`; a Back-restored checkout is not a
 fresh session, even when its summary still shows the approved total.
 `prepareFreshGuestCheckoutSession` implements this sequence as an offline-tested
-injected coordinator. Its actual browser ports remain unimplemented and
-unverified; it is not enabled live navigation or autonomous checkout.
+injected coordinator. The supervised operator wiring below is installed in its
+no-action waiting state. The next live UI run remains unverified; this is not
+autonomous checkout.
 The four ports are `openCartViaVisibleControl`, `inspectCurrentCart`,
 `clickGoToCheckout` and `inspectFreshCheckout`. A scope-bound explicit human-ready
-token is required before any navigation and is valid for at most 60 seconds.
-The preparation itself is bounded to 30 seconds and to the earlier evidence,
+token is required before any navigation and is valid for at most 180 seconds.
+The installed operator path carries one 90-second maximum across all phases,
+without restarting the window before guest initialization, and clamps it to the earlier evidence,
 scope and readiness expiry. Each mutating port must call the supplied
 `revalidateBeforeDispatch()` immediately before its effect after any await;
 revocation, expiry or cancellation makes that guard fail and aborts its signal.
@@ -210,6 +212,45 @@ checks → a separately reviewed, durably fenced card-button click → mouse-onl
 form positioning → freeze all screenshots, DOM/page reads, logging and agent
 input for secure human card entry. Earlier fence and review records remain
 unchanged. This sequence has not yet been dispatched.
+
+### Operator wiring — installed, fresh readiness required
+
+`scripts/discogs_guest_checkout_operator.mjs` is a callable metadata stdio
+harness around that coordinator. Its verified VPS execution is a
+network-disabled, 128 MiB helper running as UID 10001, with public source mounted
+read-only and only the private fence directory writable. A process lock and an
+append-only sequence/hash chain anchor all five prior records without changing
+them. The ready UUID is consumed before the first instruction. The preceding
+ready signal has expired; a **new explicit human-ready signal is required after
+code validation and installation**, alongside fresh All/All zero-order evidence
+after the latest expiration and confirmation of no card entry or `Pay` action.
+The installed helper reported `waiting_for_user_ready`; no ready UUID, operator
+attempt or UI instruction was consumed during installation. Its anchor hash
+matched the independently computed manifest of all five preserved records.
+The command runner must keep stdin open (the verified invocation uses its
+interactive terminal mode); a closed input stops without producing an action.
+
+The operator sequence is:
+
+1. `open_cart` → the integration owner uses the visible cart control, inspects
+   the actual page and acknowledges exact item, quote and destination evidence.
+2. `go_to_checkout` → the owner uses normal `Go to Checkout`, inspects the fresh
+   merchant review and acknowledges it.
+3. Only after a durable linked attempt record, `open_guest_card` → the owner
+   performs the reviewed card-button action and acknowledges either the visible
+   form or error. The outcome is appended; uncertainty stops further dispatch.
+
+Each instruction and acknowledgement binds intent, ready UUID, request, stage,
+scope and deadline. These are manual visual attestations, not automatic DOM
+verification. The page metadata explicitly uses `operator_verified_current_screen`,
+and document/control UUIDs are operator-assigned observation references, not
+browser-generated proof. `scripts/discogs_guest_cua_operator.mjs` is bound to the
+existing supported `hostView`, unarmed; its installed source copy matches the
+reviewed factory. All 64 focused tests passed (46 preparation, 11 real-process
+CLI and 7 CUA adapter tests), and independent review accepted the integrated
+path. No new live initialization has run. There is no automatic retry loop or bypass of an
+unresolved outcome. After mouse-only positioning, all UI reads and agent input
+freeze for human card entry. Neither harness is a production payment adapter.
 
 At this checkpoint the web and browser services were active, with no restart or
 OOM since their 13:42 start; browser memory was 850.7 MiB of 2 GiB. Monitoring

@@ -513,7 +513,7 @@ export async function prepareFreshGuestCheckoutSession(ports, scope, {
       userReady.source !== 'explicit_current_user_ready' || userReady.ready !== true ||
       userReady.scope_digest !== digest(scope) || !number(userReady.observed_at) ||
       !number(userReady.expires_at) || !(userReady.observed_at <= now && now < userReady.expires_at) ||
-      userReady.expires_at - userReady.observed_at > 60 || !record(priorFailure, FAILURE_KEYS) ||
+      userReady.expires_at - userReady.observed_at > 180 || !record(priorFailure, FAILURE_KEYS) ||
       priorFailure.source !== 'operator_reviewed_normal_discogs_ui' ||
       priorFailure.last_error_code !== 'SESSION_EXPIRED' ||
       ['release_id', 'listing_id', 'seller', 'quantity', 'currency', 'max_total'].some(key => priorFailure[key] !== scope[key]) ||
@@ -526,7 +526,7 @@ export async function prepareFreshGuestCheckoutSession(ports, scope, {
         priorFailure.order_history_observed_at <= priorFailure.reviewed_at && priorFailure.reviewed_at <= now &&
         now - priorFailure.order_history_observed_at < 300 && now < priorFailure.expires_at &&
         priorFailure.expires_at - priorFailure.reviewed_at <= 300) ||
-      !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000 ||
+      !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 90_000 ||
       !ports || ['openCartViaVisibleControl', 'inspectCurrentCart', 'clickGoToCheckout', 'inspectFreshCheckout']
         .some(key => typeof ports[key] !== 'function')) return stop('fresh_checkout_preconditions_unverified');
   scope = Object.freeze({ ...scope }); priorFailure = Object.freeze({ ...priorFailure });
@@ -561,7 +561,7 @@ export async function prepareFreshGuestCheckoutSession(ports, scope, {
     revalidateBeforeDispatch });
   const page = (value, url, documentRef, cart) => {
     if (!record(value, SESSION_PAGE_KEYS) || value.schema !== 'discogs_guest_session_page_v1' ||
-        value.source !== 'trusted_normal_current_dom' || value.url !== url ||
+        !['trusted_normal_current_dom', 'operator_verified_current_screen'].includes(value.source) || value.url !== url ||
         value.document_ref !== documentRef || value.access !== 'normal' || value.history_restore !== false ||
         value.resubmission_prompt !== false || value.extra_agreement_required !== false ||
         !uuid(value.selected_shipping_ref) || typeof value.selected_shipping_label !== 'string' ||
@@ -591,10 +591,10 @@ export async function prepareFreshGuestCheckoutSession(ports, scope, {
         !uuid(transition.to_document_ref) || transition.to_document_ref === cart.document_ref) throw new Error('fresh_navigation_unverified');
     const checkout = page(await checked(() => ports.inspectFreshCheckout(options())),
       GUEST_CARD_URL, transition.to_document_ref, false);
-    if (checkout.selected_shipping_ref !== cart.selected_shipping_ref ||
+    if (checkout.source !== cart.source || checkout.selected_shipping_ref !== cart.selected_shipping_ref ||
         checkout.selected_shipping_label !== cart.selected_shipping_label || !live()) throw new Error('checkout_changed');
     return { ...stop('fresh_checkout_provenance_observed'), status: 'prepared_review_only',
-      provenance: { source: 'normal_cart_to_fresh_checkout', scope_digest: digest(scope),
+      provenance: { source: 'normal_cart_to_fresh_checkout', observation_basis: cart.source, scope_digest: digest(scope),
         cart_document_ref: cart.document_ref, checkout_document_ref: checkout.document_ref,
         observed_at: clock() / 1000, expires_at: deadline / 1000 } };
   } catch { return stop('fresh_checkout_preparation_stopped'); }

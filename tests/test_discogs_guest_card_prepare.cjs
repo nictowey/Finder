@@ -779,13 +779,34 @@ test('fresh session coordinator uses normal cart then Go to Checkout and returns
   assert.equal(result.purchase_allowed, false);
   assert.equal(result.provenance.cart_document_ref, UUID);
   assert.equal(result.provenance.checkout_document_ref, OTHER);
+  assert.equal(result.provenance.observation_basis, 'trusted_normal_current_dom');
   assert.equal(result.provenance.expires_at, NOW / 1000 + 30);
+});
+
+test('fresh coordinator records a consistent DOM or operator-screen observation basis only', async () => {
+  for (const [cartSource, checkoutSource, allowed] of [
+    ['operator_verified_current_screen', 'operator_verified_current_screen', true],
+    ['trusted_normal_current_dom', 'operator_verified_current_screen', false],
+    ['operator_verified_current_screen', 'trusted_normal_current_dom', false],
+    ['unverified_screen', 'unverified_screen', false],
+  ]) {
+    const item = freshSessionFixture({ cartHook: value => ({ ...value, source: cartSource }),
+      checkoutHook: value => ({ ...value, source: checkoutSource }) });
+    const result = await prepareFreshGuestCheckoutSession(item.ports, item.currentScope, item.options);
+    if (allowed) {
+      assert.equal(result.status, 'prepared_review_only');
+      assert.equal(result.provenance.observation_basis, cartSource);
+    } else {
+      assert.equal(result.code, 'fresh_checkout_preparation_stopped');
+      assert.ok(!Object.hasOwn(result, 'provenance'));
+    }
+  }
 });
 
 test('fresh current scoped human readiness is required before any navigation', async () => {
   for (const patch of [null, { ready: false }, { source: 'standing_permission' },
     { scope_digest: 'c'.repeat(64) }, { expires_at: NOW / 1000 },
-    { observed_at: NOW / 1000 - 61, expires_at: NOW / 1000 + 1 }]) {
+    { observed_at: NOW / 1000 - 181, expires_at: NOW / 1000 + 1 }]) {
     const item = freshSessionFixture();
     const token = patch === null ? null : { ...item.userReady, ...patch };
     const result = await prepareFreshGuestCheckoutSession(item.ports, item.currentScope,
@@ -793,6 +814,35 @@ test('fresh current scoped human readiness is required before any navigation', a
     assert.equal(result.code, 'fresh_checkout_preconditions_unverified');
     assert.deepEqual(item.calls, []);
   }
+});
+
+test('fresh coordinator permits 90 seconds total without resetting between normal actions', async () => {
+  for (const late of [false, true]) {
+    let now = NOW;
+    const item = freshSessionFixture({
+      openHook: (proof, options) => {
+        assert.equal(options.deadline, NOW + 90_000); now += 40_000; return proof;
+      },
+      goHook: (proof, options) => {
+        assert.equal(options.deadline, NOW + 90_000); now += 40_000; return proof;
+      },
+      checkoutHook: value => { if (late) now += 10_001; return value; },
+    });
+    item.userReady.observed_at = NOW / 1000;
+    item.userReady.expires_at = NOW / 1000 + 180;
+    const result = await prepareFreshGuestCheckoutSession(item.ports, item.currentScope,
+      { ...item.options, clock: () => now, timeoutMs: 90_000 });
+    if (late) assert.equal(result.code, 'fresh_checkout_preparation_stopped');
+    else {
+      assert.equal(result.status, 'prepared_review_only');
+      assert.equal(result.provenance.expires_at, NOW / 1000 + 90);
+    }
+  }
+  const item = freshSessionFixture();
+  const invalid = await prepareFreshGuestCheckoutSession(item.ports, item.currentScope,
+    { ...item.options, timeoutMs: 90_001 });
+  assert.equal(invalid.code, 'fresh_checkout_preconditions_unverified');
+  assert.deepEqual(item.calls, []);
 });
 
 test('fresh session preparation rejects incomplete reconciliation or any card/Pay/approval/capture', async () => {
