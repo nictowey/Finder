@@ -98,7 +98,7 @@ function navigationFixture({ status = 200, title = 'Marketplace', landed = relea
   return { context, calls };
 }
 function pagedNavigationFixture({ secondTotal = 2, secondId = '333', secondStatus = 200,
-  secondTitle = 'Marketplace', secondLanded = null } = {}) {
+  secondTitle = 'Marketplace', secondLanded = null, onFirstEvaluate = () => {} } = {}) {
   const calls = []; let current = releaseUrl, index = 0;
   const first = { ...partialRelease(), observed_at: new Date().toISOString(),
     next_url: releaseUrl + '?page=2' };
@@ -115,6 +115,7 @@ function pagedNavigationFixture({ secondTotal = 2, secondId = '333', secondStatu
     title: async () => index === 2 ? secondTitle : 'Marketplace',
     waitForSelector(selector) { calls.push(['ready', selector]); },
     evaluate(fn, arg) { calls.push(['evaluate', arg]); assert.equal(fn, collectReleaseMarketplaceDom);
+      if (index === 1) onFirstEvaluate();
       return structuredClone(index === 1 ? first : second); },
     close: async () => calls.push(['close']),
   }, { get(target, key) {
@@ -858,6 +859,51 @@ test('monitor lease stops on denial, uncertainty, and concurrent attempts', asyn
   }
 });
 
+test('disconnect or timeout while saving a rate-limit slot revokes the lease', async () => {
+  for (const mode of ['timeout', 'disconnect']) {
+    const directory = await mkdtemp(join(tmpdir(), 'sniper-lease-'));
+    let release, entered, writes = 0;
+    const hold = new Promise(resolve => { release = resolve; });
+    const started = new Promise(resolve => { entered = resolve; });
+    const fixture = monitorFixture({ trialStatus: 429, trialRetryAfter: '3600' });
+    const grantId = randomUUID();
+    try {
+      const socket = await operatorSocket(fixture.context, directory, {
+        monitorTrialTimeoutMs: 30,
+        leaseWriteHook: async () => { if (++writes === 3) { entered(); await hold; } },
+      });
+      try {
+        await writeMonitorLeaseAck(socket, directory, grantId, '28720177');
+        assert.equal((await sendSocket(socket.path, JSON.stringify({
+          action: 'operator_monitor_lease_verify', grant_id: grantId,
+          release_id: '28720177' }) + '\n')).status, 'verified');
+        const read = JSON.stringify({ action: 'operator_monitor_lease_read',
+          release_id: '28720177' }) + '\n';
+        if (mode === 'timeout') {
+          const pending = sendSocket(socket.path, read);
+          await started;
+          stopped(await pending, 'request_timed_out');
+        } else {
+          const client = connect(socket.path);
+          await new Promise(resolve => client.once('connect', resolve));
+          client.write(read); await started;
+          const closed = new Promise(resolve => client.once('close', resolve));
+          client.destroy(); await closed;
+        }
+        release();
+        const audit = await waitForMonitorEvent(directory, 'lease_stopped', grantId);
+        assert.equal(audit.cause, mode === 'timeout' ?
+          'request_timed_out' : 'request_disconnected');
+        const state = JSON.parse(await readFile(join(directory, 'operator-monitor-lease.json'), 'utf8'));
+        assert.equal(state.revoked, true); assert.equal(state.attempts, 1);
+        assert.ok(state.next_allowed_at > Date.now() + 30 * 60_000);
+        stopped(await sendSocket(socket.path, read), 'monitor_lease_unavailable');
+        assert.equal(fixture.calls.filter(value => Array.isArray(value) && value[0] === 'goto').length, 1);
+      } finally { release(); await socket.close(); }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }
+});
+
 test('monitor lease honors Retry-After and expires without another read', async () => {
   for (const trialStatus of [429, 503]) {
     const directory = await mkdtemp(join(tmpdir(), 'sniper-lease-'));
@@ -1266,6 +1312,16 @@ test('bounded next-link traversal returns only a complete same-release page set'
     stopped(await createReleaseNavigator(blockedFixture.context)(navigateRequest), code);
     assert.deepEqual(blockedFixture.calls.at(-1), ['close']);
   }
+});
+
+test('a lease deadline stops before requesting the next marketplace page', async () => {
+  let now = 1_000_000;
+  const fixture = pagedNavigationFixture({ onFirstEvaluate: () => { now += 101; } });
+  const navigate = createReleaseNavigator(fixture.context, { now: () => now });
+  stopped(await navigate(navigateRequest, { deadline: now + 100 }), 'monitor_lease_unavailable');
+  assert.deepEqual(fixture.calls.filter(call => call[0] === 'goto').map(call => call[1]),
+    [releaseUrl]);
+  assert.deepEqual(fixture.calls.at(-1), ['close']);
 });
 
 test('429 honors Retry-After without retrying and 403 or challenge latches access stop', async () => {

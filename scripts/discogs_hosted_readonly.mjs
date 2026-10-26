@@ -277,11 +277,16 @@ function retryAfterMillis(value) {
  */
 export function createReleaseNavigator(context, { now = () => Date.now() } = {}) {
   let nextAllowedAt = 0, accessStopped = false, active = false;
-  return async (request, { signal } = {}) => {
+  return async (request, { signal, deadline } = {}) => {
     const input = requestShape(request);
     if (!input || input.action !== 'observe_release') return stopped('unsupported_read_request');
+    if (deadline !== undefined && (!Number.isSafeInteger(deadline) || deadline < 0)) {
+      return stopped('unsupported_read_request');
+    }
+    const leaseExpired = () => deadline !== undefined && now() >= deadline;
     if (accessStopped) return stopped('access_restricted');
     if (active) return stopped('read_in_progress');
+    if (leaseExpired()) return stopped('monitor_lease_unavailable');
     const currentTime = now();
     if (currentTime < nextAllowedAt) return { ...stopped('release_cooldown'),
       cooldown_seconds: Math.ceil((nextAllowedAt - currentTime) / 1000) };
@@ -295,6 +300,7 @@ export function createReleaseNavigator(context, { now = () => Date.now() } = {})
       if (signal?.aborted) return stopped('read_cancelled');
       page = await context.newPage();
       if (signal?.aborted) return stopped('read_cancelled');
+      if (leaseExpired()) return stopped('monitor_lease_unavailable');
       const url = `https://www.discogs.com/sell/release/${input.id}`;
       const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS });
       if (signal?.aborted) return stopped('read_cancelled');
@@ -356,6 +362,7 @@ export function createReleaseNavigator(context, { now = () => Date.now() } = {})
           if (expectedPage > 100 || previous.next_url !== nextUrl || signal?.aborted) {
             return stopped('pagination_next_unverified');
           }
+          if (leaseExpired()) return stopped('monitor_lease_unavailable');
           const nextResponse = await page.goto(nextUrl,
             { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS });
           if (!nextResponse || typeof nextResponse.status !== 'function') return stopped('http_response_unavailable');
@@ -527,12 +534,16 @@ export async function listenHostedReadOnly(context, socketPath, {
   clock = () => Date.now(),
   monitorVerifyTimeoutMs = READ_TIMEOUT_MS,
   monitorTrialTimeoutMs = RELEASE_PAGINATION_BUDGET_MS,
+  leaseWriteHook = null,
 } = {}) {
   if (!Number.isSafeInteger(monitorVerifyTimeoutMs) || monitorVerifyTimeoutMs < 1 ||
       monitorVerifyTimeoutMs > READ_TIMEOUT_MS ||
       !Number.isSafeInteger(monitorTrialTimeoutMs) || monitorTrialTimeoutMs < 1 ||
       monitorTrialTimeoutMs > RELEASE_PAGINATION_BUDGET_MS) {
     throw new TypeError('invalid_monitor_timeout');
+  }
+  if (leaseWriteHook !== null && typeof leaseWriteHook !== 'function') {
+    throw new TypeError('invalid_lease_write_hook');
   }
   const shared = socketPath === SHARED_SOCKET;
   if (typeof socketPath !== 'string' || (!shared && !/^\/tmp\/[a-z][a-z0-9-]{0,47}\.sock$/u.test(socketPath))) {
@@ -612,7 +623,10 @@ export async function listenHostedReadOnly(context, socketPath, {
   const writeMonitorLease = async state => {
     const temporary = join(monitorDirectory, `operator-monitor-lease-${randomUUID()}.tmp`);
     await writeFile(temporary, JSON.stringify(state) + '\n', { flag: 'wx', mode: 0o600 });
-    try { await rename(temporary, monitorLeasePath); }
+    try {
+      if (leaseWriteHook) await leaseWriteHook(state);
+      await rename(temporary, monitorLeasePath);
+    }
     finally { await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
   };
   const revokeMonitorLease = async (state, cause) => {
@@ -886,7 +900,7 @@ export async function listenHostedReadOnly(context, socketPath, {
             return send(stopped('monitor_lease_stopped'));
           }
           const result = await navigateRelease({ action: 'observe_release', release_id: releaseId },
-            { signal: controller.signal });
+            { signal: controller.signal, deadline: attempted.expires_at });
           if (controller.signal.aborted || done) {
             await revokeMonitorLease(attempted, monitorAbortCause());
             return send(stopped('monitor_lease_stopped'));
@@ -898,8 +912,17 @@ export async function listenHostedReadOnly(context, socketPath, {
           if (['rate_limited', 'service_unavailable', 'release_cooldown'].includes(result?.code)) {
             const delay = Number.isSafeInteger(result.cooldown_seconds) &&
               result.cooldown_seconds > 0 ? result.cooldown_seconds * 1000 : 0;
-            await writeMonitorLease({ ...attempted,
-              next_allowed_at: Math.max(attempted.next_allowed_at, clock() + delay) });
+            attempted = { ...attempted,
+              next_allowed_at: Math.max(attempted.next_allowed_at, clock() + delay) };
+            await writeMonitorLease(attempted);
+            if (controller.signal.aborted || done) {
+              await revokeMonitorLease(attempted, monitorAbortCause());
+              return send(stopped('monitor_lease_stopped'));
+            }
+            if (clock() >= attempted.expires_at) {
+              await revokeMonitorLease(attempted, 'expired');
+              return send(stopped('monitor_lease_unavailable'));
+            }
             return send(result);
           }
           if (result?.status !== 'observed' || result.purchase_allowed !== false) {
