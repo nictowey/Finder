@@ -240,6 +240,49 @@ test('used marker survives a new helper and boot; one request is serialized', as
   });
 });
 
+test('synthetic browser restart with merchant-retained item cannot add a second copy', async () => {
+  const { createCartPrepareHandler, createCurrentEmptyCartVerifier, scopeDigest,
+    visibleItemDigest } = await load();
+  // The prior add happened through normal UI. This fresh helper directory has
+  // no program mutation marker, and this boot receives a new scoped grant.
+  await withStore(async ({ directory, stopPath }) => {
+    const now = stamp(), bootId = randomUUID(), input = request(now), fixture = fixturePage();
+    const page = fixture.context.pages()[0];
+    const inCart = { ...itemDetail(), cart_state: 'already_in_cart' };
+    input.item_digest = visibleItemDigest(inCart);
+    const originalEvaluate = page.evaluate;
+    page.evaluate = fn => fn.name === 'collectListingDetailDom' ? inCart : originalEvaluate(fn);
+    let clicks = 0;
+    page.getByRole = () => { clicks++; throw new Error('duplicate cart control reached'); };
+    assert.equal((await readdir(directory)).includes('cart-mutation-reconciliation-required'), false);
+    await ack(directory, bootId, input.scope, scopeDigest(input.scope, input.item_digest));
+    const handle = createCartPrepareHandler({ context: fixture.context, bootId, directory,
+      stopPath, clock: () => now });
+    assert.equal((await handle(input)).code, 'listing_identity_or_state_unverified');
+    assert.equal(clicks, 0);
+    assert.equal((await readdir(directory)).includes('cart-mutation-reconciliation-required'), false);
+  });
+  await withStore(async ({ directory, stopPath }) => {
+    const now = stamp(), bootId = randomUUID(), input = request(now), fixture = fixturePage();
+    const page = fixture.context.pages()[0];
+    let clicks = 0;
+    page.getByRole = () => { clicks++; throw new Error('duplicate cart control reached'); };
+    // The detail page can still say addable while the merchant cart already
+    // contains this same item. Only grounded current-cart evidence may decide.
+    const merchantCart = { url: () => 'https://www.discogs.com/sell/cart/',
+      evaluate: async () => emptyCartDom({ status: 'blocked', code: 'cart_items_present',
+        empty: false, item_count: 1, seller_count: 1 }) };
+    const context = { pages: () => [page, merchantCart] };
+    assert.equal((await readdir(directory)).includes('cart-mutation-reconciliation-required'), false);
+    await ack(directory, bootId, input.scope, scopeDigest(input.scope, input.item_digest));
+    const handle = createCartPrepareHandler({ context, bootId, directory, stopPath,
+      clock: () => now, verifyEmptyCart: createCurrentEmptyCartVerifier({ clock: () => now }) });
+    assert.equal((await handle(input)).code, 'pre_cart_state_unverified');
+    assert.equal(clicks, 0);
+    assert.equal((await readdir(directory)).includes('cart-mutation-reconciliation-required'), false);
+  });
+});
+
 test('a scoped click is issued once and uncertain outcome fences all later attempts', async () => {
   const { createCartPrepareHandler, scopeDigest } = await load();
   await withStore(async ({ directory, stopPath }) => {

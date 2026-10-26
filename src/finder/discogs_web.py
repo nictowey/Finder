@@ -8,6 +8,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 from finder.discogs_change_outbox import InAppChangeOutbox
+from finder.discogs_checkout_readiness import checkout_readiness
 from finder.discogs_hosted_scheduler import HostedReleaseScheduler
 from finder.discogs_listing import ListingReader, ListingReadError, observation
 from finder.discogs_rules import RulesStore, release_id
@@ -72,6 +73,9 @@ class DiscogsHandler(LocalReviewHandler):
                         "order_submission_enabled": False,
                         "order_reconciliation_configured": False,
                     },
+                    "checkout_readiness": checkout_readiness(
+                        getattr(self.server, "checkout_status_path", None)
+                    ),
                     "hosted_schedule": self.server.hosted_schedule.health()
                     if getattr(self.server, "hosted_schedule", None) is not None
                     else {"paused": True, "targets": [], "purchase_allowed": False},
@@ -211,6 +215,11 @@ def main(argv=None):
         help="Opt into explicit public known-listing API reads; never discovery or purchases",
     )
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--checkout-status",
+        type=Path,
+        help="Read an owner-only operational status record; never enables checkout",
+    )
     args = parser.parse_args(argv)
     try:
         _check_environment(os.environ)
@@ -226,6 +235,7 @@ def main(argv=None):
                     # Status only: no browser socket, worker loop or live reader is configured.
                     server.hosted_schedule = HostedReleaseScheduler(Path(database), reader=None)
                     server.listing_reader = ListingReader() if args.live_listing_read else None
+                    server.checkout_status_path = args.checkout_status
                     print(f"Sniper private Discogs rules: {server.origin}", flush=True)
                     print(
                         "Purchasing disabled. Explicit known-listing reads enabled."

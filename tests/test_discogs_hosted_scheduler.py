@@ -151,6 +151,42 @@ def test_monitor_only_release_does_not_require_or_create_buying_criteria(tmp_pat
     assert reader_calls == [123, 123]
 
 
+def test_disabled_monitor_entry_does_not_pause_same_release_buying_rule(setup):
+    database, clock = setup
+    reads = []
+
+    def read(release):
+        reads.append(release)
+        observed = page(clock[0])
+        observed["release_id"] = release
+        observed["url"] = f"https://www.discogs.com/sell/release/{release}"
+        return observed
+
+    worker = scheduler(database, clock, read)
+    worker.set_monitor_release(123, False, expected_rules_revision=1)
+    worker.set_monitor_release(124, True, expected_rules_revision=2)
+    resume(worker)
+    assert worker.tick()["status"] == "baseline"
+    assert reads == [123]  # The separate enabled buying rule still requests 123.
+    clock[0] += MIN_INTERVAL + 1
+    assert scheduler(database, clock, read).tick()["status"] == "baseline"
+    assert reads == [123, 124]
+
+    worker.set_paused(True, expected_revision=worker.health()["revision"])
+    store = RulesStore(database)
+    store.save(target().model_copy(update={"enabled": False}).model_dump(), 3)
+    store.close()
+    restarted = scheduler(database, clock, read)
+    assert restarted.health()["monitor_releases"] == [
+        {"release_id": 123, "enabled": False},
+        {"release_id": 124, "enabled": True},
+    ]
+    resume(restarted)
+    clock[0] += MIN_INTERVAL + 1
+    assert restarted.tick()["status"] == "unchanged"
+    assert reads == [123, 124, 124]  # 123 has no enabled read source now.
+
+
 def test_monitor_edit_during_running_read_is_rejected(tmp_path):
     database = tmp_path / "monitor-race.db"
     RulesStore(database, create=True).close()

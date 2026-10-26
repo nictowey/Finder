@@ -129,13 +129,32 @@ function clickText(text) {
   dom=open();w=dom.window;d=w.document;await settled(w);
   assert.match(d.body.textContent,/Purchasing disabled\. See the exact-release read-only schedule below\./);
   assert.match(el('candidate-pipeline-status').textContent,/fixture-tested only/);
-  assert.match(el('candidate-pipeline-status').textContent,/No purchase authorization, hosted candidate worker, live checkout, or record purchasing is running/);
+  assert.match(el('candidate-pipeline-status').textContent,/Runtime purchase authorization is not configured/);
+  assert.match(el('candidate-pipeline-status').textContent,/No hosted candidate worker, live checkout, or record purchasing is running/);
   assert.match(el('candidate-pipeline-status').textContent,/Read-only release acquisition status is shown separately below/);
   assert.match(el('candidate-pipeline-status').textContent,/partial marketplace page.*cannot establish full availability or qualify a row by itself/);
   assert.equal(d.querySelectorAll('script').length,1);assert.equal(d.querySelectorAll('script[src],link[href],img,iframe').length,0);
   assert.equal(d.querySelector('script').nonce,'dom-test-nonce');assert.equal(d.querySelector('style').nonce,'dom-test-nonce');
   assert.equal(el('save-target').disabled,false);assert.equal(el('evaluate').disabled,true);
   assert.equal(el('read-listing').disabled,true);assert.match(el('listing-capability').textContent,/disabled on this server/);
+  assert.match(el('checkout-readiness').textContent,/unavailable or unverified/);
+  saved.checkout_readiness={schema:'sniper_checkout_readiness_v1',legacy_helper:'offline_tested_disabled',
+    observed_checkout_kind:'enhanced_v2',payment_access:'blocked_browser_security_challenge',
+    observation_recorded_at:1792987317,manual_unpaid_order_creation:'unverified',
+    enhanced_routes_to_legacy:false,live_status_checked:false,order_submission_enabled:false,purchase_allowed:false};
+  el('refresh').click();await settled(w);
+  assert.match(el('checkout-readiness').textContent,/Legacy checkout helper: tested offline and disabled/);
+  assert.match(el('checkout-readiness').textContent,/enhanced checkout.*unverified and unavailable/);
+  assert.match(el('checkout-readiness').textContent,/blocked at a security challenge/);
+  assert.match(el('checkout-readiness').textContent,/not an account limitation finding/);
+  assert.match(el('checkout-readiness').textContent,/manual payment afterward is unverified/);
+  assert.match(el('checkout-readiness').textContent,/No live payment check was made/);
+  assert.equal(el('checkout-readiness').querySelectorAll('button,a,input,iframe').length,0);
+  saved.checkout_readiness.enhanced_routes_to_legacy=true;
+  el('refresh').click();await settled(w);
+  assert.match(el('checkout-readiness').textContent,/unavailable or unverified/);
+  saved.checkout_readiness.enhanced_routes_to_legacy=false;
+  el('refresh').click();await settled(w);
   submit('listing-form');await settled(w);assert.equal(posts('/api/listing').length,0);
   assert.equal(el('destination-country').value,'US');assert.equal(el('destination-postal').value,'');
   assert.equal(el('enabled').checked,true);
@@ -160,6 +179,7 @@ function clickText(text) {
   const pause=[...d.querySelectorAll('.monitor-release-toggle')][0];pause.click();await settled(w);
   assert.equal(saved.hosted_schedule.monitor_releases[0].enabled,false);
   assert.equal(saved.hosted_schedule.paused,true);
+  assert.match(el('monitor-releases').textContent,/separate enabled buying rule may still request reads/);
   const alertText='<img src=x onerror="window.pwned=true">';
   saved.in_app_alerts.pending=[{change_sequence:1,release_id:123,listing_id:'456',kind:'new',
     observed_at:alertText,delivery:'in_app_only',purchase_allowed:false}];

@@ -152,7 +152,9 @@ Saving the same release updates its rules.</p>
 <button type="button" class="secondary" id="refresh">Refresh</button></div>
 <p class="muted">Load a target to replace the fields on the left. Refresh never replaces your draft.</p>
 <p id="hosted-schedule-status" class="muted">Exact-release browser schedule: checking stopped state.</p>
-<p id="candidate-pipeline-status" class="muted">Candidate checks, one-copy cart rehearsal, and order lifecycle safeguards are fixture-tested only. No purchase authorization, hosted candidate worker, live checkout, or record purchasing is running. Read-only release acquisition status is shown separately below. A partial marketplace page cannot establish full availability or qualify a row by itself; each listing needs separate item and final delivered-quote checks.</p>
+<p id="candidate-pipeline-status" class="muted">Candidate checks, one-copy cart rehearsal, and order lifecycle safeguards are fixture-tested only. Runtime purchase authorization is not configured. No hosted candidate worker, live checkout, or record purchasing is running. Read-only release acquisition status is shown separately below. A partial marketplace page cannot establish full availability or qualify a row by itself; each listing needs separate item and final delivered-quote checks.</p>
+<section class="notice" aria-labelledby="checkout-readiness-title"><h3 id="checkout-readiness-title">Checkout readiness</h3>
+<div id="checkout-readiness" aria-live="polite">Checkout status is unverified. Order submission remains disabled.</div></section>
 <div id="targets" aria-live="polite"></div></section>
 </div>
 <section class="panel evaluator" aria-labelledby="monitor-release-title">
@@ -393,6 +395,7 @@ function renderSaved() {
     warning.id='listing-result-stale'; el('listing-result').prepend(warning);
   }
   renderMonitorReleases();
+  renderCheckoutReadiness();
   renderInAppAlerts();
   renderMonitor();
   updateButtons();
@@ -415,14 +418,42 @@ function renderMonitorReleases() {
     card.append(node('h3', `Release ${row.release_id}`),
       node('p', row.enabled && hosted.paused === true ? 'Saved for read-only checks; hosted schedule is still paused.' :
         row.enabled ? 'Enabled for read-only checks; see the last stored result above. Buying is disabled.' :
-        'Paused for this release; no checks requested.', 'muted'));
-    const button=node('button', row.enabled ? 'Pause this release' : 'Enable this release',
+        'Monitor-only checks paused; a separate enabled buying rule may still request reads.', 'muted'));
+    const button=node('button', row.enabled ? 'Pause monitor-only checks' : 'Enable monitor-only checks',
       'secondary monitor-release-toggle'); button.type='button';
     button.addEventListener('click', () => persist('/api/monitor-release',
       {release_id:row.release_id, enabled:!row.enabled},
       `Monitor-only release ${row.release_id} ${row.enabled ? 'paused' : 'enabled'}. Hosted schedule remains paused; purchasing disabled.`));
     card.append(button); box.append(card);
   });
+}
+function renderCheckoutReadiness() {
+  const box=el('checkout-readiness'); box.replaceChildren();
+  const state=snapshot?.checkout_readiness;
+  if (!state || state.schema !== 'sniper_checkout_readiness_v1' ||
+      state.purchase_allowed !== false || state.order_submission_enabled !== false ||
+      state.enhanced_routes_to_legacy !== false || state.live_status_checked !== false ||
+      state.legacy_helper !== 'offline_tested_disabled' ||
+      state.manual_unpaid_order_creation !== 'unverified' ||
+      !['unknown','legacy_v1','enhanced_v2'].includes(state.observed_checkout_kind) ||
+      !['unknown','blocked_browser_security_challenge'].includes(state.payment_access)) {
+    box.append(node('p', 'Checkout status is unavailable or unverified. Order submission remains disabled.'));
+    return;
+  }
+  box.append(node('p', 'Legacy checkout helper: tested offline and disabled.'));
+  box.append(node('p', state.observed_checkout_kind === 'enhanced_v2' ?
+    'Last observed: enhanced checkout. Automatic orders through this flow are unverified and unavailable.' :
+    state.observed_checkout_kind === 'legacy_v1' ?
+      'Last observed: legacy checkout. Live order submission is unavailable.' :
+      'The current checkout flow has not been verified.'));
+  box.append(node('p', state.payment_access === 'blocked_browser_security_challenge' ?
+    'Hosted browser payment access was blocked at a security challenge. This is the last recorded browser state, not an account limitation finding.' :
+    'Hosted browser payment access is unverified.'));
+  box.append(node('p', 'Creating an order for manual payment afterward is unverified. No order or payment action is enabled.'));
+  if (Number.isFinite(state.observation_recorded_at) && state.observation_recorded_at > 0 &&
+      state.observation_recorded_at < 8640000000000) {
+    box.append(node('small', `Status recorded ${new Date(state.observation_recorded_at*1000).toISOString()}. No live payment check was made.`));
+  }
 }
 function renderInAppAlerts() {
   const box=el('change-alert-list'); box.replaceChildren();

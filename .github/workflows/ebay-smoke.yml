@@ -94,7 +94,7 @@ jobs:
         run: |
           python -m pytest -q tests/test_discogs_listing.py tests/test_discogs_rules.py tests/test_discogs_web.py tests/test_cloud_app.py tests/test_discogs_monitor.py tests/test_execution_guard.py tests/test_discogs_cart_claims.py tests/test_discogs_candidate_pipeline.py
           python scripts/check_cloud_owner_flow.py
-          node --test --test-concurrency=1 tests/test_discogs_cart_inspector.cjs tests/test_discogs_cart_prepare.cjs tests/test_discogs_cart_browser_adapter.cjs tests/test_discogs_listing_release_dom.cjs tests/test_discogs_listing_detail_dom.cjs tests/test_discogs_rule_cart_gate.cjs tests/test_discogs_no_order_rehearsal.cjs tests/test_discogs_hosted_readonly.cjs tests/test_discogs_release_snapshot.cjs tests/test_discogs_hosted_cart_helper.cjs tests/test_discogs_empty_cart.cjs tests/test_discogs_hosted_order_commit.cjs
+          node --test --test-concurrency=1 tests/test_discogs_cart_inspector.cjs tests/test_discogs_cart_prepare.cjs tests/test_discogs_cart_browser_adapter.cjs tests/test_discogs_listing_release_dom.cjs tests/test_discogs_listing_detail_dom.cjs tests/test_discogs_rule_cart_gate.cjs tests/test_discogs_no_order_rehearsal.cjs tests/test_discogs_hosted_readonly.cjs tests/test_discogs_release_snapshot.cjs tests/test_discogs_hosted_cart_helper.cjs tests/test_discogs_empty_cart.cjs tests/test_discogs_hosted_order_commit.cjs tests/test_discogs_enhanced_checkout.cjs
 
       - name: Build and smoke-test isolated non-root cloud container
         run: bash scripts/check_cloud_container.sh

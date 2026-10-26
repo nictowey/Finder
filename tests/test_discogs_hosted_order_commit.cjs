@@ -31,7 +31,7 @@ const cartDom = () => ({ schema: 'discogs_cart_dom_v1', code: 'observed', purcha
 
 function fixture({ quotePatch = {}, cartPatch = {}, destinationPatch = {}, statePatch = {}, termsPatch = {}, authorizationPatch = {},
   agreementChecked = true, clickError = null, onClick = null, onFence = null,
-  onQuote = null, onButtonText = null } = {}) {
+  onQuote = null, onButtonText = null, buttonText = 'Place order and pay now' } = {}) {
   const events = [];
   let intent = 'prepared', reads = 0;
   const state = () => ({ source: 'current_guarded_candidate', intent_id: scope.intent_id,
@@ -62,7 +62,7 @@ function fixture({ quotePatch = {}, cartPatch = {}, destinationPatch = {}, state
     isChecked: async () => agreementChecked };
   const button = { count: async () => 1, isVisible: async () => true,
     isEnabled: async () => true, getAttribute: async () => 'submit',
-    innerText: async () => { if (onButtonText) await onButtonText(); return 'Place order and pay now'; },
+    innerText: async () => { if (onButtonText) await onButtonText(); return buttonText; },
     click: async () => { events.push('click'); if (onClick) await onClick();
       if (clickError) throw clickError; } };
   const page = { url: async () => 'https://www.discogs.com/sell/cart/',
@@ -92,6 +92,27 @@ test('default unavailable makes no reads or clicks', async () => {
   assert.equal((await commitCurrentOrder(f.page, f.ports, scope, { clock: () => NOW })).code,
     'order_commit_disabled');
   assert.deepEqual(f.events, []); assert.equal(f.reads(), 0);
+});
+
+test('enhanced marketplace checkout never routes to the legacy committing control', async () => {
+  // All injected quote/authorization ports assert success, yet the actual v2
+  // route is not the verified legacy cart. No locator or payment action may run.
+  const f = fixture();
+  const calls = [];
+  f.page.url = async () => 'https://www.discogs.com/marketplace/checkout';
+  f.page.title = async () => { calls.push('title'); throw new Error('must not inspect checkout'); };
+  f.page.evaluate = async () => { calls.push('evaluate'); throw new Error('must not inspect checkout'); };
+  f.page.locator = () => { calls.push('locator'); throw new Error('must not select checkout control'); };
+  assert.equal((await run(f)).code, 'order_preflight_unverified');
+  assert.deepEqual(calls, []);
+  assert.deepEqual(f.events, []);
+  assert.equal(f.reads(), 0);
+});
+
+test('Go to Checkout is never mistaken for Place order and pay now', async () => {
+  const f = fixture({ buttonText: 'Go to Checkout' });
+  assert.equal((await run(f)).code, 'order_preflight_unverified');
+  assert.deepEqual(f.events, []);
 });
 
 test('synthetic explicit ISO cart and trusted matching evidence fence before one intercepted click', async () => {

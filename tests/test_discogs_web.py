@@ -1,5 +1,6 @@
 import json
 import socket
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -35,6 +36,7 @@ def request(
     host=None,
     reader=None,
     schedule=None,
+    checkout_status_path=None,
 ):
     body = b"" if data is None else json.dumps(data).encode()
     method = "GET" if data is None else "POST"
@@ -50,6 +52,7 @@ def request(
     )
     if schedule is not None:
         server.hosted_schedule = schedule
+    server.checkout_status_path = checkout_status_path
     DiscogsHandler(connection, ("127.0.0.1", 1234), server)
     head, _, result = bytes(connection.output).partition(b"\r\n\r\n")
     return int(head.split(b" ")[1]), result
@@ -95,6 +98,35 @@ def test_local_snapshot_reports_real_stopped_schedule_without_cloud_control(stor
     DiscogsHandler(connection, ("127.0.0.1", 1234), server)
     _, _, body = bytes(connection.output).partition(b"\r\n\r\n")
     assert json.loads(body)["hosted_schedule"]["kill_switch"] is True
+
+
+def test_snapshot_reports_recorded_checkout_block_without_enabling_actions(store, tmp_path):
+    status_path = tmp_path / "checkout-status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "schema": "sniper_checkout_status_v1",
+                "checkout_kind": "enhanced_v2",
+                "payment_access": "blocked_browser_security_challenge",
+                "recorded_at": time.time() - 10,
+            }
+        )
+    )
+    status_path.chmod(0o600)
+    _, body = request(store, "/api/snapshot", checkout_status_path=status_path)
+    state = json.loads(body)
+    ready = state["checkout_readiness"]
+    assert ready["payment_access"] == "blocked_browser_security_challenge"
+    assert ready["observed_checkout_kind"] == "enhanced_v2"
+    assert ready["manual_unpaid_order_creation"] == "unverified"
+    assert ready["enhanced_routes_to_legacy"] is False
+    assert ready["live_status_checked"] is False
+    assert ready["purchase_allowed"] is False
+    assert state["capabilities"]["order_submission_enabled"] is False
+    # A process restart re-reads the same report; it cannot clear a provider block.
+    _, again = request(store, "/api/snapshot", checkout_status_path=status_path)
+    assert json.loads(again)["checkout_readiness"]["payment_access"] == ready["payment_access"]
+    assert status_path.read_text().count("blocked_browser_security_challenge") == 1
 
 
 def test_sniper_restarts_on_same_loopback_port_without_sharing_listener(store, monkeypatch):

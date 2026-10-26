@@ -516,6 +516,17 @@ unpaid-order control was visible. No payment button was operated. There was no
 explicit tax amount or tax-finality evidence captured; this display alone is
 not promoted to a verified all-in payable quote.
 
+Inspector subsequently verified the enhanced summary's content, unordered
+item-list and totals definition-list components. The read-only
+`discogs_enhanced_checkout.mjs` collector now normalizes only that displayed
+subtotal, shipping, total and method label, plus the public seller heading and
+visible row count. One row does not verify quantity; the inspected summary
+does not establish listing/release identity. Those fields, tax, fees and final
+quote authority remain unverified. It reads no address, item description or
+payment-frame contents, exposes no controls, and is not enabled on the hosted
+browser. Sanitized DOM fixtures test this observed structure; no live collector
+execution or payment action is claimed.
+
 The dormant `discogs_hosted_order_commit.mjs` is limited to the previously
 observed legacy `checkout_v1` committing control. It requires exact current
 authorization, candidate, final quote, destination and terms ports, explicit
@@ -537,3 +548,32 @@ incomplete payment from uncleared payment. This supports the separate status
 model, not a promise that enhanced checkout can create an unpaid order alone.
 No payment control, hidden legacy control or alternate payment path was used
 to resolve that unknown.
+
+## Private readiness display and recorded access status
+
+The private web UI separates the offline-tested, disabled legacy helper from
+the observed enhanced checkout. It states that creating an order for manual
+payment afterward is unverified. No enhanced page routes to the legacy helper.
+
+An optional `--checkout-status /var/lib/sniper/checkout-status.json` record
+contains only schema, checkout-kind/payment-access enums and its recording time.
+The reader requires an owner-only regular file, rejects ambiguous or extra
+fields, and performs no site request. Defaults are unknown. The deployed
+record describes the last observed browser challenge block, not an account
+limitation or a fresh probe; age never clears it. This report cannot authorize
+an order, verify a quote, enable a helper, or clear any access stop.
+
+Monitoring status also distinguishes monitor-only settings from buying rules.
+Pausing a monitor-only entry does not cancel reads requested by a separate
+enabled buying rule for that release. Pausing the overall schedule stops both.
+The monitor-only toggle and description now state that scope explicitly.
+
+### Acceptance status
+
+| Part | Evidence | Remaining limit |
+| --- | --- | --- |
+| Saved monitoring and restart state | Offline cadence/deduplication/restart tests; stored bounded-read results for the three owner IDs | Worker and schedule are stopped; no recurring activation or new live reads in this audit |
+| Rule and candidate checks | Offline exact-release, conditions, seller, completeness, damage, quote and one-copy tests | No running hosted candidate-to-order worker |
+| Cart preparation | One approved KC add through normal hosted UI; grounded DOM collectors and restart duplicate tests | Program helper remains disabled; UI evidence is not proof of its execution |
+| Enhanced checkout | Loaded review shows the approved item, saved address and explicit displayed USD amounts | Tax finality, order-creation timing and manual unpaid-order route remain unverified |
+| Order and payment | Durable offline ledger, reconciliation, final-check and uncertainty tests | No live receipt reader/order confirmation; no payment control operated |
