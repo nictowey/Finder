@@ -207,7 +207,9 @@ export function collectCartDom(expectedListingId) {
     const goBound = goButtons.length === 1 && legacyButtons.length === 0 &&
       container.contains(goButtons[0]) && goButtons[0].form === orderForm &&
       visible(goButtons[0]) && goButtons[0].type === 'submit' &&
-      goButtons[0].value === 'Go to Checkout' && text(goButtons[0]) === 'Go to Checkout';
+      !goButtons[0].disabled && !goButtons[0].matches(':disabled') &&
+      goButtons[0].getAttribute('aria-disabled') !== 'true' &&
+      text(goButtons[0]) === 'Go to Checkout';
     const v2 = goBound && methods.length === 1 &&
       container.contains(methods[0]) && methods[0].form === orderForm;
     if (!legacy && !v2) return halt(goBound ? 'shipping_form_mismatch' : 'control_binding_mismatch');

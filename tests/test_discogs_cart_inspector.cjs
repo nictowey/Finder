@@ -446,22 +446,30 @@ test('captured layout motivates class-independent same-form V2 observation', () 
   } finally { fixture.close(); }
 });
 
-test('fixed binding diagnostics reproduce an uncaptured Go value and reveal no page values', () => {
+test('synthetic alternate Go values preserve read-only binding when exact visible label matches', () => {
   const exact = cartDom(V2_CART_DOM);
-  const absent = cartDom(V2_CART_DOM.replace('value="Go to Checkout"', ''));
   try {
-    const good = exact.collect(), stopped = absent.collect();
-    assert.deepEqual(stopped.binding_counts, good.binding_counts);
+    const good = exact.collect();
     assert.equal(good.binding_gate, 'complete');
-    assert.equal(stopped.binding_gate, 'control_binding_mismatch');
-    assert.equal(stopped.form_count, 1);
-    assert.equal(stopped.summary_count, undefined);
-    assert.equal(stopped.subtotal, undefined);
-    assert.equal(stopped.address_container_count, undefined);
-    for (const value of ['PRIVATE_SYNTHETIC_ADDRESS', 'Synthetic title', '$0.10 USD']) {
-      assert.equal(JSON.stringify(stopped).includes(value), false);
+    for (const html of [
+      V2_CART_DOM.replace('value="Go to Checkout"', ''),
+      V2_CART_DOM.replace('value="Go to Checkout"', 'value=""'),
+      V2_CART_DOM.replace('value="Go to Checkout"', 'value="Other public control value"'),
+    ]) {
+      const alternate = cartDom(html);
+      try {
+        const raw = alternate.collect();
+        assert.deepEqual(raw.binding_counts, good.binding_counts);
+        assert.equal(raw.binding_gate, 'complete');
+        assert.equal(raw.checkout_control_kind, 'v2_go_to_checkout');
+        const result = inspectCartDomSnapshot(URL, raw, OPTIONS);
+        assert.equal(result.code, 'final_quote_unverified');
+        assert.deepEqual(result.observed_quote.subtotal, { amount: '0.10', currency: 'USD' });
+        assert.equal(result.purchase_allowed, false);
+        assert.equal(JSON.stringify(result).includes('PRIVATE_SYNTHETIC_ADDRESS'), false);
+      } finally { alternate.close(); }
     }
-  } finally { exact.close(); absent.close(); }
+  } finally { exact.close(); }
 });
 
 test('diagnostic gate names first structural stop without broadening eligibility', () => {
@@ -487,6 +495,10 @@ test('diagnostic gate names first structural stop without broadening eligibility
 
 test('V2 rejects split, wrong-form, duplicate and detached merchant controls without money reads', () => {
   for (const html of [
+    V2_CART_DOM.replace('>Go to Checkout</button>', '>Continue</button>'),
+    V2_CART_DOM.replace('type="submit" value="Go to Checkout"', 'type="button" value="Go to Checkout"'),
+    V2_CART_DOM.replace('type="submit" value="Go to Checkout"', 'type="submit" disabled value="Go to Checkout"'),
+    V2_CART_DOM.replace('type="submit" value="Go to Checkout"', 'type="submit" aria-disabled="true" value="Go to Checkout"'),
     V2_CART_DOM.replace('name="Action.ProceedCommerceCheckout"',
       'name="Action.ProceedCommerceCheckout" form="other-form"')
       .replace('</body>', '<form id="other-form"></form></body>'),

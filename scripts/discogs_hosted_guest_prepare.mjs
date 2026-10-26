@@ -209,6 +209,7 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
       visible_address_wrapper_count: count([...document.querySelectorAll('[id^="shipping_address_"]')].filter(visible)),
       discovery_attempted: discoveryAttempted,
       go_type_submit: !!candidateGo && candidateGo.type === 'submit',
+      // Informational only: a submit value is independent of its visible label.
       go_value_matches: !!candidateGo && candidateGo.value === 'Go to Checkout',
       go_text_matches: !!candidateGo && text(candidateGo) === 'Go to Checkout',
       go_visible: !!candidateGo && visible(candidateGo),
@@ -238,7 +239,7 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
         'form_contains_container', 'form_contains_row', 'form_contains_go', 'form_contains_select',
         'container_contains_row', 'container_contains_go', 'container_contains_select', 'summary_count_one', 'form_contains_summary',
         'container_visible', 'row_visible', 'select_visible', 'go_visible', 'go_not_disabled_property', 'go_not_disabled_selector',
-        'go_not_aria_disabled', 'go_type_submit', 'go_value_matches', 'go_text_matches'].map(key => [key, diagnostic[key]]),
+        'go_not_aria_disabled', 'go_type_submit', 'go_text_matches'].map(key => [key, diagnostic[key]]),
     ];
     diagnostic.first_failed = predicates.find(([, matches]) => !matches)?.[0] || 'none';
     out.cart_binding_diagnostic = diagnostic;
@@ -250,7 +251,7 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
         !container.contains(rows[0]) || !container.contains(button) || !container.contains(select) ||
         summaries.length !== 1 || !form.contains(summaries[0]) || !visible(container) || !visible(rows[0]) || !visible(select) ||
         !visible(button) || button.disabled || button.matches(':disabled') || button.getAttribute('aria-disabled') === 'true' ||
-        button.type !== 'submit' || button.value !== 'Go to Checkout' || text(button) !== 'Go to Checkout') return null;
+        button.type !== 'submit' || text(button) !== 'Go to Checkout') return null;
     return { button, container, select, form };
   };
   const initialCartBinding = cart ? cartBinding() : null;
@@ -381,6 +382,18 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
 
 /** Same-document final form association recheck on the bound visible Go handle. */
 function revalidateHostedGoFormDom(element) {
+  const rendered = node => {
+    if (!node?.isConnected) return false;
+    for (let current = node; current; current = current.parentElement) {
+      const style = getComputedStyle(current);
+      if (current.hidden || current.getAttribute('aria-hidden') === 'true' || style.display === 'none' ||
+          ['hidden', 'collapse'].includes(style.visibility) || style.contentVisibility === 'hidden' || style.opacity === '0') return false;
+    }
+    return true;
+  };
+  const visible = node => rendered(node) && [...node.getClientRects()].some(rect => rect.width > 0 && rect.height > 0);
+  const text = node => node.nodeType === 3 ? node.nodeValue : node.nodeType !== 1 ? '' :
+    node.tagName === 'BR' ? rendered(node) ? ' ' : '' : visible(node) ? [...node.childNodes].map(text).join('') : '';
   const controls = document.querySelectorAll('button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]');
   const containers = document.querySelectorAll('[id^="cart-order-"].order_container');
   const rows = document.querySelectorAll('tr.order_row');
@@ -391,8 +404,9 @@ function revalidateHostedGoFormDom(element) {
   return form.isConnected && form.ownerDocument === document && container.closest('form') === form && select.form === form &&
     [container, rows[0], element, select].every(node => form.contains(node)) &&
     [rows[0], element, select].every(node => container.contains(node)) && container.querySelectorAll('.order_summary').length === 1 &&
+    [container, rows[0], element, select].every(visible) &&
     !element.disabled && !element.matches(':disabled') && element.getAttribute('aria-disabled') !== 'true' &&
-    element.type === 'submit' && element.value === 'Go to Checkout';
+    element.type === 'submit' && text(element).replace(/\s+/gu, ' ').trim() === 'Go to Checkout';
 }
 
 /** Exact observed provider URL, with private query parameters discarded. */

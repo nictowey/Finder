@@ -1476,7 +1476,7 @@ test('observed plain Change your address label is excluded from synthetic nested
   }
 });
 
-test('cart predicate diagnostics preserve retained layout facts and distinguish a synthetic absent Go value without claiming a live cause', async () => {
+test('cart predicate diagnostics keep the value comparison informational without claiming the actual private value', async () => {
   const retained = JSON.parse(await readFile(join(__dirname, 'fixtures/discogs_cart_layout_1ea2be8.json'), 'utf8'));
   assert.equal(retained.provenance.private_text_and_values, 'not_captured');
   assert.equal(retained.cart_layout.collector_gate.form_count, 0);
@@ -1492,22 +1492,87 @@ test('cart predicate diagnostics preserve retained layout facts and distinguish 
       assert.equal(diagnostic.schema, 'cart_binding_predicates_v1');
       for (const key of ['go_count', 'container_count', 'row_count', 'select_count', 'scoped_summary_count', 'visible_address_wrapper_count']) assert.equal(diagnostic[key], 1, key);
       assert.equal(diagnostic.legacy_count, 0);
-      assert.equal(diagnostic.go_value_matches, !absentValue); assert.equal(diagnostic.discovery_attempted, !absentValue);
-      assert.equal(diagnostic.first_failed, absentValue ? 'go_value_matches' : 'none');
-      assert.equal(result.address_present, !absentValue); assert.equal(result.structure.address_container_count, absentValue ? 0 : 1);
-      assert.equal(result.observed.summary_supported, !absentValue);
+      assert.equal(diagnostic.go_value_matches, !absentValue); assert.equal(diagnostic.discovery_attempted, true);
+      assert.equal(diagnostic.first_failed, 'none');
+      assert.equal(result.address_present, true); assert.equal(result.structure.address_container_count, 1);
+      assert.equal(result.observed.summary_supported, true);
       assert.equal(result.cart_reader_diagnostic.schema, 'cart_reader_predicates_v1');
-      assert.equal(result.cart_reader_diagnostic.first_failed, absentValue ? 'control_binding_mismatch' : 'complete');
+      assert.equal(result.cart_reader_diagnostic.first_failed, 'complete');
       for (const secret of [...ADDRESS.filter(value => value !== 'US'), sha(ADDRESS.join('\n')), 'Go to Checkout', 'Fixture Artist']) assert.ok(!json(result).includes(secret));
       assert.equal(result.initialization_allowed, false); assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
     } finally { b.close(); }
   }
 });
 
+test('retained mismatch evidence permits a synthetic nonlabel Go value only with full fresh checkout preflight and no initialization', async () => {
+  const retained = JSON.parse(await readFile(join(__dirname, 'fixtures/discogs_cart_binding_8447cc2.json'), 'utf8'));
+  const observed = retained.cart_binding_diagnostic;
+  assert.equal(observed.first_failed, 'go_value_matches'); assert.equal(observed.go_value_matches, false);
+  for (const [key, value] of Object.entries(observed)) if (typeof value === 'boolean' && !['go_value_matches', 'discovery_attempted'].includes(key)) assert.equal(value, true, key);
+  // The actual value was not captured. This opaque value is synthetic; its
+  // difference from the visible label alone cannot qualify the operation.
+  const cart = nestedPrivateCart.replace('value="Go to Checkout"', 'value="SYNTHETIC_MACHINE_ACTION"');
+  await preflightFixture(async ({ b, execute, f }) => {
+    const result = await execute(); assert.equal(result.code, 'cart_checkout_preflight_observed', json(result));
+    assert.equal(result.checkout_conditions_verified, true); assert.equal(result.destination_match, true);
+    assert.equal(result.initialization_allowed, false); assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]);
+    assert.equal((await records(f.directory)).length, 0); assert.ok(!json(result).includes('SYNTHETIC_MACHINE_ACTION'));
+  }, { cart });
+});
+
+test('visible label type form visibility enabled name and uniqueness still reject before Go with a different machine value', async () => {
+  const cart = nestedPrivateCart.replace('value="Go to Checkout"', 'value="SYNTHETIC_MACHINE_ACTION"');
+  for (const mode of ['label', 'type', 'form', 'hidden', 'disabled', 'aria_disabled', 'name', 'duplicate']) {
+    await preflightFixture(async ({ b, execute }) => {
+      const document = b.state.merchant.window.document, button = document.querySelector('button');
+      if (mode === 'label') button.textContent = 'Go somewhere else';
+      if (mode === 'type') button.type = 'button';
+      if (mode === 'form') { const other = document.createElement('form'); other.id = 'other-owner'; document.body.append(other); button.setAttribute('form', other.id); }
+      if (mode === 'hidden') button.hidden = true;
+      if (mode === 'disabled') button.disabled = true;
+      if (mode === 'aria_disabled') button.setAttribute('aria-disabled', 'true');
+      if (mode === 'name') button.name = 'WrongAction';
+      if (mode === 'duplicate') button.parentElement.append(button.cloneNode(true));
+      const result = await execute(); assert.equal(result.status, 'blocked', mode);
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    }, { cart });
+  }
+});
+
+test('final bound Go recheck catches last-await control mutations and does not read the machine value', async () => {
+  const cart = nestedPrivateCart.replace('value="Go to Checkout"', 'value="SYNTHETIC_MACHINE_ACTION"');
+  for (const mode of ['label', 'type', 'form', 'hidden', 'disabled', 'aria_disabled', 'name', 'duplicate', 'value_getter']) {
+    await preflightFixture(async ({ b, execute, f }) => {
+      const find = b.page.$; let mutated = false;
+      b.page.$ = async selector => {
+        const handle = await find(selector), evaluate = handle.evaluate;
+        handle.evaluate = async fn => {
+          assert.equal(fn.name, 'revalidateHostedGoFormDom'); mutated = true;
+          const document = b.state.merchant.window.document, button = document.querySelector('button');
+          if (mode === 'label') button.textContent = 'Go somewhere else';
+          if (mode === 'type') button.type = 'button';
+          if (mode === 'form') { const other = document.createElement('form'); other.id = 'last-owner'; document.body.append(other); button.setAttribute('form', other.id); }
+          if (mode === 'hidden') button.hidden = true;
+          if (mode === 'disabled') button.disabled = true;
+          if (mode === 'aria_disabled') button.setAttribute('aria-disabled', 'true');
+          if (mode === 'name') button.name = 'WrongAction';
+          if (mode === 'duplicate') button.parentElement.append(button.cloneNode(true));
+          if (mode === 'value_getter') Object.defineProperty(button, 'value', { get() { throw new Error('FINAL_VALUE_MUST_NOT_BE_READ'); } });
+          return evaluate(fn);
+        };
+        return handle;
+      };
+      const result = await execute(); assert.equal(mutated, true, mode);
+      assert.equal(result.code, mode === 'value_getter' ? 'cart_checkout_preflight_observed' : 'checkout_control_changed', mode);
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [mode === 'value_getter' ? 1 : 0, 0, 0]);
+      assert.equal((await records(f.directory)).length, 0);
+    }, { cart });
+  }
+});
+
 test('every cart binding boolean has a precise negative diagnostic without changing the existing gate', async () => {
   const failures = {
     go_type_submit: ({ button }) => { button.type = 'button'; },
-    go_value_matches: ({ button }) => { button.value = 'PRIVATE_CONTROL_VALUE'; },
     go_text_matches: ({ button }) => { button.textContent = 'PRIVATE_CONTROL_LABEL'; },
     go_visible: ({ button }) => { button.hidden = true; },
     go_not_disabled_property: ({ button }) => { button.disabled = true; },
@@ -1537,7 +1602,7 @@ test('every cart binding boolean has a precise negative diagnostic without chang
   const baseline = browser({ cart: nestedPrivateCart });
   try {
     const snapshot = await baseline.page.evaluate(port.collectHostedGuestDom, { stage: 'cart' });
-    const booleans = Object.keys(snapshot.cart_binding_diagnostic).filter(key => typeof snapshot.cart_binding_diagnostic[key] === 'boolean' && !['go_enabled', 'discovery_attempted'].includes(key));
+    const booleans = Object.keys(snapshot.cart_binding_diagnostic).filter(key => typeof snapshot.cart_binding_diagnostic[key] === 'boolean' && !['go_enabled', 'discovery_attempted', 'go_value_matches'].includes(key));
     assert.deepEqual(booleans.sort(), Object.keys(failures).sort());
     assert.ok(booleans.every(key => snapshot.cart_binding_diagnostic[key] === true)); assert.equal(snapshot.go, true);
   } finally { baseline.close(); }

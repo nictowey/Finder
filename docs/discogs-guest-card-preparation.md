@@ -1023,3 +1023,40 @@ ordinary qualification policy can leave its acknowledgement null and use only
 its inspect phase; its required max_calls2 schema must not be relabelled as a
 max-one policy, and confirmation stays denied without a later explicit update.
 The spent preflight job and its receipts remain separate and unchanged.
+
+
+### Live-confirmed Go-value assumption (October 26)
+
+The separately authorized inspect-only job on CI-passed `8447cc2` confirmed
+`first_failed: go_value_matches`. Every other captured Go/form/row/shipping
+predicate passed, including exact visible label, submit type, enabled state,
+visibility and form ownership. The raw collector stopped at
+`control_binding_mismatch`; its counts showed one Go control, select, container,
+row and summary, with no legacy control. One visible address wrapper was present,
+but discovery was suppressed by that early binding failure. No destination
+acknowledgement, Go navigation, card initialization or payment occurred.
+
+The actual button value was deliberately not exported: it is only established
+that it differs from the visible label, not that it is empty. The fixed, redacted
+predicates are retained in `tests/fixtures/discogs_cart_binding_8447cc2.json`.
+The minimal correction removes value-to-label equality as an eligibility
+assumption. Unique known action control, exact visible label, enabled/visible
+submit type and current form ownership remain required; the final Go recheck
+uses those same semantic controls. `go_value_matches` remains informational in
+diagnostics and cannot be a required first-failed gate. Exact item, seller,
+quantity, amount, destination, document and ledger checks remain independent.
+
+The diagnostic opened only the cart; its missing detail evidence is expected,
+not a verified detail-reader regression. A fresh bounded preflight must open
+the exact detail page and cart, establish their full continuity and amounts,
+privately bind the approved saved destination, and only then dispatch one normal
+server Go action. The current correction is not evidence that this live
+transition or any payment is working.
+
+The live-evidenced correction passed 510 tests in the exact CI Node list, 3,885
+Python tests plus 41 subtests, 110 app tests, lint, format and type checks.
+Independent review accepted the change and the fresh bounded preflight plan.
+Synthetic alternate submit values exercise one normal Go transition with no
+card initialization or claim, while wrong labels, types, forms, hidden/disabled
+controls and late mutations stop before Go. These are offline results; the
+corrected server transition still requires live verification.
