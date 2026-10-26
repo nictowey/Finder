@@ -174,6 +174,56 @@ def test_status_unknown_and_stale_or_regressive_evidence_fail_closed(tmp_path):
     assert regressive["review_required"] is True
 
 
+def test_stale_different_order_does_not_change_paid_reconciliation(tmp_path):
+    store = ledger(tmp_path)
+    proposal = expected()
+    store.prepare(proposal, now=1000)
+    store.fence_possible_submit(proposal.intent_id, now=1001)
+    paid = store.record_read_only_lookup(
+        proposal.intent_id,
+        observed(displayed_status="Payment Received", observed_at=1200),
+        now=1201,
+    )
+    assert paid["state"] == "order_seen" and paid["review_required"] is False
+    with pytest.raises(OrderEvidenceStopped, match="stale_order_evidence"):
+        store.record_read_only_lookup(
+            proposal.intent_id,
+            observed(order_id="555-666", observed_at=1100),
+            now=1202,
+        )
+    assert store.status(proposal.intent_id) == paid
+    assert (
+        store.record_read_only_lookup(
+            proposal.intent_id,
+            observed(displayed_status="Payment Received", observed_at=1300),
+            now=1301,
+        )
+        == paid
+    )
+
+
+def test_current_different_order_still_conflicts_and_retains_paid_fence(tmp_path):
+    store = ledger(tmp_path)
+    proposal = expected()
+    store.prepare(proposal, now=1000)
+    store.fence_possible_submit(proposal.intent_id, now=1001)
+    store.record_read_only_lookup(
+        proposal.intent_id,
+        observed(displayed_status="Payment Received", observed_at=1200),
+        now=1201,
+    )
+    conflict = store.record_read_only_lookup(
+        proposal.intent_id,
+        observed(order_id="555-666", observed_at=1300),
+        now=1301,
+    )
+    assert conflict["state"] == "identity_conflict"
+    assert conflict["order_id"] == "123456-789012"
+    assert conflict["payment_state"] == "paid"
+    assert conflict["review_required"] is True
+    assert conflict["may_submit_again"] is False
+
+
 def test_fence_is_durable_under_competing_workers_and_no_delete(tmp_path):
     path = tmp_path / "orders.db"
     store = DiscogsOrderLedger(path, create=True)

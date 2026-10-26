@@ -292,6 +292,11 @@ class DiscogsOrderLedger:
                 return self._public(row)
             if evidence.observed_at > now or evidence.observed_at < row["created_at"]:
                 raise OrderEvidenceStopped("order_evidence_time_unverified")
+            if (
+                row["last_observed_at"] is not None
+                and evidence.observed_at < row["last_observed_at"]
+            ):
+                raise OrderEvidenceStopped("stale_order_evidence")
             if row["order_id"] and row["order_id"] != evidence.order_id:
                 db.execute(
                     "UPDATE intents SET state='identity_conflict',review_required=1,updated_at=? "
@@ -309,11 +314,6 @@ class DiscogsOrderLedger:
                 and row["currency"] == evidence.currency
             )
             payment = PAYMENT_STATES.get(evidence.displayed_status, "unknown")
-            if (
-                row["last_observed_at"] is not None
-                and evidence.observed_at < row["last_observed_at"]
-            ):
-                raise OrderEvidenceStopped("stale_order_evidence")
             rank = {"unknown": 0, "unpaid": 1, "pending": 2, "paid": 3}
             downgrade = rank[payment] < rank[row["payment_state"]]
             review = not matches or payment == "unknown" or downgrade or row["review_required"]

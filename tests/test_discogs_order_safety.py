@@ -1,5 +1,6 @@
 """Synthetic order lifecycle only: no browser, provider, cart, or payment."""
 
+import sqlite3
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -266,13 +267,17 @@ def test_verified_absent_still_retains_one_copy_slot(context):
     _, store, target, observation, quote = context
     prepare(context)
     assert (
-        store.simulate_attempt(INTENT, target, 7, quote, SyntheticOrderAdapter(), now=NOW)["state"]
+        store.simulate_attempt(INTENT, target, 7, quote, SyntheticOrderAdapter(), now=NOW + 1)[
+            "state"
+        ]
         == "uncertain"
     )
     assert (
-        store.reconcile(INTENT, SyntheticOrderAdapter(lookup_result=absence(quote)), now=NOW + 2)[
-            "state"
-        ]
+        store.reconcile(
+            INTENT,
+            SyntheticOrderAdapter(lookup_result=absence(quote, checked_at=NOW + 1.5)),
+            now=NOW + 2,
+        )["state"]
         == "absent"
     )
     with pytest.raises(OrderStopped, match="one_copy_or_idempotency_conflict"):
@@ -296,18 +301,104 @@ def test_unsupported_or_mismatched_absence_stays_uncertain(context, lookup_kind)
     )
 
 
-def test_absence_before_attempt_cannot_clear_uncertainty(context):
+@pytest.mark.parametrize("checked_at", [NOW - 1, NOW + 0.5])
+def test_absence_before_attempt_cannot_clear_uncertainty(context, checked_at):
     _, store, target, _, quote = context
     prepare(context)
     store.simulate_attempt(INTENT, target, 7, quote, SyntheticOrderAdapter(), now=NOW + 1)
-    assert (
-        store.reconcile(
-            INTENT,
-            SyntheticOrderAdapter(lookup_result=absence(quote, checked_at=NOW - 1)),
-            now=NOW + 2,
-        )["state"]
-        == "uncertain"
+    result = store.reconcile(
+        INTENT,
+        SyntheticOrderAdapter(lookup_result=absence(quote, checked_at=checked_at)),
+        now=NOW + 2,
     )
+    assert result["state"] == "uncertain" and result["requires_reconciliation"] is True
+
+
+def test_crash_reopen_preserves_submission_time_and_permanent_fence(context):
+    path, store, target, observation, quote = context
+    prepare(context)
+    crashed = SyntheticOrderAdapter(submit_result=SimulatedCrash())
+    with pytest.raises(SimulatedCrash):
+        store.simulate_attempt(INTENT, target, 7, quote, crashed, now=NOW + 1)
+    reopened = OrderSafetyStore(path)
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT submission_started_at FROM intents").fetchone()[0] == NOW + 1
+    stale = reopened.reconcile(
+        INTENT,
+        SyntheticOrderAdapter(lookup_result=absence(quote, checked_at=NOW + 0.5)),
+        now=NOW + 2,
+    )
+    assert stale["state"] == "uncertain" and stale["requires_reconciliation"] is True
+    fresh = reopened.reconcile(
+        INTENT,
+        SyntheticOrderAdapter(lookup_result=absence(quote, checked_at=NOW + 1.5)),
+        now=NOW + 2,
+    )
+    assert fresh["state"] == "absent" and fresh["requires_reconciliation"] is False
+    with pytest.raises(OrderStopped, match="attempt_already_started_or_missing"):
+        reopened.simulate_attempt(INTENT, target, 7, quote, crashed, now=NOW + 2)
+    with pytest.raises(OrderStopped, match="one_copy_or_idempotency_conflict"):
+        reopened.prepare(GRANT, OTHER, target, 7, observation, quote, now=NOW + 2)
+    assert crashed.submit_calls == 1
+
+
+@pytest.mark.parametrize("legacy_state", ["submitting", "uncertain", "absent"])
+def test_legacy_missing_submission_time_cannot_confirm_absence(context, legacy_state):
+    path, store, target, _, quote = context
+    prepare(context)
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE intents SET state=?", (legacy_state,))
+        db.execute("ALTER TABLE intents DROP COLUMN submission_started_at")
+        db.execute("PRAGMA user_version=1")
+    reopened = OrderSafetyStore(path)
+    assert OrderSafetyStore(path).status(INTENT)["requires_reconciliation"] is True
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.execute("SELECT submission_started_at FROM intents").fetchone()[0] is None
+    result = reopened.reconcile(
+        INTENT,
+        SyntheticOrderAdapter(lookup_result=absence(quote, checked_at=NOW + 2)),
+        now=NOW + 3,
+    )
+    assert result["state"] == "uncertain" and result["requires_reconciliation"] is True
+    with pytest.raises(OrderStopped, match="attempt_already_started_or_missing"):
+        reopened.simulate_attempt(INTENT, target, 7, quote, SyntheticOrderAdapter(), now=NOW + 3)
+
+
+@pytest.mark.parametrize("legacy_state", ["prepared", "confirmed"])
+def test_legacy_unstarted_or_confirmed_intent_keeps_its_state(context, legacy_state):
+    path, store, target, _, quote = context
+    prepare(context)
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE intents SET state=?", (legacy_state,))
+        db.execute("ALTER TABLE intents DROP COLUMN submission_started_at")
+        db.execute("PRAGMA user_version=1")
+    reopened = OrderSafetyStore(path)
+    assert reopened.status(INTENT)["state"] == legacy_state
+    if legacy_state == "prepared":
+        reopened.simulate_attempt(INTENT, target, 7, quote, SyntheticOrderAdapter(), now=NOW + 1)
+        assert (
+            reopened.reconcile(
+                INTENT,
+                SyntheticOrderAdapter(lookup_result=absence(quote, checked_at=NOW + 1.5)),
+                now=NOW + 2,
+            )["state"]
+            == "absent"
+        )
+
+
+def test_null_submission_time_in_current_ledger_keeps_reconciliation_required(context):
+    path, store, target, _, quote = context
+    prepare(context)
+    store.simulate_attempt(INTENT, target, 7, quote, SyntheticOrderAdapter(), now=NOW + 1)
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE intents SET submission_started_at=NULL")
+    result = OrderSafetyStore(path).reconcile(
+        INTENT,
+        SyntheticOrderAdapter(lookup_result=absence(quote, checked_at=NOW + 2)),
+        now=NOW + 3,
+    )
+    assert result["state"] == "uncertain" and result["requires_reconciliation"] is True
 
 
 def test_no_grant_or_ledger_exists_in_private_app_by_default(tmp_path):

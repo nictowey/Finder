@@ -34,4 +34,22 @@ The adapter is intentionally absent: the committing control cannot be used as
 a quote preview. A future live checkout needs an exact authorized item and
 ceiling, complete final quote, matching destination/payment references,
 ordinary website control evidence, and separately verified post-action order
-and payment reconciliation. No record order is authorized for development.
+and payment reconciliation. This module does not authorize a record order.
+
+## Manual payment after order creation
+
+The owner selected a separate mode in which a specifically authorized Discogs
+order may be created and PayPal payment is left to the owner. This does not
+remove the final-quote, destination, terms, authorization or duplicate-order
+checks before the committing order control. An unpaid order is a purchase
+commitment, not a temporary reservation or guarantee that the seller will ship.
+
+`discogs_manual_payment` projects only existing durable ledger state. It does
+not add a lifecycle store, submit an order, pay, or query the website. An exact
+recorded order with unpaid status can be labeled manual payment due as last
+recorded; payment pending must not invite a second payment. Unknown, conflicting
+or review-required evidence blocks the handoff. No canonical buyer order-page
+URL was established by the retained evidence, so the contract reports the link
+as unavailable rather than guessing one. It makes no current-status or
+availability claim. Its tests use synthetic order-page evidence and do not
+establish a live order or payment handoff.

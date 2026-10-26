@@ -15,6 +15,12 @@ from pydantic import Field, field_validator, model_validator
 from finder.discogs_candidate_pipeline import CandidatePipeline, CandidateStopped
 from finder.discogs_hosted_checkout import CheckoutStopped, HostedCheckoutPreflight
 from finder.discogs_order_safety import OrderSafetyStore, OrderStopped
+from finder.discogs_payment_preflight import (
+    PaymentPreflightStopped,
+    PaymentQuoteBindings,
+    PaymentQuoteEvidence,
+    assess_payment_quote,
+)
 from finder.discogs_rules import StrictInput, amount
 
 
@@ -110,7 +116,67 @@ class HostedNoOrderCoordinator:
             "final_quote_adapter": "offline_fixture" if self.quote_adapter else "unavailable",
             "order_ledger": "synthetic_intent_guard" if self.orders else "unavailable",
             "live_order_submission_enabled": False,
+            "payment_quote_contract": "assessment_only",
             "purchase_allowed": False,
+        }
+
+    def inspect_payment_contract(
+        self, release_id, listing_id, idempotency_key, bindings, evidence=None
+    ):
+        """Bind untrusted quote assertions to current cart-review state, with no action."""
+        if type(bindings) is not PaymentQuoteBindings:
+            raise CheckoutStopped("payment_contract_bindings_unverified")
+        self._no_existing_order_intent(release_id)
+        if type(evidence) is PaymentQuoteEvidence:
+            try:
+                evidence = PaymentQuoteEvidence.model_validate(evidence.model_dump(warnings=False))
+            except (ValueError, TypeError):
+                raise CheckoutStopped("payment_contract_evidence_unverified") from None
+        try:
+            before = self.candidates.cart_review_bundle(release_id, listing_id, idempotency_key)
+            target = next(
+                row for row in before["snapshot"]["targets"] if row["release_id"] == release_id
+            )
+            expected = PaymentQuoteBindings(
+                release_id=release_id,
+                listing_id=listing_id,
+                rules_revision=before["snapshot"]["revision"],
+                candidate_sequence=before["candidate_sequence"],
+                observation_fingerprint=before["listing"]["observation_fingerprint"],
+                claim_ref=idempotency_key,
+                destination_ref=bindings.destination_ref,
+                payment_ref=bindings.payment_ref,
+                currency=target["currency"],
+                max_all_in=target["max_total"],
+            )
+            if before["claim"]["state"] != "cart_observed" or bindings != expected:
+                raise CheckoutStopped("payment_contract_context_changed")
+            assess_payment_quote(expected, evidence, now=self.candidates.clock())
+            after = self.candidates.cart_review_bundle(release_id, listing_id, idempotency_key)
+            if before != after or after["claim"]["state"] != "cart_observed":
+                raise CheckoutStopped("payment_contract_context_changed")
+            self._no_existing_order_intent(release_id)
+            # A state read can outlive a quote. Assess at the final clock too.
+            result = assess_payment_quote(expected, evidence, now=self.candidates.clock())
+            if result["contract_satisfied"] and (
+                evidence.item.amount != before["listing"]["listing"]["item"]
+                or before["listing"]["listing"]["currency"] not in (None, evidence.item.currency)
+            ):
+                result = {
+                    **result,
+                    "code": "quote_item_changed_from_candidate",
+                    "contract_satisfied": False,
+                    "evidence_fingerprint": None,
+                }
+        except (CandidateStopped, PaymentPreflightStopped, KeyError, ValueError, StopIteration):
+            raise CheckoutStopped("payment_contract_current_state_unverified") from None
+        return {
+            **result,
+            "release_id": release_id,
+            "listing_id": listing_id,
+            "rules_revision": expected.rules_revision,
+            "candidate_sequence": expected.candidate_sequence,
+            "claim_state": "cart_observed",
         }
 
     def inspect(self, release_id, listing_id, idempotency_key, *, bindings=None):
@@ -118,12 +184,7 @@ class HostedNoOrderCoordinator:
             raise CheckoutStopped("checkout_bindings_unverified")
         # Once any intent exists, an uncertain or even confirmed-absent outcome
         # cannot silently recycle this release's one-copy slot.
-        try:
-            existing = self.orders.status_for_release(release_id) if self.orders else None
-        except OrderStopped:
-            raise CheckoutStopped("invalid_order_intent_lookup") from None
-        if existing is not None:
-            raise CheckoutStopped("existing_order_intent_blocks_hosted_checkout")
+        self._no_existing_order_intent(release_id)
         result = self.preflight.inspect(release_id, listing_id, idempotency_key)
         if bindings is None:
             return self._blocked(result, "destination_payment_binding_unavailable")
@@ -165,6 +226,14 @@ class HostedNoOrderCoordinator:
         ):
             raise CheckoutStopped("candidate_changed_after_quote_read")
         return self._blocked(result, "offline_quote_cannot_authorize_purchase")
+
+    def _no_existing_order_intent(self, release_id):
+        try:
+            existing = self.orders.status_for_release(release_id) if self.orders else None
+        except OrderStopped:
+            raise CheckoutStopped("invalid_order_intent_lookup") from None
+        if existing is not None:
+            raise CheckoutStopped("existing_order_intent_blocks_hosted_checkout")
 
     @staticmethod
     def _blocked(preflight, code):

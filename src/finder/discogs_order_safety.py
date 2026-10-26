@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from math import isfinite
 from pathlib import Path
 from typing import Literal
 from uuid import UUID
@@ -22,7 +23,7 @@ from pydantic import Field, field_validator
 from finder.discogs_rules import Observation, StrictInput, Target, amount, evaluate
 
 APPLICATION_ID = 1397637170
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_ID = 9007199254740991
 MAX_QUOTE_AGE = 300
 
@@ -177,6 +178,7 @@ class OrderSafetyStore:
                         state TEXT NOT NULL CHECK(state IN
                             ('prepared','submitting','uncertain','confirmed','absent')),
                         provider_order_id TEXT UNIQUE,
+                        submission_started_at REAL,
                         FOREIGN KEY(grant_id) REFERENCES grants(grant_id)
                     );
                     CREATE TRIGGER no_grant_delete BEFORE DELETE ON grants
@@ -185,11 +187,22 @@ class OrderSafetyStore:
                       BEGIN SELECT RAISE(ABORT,'intents cannot be deleted'); END;
                     COMMIT;
                 """)
-            elif (
-                db.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID
-                or db.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION
-            ):
-                raise ValueError("Not a supported order-safety file.")
+            else:
+                version = db.execute("PRAGMA user_version").fetchone()[0]
+                application = db.execute("PRAGMA application_id").fetchone()[0]
+                if application != APPLICATION_ID or version not in {1, SCHEMA_VERSION}:
+                    raise ValueError("Not a supported order-safety file.")
+                if version == 1:
+                    db.execute("BEGIN IMMEDIATE")
+                    try:
+                        if db.execute("PRAGMA user_version").fetchone()[0] == 1:
+                            db.execute("ALTER TABLE intents ADD COLUMN submission_started_at REAL")
+                            db.execute("UPDATE intents SET state='uncertain' WHERE state='absent'")
+                            db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                        db.commit()
+                    except BaseException:
+                        db.rollback()
+                        raise
 
     @contextmanager
     def _connection(self):
@@ -347,7 +360,7 @@ class OrderSafetyStore:
                     return self._status(existing)
                 raise OrderStopped("one_copy_or_idempotency_conflict")
             db.execute(
-                "INSERT INTO intents VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'prepared',NULL)",
+                "INSERT INTO intents VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'prepared',NULL,NULL)",
                 (
                     target.release_id,
                     intent_id,
@@ -419,11 +432,14 @@ class OrderSafetyStore:
             if (
                 row["rules_revision"] != revision
                 or row["quote_fingerprint"] != _fingerprint(quote.model_dump())
-                or not now < row["quote_expires_at"]
+                or not row["prepared_at"] <= now < row["quote_expires_at"]
                 or quote.currency != grant["currency"]
             ):
                 raise OrderStopped("attempt_state_or_quote_changed")
-            db.execute("UPDATE intents SET state='submitting' WHERE intent_id=?", (intent_id,))
+            db.execute(
+                "UPDATE intents SET state='submitting',submission_started_at=? WHERE intent_id=?",
+                (now, intent_id),
+            )
             db.commit()
         try:
             receipt = adapter.submit(intent_id)
@@ -482,7 +498,11 @@ class OrderSafetyStore:
                 and result.payment_ref == row["payment_ref"]
                 and type(result.checked_at) in {int, float}
                 and type(now) in {int, float}
-                and row["prepared_at"] <= result.checked_at <= now
+                and type(row["submission_started_at"]) in {int, float}
+                and isfinite(result.checked_at)
+                and isfinite(now)
+                and isfinite(row["submission_started_at"])
+                and row["prepared_at"] <= row["submission_started_at"] <= result.checked_at <= now
             )
         except OrderStopped:
             absent = False

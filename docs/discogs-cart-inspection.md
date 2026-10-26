@@ -435,3 +435,54 @@ unsupported metadata still leaves the omission assessment unknown and blocks pre
 The combined live listing-plus-catalog test could not be completed in the test environment
 and remains unverified. The standalone public catalog quantity read succeeded;
 offline tests exercise the integrated path without claiming hosted or live checkout proof.
+
+## Hosted preparation and payment contracts, October 26
+
+The separate `HostedCartPrepareAdapter` and `discogs_hosted_cart_helper.mjs` define
+one fixed, scoped preparation protocol. Neither is enabled by the current private
+service. The helper requires an owner-created acknowledgement bound to the boot,
+exact immutable scope and idempotency key, and exclusively records use before
+touching a page. It keeps the original read-access stop and its history. No
+arbitrary URL, browser command, account setting or order action is exposed.
+Each exclusive owner-only marker and its parent directory are synced before
+browser access or a possible click. A helper-wide mutation fence remains after
+any issued add, including a confirmed result; there is no automatic reset path.
+An already-issued browser click may finish after a disconnect, so uncertainty
+blocks subsequent preparation instead of causing a retry.
+
+The proposed separate host path `/var/lib/sniper/cart-bridge` maps to
+`/cart-bridge` in the browser container. Its group access must be reviewed before
+configuration; it is not the existing read-only socket or profile mount. The
+browser profile stays owner-only. No mount, listener, acknowledgement or live
+cart authorization was installed by this code change.
+
+The current cart collector cannot establish an empty pre-add cart. The helper
+therefore stops before any click unless a separately verified producer supplies
+that evidence. Two supported DOM reads of the owner's already-open local cart
+timed out before command dispatch; no empty-cart structure was captured. That is
+a browser-tool limitation, not evidence of a Discogs access denial or emptiness.
+
+`PaymentQuoteEvidence` is an assessment-only contract for a future noncommitting
+quote source. The no-order coordinator binds it to the current candidate,
+revision, observation fingerprint, one-copy claim, explicit currency, ceiling and
+opaque destination/payment references before and after assessment. Complete
+assertions still return `final_payable_quote_verified: false` and
+`purchase_allowed: false`; they cannot supply live provenance or enable submit.
+A missing fee line remains absent, without inventing a buyer surcharge or
+manufacturing a displayed zero-fee line. Deferred tax and an order-creating
+surface remain blockers. No supported Wallet capability was available during
+this implementation, and no substitute card-handling route was configured.
+
+The hosted PayPal sign-in was not authenticated. After the owner personally
+completed its challenge on October 26, the existing page displayed
+`You have been blocked.` and `We couldn't load the security challenge.` A
+non-mutating observation recorded that restriction; no reload, alternate route,
+further login attempt or payment followed. Live payment access remains blocked.
+These offline contracts do not resolve that restriction or verify the account.
+
+Order reconciliation ignores stale evidence before applying order-identity
+conflicts. The synthetic order-safety store separately records submission time
+before calling its simulated adapter. Its additive v1-to-v2 migration preserves
+permanent duplicate fences and treats legacy uncertain/absent attempts without
+a submission timestamp conservatively; an older absence lookup cannot clear
+uncertainty. These are storage and no-submit tests, not live payment proof.
