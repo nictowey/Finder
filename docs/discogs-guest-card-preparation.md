@@ -377,6 +377,86 @@ A later expired-grant probe, timeout or exception does not establish no effect.
 The new review retains that proof; no old claim, outcome or fence is replaced.
 This path is supervised CUA development tooling, not autonomous server checkout.
 
+### Successful actor-local no-submit observation
+
+On October 26, 2026, revision
+`12ab704eeff8a31d22632f176838f98766a65cb2` passed its exact CI and independent
+review. Staged server hashes matched; the serialized actor was installed without
+module dependencies or a browser restart. Fresh All/All history showed zero
+orders before the test. Normal item/release links verified item `1366950910`
+and release `3422100`. The current cart and fresh merchant checkout showed
+one item from seller `Mailman21842`, item $0.10 plus
+selected Economy/Media Mail $4.95, aggregate $5.05 USD and the approved saved
+destination. No cart or shipping selection was changed.
+
+The original blocked claim and its unknown outcome were preserved. A new review
+retained the exact definitive no-dispatch proof and newer order reconciliation.
+The new claim was
+`5877754b846069fc0d3b8e096f044e25792f44fef58c02b5b07cc2dcc825b17f`.
+The actor captured its own checkout observation at Unix time `1793038050.410`
+and dispatched once with that observation **11.168 seconds old**. No terminal
+round trip occurred between capture and dispatch. The blank guest form was
+visibly present at `1793038073.351`; outcome `guest_form_visible` was recorded
+in `guest-checkout-000010.json`, whose hash is
+`1cdc66a4ef7ecfe21ed525580687375cf41496b102d173e144caa3f27501849c`.
+
+Observed fields were blank, including email, card number, expiry, security code
+and billing fields. The lower form displayed **Pay $5.05**, default-checked
+**Ship to billing address**, and an age-18 notice. No details were entered;
+no Pay, approval or capture action occurred. The actor was consumed and frozen.
+Provider currency code, final post-entry destination/terms, merchant order
+creation and payment were not verified. All/All history was not rechecked after
+initialization, so this observation does not establish that no merchant order or
+provider draft exists.
+
+Browser memory was 995.5 MiB of 2 GiB before the run and 1.143 GiB afterward;
+a subsequent passive process check still showed 1.143 GiB. OOM and restart
+counters remained false/zero. These few samples show the run stayed within its
+limit; they do not diagnose a memory leak or establish long-duration stability.
+The current form was last observed blank and left untouched; an idle form is
+not a promise that its provider session remains usable indefinitely.
+
+### Repeatability gate and autonomous-server gap
+
+Offline replay must stitch the real claim/outcome commands to the exact
+serialized actor, with intercepted view actions: delayed transport followed by
+fresh actor capture, one card-control effect, zero card-entry/Pay capabilities,
+idempotent accounting and durable refusal of duplicate/pending/unknown claims.
+Stale or changed observations, cancellation and expired scope must produce zero
+new effects. Lost-runtime recovery must request a fresh claim and stop when the
+audit is pending or unknown; it must never replay an old grant into a new actor.
+The runtime registry does not persist across a new JavaScript realm, so that
+last rule remains an installation/integration requirement, not cross-runtime
+revocation proved by the registry. This is fixture evidence, not another live
+success.
+
+One additional bounded live repetition is a conditional plan, not enabled work:
+preserve the blank form until its disposition is reviewed; verify no entry,
+Pay, approval or capture, observe normal SDK dismissal, then obtain newer
+complete All/All merchant history showing zero orders. A new immutable review
+must link the successful claim/outcome and this disposition before another
+exact-scope no-submit claim may run. A challenge, order, incomplete history or
+uncertain disposition stops it. No user card standby or test purchase is needed.
+The current `guest_form_visible` guard remains in force.
+
+The captured checkout source distinguishes a creation transaction ID from the
+merchant order ID returned after approval/capture. That supports treating an
+unapproved payment draft separately; it does not prove backend order-creation
+timing or guarantee merchant-history consistency. Fresh reconciliation plus
+normal dismissal provides an operational basis for one reviewed repetition,
+not proof that all provider drafts are absent. A second controlled pass would
+demonstrate one repetition, not unattended reliability across all conditions.
+
+Current success depends on Mac-hosted CUA and manual screen attestations. The
+smallest useful production step is one fixed enhanced-checkout preparation port
+inside the existing hosted Firefox service: actual sanitized DOM/frame evidence,
+normal Cart-to-Checkout controls, the shared durable claim and same-process
+fresh validation before one form-opening effect. The server DOM/control/frame
+association must first be captured and verified under its permitted access;
+no hidden endpoints or broad browser API are implied. This replaces the manual
+actor rather than adding another coordinator. Live order submission, final
+payment and receipt reconciliation remain separate, unverified requirements.
+
 At this checkpoint the web and browser services were active, with no restart or
 OOM since their 13:42 start; browser memory was 850.7 MiB of 2 GiB. Monitoring
 remained inactive. These health observations do not verify checkout or payment.

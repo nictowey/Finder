@@ -9,17 +9,18 @@ const { pathToFileURL } = require('node:url');
 const { createHash, randomUUID } = require('node:crypto');
 const { spawn, spawnSync } = require('node:child_process');
 const { createInterface } = require('node:readline');
-let helper, operator;
+let helper, operator, makeCurrentCheckoutCuaActor;
 before(async () => { helper = await import('../scripts/discogs_guest_card_prepare.mjs');
-  operator = await import('../scripts/discogs_guest_checkout_operator.mjs'); });
+  operator = await import('../scripts/discogs_guest_checkout_operator.mjs');
+  ({ makeCurrentCheckoutCuaActor } = await import('../scripts/discogs_guest_cua_operator.mjs')); });
 const encoded = value => JSON.stringify(value) + '\n';
 const hash = value => createHash('sha256').update(value).digest('hex');
 const moduleURL = pathToFileURL(resolve('scripts/discogs_guest_checkout_operator.mjs')).href;
 
-async function stateFixture(run) {
+async function stateFixture(run, { now = Date.now() } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'sniper-operator-cli-'));
   const original = { schema: 'discogs_guest_card_init_fence_v1', intent_id: randomUUID(),
-    scope_digest: 'a'.repeat(64), release_id: 3422100, listing_id: '1366950910', created_at: Date.now() / 1000 - 30 };
+    scope_digest: 'a'.repeat(64), release_id: 3422100, listing_id: '1366950910', created_at: now / 1000 - 30 };
   const saved = {};
   const put = async (name, value) => {
     const bytes = encoded(value); saved[name] = bytes;
@@ -75,15 +76,14 @@ function client(directory, { advanceMs = 0 } = {}) {
     close: async () => { if (child.exitCode === null && !child.killed) child.kill('SIGKILL'); await exited; reader.close(); },
   };
 }
-function startFor(waiting, { ttl = 45, readyRef = randomUUID(), intent = randomUUID() } = {}) {
-  const now = Date.now() / 1000;
+function startFor(waiting, { ttl = 45, readyRef = randomUUID(), intent = randomUUID(), now = Date.now() / 1000 } = {}) {
   const scope = { intent_id: intent, approval_ref: randomUUID(), release_id: 3422100,
     listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD', max_total: '5.05',
     rules_revision: 0, quote_fingerprint: 'd'.repeat(64), destination_ref: randomUUID(),
     terms_fingerprint: 'e'.repeat(64), issued_at: now, expires_at: now + 300 };
   return { type: 'start', ready_ref: readyRef, scope, expected_latest_hash: waiting.latest_hash,
     userReady: { source: 'explicit_current_user_ready', ready: true,
-      scope_digest: helper.guestCardScopeDigest(scope), observed_at: now, expires_at: now + ttl },
+      scope_digest: helper.guestCardScopeDigest(scope, { now }), observed_at: now, expires_at: now + ttl },
     priorFailure: { source: 'operator_reviewed_normal_discogs_ui', last_error_code: 'SESSION_EXPIRED',
       release_id: 3422100, listing_id: '1366950910', seller: 'Mailman21842', quantity: 1,
       currency: 'USD', max_total: '5.05', card_data_entered: false, pay_invoked: false,
@@ -397,11 +397,11 @@ test('injected process clock enforces 120-second stage, 20-second guest quote an
   });
 });
 
-async function currentClaim(directory) {
+async function currentClaim(directory, { now = Date.now() / 1000 } = {}) {
   const probe = client(directory); let waiting;
   try { waiting = await probe.next(); } finally { await probe.close(); }
-  const start = startFor(waiting, { ttl: 300 }), values = refs();
-  const templates = operator.prepareOperatorAckTemplates(start, values), observed = Date.now() / 1000;
+  const start = startFor(waiting, { ttl: 300, now }), values = refs();
+  const templates = operator.prepareOperatorAckTemplates(start, values), observed = now;
   return { type: 'claim_current_checkout', ready_ref: start.ready_ref, scope: start.scope,
     userReady: start.userReady, priorFailure: start.priorFailure, expected_latest_hash: start.expected_latest_hash,
     provenance: { source: 'operator_verified_current_screen', navigation: 'normal_cart_to_fresh_checkout',
@@ -411,8 +411,9 @@ async function currentClaim(directory) {
     inspection: { schema: 'discogs_guest_card_inspection_v1', url: helper.GUEST_CARD_URL, access: 'normal',
       control: templates.card_control, evidence: { ...templates.checkout.evidence, observed_at: observed } } };
 }
-async function oneShot(directory, value, { mode = 'claim', crashBeforePermit = false, inputFailure = false } = {}) {
+async function oneShot(directory, value, { mode = 'claim', crashBeforePermit = false, inputFailure = false, now = null } = {}) {
   const source = `import {runCurrentCheckoutClaim} from ${JSON.stringify(moduleURL)};
+    ${now === null ? '' : `Date.now = () => ${Number(now)};`}
     process.exit(await runCurrentCheckoutClaim({directory:process.argv[1],mode:${JSON.stringify(mode)}
       ${crashBeforePermit ? ",output:{write(){process.kill(process.pid,'SIGKILL')}}" : ''}
       ${inputFailure ? ",input:{async *[Symbol.asyncIterator](){throw new Error('SYNTHETIC_NEVER_LOG_THIS')}}" : ''}}));`;
@@ -532,8 +533,7 @@ test('all dispatch modes share pending/unknown/form-visible/restricted guard and
   }
 });
 
-function noSubmitAuthorization(claim) {
-  const now = Date.now() / 1000;
+function noSubmitAuthorization(claim, now = Date.now() / 1000) {
   const result = { ...claim }; delete result.userReady;
   result.testAuthorization = { source: 'explicit_user_authorized_no_submit_test', approval_ref: claim.scope.approval_ref,
     scope_digest: claim.provenance.scope_digest, attempt_id: claim.scope.intent_id,
@@ -702,3 +702,103 @@ test('a later expired-grant probe cannot resolve an earlier unknown action', asy
   assert.equal(result.message.stop_reason, 'prior_no_dispatch_unverified');
   assert.equal((await audits(directory)).length, 4);
 }));
+
+function interceptedCurrentActor(grant, clock) {
+  const { runInThisContext } = require('node:vm');
+  const factory = runInThisContext(`(${makeCurrentCheckoutCuaActor.toString()})`);
+  const effects = []; let screen = 'synthetic_normal_checkout';
+  const view = Object.freeze({
+    getAXState: async options => { effects.push(['getAXState', options, clock.now]); return { screen }; },
+    getScreenshot: async options => { effects.push(['getScreenshot', options, clock.now]); return { screen, synthetic: true }; },
+    click: async point => {
+      assert.deepEqual(point, [350, 550]); effects.push(['click', point, clock.now]); screen = 'synthetic_blank_guest_form';
+    },
+    markHandoff: async () => { effects.push(['markHandoff', null, clock.now]); },
+  });
+  const actor = factory(view, grant, { clock: () => clock.now });
+  const proof = observed => {
+    const s = grant.expected_scope, p = grant.permit;
+    return { source: 'operator_current_screen', observation_id: observed.observation_id,
+      claim_sha256: grant.claim_sha256, intent_id: p.intent_id, ready_ref: p.ready_ref, scope_digest: p.scope_digest,
+      url: helper.GUEST_CARD_URL, document_ref: p.from_document_ref, control_ref: p.control_ref,
+      inspection_fingerprint: p.inspection_fingerprint, control_label: 'Debit or Credit Card', control_count: 1,
+      control_visible: true, control_enabled: true, point: [350, 550], approval_scope_verified: true,
+      item_scope_verified: true, quote_verified: true, destination_verified: true, terms_verified: true,
+      no_card_data_entered: true, normal_checkout: true, history_restore: false, resubmission_prompt: false,
+      extra_agreement_required: false, challenge_present: false, release_id: s.release_id, listing_id: s.listing_id,
+      seller: s.seller, quantity: 1, item_count: 1, seller_count: 1, rules_revision: s.rules_revision,
+      approval_ref: s.approval_ref, currency: s.currency, item: '0.10', shipping: '4.95', total: '5.05',
+      quote_fingerprint: s.quote_fingerprint, destination_ref: s.destination_ref, terms_fingerprint: s.terms_fingerprint,
+      authorization_current: true, authorization_revoked: false, already_owned: false, existing_order: false,
+      uncertain_prior_action: false, duplicate_guard_verified: true, rules_current: true, criteria_satisfied: true,
+      shipping_selection_verified: true, preparation_quote_verified: true, final_payment_quote_verified: false,
+      deferred_total_notice: false, amount_basis: 'explicit_merchant_checkout_total' };
+  };
+  return { actor, view, effects, proof };
+}
+
+test('intercepted integration joins real claim, serialized actor and exactly-once outcome after delayed transport', async () => stateFixture(async directory => {
+  const clock = { now: 1_800_000_000_000 };
+  const claim = noSubmitAuthorization(await currentClaim(directory, { now: clock.now / 1000 }), clock.now / 1000);
+  const result = await oneShot(directory, claim, { now: clock.now });
+  assert.equal(result.message.type, 'checkout_claim_granted');
+  const originalDeadline = result.message.permit.deadline;
+  assert.equal((await audits(directory)).length, 3);
+  clock.now += 45_000; // Simulated transport exceeds the former whole-operation quote budget.
+  assert.ok(clock.now > (claim.inspection.evidence.observed_at + 20) * 1000 && clock.now < originalDeadline);
+  const s = interceptedCurrentActor(result.message, clock), observed = await s.actor.observe();
+  assert.equal(observed.observed_at, clock.now / 1000);
+  assert.equal(observed.screenshot.screen, 'synthetic_normal_checkout');
+  clock.now += 11_168;
+  const effect = await s.actor.dispatch(s.proof(observed));
+  assert.equal(effect.status, 'effect_requires_screen_observation');
+  const clicks = s.effects.filter(effect => effect[0] === 'click');
+  assert.equal(clicks.length, 1); assert.equal(clicks[0][2] - observed.observed_at * 1000, 11_168);
+  assert.equal(s.actor.status().deadline, originalDeadline);
+  assert.equal((await s.view.getAXState({ emit: false })).screen, 'synthetic_blank_guest_form');
+  await assert.rejects(s.actor.dispatch(s.proof(observed)), /not_live/);
+  assert.deepEqual(Object.keys(s.view).sort(), ['click', 'getAXState', 'getScreenshot', 'markHandoff']);
+  assert.ok(s.effects.every(effect => ['click', 'getAXState', 'getScreenshot'].includes(effect[0])));
+  const outcome = { ...outcomeFor(claim, result.message, 'guest_form_visible'), observed_at: clock.now / 1000 };
+  assert.equal((await oneShot(directory, outcome, { mode: 'outcome', now: clock.now })).message.duplicate, false);
+  assert.equal((await oneShot(directory, outcome, { mode: 'outcome', now: clock.now })).message.duplicate, true);
+  const records = await audits(directory); assert.equal(records.length, 4);
+  assert.equal(records[3].payload.outcome, 'guest_form_visible');
+  for (const key of ['human_payment_ready', 'card_entry_allowed', 'payment_allowed', 'final_submission_allowed', 'autonomous_checkout']) {
+    assert.equal(result.message[key], false);
+  }
+  assert.equal(result.message.order_status, 'unverified'); assert.equal(result.message.payment_status, 'unverified');
+}, { now: 1_800_000_000_000 }));
+
+test('intercepted integration rejects stale or changed quote; rebound runtime cannot mint grants past pending or unknown', async () => {
+  for (const mode of ['stale', 'changed_total']) await stateFixture(async directory => {
+    const clock = { now: 1_800_000_000_000 };
+    const claim = noSubmitAuthorization(await currentClaim(directory, { now: clock.now / 1000 }), clock.now / 1000);
+    const granted = await oneShot(directory, claim, { now: clock.now });
+    assert.equal(granted.message.type, 'checkout_claim_granted');
+    clock.now += 45_000;
+    const s = interceptedCurrentActor(granted.message, clock), observed = await s.actor.observe();
+    const proof = s.proof(observed);
+    if (mode === 'stale') clock.now += 20_001;
+    else { clock.now += 11_168; proof.total = '5.06'; }
+    await assert.rejects(s.actor.dispatch(proof), /screen_unverified/); s.actor.cancel();
+    assert.equal(s.effects.some(effect => effect[0] === 'click'), false);
+    // Rebinding only creates code. It does not replay the existing permit or bypass server state.
+    const rebound = require('node:vm').runInThisContext(`(${makeCurrentCheckoutCuaActor.toString()})`);
+    assert.equal(typeof rebound, 'function');
+    const nextClaim = () => currentClaim(directory, { now: clock.now / 1000 })
+      .then(value => noSubmitAuthorization(value, clock.now / 1000));
+    const pending = await oneShot(directory, await nextClaim(), { now: clock.now });
+    assert.equal(pending.message.stop_reason, 'prior_attempt_unresolved');
+    assert.ok(!Object.hasOwn(pending.message, 'permit'));
+    assert.equal((await audits(directory)).length, 3);
+    const outcome = { ...outcomeFor(claim, granted.message, 'unknown'), observed_at: clock.now / 1000 };
+    assert.equal((await oneShot(directory, outcome, { mode: 'outcome', now: clock.now })).code, 0);
+    clock.now += 1;
+    const unknown = await oneShot(directory, await nextClaim(), { now: clock.now });
+    assert.equal(unknown.message.stop_reason, 'prior_attempt_unresolved');
+    assert.ok(!Object.hasOwn(unknown.message, 'permit'));
+    assert.equal((await audits(directory)).length, 4);
+    assert.equal(s.effects.some(effect => effect[0] === 'click'), false);
+  }, { now: 1_800_000_000_000 });
+});
