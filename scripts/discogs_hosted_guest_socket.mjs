@@ -88,6 +88,71 @@ function sanitizedCartStructure(value) {
   return { row_count: 1, listing_href: '/sell/item/1366950910',
     title_link: { tag: 'A', text: value.title_link.text, nodes: title }, grade_nodes: grades };
 }
+const CART_LAYOUT_TAGS = new Set(['FORM', 'DIV', 'SECTION', 'MAIN', 'TABLE', 'THEAD', 'TBODY', 'TFOOT',
+  'TR', 'TD', 'TH', 'ADDRESS', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'SPAN', 'BR', 'UL', 'LI', 'A', 'OTHER']);
+const CART_LAYOUT_HINTS = new Set(['legacy', 'order_container', 'order_row', 'order_summary', 'order_subtotal',
+  'order_total', 'order_summary_value', 'order_shipping_amount', 'order_shipping_fields', 'shipping_method',
+  'shipping_address_prefix', 'cart_order_prefix']);
+const CART_SUMMARY_LABELS = new Set(['Subtotal', 'Shipping', 'Total', 'Tax', 'Sales Tax', 'Plus applicable sales tax']);
+function sanitizedCartLayout(value) {
+  if (value?.schema !== 'discogs_cart_layout_v1' || typeof value.truncated !== 'boolean') return null;
+  const hints = values => Array.isArray(values) && values.length <= CART_LAYOUT_HINTS.size &&
+    values.every(hint => CART_LAYOUT_HINTS.has(hint)) ? [...values] : null;
+  const childTypes = values => Array.isArray(values) && values.length <= 16 &&
+    values.every(tag => CART_LAYOUT_TAGS.has(tag) || ['#text', '#comment'].includes(tag)) ? [...values] : null;
+  const node = (source, withChildren = false) => {
+    const safeHints = hints(source?.hints), types = withChildren ? childTypes(source?.child_types) : [];
+    if (!CART_LAYOUT_TAGS.has(source?.tag) || !safeHints || !types) return null;
+    return { tag: source.tag, hints: safeHints, ...(withChildren ? { child_types: types } : {}) };
+  };
+  const cappedArray = (values, cap, map) => {
+    if (!Array.isArray(values) || values.length > cap) return null;
+    const out = values.map(map); return out.some(item => item === null) ? null : out;
+  };
+  const count = number => Number.isInteger(number) && number >= 0 && number <= 32;
+  const gate = value.collector_gate;
+  if (gate?.code !== 'not_run_private_text_guard') return null;
+  const collectorGate = { code: 'not_run_private_text_guard' };
+  for (const key of ['form_count', 'order_container_count', 'summary_count', 'address_wrapper_count', 'address_count',
+    'go_count', 'shipping_select_count', 'selected_count', 'option_count']) {
+    if (!count(gate[key])) return null;
+    collectorGate[key] = gate[key];
+  }
+  for (const key of ['form_contains_row', 'container_contains_row', 'container_in_form', 'go_form_present', 'go_form_legacy',
+    'go_form_contains_row', 'go_in_container', 'shipping_form_present', 'shipping_form_same_as_go', 'shipping_in_container']) {
+    if (typeof gate[key] !== 'boolean') return null;
+    collectorGate[key] = gate[key];
+  }
+  if (!(gate.selected_index === null || Number.isInteger(gate.selected_index) && gate.selected_index >= -1 && gate.selected_index <= 31)) return null;
+  collectorGate.selected_index = gate.selected_index;
+  const ancestry = cappedArray(value.ancestry, 8, source => node(source));
+  const tables = cappedArray(value.tables, 4, table => {
+    const safeHints = hints(table?.hints);
+    if (!safeHints || !count(table.row_count)) return null;
+    const rows = cappedArray(table.rows, 8, row => {
+      const rowHints = hints(row?.hints);
+      if (!rowHints || !count(row.cell_count)) return null;
+      const cells = cappedArray(row.cells, 4, cell => {
+        const safe = node(cell, true);
+        if (!safe || !['TD', 'TH'].includes(safe.tag) ||
+            !(cell.public_text === null || CART_SUMMARY_LABELS.has(cell.public_text) ||
+              typeof cell.public_text === 'string' && /^\$[0-9]{1,4}\.[0-9]{2} USD$/u.test(cell.public_text))) return null;
+        return { ...safe, public_text: cell.public_text };
+      });
+      return cells && cells.length <= row.cell_count ? { hints: rowHints, cell_count: row.cell_count, cells } : null;
+    });
+    return rows && rows.length <= table.row_count ? { hints: safeHints, row_count: table.row_count, rows } : null;
+  });
+  const addressShapes = cappedArray(value.address_shapes, 6, address => {
+    const safe = node(address, true);
+    if (!safe || !['address', 'shipping_wrapper', 'shipping_heading_following'].includes(address.kind)) return null;
+    const children = cappedArray(address.children, 8, child => node(child, true));
+    return children ? { kind: address.kind, ...safe, children } : null;
+  });
+  if (!ancestry || !tables || !addressShapes) return null;
+  return { schema: 'discogs_cart_layout_v1', collector_gate: collectorGate, ancestry, tables,
+    address_shapes: addressShapes, truncated: value.truncated };
+}
 function safeResult(value, { captureAllowed = false, preflightAllowed = false } = {}) {
   // Observed effects are facts, not capabilities: never rewrite a reported
   // initialization into false merely because this action forbids it.
@@ -105,6 +170,11 @@ function safeResult(value, { captureAllowed = false, preflightAllowed = false } 
     const structure = captureAllowed ? sanitizedCartStructure(value.cart_structure) : null;
     if (!structure) return stop('cart_capture_unverified');
     result.status = 'observed'; result.cart_structure = structure;
+    if (Object.hasOwn(value, 'cart_layout')) {
+      const layout = sanitizedCartLayout(value.cart_layout);
+      if (!layout) return stop('cart_capture_unverified');
+      result.cart_layout = layout;
+    }
   }
   if (value?.status === 'observed' && value.code === 'cart_checkout_preflight_observed') {
     if (!preflightAllowed) return stop('preflight_authorization_required');

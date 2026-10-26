@@ -286,3 +286,77 @@ test('separate fixed preflight action reports only noncommitting diagnostics and
     assert.equal(preflights, 2); assert.equal(prepares, 0);
   } finally { await readonlyClose(); }
 });
+
+function cartLayoutFixture() {
+  return { schema: 'discogs_cart_layout_v1', collector_gate: { code: 'not_run_private_text_guard',
+    form_count: 0, order_container_count: 2, summary_count: 0, address_wrapper_count: 1, address_count: 1,
+    form_contains_row: false, container_contains_row: true, container_in_form: false,
+    go_count: 1, go_form_present: true, go_form_legacy: false, go_form_contains_row: true, go_in_container: false,
+    shipping_select_count: 1, shipping_form_present: true, shipping_form_same_as_go: false, shipping_in_container: true,
+    selected_count: 1, selected_index: 2, option_count: 4 },
+  ancestry: [{ tag: 'TR', hints: ['order_row'] }, { tag: 'DIV', hints: ['order_container', 'cart_order_prefix'] }],
+  tables: [{ hints: ['order_summary'], row_count: 2, rows: [
+    { hints: ['order_subtotal'], cell_count: 2, cells: [
+      { tag: 'TD', hints: [], child_types: ['#text'], public_text: 'Subtotal' },
+      { tag: 'TD', hints: ['order_summary_value'], child_types: ['SPAN'], public_text: '$0.10 USD' }] },
+    { hints: ['order_total'], cell_count: 2, cells: [
+      { tag: 'TD', hints: [], child_types: ['#text'], public_text: 'Total' },
+      { tag: 'TD', hints: ['order_summary_value'], child_types: ['#text'], public_text: '$5.05 USD' }] }] }],
+  address_shapes: [{ kind: 'shipping_heading_following', tag: 'DIV', hints: ['shipping_address_prefix'],
+    child_types: ['#text', 'BR', '#text', 'BR', '#text'], children: [
+      { tag: 'BR', hints: [], child_types: [] }, { tag: 'BR', hints: [], child_types: [] }] }], truncated: false };
+}
+
+test('one authorized cart capture returns all layout mismatch and association diagnostics without private text or attributes', async () => {
+  const socket = path(), config = options(); config.authorize = async () => ({ mode: 'capture_cart_structure' });
+  const layout = cartLayoutFixture();
+  layout.address_shapes[0].text = 'NEVER_EXPORT_PRIVATE_ADDRESS'; layout.address_shapes[0].id = 'NEVER_EXPORT_ID';
+  layout.address_shapes[0].children[0].value = 'NEVER_EXPORT_INPUT_VALUE';
+  layout.collector_gate.form_action = 'NEVER_EXPORT_URL'; layout.tables[0].rows[0].cells[0].html = 'NEVER_EXPORT_HTML';
+  config.fixtureOperations.probe_guest_evidence = async () => ({ status: 'observed', code: 'cart_structure_captured',
+    cart_structure: { row_count: 1, listing_href: '/sell/item/1366950910', title_link: { tag: 'A', text: 'Get Down Tonight', nodes: [] }, grade_nodes: [] },
+    cart_layout: layout });
+  const close = await listenHostedGuestPreparation({}, socket, config);
+  const capture = JSON.stringify({ action: 'probe_guest_evidence', request: { phase: 'capture_cart_structure' } }) + '\n';
+  try {
+    const result = await exchange(socket, capture); assert.equal(result.status, 'observed');
+    assert.equal(result.cart_layout.collector_gate.form_count, 0); assert.equal(result.cart_layout.collector_gate.order_container_count, 2);
+    assert.equal(result.cart_layout.collector_gate.summary_count, 0); assert.equal(result.cart_layout.collector_gate.shipping_form_same_as_go, false);
+    assert.equal(result.cart_layout.collector_gate.selected_index, 2);
+    assert.deepEqual(result.cart_layout.address_shapes[0].child_types, ['#text', 'BR', '#text', 'BR', '#text']);
+    assert.equal(result.cart_layout.tables[0].rows[1].cells[1].public_text, '$5.05 USD');
+    assert.equal(JSON.stringify(result).includes('NEVER_EXPORT'), false);
+    assert.equal((await exchange(socket, request('probe_guest_evidence'))).code, 'cart_capture_unverified');
+  } finally { await close(); }
+});
+
+test('cart layout sanitizer rejects the entire capture on unknown text, raw class hints, invalid structure or exceeded bounds', async () => {
+  const socket = path(), config = options(); config.authorize = async () => ({ mode: 'capture_cart_structure' });
+  let layout;
+  config.fixtureOperations.probe_guest_evidence = async () => ({ status: 'observed', code: 'cart_structure_captured',
+    cart_structure: { row_count: 1, listing_href: '/sell/item/1366950910', title_link: { tag: 'A', text: 'Get Down Tonight', nodes: [] }, grade_nodes: [] },
+    cart_layout: layout });
+  const close = await listenHostedGuestPreparation({}, socket, config);
+  const capture = JSON.stringify({ action: 'probe_guest_evidence', request: { phase: 'capture_cart_structure' } }) + '\n';
+  const mutations = [
+    value => { value.tables[0].rows[0].cells[0].public_text = 'Private street with $5.05 USD inside'; },
+    value => { value.tables[0].rows[0].cells[1].public_text = '$0.10'; },
+    value => { value.tables[0].rows[0].cells[1].public_text = '$12345.00 USD'; },
+    value => { value.address_shapes[0].hints = ['shipping_address_123']; },
+    value => { value.address_shapes[0].children[0].tag = 'SCRIPT'; },
+    value => { value.address_shapes[0].child_types = ['actual private address']; },
+    value => { value.collector_gate.form_count = 33; },
+    value => { value.collector_gate.selected_index = 32; },
+    value => { delete value.collector_gate.go_form_contains_row; },
+    value => { value.tables[0].rows[0].cells = Array(5).fill(value.tables[0].rows[0].cells[0]); },
+    value => { value.address_shapes = Array(7).fill(value.address_shapes[0]); },
+    value => { value.ancestry = Array(9).fill(value.ancestry[0]); },
+    value => { value.tables[0].row_count = 0; },
+  ];
+  try {
+    for (const mutate of mutations) { layout = cartLayoutFixture(); mutate(layout);
+      const result = await exchange(socket, capture); assert.equal(result.code, 'cart_capture_unverified');
+      assert.equal(Object.hasOwn(result, 'cart_layout'), false); assert.equal(Object.hasOwn(result, 'cart_structure'), false);
+    }
+  } finally { await close(); }
+});

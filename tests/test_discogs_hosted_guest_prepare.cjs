@@ -915,7 +915,8 @@ test('separate capture mode returns only bounded exact-KC public title subtree a
     assert.deepEqual(Array.from(captured.title_link.nodes, node => node.tag), ['SPAN', '#text', 'STRONG', '#text', 'SMALL', '#text']);
     assert.ok(captured.grade_nodes.some(node => node.label === 'Media')); assert.ok(captured.grade_nodes.some(node => node.grade === 'P'));
     assert.ok(captured.grade_nodes.some(node => node.label === 'Sleeve')); assert.ok(captured.grade_nodes.some(node => node.grade === 'Generic'));
-    for (const secret of ['Fixture Street', 'PRIVATE_FIELD_VALUE', '$0.10', '$4.95', '$5.05', 'PRIVATE=']) assert.ok(!json(result).includes(secret));
+    for (const secret of ['Fixture Street', 'PRIVATE_FIELD_VALUE', 'PRIVATE=']) assert.ok(!json(result).includes(secret));
+    for (const amount of ['$0.10', '$4.95', '$5.05']) assert.ok(!json(captured).includes(amount));
     for (const node of [...captured.title_link.nodes, ...captured.grade_nodes]) {
       assert.ok(node.path.length <= 4 && node.path.every(index => Number.isInteger(index) && index >= 0 && index <= 31));
       assert.ok(node.text.length <= 160); assert.ok(!Object.hasOwn(node, 'attributes'));
@@ -923,6 +924,137 @@ test('separate capture mode returns only bounded exact-KC public title subtree a
     assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
     const calls = b.effects.evaluate; assert.equal((await probe(b, grant)).code, 'probe_job_replayed'); assert.equal(b.effects.evaluate, calls);
   } finally { b.close(); }
+});
+
+test('layout capture batches exact collector gates, form associations and public summary shapes without invoking the text-reading collector', async () => {
+  const b = browser({ beforeEvaluate: ({ fn }) => { assert.notEqual(fn.name, 'collectCartDom'); } });
+  try {
+    const result = await probe(b, cartCaptureGrant()), layout = result.cart_layout;
+    assert.equal(result.code, 'cart_structure_captured');
+    assert.equal(layout.schema, 'discogs_cart_layout_v1'); assert.equal(layout.truncated, false);
+    assert.equal(layout.collector_gate.code, 'not_run_private_text_guard');
+    for (const field of ['form_count', 'order_container_count', 'summary_count', 'address_wrapper_count', 'address_count',
+      'go_count', 'shipping_select_count', 'selected_count', 'option_count']) assert.equal(layout.collector_gate[field], 1, field);
+    assert.equal(layout.collector_gate.selected_index, 0);
+    for (const field of ['form_contains_row', 'container_contains_row', 'container_in_form', 'go_form_present', 'go_form_legacy',
+      'go_form_contains_row', 'go_in_container', 'shipping_form_present', 'shipping_form_same_as_go', 'shipping_in_container']) assert.equal(layout.collector_gate[field], true, field);
+    assert.ok(layout.ancestry.some(node => node.tag === 'FORM' && node.hints.includes('legacy')));
+    assert.ok(layout.ancestry.some(node => node.hints.includes('cart_order_prefix')));
+    const table = layout.tables.find(node => node.hints.includes('order_summary'));
+    assert.equal(table.row_count, 3); assert.equal(table.rows.length, 3);
+    assert.deepEqual(Array.from(table.rows, row => Array.from(row.cells, cell => cell.public_text)),
+      [['Subtotal', '$0.10 USD'], ['Shipping', '$4.95 USD'], ['Total', '$5.05 USD']]);
+    assert.ok(layout.address_shapes.some(node => node.kind === 'address' && node.tag === 'ADDRESS'));
+    assert.ok(layout.address_shapes.some(node => node.kind === 'shipping_wrapper' && node.hints.includes('shipping_address_prefix')));
+    assert.ok(!json(result).includes('Synthetic Buyer')); assert.ok(!json(result).includes('Fixture Street'));
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  } finally { b.close(); }
+});
+
+test('layout preserves form reparenting and unknown table/address shape diagnostics without guessing selectors', async () => {
+  const cart = cartMarkup.replace('<form class="legacy">', '<form class="unknown_private_class">')
+    .replace('class="order_container"', 'class="unknown_private_container"')
+    .replace('class="order_summary"', 'class="unknown_private_summary"')
+    .replaceAll('class="order_subtotal"', '').replaceAll('class="order_total"', '')
+    .replaceAll('class="order_summary_value"', '').replaceAll('class="order_shipping_amount order_summary_value"', '')
+    .replace('id="shipping_address_fixture"', 'id="private_address_987654"')
+    .replace('<address>', '<h2>Shipping Address</h2><section>').replace('</address>', '</section>');
+  const b = browser({ cart });
+  try {
+    const result = await probe(b, cartCaptureGrant()), layout = result.cart_layout;
+    assert.equal(result.code, 'cart_structure_captured');
+    for (const field of ['form_count', 'order_container_count', 'summary_count', 'address_wrapper_count', 'address_count']) assert.equal(layout.collector_gate[field], 0, field);
+    assert.equal(layout.collector_gate.go_form_present, true); assert.equal(layout.collector_gate.go_form_legacy, false);
+    assert.equal(layout.collector_gate.shipping_form_same_as_go, true);
+    assert.ok(layout.address_shapes.some(node => node.kind === 'shipping_heading_following' && node.tag === 'SECTION'));
+    assert.ok(layout.tables.every(table => table.rows.every(row => row.cells.every(cell => cell.public_text === null))));
+    for (const secret of ['unknown_private_class', 'unknown_private_container', 'unknown_private_summary', '987654', ...ADDRESS]) assert.ok(!json(result).includes(secret));
+  } finally { b.close(); }
+  const split = browser();
+  try {
+    const document = split.state.merchant.window.document;
+    document.body.append(document.querySelector('button'), document.querySelector('.order_shipping_fields'));
+    const result = await probe(split, cartCaptureGrant()), gate = result.cart_layout.collector_gate;
+    assert.equal(gate.go_count, 1); assert.equal(gate.go_form_present, false); assert.equal(gate.go_form_contains_row, false);
+    assert.equal(gate.shipping_select_count, 1); assert.equal(gate.shipping_form_present, false); assert.equal(gate.shipping_form_same_as_go, false);
+  } finally { split.close(); }
+});
+
+test('layout never reads address or field values; mixed, nested private, hidden, and non-USD summary cells emit no text', async () => {
+  const b = browser();
+  const document = b.state.merchant.window.document;
+  const address = document.querySelector('address'), wrapper = address.parentElement;
+  const privateGet = () => { throw new Error('PRIVATE_TEXT_READ'); };
+  for (const node of [address, wrapper, ...address.querySelectorAll('*')]) {
+    Object.defineProperty(node, 'textContent', { get: privateGet });
+    Object.defineProperty(node, 'innerText', { get: privateGet });
+  }
+  for (const node of [...address.querySelectorAll('span')].flatMap(node => [...node.childNodes])) Object.defineProperty(node, 'nodeValue', { get: privateGet });
+  const input = document.createElement('input'); Object.defineProperty(input, 'value', { get: privateGet }); wrapper.append(input);
+  const summary = document.querySelector('table.order_summary');
+  summary.insertAdjacentHTML('beforeend', '<tr><td>Total PRIVATE_ACCOUNT</td><td>$5.05</td></tr><tr><td>Other PRIVATE_MESSAGE</td><td>$5.05 EUR</td></tr><tr><td>Subtotal</td><td hidden>$0.10 USD</td></tr>');
+  const nested = document.createElement('tr'); nested.innerHTML = '<td>Total</td><td class="order_summary_value">$5.05 USD</td>';
+  nested.lastElementChild.append(address); summary.append(nested);
+  try {
+    const result = await probe(b, cartCaptureGrant()); assert.equal(result.code, 'cart_structure_captured', json(result));
+    const rows = result.cart_layout.tables.find(table => table.hints.includes('order_summary')).rows;
+    assert.deepEqual(Array.from(rows.slice(3, 5), row => Array.from(row.cells, cell => cell.public_text)), [[null, null], [null, null]]);
+    assert.equal(rows[5].cells[1].public_text, null); assert.equal(rows[6].cells[1].public_text, null);
+    for (const secret of ['PRIVATE_ACCOUNT', 'PRIVATE_MESSAGE', ...ADDRESS.filter(line => line !== 'US')]) assert.ok(!json(result).includes(secret));
+    assert.ok(!json(result).includes('"US"'));
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  } finally { b.close(); }
+});
+
+test('layout caps all structural arrays/counts and never returns attributes, raw class names, or unknown text', async () => {
+  const b = browser(), document = b.state.merchant.window.document;
+  const form = document.querySelector('form');
+  for (let i = 0; i < 40; i++) {
+    const table = document.createElement('table'); table.innerHTML = '<tr><td>PRIVATE_UNKNOWN</td></tr>'.repeat(40);
+    form.append(table);
+    const address = document.createElement('address'); address.id = 'PRIVATE_ID_' + i;
+    address.innerHTML = '<span>PRIVATE_ADDRESS</span>'.repeat(20); form.append(address);
+  }
+  const summary = document.querySelector('table.order_summary');
+  summary.insertAdjacentHTML('beforeend', '<tr>' + '<td><span></span></td>'.repeat(40) + '</tr>'.repeat(1));
+  try {
+    const result = await probe(b, cartCaptureGrant()), layout = result.cart_layout;
+    assert.equal(result.code, 'cart_structure_captured'); assert.equal(layout.truncated, true);
+    assert.equal(layout.collector_gate.address_count, 32); assert.ok(layout.tables.length <= 4); assert.ok(layout.address_shapes.length <= 6);
+    for (const table of layout.tables) {
+      assert.ok(table.row_count <= 32 && table.rows.length <= 8);
+      for (const row of table.rows) { assert.ok(row.cell_count <= 32 && row.cells.length <= 4); for (const cell of row.cells) assert.ok(cell.child_types.length <= 16); }
+    }
+    for (const shape of layout.address_shapes) { assert.ok(shape.children.length <= 8 && shape.child_types.length <= 16); for (const child of shape.children) assert.ok(child.child_types.length <= 16); }
+    assert.ok(!json(result).includes('PRIVATE_')); assert.ok(!json(result).includes('attributes'));
+  } finally { b.close(); }
+});
+
+test('observed Your Shipping Address plain labels protect following shape and fixed summary survives form reparenting', async () => {
+  for (const label of ['<h2>Your Shipping Address</h2>', '<strong>Your Shipping Address</strong>', '<b>Your Shipping Address</b>',
+    '<p><strong>Your Shipping Address</strong></p>', '<div><b>Your Shipping Address</b></div>']) {
+    const b = browser(), document = b.state.merchant.window.document;
+    const summary = document.querySelector('table.order_summary'); document.body.append(summary);
+    document.querySelector('[id^="shipping_address_"]').remove();
+    const wrapper = document.createElement('div'); wrapper.innerHTML = label + '<section><strong>PRIVATE_ADDRESS_TEXT</strong><input></section>';
+    document.body.append(wrapper);
+    const address = wrapper.querySelector('section'), privateGet = () => { throw new Error('PRIVATE_TEXT_READ'); };
+    for (const node of [address, address.querySelector('strong')]) {
+      Object.defineProperty(node, 'textContent', { get: privateGet }); Object.defineProperty(node, 'innerText', { get: privateGet });
+    }
+    Object.defineProperty(address.querySelector('strong').firstChild, 'nodeValue', { get: privateGet });
+    Object.defineProperty(address.querySelector('input'), 'value', { get: privateGet });
+    try {
+      const result = await probe(b, cartCaptureGrant()), layout = result.cart_layout;
+      assert.equal(result.code, 'cart_structure_captured', label);
+      assert.equal(layout.collector_gate.summary_count, 0); assert.equal(layout.collector_gate.address_count, 0);
+      assert.ok(layout.tables[0].hints.includes('order_summary'));
+      assert.equal(layout.tables[0].rows[2].cells[1].public_text, '$5.05 USD');
+      assert.ok(layout.address_shapes.some(node => node.kind === 'shipping_heading_following' && node.tag === 'SECTION'));
+      assert.ok(!json(result).includes('PRIVATE_ADDRESS_TEXT')); assert.ok(!json(result).includes('Your Shipping Address'));
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    } finally { b.close(); }
+  }
 });
 
 test('unsupported grade parent is omitted without dropping useful public title or leaking sibling messages', async () => {

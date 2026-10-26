@@ -910,3 +910,42 @@ remain explicit in its result. The observed selected method's bare label or exac
 `Economy - Media Mail - $4.95` rendering is accepted only alongside independently
 verified USD amounts and one unchanged selected option; arbitrary suffixes or
 inferred currency are not accepted.
+
+### Actual cart inspection and batched layout diagnosis
+
+The server inspection on the new preflight path verified exact item/release
+details, seller, quantity and the repaired literal cart-title comparison. It did
+not verify the cart summary, displayed amounts or private destination: summary
+and amount flags were false, and the supplemental address-container count was
+zero. The run stopped before destination confirmation or Go to Checkout. Cart
+condition/provider flags being unknown were expected at that preparatory stage;
+they do not explain the independent money/address failures.
+
+The browser control connection was restored by binding the current instance of
+the same Chrome extension and retrieving the existing viewer tab. No alternate
+browser/profile was used. The original expired preflight job remained unused;
+the reviewed replacement spent only its inspection slot. Both normal merchant
+pages rendered without a challenge. No initialization, payment or order action
+occurred, and all historical preservation hashes matched.
+
+The next capture extends the existing one-call, exact-item structural operation.
+It reports the legacy form/container gate counts, row ancestry, form associations
+of Go and shipping controls, bounded table/cell structure, fixed public labels or
+whole explicit USD values, and address node types/children. Raw collector calls,
+address or wrapper text, field values, HTML, arbitrary attributes and identifiers
+are excluded. Only fixed CSS hints leave the process. Known summary tables are
+considered even after HTML form reparenting; the observed public heading “Your
+Shipping Address” and its plain nested-label variants are included. Private
+regions are excluded before reading any public summary text.
+
+This is a diagnostic capture, not a selector repair or eligibility change. It
+uses a separate fresh max-one job; the spent preflight inspect slot cannot be
+reused. Its purpose is to ground one batch repair of form, summary, address and
+control-association mismatches instead of guessing one field per iteration.
+
+The capture-only extension passed 92 focused module/policy/socket tests and all
+required full checks (3,885 Python tests plus 41 subtests, 110 app tests, lint,
+format and type checking). Negative cases cover private getters, mixed/hidden
+or non-USD cells, unknown classes/attributes, malformed schemas and bounds.
+Independent review accepted the final scope. These results verify the diagnostic
+code offline; they do not yet establish the actual layout or repair its selectors.

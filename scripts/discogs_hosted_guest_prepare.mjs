@@ -586,7 +586,7 @@ export function createHostedGuestPrepareFixture({ context, directory, authorizat
   return request => prepareHostedGuestForm(context, request, { authorization, signal, [fixtureDirectory]: directory });
 }
 
-/** Single fixed public-cart structure capture. No row text, HTML, address,
+/** Single fixed public-cart structure capture. No row text, HTML, address text,
  * account, arbitrary attributes, field values or alternative selectors leave it.
  * These nodes ground a later parser; this collector never qualifies the title.
  */
@@ -664,7 +664,8 @@ export function collectHostedCartStructureDom() {
     // allowlisted labels/grades. Any price, comment or unknown content omits it.
     if (cell && cell.closest('tr.order_row') === row) {
       const candidates = [...cell.querySelectorAll('span,strong,b,em,i,small')].filter(node =>
-        !link.contains(node) && visible(node) && [...node.childNodes].every(child => child.nodeType === 3) && token(node.textContent)?.label);
+        !link.contains(node) && !node.closest('address,[id^="shipping_address_"]') && visible(node) &&
+        [...node.childNodes].every(child => child.nodeType === 3) && token(node.textContent)?.label);
       for (const parent of new Set(candidates.map(node => node.parentElement))) {
         try {
           const captured = [], foundLabels = new Set(); let length = 0;
@@ -686,10 +687,124 @@ export function collectHostedCartStructureDom() {
         } catch { /* Unsupported grade structure remains unknown; title capture is still useful. */ }
       }
     }
+    // Structural diagnostics only. Do not call collectCartDom here: that older
+    // collector reads address-wrapper/tax text. These exact gate counts explain
+    // its early return without inspecting private text or granting eligibility.
+    let truncated = false;
+    const cap = (items, limit) => { if (items.length > limit) truncated = true; return items.slice(0, limit); };
+    const count = items => { if (items.length > 32) truncated = true; return Math.min(items.length, 32); };
+    const layoutTags = new Set(['FORM', 'DIV', 'SECTION', 'MAIN', 'TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'TD', 'TH',
+      'ADDRESS', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'SPAN', 'BR', 'UL', 'LI', 'A']);
+    const tag = node => layoutTags.has(node?.tagName) ? node.tagName : 'OTHER';
+    const classHints = ['legacy', 'order_container', 'order_row', 'order_summary', 'order_subtotal', 'order_total',
+      'order_summary_value', 'order_shipping_amount', 'order_shipping_fields', 'shipping_method'];
+    const hints = node => {
+      const result = classHints.filter(name => node.classList?.contains(name));
+      const id = node.getAttribute?.('id');
+      if (id?.startsWith('shipping_address_')) result.push('shipping_address_prefix');
+      if (id?.startsWith('cart-order-')) result.push('cart_order_prefix');
+      return result;
+    };
+    const childTypes = node => cap([...node.childNodes], 16).map(child =>
+      child.nodeType === 3 ? '#text' : child.nodeType === 8 ? '#comment' : child.nodeType === 1 ? tag(child) : 'OTHER');
+    const shape = node => ({ tag: tag(node), hints: hints(node), child_types: childTypes(node) });
+    const forms = [...document.querySelectorAll('form.legacy')];
+    const containers = [...document.querySelectorAll('[id^="cart-order-"].order_container')];
+    const container = containers.length === 1 ? containers[0] : null;
+    const wrappers = [...document.querySelectorAll('[id^="shipping_address_"]')];
+    const addresses = [...document.querySelectorAll('address')];
+    const headingLabels = new Set(['Shipping Address', 'Shipping address', 'My Shipping Address', 'Your Shipping Address', 'Ship To', 'Ship to']);
+    const headingFollowers = [];
+    for (const heading of cap([...document.querySelectorAll('h1,h2,h3,h4,h5,h6,strong,b')], 32)) {
+      // Only plain, bounded public heading labels; never aggregate descendants.
+      if ([...addresses, ...wrappers, ...headingFollowers].some(region => region.contains(heading))) continue;
+      const children = [...heading.childNodes];
+      if (children.length !== 1 || children[0].nodeType !== 3 || !visible(heading)) continue;
+      const raw = children[0].nodeValue || '';
+      if (raw.length > 40 || !headingLabels.has(normalize(raw))) continue;
+      let following = heading.nextElementSibling;
+      const parent = heading.parentElement;
+      // The observed public label can stand alone inside a plain wrapper.
+      // Do not aggregate/read that wrapper's text or inspect unrelated siblings.
+      if (!following && ['P', 'DIV'].includes(parent?.tagName) && parent.childNodes.length === 1 && parent.firstChild === heading) following = parent.nextElementSibling;
+      if (following) headingFollowers.push(following);
+    }
+    const privateRegions = [...addresses, ...wrappers, ...headingFollowers];
+    const privateNode = node => privateRegions.some(region => region === node || region.contains(node) || node.contains(region));
+    const addressShapes = cap([
+      ...addresses.map(node => ({ node, kind: 'address' })),
+      ...wrappers.map(node => ({ node, kind: 'shipping_wrapper' })),
+      ...headingFollowers.map(node => ({ node, kind: 'shipping_heading_following' })),
+    ], 6).map(({ node, kind }) => ({ kind, ...shape(node), children: cap([...node.children], 8).map(shape) }));
+    const ancestry = [];
+    for (let node = row.parentElement; node && node !== document.body; node = node.parentElement) {
+      if (ancestry.length === 8) { truncated = true; break; }
+      ancestry.push({ tag: tag(node), hints: hints(node) });
+    }
+    const publicLabels = new Set(['Subtotal', 'Shipping', 'Total', 'Tax', 'Sales Tax', 'Plus applicable sales tax']);
+    const summaryText = cell => {
+      if (privateNode(cell) || !visible(cell)) return null;
+      let value = '', visited = 0;
+      const visit = node => {
+        if (++visited > 12) throw new Error('unsupported');
+        if (node.nodeType === 3) {
+          const raw = node.nodeValue || '';
+          if (raw.length > 100) throw new Error('unsupported');
+          value += raw; if (value.length > 100) throw new Error('unsupported');
+        } else if (node.nodeType !== 1 || !['SPAN', 'STRONG', 'B', 'EM', 'I', 'SMALL', 'BR'].includes(node.tagName) || !visible(node)) {
+          throw new Error('unsupported');
+        } else if (node.tagName === 'BR') value += ' ';
+        else [...node.childNodes].forEach(visit);
+      };
+      try {
+        [...cell.childNodes].forEach(visit); value = normalize(value);
+        return publicLabels.has(value) || /^\$[0-9]{1,4}\.[0-9]{2} USD$/u.test(value) ? value : null;
+      } catch { return null; }
+    };
+    // Stay in the exact product row's nearest form/container. Unknown tables
+    // expose shape only; public text is limited to already-known summary nodes.
+    const scope = row.closest('form') || container || row.closest('table');
+    const allTables = scope ? [...scope.querySelectorAll('table')] : [];
+    if (scope?.tagName === 'TABLE') allTables.unshift(scope);
+    // HTML form/table reparenting can leave the already-known summary outside
+    // the product's form. This fixed selector adds shape, never eligibility.
+    const orderedTables = [...new Set([...document.querySelectorAll('table.order_summary'), ...allTables])];
+    const tables = cap(orderedTables, 4).map(table => {
+      const tableRows = [...table.querySelectorAll('tr')].filter(candidate => candidate.closest('table') === table);
+      return { hints: hints(table), row_count: count(tableRows), rows: cap(tableRows, 8).map(tableRow => {
+        const cells = [...tableRow.children].filter(cell => ['TD', 'TH'].includes(cell.tagName));
+        const known = table.classList.contains('order_summary') || ['order_subtotal', 'order_total'].some(name => tableRow.classList.contains(name));
+        return { hints: hints(tableRow), cell_count: count(cells), cells: cap(cells, 4).map(cell => ({
+          ...shape(cell), public_text: known || cell.classList.contains('order_shipping_amount') || cell.classList.contains('order_summary_value') ? summaryText(cell) : null,
+        })) };
+      }) };
+    });
+    const goControls = [...document.querySelectorAll('button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]')];
+    const goControl = goControls.length === 1 ? goControls[0] : null;
+    const goForm = goControl?.form || null;
+    const shippingSelects = [...document.querySelectorAll('.order_shipping_fields select.shipping_method[name="shipping_method"]')];
+    const shippingSelect = shippingSelects.length === 1 ? shippingSelects[0] : null;
+    const shippingForm = shippingSelect?.form || null;
+    const options = shippingSelect ? [...shippingSelect.options] : [];
+    const selectedIndex = shippingSelect?.selectedIndex;
+    const cartLayout = { schema: 'discogs_cart_layout_v1', collector_gate: {
+      code: 'not_run_private_text_guard', form_count: count(forms), order_container_count: count(containers),
+      summary_count: count([...(container?.querySelectorAll('.order_summary') ?? [])]),
+      address_wrapper_count: count([...(container?.querySelectorAll('[id^="shipping_address_"]') ?? [])].filter(visible)),
+      address_count: count(addresses), form_contains_row: forms.length === 1 && forms[0].contains(row),
+      container_contains_row: !!container?.contains(row), container_in_form: !!container && forms.length === 1 && container.closest('form.legacy') === forms[0],
+      go_count: count(goControls), go_form_present: !!goForm, go_form_legacy: !!goForm?.classList.contains('legacy'),
+      go_form_contains_row: !!goForm?.contains(row), go_in_container: !!container?.contains(goControl),
+      shipping_select_count: count(shippingSelects), shipping_form_present: !!shippingForm,
+      shipping_form_same_as_go: !!shippingForm && shippingForm === goForm, shipping_in_container: !!container?.contains(shippingSelect),
+      selected_count: count(options.filter(option => option.selected)),
+      selected_index: Number.isInteger(selectedIndex) && selectedIndex >= -1 && selectedIndex <= 31 ? selectedIndex : null,
+      option_count: count(options),
+    }, ancestry, tables, address_shapes: addressShapes, truncated };
     if (!row.isConnected || !link.isConnected || link.getAttribute('href') !== '/sell/item/1366950910' ||
         location.href !== 'https://www.discogs.com/sell/cart/') return stop('cart_capture_unverified');
     return { status: 'observed', code: 'cart_structure_captured', cart_structure: { row_count: 1,
-      listing_href: '/sell/item/1366950910', title_link: { tag: 'A', text: title, nodes }, grade_nodes: gradeNodes } };
+      listing_href: '/sell/item/1366950910', title_link: { tag: 'A', text: title, nodes }, grade_nodes: gradeNodes }, cart_layout: cartLayout };
   } catch { return stop('cart_capture_unverified'); }
 }
 
