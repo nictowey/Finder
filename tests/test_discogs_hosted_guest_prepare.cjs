@@ -102,7 +102,7 @@ function browser({ cart = cartMarkup, checkout = summary, detail = detailMarkup,
     evaluate: (fn, arg) => evaluate('merchant', fn, arg),
     $: async selector => { assert.equal(selector, port.HOSTED_GO_SELECTOR); const e = state.merchant.window.document.querySelector(selector); return e ? handle('merchant', e) : null; },
     waitForURL: async url => assert.equal(page.url(), url), mainFrame: () => main,
-    frames: () => duplicateFrames ? [frame, frame] : [frame] };
+    frames: () => page.url() === CHECKOUT ? duplicateFrames ? [frame, frame] : [frame] : [] };
   const detailPage = { url: () => state.detail.window.location.href,
     evaluateHandle: async () => state.detail.window.document,
     evaluate: (fn, arg) => evaluate('detail', fn, arg) };
@@ -293,21 +293,40 @@ test('factory defaults deny and restricts fixed ledger; URL matching never expor
   } finally { b.close(); }
 }));
 
-test('read-only probe reports scoped continuity and control association with zero actions or ledger writes', async () => ledgerFixture(async f => {
+function readonlyGrant() {
+  const now = Date.now() / 1000, job = randomUUID();
+  return { request: { schema: 'discogs_guest_readonly_probe_v1', job_id: job, phase: 'inspect' },
+    authorization: { schema: 'discogs_guest_readonly_authorization_v1', job_id: job,
+      issued_at: now, expires_at: now + 1800, release_id: '3422100', listing_id: '1366950910',
+      seller: 'Mailman21842', quantity: 1, currency: 'USD', max_total: '5.05', approved_destination_ref: 'saved_shipping_address' } };
+}
+function confirmation(grant, observed) {
+  return { request: { ...grant.request, phase: 'confirm_saved_destination', document_ref: observed.document_ref },
+    authorization: { ...grant.authorization, destination_ack: { document_ref: observed.document_ref,
+      source: 'operator_visual_saved_destination_match', approved_destination_ref: 'saved_shipping_address', observed_at: Date.now() / 1000 } } };
+}
+const probe = (b, grant, signal) => port.probeCurrentGuestPreparationEvidence(b.context, grant.request, { authorization: grant.authorization, signal });
+
+test('distinct read-only authority reports honest unbound destination and safe structure without transaction evidence', async () => ledgerFixture(async f => {
   const b = browser(); b.state.merchant = dom(summary, CHECKOUT);
   try {
-    const result = await port.probeCurrentGuestPreparationEvidence(b.context, f.request, { authorization: f.authorization });
+    const result = await probe(b, readonlyGrant());
     assert.equal(result.status, 'observed', JSON.stringify(result));
-    assert.deepEqual(result.missing_fields, []);
-    assert.equal(result.initialization_allowed, false);
-    assert.equal(result.normal_cart_transition_verified, false);
+    assert.deepEqual(result.missing_fields, ['destination_match']);
+    assert.equal(result.merchant_route, 'enhanced_checkout');
+    assert.equal(result.address_present, true); assert.equal(result.destination_binding_available, false);
+    assert.equal(result.destination_match, null); assert.equal(result.observed.destination_match, null);
+    assert.equal(result.structure.media_grade, 'M'); assert.equal(result.structure.sleeve_grade, 'Generic');
+    assert.equal(result.structure.item_title_present, true); assert.equal(result.structure.item_row_count, 1);
+    assert.equal(result.initialization_allowed, false); assert.equal(result.normal_cart_transition_verified, false);
     assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
     assert.equal((await records(f.directory)).length, 0);
-    for (const forbidden of ['Fixture Street', 'Synthetic KC Single', 'PRIVATE', f.authorization.approved_destination_digest]) assert.ok(!json(result).includes(forbidden));
+    for (const forbidden of ['Fixture Street', 'Synthetic KC Single', 'PRIVATE', sha(ADDRESS.join('\n'))]) assert.ok(!json(result).includes(forbidden));
     b.state.provider.window.document.querySelector('#card-fields-container').innerHTML = '<input autocomplete="cc-number" value="NEVER_READ">';
-    const existing = await port.probeCurrentGuestPreparationEvidence(b.context, f.request, { authorization: f.authorization });
-    assert.equal(existing.observed.existing_guest_form, true);
-    assert.ok(!json(existing).includes('NEVER_READ'));
+    const existing = await probe(b, readonlyGrant());
+    assert.equal(existing.observed.existing_guest_form, true); assert.ok(!json(existing).includes('NEVER_READ'));
+    const transaction = await port.probeCurrentGuestPreparationEvidence(b.context, f.request, { authorization: f.authorization });
+    assert.equal(transaction.code, 'readonly_authorization_required');
   } finally { b.state.merchant.window.close(); b.close(); }
 }));
 
@@ -512,7 +531,7 @@ test('probe cancellation drains hidden inner-inspector DOM promise before runtim
   } });
   b.state.merchant = dom(summary, CHECKOUT);
   try {
-    const running = port.probeCurrentGuestPreparationEvidence(b.context, f.request, { authorization: f.authorization, signal: controller.signal });
+    const running = probe(b, readonlyGrant(), controller.signal);
     await entered.promise; controller.abort();
     assert.equal((await running).code, 'cancelled');
     const readsAtCancellation = b.effects.evaluate;
@@ -526,3 +545,165 @@ test('probe cancellation drains hidden inner-inspector DOM promise before runtim
     assert.equal((await records(f.directory)).length, 0);
   } finally { finishRead.resolve(); await eventLoopTurn(); b.state.merchant.window.close(); b.close(); }
 }));
+
+test('readonly inspect then explicit saved-address visual acknowledgement binds only unchanged current document', async () => ledgerFixture(async f => {
+  for (const checkout of [false, true]) {
+    const b = browser(); if (checkout) b.state.merchant = dom(summary, CHECKOUT);
+    const grant = readonlyGrant();
+    try {
+      const first = await probe(b, grant);
+      assert.equal(first.status, 'observed', JSON.stringify(first)); assert.equal(first.address_present, true);
+      assert.equal(first.destination_match, null); assert.equal(first.destination_binding_available, false);
+      assert.equal(first.merchant_route, checkout ? 'enhanced_checkout' : 'cart');
+      assert.match(first.document_ref, /^[0-9a-f-]{36}$/u);
+      const next = confirmation(grant, first);
+      const confirmed = await probe(b, next);
+      assert.equal(confirmed.code, 'approved_saved_destination_bound', JSON.stringify(confirmed));
+      assert.equal(confirmed.destination_match, true); assert.equal(confirmed.destination_binding_available, true);
+      assert.equal(confirmed.document_ref, first.document_ref);
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+      assert.equal((await records(f.directory)).length, 0);
+      for (const secret of [...ADDRESS, sha(ADDRESS.join('\n'))]) assert.ok(!json(first).includes(secret) && !json(confirmed).includes(secret));
+      const reads = b.effects.evaluate;
+      assert.equal((await probe(b, grant)).code, 'probe_job_replayed');
+      assert.equal((await probe(b, next)).code, 'probe_job_replayed'); assert.equal(b.effects.evaluate, reads);
+    } finally { if (checkout) b.state.merchant.window.close(); b.close(); }
+  }
+}));
+
+test('readonly source-prefix diagnostics canonicalize exactly observed Poor (P), never infer unknown public grades', async () => {
+  for (const [label, expected] of [['Poor (P)', 'P'], ['Poor', 'P'], ['P', 'P'], ['Poor (VG)', null], ['constructor', null]]) {
+    const b = browser(); b.state.merchant = dom(summary.replace('Media: Mint', `Media: ${label}`), CHECKOUT);
+    try {
+      const result = await probe(b, readonlyGrant());
+      assert.equal(result.status, 'observed'); assert.equal(result.structure.media_grade, expected);
+      assert.equal(result.structure.sleeve_grade, 'Generic'); assert.equal(result.structure.item_title_present, true);
+      assert.ok(!json(result).includes('Synthetic KC Single'));
+    } finally { b.state.merchant.window.close(); b.close(); }
+  }
+});
+
+test('distinct readonly authorization rejects extra transaction evidence, wrong scope, caller ack and unapproved source before DOM', async () => {
+  for (const alter of [
+    g => { g.request.priorFailure = { last_error_code: 'SESSION_EXPIRED' }; },
+    g => { g.authorization.listing_id = 'other'; }, g => { g.authorization.quantity = 2; },
+    g => { g.authorization.currency = 'EUR'; }, g => { g.authorization.approved_destination_digest = 'a'.repeat(64); },
+    g => { g.request.destination_ack = { source: 'operator_visual_saved_destination_match' }; },
+    g => { g.authorization.expires_at += 1; },
+  ]) {
+    const b = browser(), grant = readonlyGrant(); alter(grant);
+    try { assert.equal((await probe(b, grant)).code, 'readonly_authorization_required'); assert.equal(b.effects.pages, 0); }
+    finally { b.close(); }
+  }
+});
+
+test('confirmation rejects changed address snapshot, replaced document, changed URL, different context, and unseen reference', async () => {
+  for (const mode of ['address', 'document', 'url', 'context', 'reference']) {
+    const b = browser(), grant = readonlyGrant(); b.state.merchant = dom(summary, CHECKOUT);
+    let other;
+    try {
+      const first = await probe(b, grant), next = confirmation(grant, first);
+      if (mode === 'address') b.state.merchant.window.document.querySelector('address span').textContent = 'Changed private destination';
+      if (mode === 'document') b.state.merchant = dom(summary, CHECKOUT);
+      if (mode === 'url') b.state.merchant = dom(cartMarkup, CART);
+      if (mode === 'context') { other = browser(); }
+      if (mode === 'reference') { next.request.document_ref = randomUUID(); next.authorization.destination_ack.document_ref = next.request.document_ref; }
+      const result = await probe(other || b, next);
+      assert.equal(result.status, 'blocked');
+      assert.equal(result.code, mode === 'address' ? 'saved_destination_snapshot_changed' : ['context', 'reference'].includes(mode) ? 'probe_reference_unverified' : 'probe_document_changed');
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+      assert.ok(!json(result).includes('Changed private destination'));
+    } finally { b.state.merchant.window.close(); b.close(); other?.close(); }
+  }
+});
+
+test('confirmation requires genuine fresh private visual acknowledgement after reference and rejects expired references', async () => {
+  for (const mode of ['missing_ack', 'wrong_source', 'too_early', 'stale_ack', 'expired_ref']) {
+    const b = browser(), grant = readonlyGrant();
+    const actualNow = Date.now;
+    try {
+      const first = await probe(b, grant), next = confirmation(grant, first);
+      if (mode === 'missing_ack') delete next.authorization.destination_ack;
+      if (mode === 'wrong_source') next.authorization.destination_ack.source = 'current_dom_address_present';
+      if (mode === 'too_early') next.authorization.destination_ack.observed_at = grant.authorization.issued_at - 1;
+      if (mode === 'stale_ack') { Date.now = () => actualNow() + 61000; }
+      if (mode === 'expired_ref') { Date.now = () => actualNow() + 301000; next.authorization.destination_ack.observed_at = Date.now() / 1000; }
+      const reads = b.effects.evaluate;
+      assert.equal((await probe(b, next)).code, mode === 'expired_ref' ? 'probe_reference_expired' : 'readonly_authorization_required');
+      assert.equal(b.effects.evaluate, reads);
+    } finally { Date.now = actualNow; b.close(); }
+  }
+});
+
+test('concurrent confirmations can consume reference only once and no address presence auto-approves', async () => {
+  const b = browser(), grant = readonlyGrant();
+  try {
+    const first = await probe(b, grant), next = confirmation(grant, first);
+    const results = await Promise.all([probe(b, next), probe(b, next)]);
+    assert.equal(results.filter(value => value.code === 'approved_saved_destination_bound').length, 1);
+    assert.equal(results.filter(value => value.code === 'probe_job_replayed').length, 1);
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  } finally { b.close(); }
+  const missing = browser({ cart: cartMarkup.replace(/<address>.*?<\/address>/u, '<div>No address</div>') }), g = readonlyGrant();
+  try {
+    const first = await probe(missing, g); assert.equal(first.address_present, false); assert.equal(first.destination_match, null);
+    assert.equal((await probe(missing, confirmation(g, first))).code, 'saved_destination_unverified');
+  } finally { missing.close(); }
+});
+
+test('address mutation during later provider reads cannot promote the earlier snapshot to an approved binding', async () => {
+  let armed = false;
+  const b = browser({ beforeEvaluate: ({ which, state }) => {
+    if (armed && which === 'provider') state.merchant.window.document.querySelector('address span').textContent = 'Changed during confirmation';
+  } });
+  b.state.merchant = dom(summary, CHECKOUT);
+  const grant = readonlyGrant();
+  try {
+    const first = await probe(b, grant); armed = true;
+    const result = await probe(b, confirmation(grant, first));
+    assert.equal(result.code, 'saved_destination_snapshot_changed');
+    assert.ok(!json(result).includes('Changed during confirmation'));
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  } finally { b.state.merchant.window.close(); b.close(); }
+});
+
+test('a new module boot cannot consume an opaque reference retained only in the previous process', async () => {
+  const b = browser(), grant = readonlyGrant();
+  try {
+    const first = await probe(b, grant), next = confirmation(grant, first);
+    const reloaded = await import('../scripts/discogs_hosted_guest_prepare.mjs?readonly-boot=' + randomUUID());
+    const calls = b.effects.pages;
+    const result = await reloaded.probeCurrentGuestPreparationEvidence(b.context, next.request, { authorization: next.authorization });
+    assert.equal(result.code, 'probe_reference_unverified'); assert.equal(b.effects.pages, calls);
+  } finally { b.close(); }
+});
+
+test('confirmation pending DOM read crossing either reference or visual-ack expiry never creates binding', async () => {
+  for (const boundary of ['reference', 'ack']) {
+    const actualNow = Date.now;
+    let clock = actualNow(), confirming = false, advanced = false;
+    Date.now = () => clock;
+    const b = browser({ beforeEvaluate: async () => {
+      if (confirming && !advanced) {
+        advanced = true;
+        await Promise.resolve(); // The request was valid when the pending read began.
+        clock += 20;
+      }
+    } });
+    const grant = readonlyGrant();
+    try {
+      const first = await probe(b, grant);
+      clock += boundary === 'reference' ? 299990 : 59990;
+      const next = confirmation(grant, first);
+      if (boundary === 'ack') next.authorization.destination_ack.observed_at -= 59.99;
+      confirming = true;
+      const result = await probe(b, next);
+      assert.equal(advanced, true);
+      assert.equal(result.status, 'blocked');
+      assert.equal(result.code, 'probe_deadline_expired');
+      assert.notEqual(result.destination_binding_available, true); assert.notEqual(result.destination_match, true);
+      assert.equal((await probe(b, confirmation(grant, first))).status, 'blocked');
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    } finally { Date.now = actualNow; b.close(); }
+  }
+});

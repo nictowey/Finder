@@ -40,10 +40,13 @@ const CODES = new Set(['scoped_authorization_required', 'prior_attempt_unresolve
   'provider_not_ready', 'provider_frame_changed', 'card_control_changed', 'inspection_unverified', 'claim_unverified',
   'inspection_stale', 'execution_revalidation_failed', 'outcome_recording_uncertain', 'unknown_internal_stop',
   'guest_form_observation_required', 'operation_unavailable', 'probe_deadline_expired', 'single_current_checkout_required',
-  'current_dom_evidence_only', 'probe_unverified']);
+  'current_dom_evidence_only', 'probe_unverified', 'approved_saved_destination_bound',
+  'readonly_authorization_required', 'probe_job_replayed', 'probe_reference_unverified',
+  'probe_reference_expired', 'probe_document_changed', 'saved_destination_snapshot_changed',
+  'saved_destination_unverified', 'probe_capacity_exceeded', 'single_current_merchant_page_required']);
 function safeResult(value) {
   const result = stop(CODES.has(value?.code) ? value.code : 'operation_unavailable');
-  if (value?.status === 'observed' && value.code === 'current_dom_evidence_only') result.status = 'observed';
+  if (value?.status === 'observed' && ['current_dom_evidence_only', 'approved_saved_destination_bound'].includes(value.code)) result.status = 'observed';
   for (const key of ['checkout_navigation_issued', 'card_initialization_issued']) {
     if (typeof value?.[key] === 'boolean') result[key] = value[key];
   }
@@ -51,6 +54,26 @@ function safeResult(value) {
   if (Array.isArray(value?.missing_fields)) result.missing_fields = value.missing_fields.filter(key => MISSING.has(key));
   if (result.status === 'observed' && value.observed && typeof value.observed === 'object') {
     result.observed = Object.fromEntries([...OBSERVED].filter(key => typeof value.observed[key] === 'boolean').map(key => [key, value.observed[key]]));
+    if (value.observed.destination_match === null) result.observed.destination_match = null;
+  }
+  if (result.status === 'observed') {
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value.document_ref || '')) result.document_ref = value.document_ref;
+    if (['cart', 'enhanced_checkout'].includes(value.merchant_route)) result.merchant_route = value.merchant_route;
+    for (const key of ['address_present', 'destination_binding_available', 'destination_match']) {
+      if (typeof value[key] === 'boolean' || key === 'destination_match' && value[key] === null) result[key] = value[key];
+    }
+    if (value.structure && typeof value.structure === 'object') {
+      result.structure = {};
+      for (const key of ['item_row_count', 'address_container_count']) {
+        if ([0, 1, 2].includes(value.structure[key])) result.structure[key] = value.structure[key];
+      }
+      if (typeof value.structure.item_title_present === 'boolean') result.structure.item_title_present = value.structure.item_title_present;
+      const grades = ['P', 'F', 'G', 'G+', 'VG', 'VG+', 'NM', 'M', null];
+      if (grades.includes(value.structure.media_grade)) result.structure.media_grade = value.structure.media_grade;
+      if ([...grades, 'Generic'].includes(value.structure.sleeve_grade)) result.structure.sleeve_grade = value.structure.sleeve_grade;
+      const lines = value.structure.address_line_count;
+      if (lines === null || Number.isInteger(lines) && lines >= 0 && lines <= 6) result.structure.address_line_count = lines;
+    }
   }
   return result;
 }

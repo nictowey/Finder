@@ -620,3 +620,37 @@ approved destination digest are still unconfigured; current hosted DOM/frame
 continuity has not yet been qualified by that code. These are implementation and
 live-evidence gates, not a new request for broad purchase permission. No new
 order, payment or live server initialization was attempted in this checkpoint.
+
+
+### Bounded hosted read-only qualification policy
+
+The runner can load `/bridge/guest-qualification.json` as ordinary local policy,
+not a credential. It must be an owner-only 0600 regular file belonging to the
+existing browser UID. Absence or valid expiry leaves qualification off. The fixed
+policy admits only `probe_guest_evidence` for KC item `1366950910`, release
+`3422100`, seller `Mailman21842`, one copy and the existing $5.05 USD ceiling.
+It never grants `prepare_guest_form`, navigation, clicks, card entry or payment.
+The socket remains owner-only and the original access-stop marker is untouched.
+
+The job lasts at most 30 minutes and has exactly two durable single-use slots:
+inspect, then confirm the saved destination. Exclusive, synced slot records and
+an immutable job identity prevent policy edits or process restart from resetting
+the budget. A first read returns public bounded structure/grade diagnostics and
+an opaque reference to the actual Page/Document; initial destination match is
+unknown. Address contents and its digest are retained privately in browser-service
+memory and are never returned through IPC, written to policy or logged.
+
+The operator must visually verify the user's already-approved saved address,
+then add a same-job acknowledgement of that document reference. Confirmation
+requires a reference no older than five minutes and a visual acknowledgement no
+older than one minute. It rechecks the same document, URL, browser context and
+unchanged private address snapshot under the shared context lease, consuming the
+reference before asynchronous work. A restart, changed address/document, replay,
+challenge, expired scope or uncertain read fails closed. A successful match is
+read-only evidence; it does not qualify a final quote or enable initialization.
+
+The probe's authorization schema is distinct from transaction authorization. It
+does not invent an expired-session event, order-history result, quote, readiness
+attestation or destination hash merely to inspect a page. Observed public
+canonical grade labels such as `Poor (P)` normalize only when the label and grade
+token agree; an ambiguous or mismatched grade stays unknown.

@@ -16,6 +16,7 @@ export const HOSTED_GO_SELECTOR = 'button.order_button.checkout_v2[name="Action.
 const CART = 'https://www.discogs.com/sell/cart/';
 const active = new WeakSet(), uncertain = new WeakSet();
 const pendingByContext = new WeakMap();
+const readonlyProbeJobs = new Map();
 let ledgerActive = false;
 const stable = value => JSON.stringify(value);
 const STOP = Symbol('fixed_guest_stop');
@@ -71,7 +72,7 @@ async function ledgerHead(directory, request) {
  * Only a match against the ephemeral server-local approved address digest leaves
  * the browser. No raw address is returned or logged.
  */
-export async function collectHostedGuestDom({ stage, approvedDestinationDigest }) {
+export async function collectHostedGuestDom({ stage, approvedDestinationDigest, privateDestinationSnapshot = false }) {
   const cart = stage === 'cart';
   const visible = element => {
     if (!element?.isConnected) return false;
@@ -94,7 +95,8 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest }
     new TextEncoder().encode(value)))].map(byte => byte.toString(16).padStart(2, '0')).join('');
   const out = { access: 'normal', ready: document.readyState === 'complete',
     listing: false, quantity: false, destination: false, title_digest: null,
-    media: null, sleeve: null, item: null, agreements: false, existing_form: false, go: false };
+    media: null, sleeve: null, item: null, item_row_count: 0, item_title_present: false,
+    address_container_count: 0, address_line_count: null, address_present: false, agreements: false, existing_form: false, go: false };
   if (/just a moment|attention required|security check|captcha|cloudflare|sign in|log in/iu.test(document.title) ||
       document.querySelector('input[type="password"],form[action*="/cdn-cgi/"],iframe[src*="challenges.cloudflare.com"],[id*="captcha" i],[class*="captcha" i]')) {
     out.access = 'access_restricted'; return out;
@@ -108,15 +110,20 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest }
   const fields = document.querySelectorAll('#card-fields-container');
   out.existing_form = [...fields].some(node => node.childElementCount > 0 && visible(node));
   const rows = cart ? document.querySelectorAll('tr.order_row') : named(document, 'li', '_checkout-sell-item__list-item_');
+  out.item_row_count = Math.min(rows.length, 2);
   if (rows.length === 1 && visible(rows[0])) {
     const row = rows[0];
     const links = [...row.querySelectorAll('a.item_link[href="/sell/item/1366950910"]')].filter(visible);
     out.listing = links.length === 1;
     const headings = cart ? links : named(row, 'h3', '_checkout-sell-item__title_').filter(visible);
-    if (headings.length === 1 && text(headings[0])) out.title_digest = await digest(text(headings[0]));
+    if (headings.length === 1 && text(headings[0])) {
+      out.title_digest = await digest(text(headings[0])); out.item_title_present = true;
+    }
     const grades = { Poor: 'P', Fair: 'F', Good: 'G', 'Good Plus': 'G+', 'Very Good': 'VG',
       'Very Good Plus': 'VG+', 'Near Mint': 'NM', Mint: 'M', Generic: 'Generic' };
-    const grade = value => grades[value] || (/^(?:P|F|G|G\+|VG|VG\+|NM|M)$/u.test(value) ? value : null);
+    const grade = value => (Object.hasOwn(grades, value) ? grades[value] : null) || Object.entries(grades).find(([label, token]) =>
+      label !== 'Generic' && value === `${label} (${token})`)?.[1] ||
+      (/^(?:P|F|G|G\+|VG|VG\+|NM|M)$/u.test(value) ? value : null);
     const conditions = cart ? text(row) : text(named(row, 'div', '_checkout-sell-item__condition_')[0]);
     const match = /(?:^| )Media(?: Condition)?\s*:\s*(.*?)\s+Sleeve(?: Condition)?\s*:\s*(.*?)(?= \$|$)/u.exec(conditions);
     if (match) { out.media = grade(match[1]); out.sleeve = grade(match[2]); }
@@ -136,12 +143,26 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest }
     const content = containers.length === 1 ? named(containers[0], 'div', '_ships-to-address__content_') : [];
     addresses = content.length === 1 ? [...content[0].querySelectorAll('address')] : [];
   }
+  out.address_container_count = Math.min(addresses.length, 2);
   if (addresses.length === 1 && visible(addresses[0])) {
     const children = [...addresses[0].children];
     const lines = children.filter(node => node.tagName === 'SPAN' && node.children.length === 0 && visible(node));
     const sourceShape = cart || lines.every(node => [...node.classList].some(token => token.startsWith('_ships-to-address__line_')));
-    out.destination = sourceShape && lines.length === children.length && lines.length >= 4 && lines.length <= 6 &&
-      await digest(lines.map(text).join('\n')) === approvedDestinationDigest;
+    out.address_line_count = lines.length <= 6 ? lines.length : null;
+    out.address_present = sourceShape && lines.length === children.length && lines.length >= 4 && lines.length <= 6 && lines.every(node => text(node));
+    if (out.address_present) {
+      const addressText = lines.map(text).join('\n');
+      const addressDigest = await digest(addressText);
+      if (addresses[0].children.length !== children.length ||
+          [...addresses[0].children].some((node, index) => node !== children[index]) ||
+          lines.some(node => !visible(node)) || lines.map(text).join('\n') !== addressText) {
+        out.address_present = false; return out;
+      }
+      out.destination = addressDigest === approvedDestinationDigest;
+      // Internal browser-to-server snapshot only. The probe's explicit response
+      // whitelist never exports this fingerprint or any address text.
+      if (privateDestinationSnapshot) out.private_destination_snapshot = addressDigest;
+    }
   }
   if (cart) {
     const controls = document.querySelectorAll('button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]');
@@ -439,13 +460,62 @@ export function createHostedGuestPrepareFixture({ context, directory, authorizat
   return request => prepareHostedGuestForm(context, request, { authorization, signal, [fixtureDirectory]: directory });
 }
 
-/** Read-only existing-page probe. Does not consume a claim, navigate, click,
- * inspect field values, or return addresses, titles, hashes, or provider URLs.
- * Matching booleans report only this fresh DOM; they do not authorize init.
+/** Distinct read-only authority. No prior failure, quote fingerprint, transaction
+ * intent or payment-ready claim is required or accepted on this surface.
+ */
+function readonlyAuthorizationValid(request, authorization) {
+  const keys = (value, expected) => value && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).sort().join('|') === expected.sort().join('|');
+  const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value);
+  const now = Date.now() / 1000, confirm = request?.phase === 'confirm_saved_destination';
+  if (!keys(request, confirm ? ['schema', 'job_id', 'phase', 'document_ref'] : ['schema', 'job_id', 'phase']) ||
+      request.schema !== 'discogs_guest_readonly_probe_v1' || !uuid(request.job_id) ||
+      !['inspect', 'confirm_saved_destination'].includes(request.phase) || confirm && !uuid(request.document_ref) ||
+      !keys(authorization, ['schema', 'job_id', 'issued_at', 'expires_at', 'release_id', 'listing_id', 'seller',
+        'quantity', 'currency', 'max_total', 'approved_destination_ref', ...(authorization?.destination_ack ? ['destination_ack'] : [])]) ||
+      authorization.schema !== 'discogs_guest_readonly_authorization_v1' || authorization.job_id !== request.job_id ||
+      authorization.release_id !== '3422100' || authorization.listing_id !== '1366950910' ||
+      authorization.seller !== 'Mailman21842' || authorization.quantity !== 1 ||
+      authorization.currency !== 'USD' || authorization.max_total !== '5.05' ||
+      authorization.approved_destination_ref !== 'saved_shipping_address' ||
+      !Number.isFinite(authorization.issued_at) || !Number.isFinite(authorization.expires_at) ||
+      !(0 <= authorization.issued_at && authorization.issued_at <= now && now < authorization.expires_at &&
+        authorization.expires_at - authorization.issued_at <= 1800)) return false;
+  if (!confirm) return true;
+  const ack = authorization.destination_ack;
+  return keys(ack, ['document_ref', 'source', 'approved_destination_ref', 'observed_at']) &&
+    ack.document_ref === request.document_ref && ack.source === 'operator_visual_saved_destination_match' &&
+    ack.approved_destination_ref === 'saved_shipping_address' && Number.isFinite(ack.observed_at) &&
+    ack.observed_at <= now && now - ack.observed_at <= 60;
+}
+
+/** Read-only existing fixed Cart/Checkout probe. One inspect and one explicit
+ * confirmation per job; runtime additionally persists its fixed call budget.
+ * Initial address presence never approves a destination. A fresh operator visual
+ * acknowledgement must name the opaque reference, then the same live document
+ * and unchanged private snapshot are checked before an ephemeral match is set.
+ * References expire within 300 seconds and are lost on process restart.
  */
 export async function probeCurrentGuestPreparationEvidence(context, request, { authorization, signal } = {}) {
-  if (!context || typeof context !== 'object' || !authorizationValid(request, authorization)) return stopped('scoped_authorization_required');
-  const deadline = Math.min(Date.now() + 1500, request.scope.expires_at * 1000);
+  if (!context || typeof context !== 'object' || !readonlyAuthorizationValid(request, authorization)) return stopped('readonly_authorization_required');
+  request = JSON.parse(stable(request)); authorization = JSON.parse(stable(authorization));
+  const now = Date.now() / 1000, confirming = request.phase === 'confirm_saved_destination';
+  let job = readonlyProbeJobs.get(request.job_id);
+  if (confirming) {
+    if (!job || job.context !== context || job.document_ref !== request.document_ref) return stopped('probe_reference_unverified');
+    if (now >= job.reference_expires_at) return stopped('probe_reference_expired');
+    if (job.confirmation_consumed) return stopped('probe_job_replayed');
+    if (authorization.destination_ack.observed_at < job.reference_created_at) return stopped('readonly_authorization_required');
+    job.confirmation_consumed = true; // Consume before any await, including concurrent confirmation.
+  } else {
+    if (job) return stopped('probe_job_replayed');
+    for (const [id, prior] of readonlyProbeJobs) if (now >= prior.authorization_expires_at) readonlyProbeJobs.delete(id);
+    if (readonlyProbeJobs.size >= 64) return stopped('probe_capacity_exceeded');
+    job = { context, authorization_expires_at: authorization.expires_at, confirmation_consumed: false };
+    readonlyProbeJobs.set(request.job_id, job);
+  }
+  const deadline = Math.min(Date.now() + 1500, authorization.expires_at * 1000,
+    ...(confirming ? [job.reference_expires_at * 1000, (authorization.destination_ack.observed_at + 60) * 1000] : []));
   const read = async operation => {
     if (signal?.aborted) fail('cancelled');
     if (Date.now() >= deadline) fail('probe_deadline_expired');
@@ -466,9 +536,12 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
   };
   try {
     const pages = await read(() => context.pages());
-    const checkoutPages = pages.filter(page => page.url() === GUEST_CARD_URL);
-    if (checkoutPages.length !== 1) fail('single_current_checkout_required');
-    const page = checkoutPages[0], documentRef = await read(() => page.evaluateHandle(() => document));
+    const merchantPages = pages.filter(page => [CART, GUEST_CARD_URL].includes(page.url()));
+    if (merchantPages.length !== 1) fail('single_current_merchant_page_required');
+    const page = merchantPages[0], url = page.url(), cart = url === CART;
+    if (confirming && (job.page !== page || job.url !== url ||
+        !await read(() => page.evaluate(expected => document === expected, job.document_handle)))) fail('probe_document_changed');
+    const documentHandle = confirming ? job.document_handle : await read(() => page.evaluateHandle(() => document));
     const inspectorPage = {
       url: () => retainContextTask(context, Promise.resolve().then(() => {
         if (signal?.aborted) fail('cancelled');
@@ -481,10 +554,13 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
         return page.evaluate(...args);
       })),
     };
-    const summary = await read(() => inspectCurrentEnhancedCheckout(inspectorPage, { signal }));
+    const summary = cart ? null : await read(() => inspectCurrentEnhancedCheckout(inspectorPage, { signal }));
+    const cartDom = cart ? await read(() => page.evaluate(collectCartDom, '1366950910')) : null;
     const dom = await read(() => page.evaluate(collectHostedGuestDom, {
-      stage: 'checkout', approvedDestinationDigest: authorization.approved_destination_digest }));
-    if (dom.access !== 'normal' || summary.code === 'access_restricted') fail('access_restricted');
+      stage: cart ? 'cart' : 'checkout', privateDestinationSnapshot: true }));
+    if (dom.access !== 'normal' || summary?.code === 'access_restricted') fail('access_restricted');
+    if (confirming && (!job.private_destination_snapshot || !dom.address_present)) fail('saved_destination_unverified');
+    if (confirming && dom.private_destination_snapshot !== job.private_destination_snapshot) fail('saved_destination_snapshot_changed');
     const detailPages = pages.filter(candidate => ['https://www.discogs.com/sell/item/1366950910',
       'https://www.discogs.com/shop/item/1366950910'].includes(candidate.url()));
     let detail = null, title = null;
@@ -494,17 +570,17 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
       if (title.access !== 'normal') fail('access_restricted');
     }
     const observed = {
-      summary_supported: summary.status === 'observed',
-      seller_matches: summary.status === 'observed' && summary.seller_handle === request.scope.seller,
-      exact_preparation_amounts: summary.status === 'observed' && summary.displayed.subtotal.amount === '0.10' &&
-        summary.displayed.shipping.amount === '4.95' && summary.displayed.total.amount === '5.05',
+      summary_supported: cart ? cartDom?.code === 'observed' && cartDom.form_count === 1 && cartDom.order_container_count === 1 && cartDom.summary_count === 1 : summary?.status === 'observed',
+      seller_matches: cart ? detail?.seller_handle === authorization.seller && dom.listing === true : summary?.status === 'observed' && summary.seller_handle === authorization.seller,
+      exact_preparation_amounts: cart ? cartDom?.subtotal?.value === '$0.10 USD' && cartDom?.shipping?.value === '$4.95 USD' && cartDom?.total?.value === '$5.05 USD' :
+        summary?.status === 'observed' && summary.displayed.subtotal.amount === '0.10' && summary.displayed.shipping.amount === '4.95' && summary.displayed.total.amount === '5.05',
       quantity_declaration: dom.quantity === true,
-      destination_match: dom.destination === true,
-      listing_detail_supported: detail?.status === 'observed' && detail?.release_id === request.scope.release_id &&
-        detail?.listing_id === request.scope.listing_id && detail?.seller_handle === request.scope.seller,
+      destination_match: confirming ? true : null,
+      listing_detail_supported: detail?.status === 'observed' && detail?.release_id === Number(authorization.release_id) &&
+        detail?.listing_id === authorization.listing_id && detail?.seller_handle === authorization.seller,
       title_continuity: !!title?.title_digest && dom.title_digest === title.title_digest,
       condition_continuity: detail?.status === 'observed' && dom.media === detail.media && dom.sleeve === detail.sleeve,
-      item_price_continuity: dom.item === '0.10',
+      item_price_continuity: cart ? cartDom?.subtotal?.value === '$0.10 USD' : dom.item === '0.10',
       provider_frame_associated: false, card_control_unique_visible_enabled: false,
       existing_guest_form: dom.existing_form === true,
     };
@@ -513,17 +589,41 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
       const frame = frames[0], element = await read(() => frame.frameElement());
       observed.provider_frame_associated = await read(() => element.isVisible()) &&
         await read(() => element.contentFrame()) === frame && await read(() => element.ownerFrame()) === page.mainFrame();
-      const provider = await read(() => frame.evaluate(collectHostedGuestDom, { stage: 'provider' }));
-      if (provider.access !== 'normal') fail('access_restricted');
-      observed.existing_guest_form ||= provider.existing_form === true;
-      if (observed.provider_frame_associated && await read(() => frame.locator(GUEST_CARD_SELECTOR).count()) === 1) {
-        const card = await read(() => frame.$(GUEST_CARD_SELECTOR));
-        observed.card_control_unique_visible_enabled = !!card && await read(() => card.isVisible()) &&
-          await read(() => card.isEnabled()) && await read(() => card.getAttribute('aria-disabled')) === 'false';
+      if (observed.provider_frame_associated) {
+        const provider = await read(() => frame.evaluate(collectHostedGuestDom, { stage: 'provider' }));
+        if (provider.access !== 'normal') fail('access_restricted');
+        observed.existing_guest_form ||= provider.existing_form === true;
+        if (await read(() => frame.locator(GUEST_CARD_SELECTOR).count()) === 1) {
+          const card = await read(() => frame.$(GUEST_CARD_SELECTOR));
+          observed.card_control_unique_visible_enabled = !!card && await read(() => card.isVisible()) &&
+            await read(() => card.isEnabled()) && await read(() => card.getAttribute('aria-disabled')) === 'false';
+        }
       }
     }
-    if (page.url() !== GUEST_CARD_URL || !await read(() => page.evaluate(expected => document === expected, documentRef))) fail('checkout_document_changed');
-    return { status: 'observed', code: 'current_dom_evidence_only', observed,
+    const finalSnapshot = await read(() => page.evaluate(collectHostedGuestDom, {
+      stage: cart ? 'cart' : 'checkout', privateDestinationSnapshot: true }));
+    if (finalSnapshot.access !== 'normal') fail('access_restricted');
+    if (finalSnapshot.private_destination_snapshot !== dom.private_destination_snapshot) fail('saved_destination_snapshot_changed');
+    if (page.url() !== url || !await read(() => page.evaluate(expected => document === expected, documentHandle))) fail('probe_document_changed');
+    // A document ref is an opaque observation handle, not destination approval.
+    if (!confirming) {
+      job.page = page; job.url = url; job.document_handle = documentHandle; job.document_ref = randomUUID();
+      job.reference_created_at = Date.now() / 1000;
+      job.reference_expires_at = Math.min(authorization.expires_at, job.reference_created_at + 300);
+      job.private_destination_snapshot = dom.private_destination_snapshot || null;
+    } else {
+      const bindingAt = Date.now() / 1000;
+      if (bindingAt >= job.reference_expires_at) fail('probe_reference_expired');
+      if (bindingAt >= authorization.destination_ack.observed_at + 60 || bindingAt >= authorization.expires_at) fail('readonly_authorization_required');
+      job.approved_destination_digest = dom.private_destination_snapshot;
+    }
+    return { status: 'observed', code: confirming ? 'approved_saved_destination_bound' : 'current_dom_evidence_only', observed,
+      document_ref: job.document_ref, merchant_route: cart ? 'cart' : 'enhanced_checkout',
+      address_present: dom.address_present === true, destination_binding_available: confirming,
+      destination_match: confirming ? true : null,
+      structure: { item_row_count: dom.item_row_count, item_title_present: dom.item_title_present,
+        media_grade: dom.media, sleeve_grade: dom.sleeve, address_container_count: dom.address_container_count,
+        address_line_count: dom.address_line_count },
       missing_fields: Object.keys(observed).filter(key => key !== 'existing_guest_form' && !observed[key]),
       normal_cart_transition_verified: false, initialization_allowed: false,
       source: 'current_visible_dom', final_quote_verified: false,

@@ -59,6 +59,31 @@ test('trusted scope/access callbacks required; denied scope never reaches browse
   finally { await close(); }
 });
 
+test('readonly qualification exposes only opaque reference and bounded public structure', async () => {
+  const socket = path(), config = options(), ref = randomUUID();
+  config.fixtureOperations.probe_guest_evidence = async () => ({ status: 'observed', code: 'current_dom_evidence_only',
+    document_ref: ref, merchant_route: 'enhanced_checkout', address_present: true,
+    destination_binding_available: false, destination_match: null, observed: { destination_match: null },
+    structure: { item_row_count: 1, item_title_present: true, media_grade: 'P', sleeve_grade: 'Generic',
+      address_container_count: 1, address_line_count: 4, address: 'never export', address_digest: 'never export' },
+    address: 'never export', address_digest: 'never export', initialization_allowed: true });
+  const close = await listenHostedGuestPreparation({}, socket, config);
+  try {
+    const result = await exchange(socket, request('probe_guest_evidence'));
+    assert.equal(result.document_ref, ref); assert.equal(result.destination_match, null);
+    assert.deepEqual(result.observed, { destination_match: null });
+    assert.deepEqual(result.structure, { item_row_count: 1, address_container_count: 1,
+      item_title_present: true, media_grade: 'P', sleeve_grade: 'Generic', address_line_count: 4 });
+    assert.equal(JSON.stringify(result).includes('never export'), false);
+    assert.equal(result.final_submission_allowed, false); assert.equal(result.initialization_allowed, undefined);
+    config.fixtureOperations.probe_guest_evidence = async () => ({ status: 'observed', code: 'approved_saved_destination_bound',
+      document_ref: 'bad', merchant_route: 'other', structure: { item_row_count: 3, media_grade: 'secret', address_line_count: 99 } });
+    const rejected = await exchange(socket, request('probe_guest_evidence'));
+    assert.equal(rejected.status, 'observed'); assert.equal(rejected.document_ref, undefined);
+    assert.equal(rejected.merchant_route, undefined); assert.deepEqual(rejected.structure, {});
+  } finally { await close(); }
+});
+
 test('shared context lease blocks reader while preparation owns context, then releases after completion', async () => {
   const guest = path(), reader = `/tmp/guest-reader-${randomUUID().slice(0, 8)}.sock`;
   const acquireContextLease = createHostedContextLease(), entered = deferred(), finish = deferred();

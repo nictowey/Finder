@@ -4,10 +4,12 @@
 import { pathToFileURL } from 'node:url';
 import { launchHostedReadOnlyBrowser } from './discogs_hosted_browser_runtime.mjs';
 import { startBrowserMemoryLogging } from './discogs_browser_memory.mjs';
+import { loadHostedGuestQualification } from './discogs_hosted_guest_qualification.mjs';
 
 export async function runHostedBrowser(firefox, {
   launch = launchHostedReadOnlyBrowser,
   startMemoryLogging = startBrowserMemoryLogging,
+  loadQualification = loadHostedGuestQualification,
   signals = process,
   report = message => console.log(message),
   reportError = message => console.error(message),
@@ -23,7 +25,10 @@ export async function runHostedBrowser(firefox, {
     if (close) await close();
   };
   try {
-    close = await launch(firefox, '/profile', '/bridge/sniper-read-only.sock');
+    const guestPreparation = await loadQualification();
+    close = guestPreparation === null ?
+      await launch(firefox, '/profile', '/bridge/sniper-read-only.sock') :
+      await launch(firefox, '/profile', '/bridge/sniper-read-only.sock', { guestPreparation });
     if (stopping) { await cleanup(); return 0; }
     if (!close.isAvailable()) throw new Error('browser_unavailable');
     stopMemoryLogging = startMemoryLogging({ report });
