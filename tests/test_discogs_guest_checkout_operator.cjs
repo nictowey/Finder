@@ -216,7 +216,7 @@ test('ready ID is consumed before first UI instruction and cannot replay across 
   } finally { await a.close(); if (b) await b.close(); }
 }));
 
-test('crash after guest fence requires fresh reconciliation even with a new ready ID', async () => stateFixture(async directory => {
+test('crash after guest fence remains pending even with new readiness and reconciliation', async () => stateFixture(async directory => {
   const a = client(directory); let b, c;
   try {
     const start = startFor(await a.next()); a.send(start);
@@ -227,7 +227,8 @@ test('crash after guest fence requires fresh reconciliation even with a new read
     assert.equal((await b.next()).type, 'stopped'); await b.exited;
     await new Promise(resolve => setTimeout(resolve, 5));
     c = client(directory); const reconciled = startFor(await c.next()); c.send(reconciled);
-    assert.equal((await c.next()).stage, 'open_cart'); // Explicit new ready + new zero-order reconciliation.
+    assert.equal((await c.next()).type, 'stopped');
+    assert.ok(!c.output.join('').includes('operator_action'));
   } finally { await a.close(); if (b) await b.close(); if (c) await c.close(); }
 }));
 
@@ -394,4 +395,138 @@ test('injected process clock enforces 120-second stage, 20-second guest quote an
       else assert.ok(!records.some(value => value.kind === 'attempt'));
     } finally { await cli.close(); }
   });
+});
+
+async function currentClaim(directory) {
+  const probe = client(directory); let waiting;
+  try { waiting = await probe.next(); } finally { await probe.close(); }
+  const start = startFor(waiting, { ttl: 300 }), values = refs();
+  const templates = operator.prepareOperatorAckTemplates(start, values), observed = Date.now() / 1000;
+  return { type: 'claim_current_checkout', ready_ref: start.ready_ref, scope: start.scope,
+    userReady: start.userReady, priorFailure: start.priorFailure, expected_latest_hash: start.expected_latest_hash,
+    provenance: { source: 'operator_verified_current_screen', navigation: 'normal_cart_to_fresh_checkout',
+      scope_digest: templates.scope_digest, cart_document_ref: values.cart, checkout_document_ref: values.checkout,
+      cart_observed_at: observed, checkout_observed_at: observed, cart_scope_verified: true,
+      go_to_checkout_verified: true, history_restore: false, resubmission_prompt: false, extra_agreement_required: false },
+    inspection: { schema: 'discogs_guest_card_inspection_v1', url: helper.GUEST_CARD_URL, access: 'normal',
+      control: templates.card_control, evidence: { ...templates.checkout.evidence, observed_at: observed } } };
+}
+async function oneShot(directory, value, { mode = 'claim', crashBeforePermit = false } = {}) {
+  const source = `import {runCurrentCheckoutClaim} from ${JSON.stringify(moduleURL)};
+    process.exit(await runCurrentCheckoutClaim({directory:process.argv[1],mode:${JSON.stringify(mode)}
+      ${crashBeforePermit ? ",output:{write(){process.kill(process.pid,'SIGKILL')}}" : ''}}));`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', source, directory], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let output = '', errors = ''; child.stdout.on('data', chunk => { output += chunk; });
+  child.stderr.on('data', chunk => { errors += chunk; }); child.stdin.on('error', () => {});
+  const exited = new Promise(resolve => child.on('exit', (code, signal) => resolve({ code, signal })));
+  child.stdin.end(encoded(value));
+  const result = await exited;
+  return { ...result, message: output ? JSON.parse(output.trim()) : null, output, errors };
+}
+const outcomeFor = (claim, granted, outcome = 'SESSION_EXPIRED') => ({ type: 'record_claim_outcome',
+  intent_id: claim.scope.intent_id, ready_ref: claim.ready_ref, scope_digest: claim.provenance.scope_digest,
+  claim_sha256: granted.claim_sha256, outcome, observed_at: Date.now() / 1000 });
+
+test('one-shot claim fsyncs exact current checkout permit and outcome accounting is bound and idempotent', async () => stateFixture(async (directory, saved) => {
+  const claim = await currentClaim(directory), result = await oneShot(directory, claim);
+  assert.equal(result.code, 0); assert.equal(result.message.type, 'checkout_claim_granted');
+  assert.equal(result.message.permit.stage, 'open_guest_card');
+  assert.ok(result.message.permit.deadline <= (claim.inspection.evidence.observed_at + 20) * 1000);
+  const before = await audits(directory); assert.deepEqual(before.map(record => record.kind), ['ready', 'review', 'attempt']);
+  assert.deepEqual(before[2].payload.permit, result.message.permit);
+  assert.equal(hash(await readFile(join(directory, 'guest-checkout-000003.json'))), result.message.claim_sha256);
+  const outcome = outcomeFor(claim, result.message);
+  for (const patch of [{ claim_sha256: 'a'.repeat(64) }, { scope_digest: 'b'.repeat(64) }, { intent_id: randomUUID() }]) {
+    assert.equal((await oneShot(directory, { ...outcome, ...patch }, { mode: 'outcome' })).message.type, 'claim_stopped');
+    assert.equal((await audits(directory)).length, 3);
+  }
+  assert.equal((await oneShot(directory, outcome, { mode: 'outcome' })).message.duplicate, false);
+  assert.equal((await oneShot(directory, outcome, { mode: 'outcome' })).message.duplicate, true);
+  assert.equal((await audits(directory)).length, 4);
+  for (const [name, bytes] of Object.entries(saved)) assert.equal(await readFile(join(directory, name), 'utf8'), bytes);
+}));
+
+test('one-shot concurrent and restarted claims cannot pass a pending or unknown durable attempt', async () => stateFixture(async directory => {
+  const first = await currentClaim(directory), second = await currentClaim(directory);
+  const results = await Promise.all([oneShot(directory, first), oneShot(directory, second)]);
+  assert.equal(results.filter(result => result.message.type === 'checkout_claim_granted').length, 1);
+  assert.equal((await audits(directory)).length, 3);
+  const grantedIndex = results.findIndex(result => result.message.type === 'checkout_claim_granted');
+  const granted = results[grantedIndex].message, claim = [first, second][grantedIndex];
+  for (let i = 0; i < 2; i++) {
+    const next = await currentClaim(directory);
+    assert.equal((await oneShot(directory, next)).message.type, 'claim_stopped');
+    assert.equal((await audits(directory)).length, 3);
+  }
+  assert.equal((await oneShot(directory, outcomeFor(claim, granted, 'unknown'), { mode: 'outcome' })).code, 0);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal((await oneShot(directory, await currentClaim(directory))).message.type, 'claim_stopped');
+  assert.equal((await audits(directory)).length, 4);
+}));
+
+test('process crash before one-shot permit output leaves a durable pending attempt across restart', async () => stateFixture(async directory => {
+  const claim = await currentClaim(directory);
+  const result = await oneShot(directory, claim, { crashBeforePermit: true });
+  assert.equal(result.signal, 'SIGKILL'); assert.equal(result.output, '');
+  assert.equal((await audits(directory)).length, 3);
+  assert.equal((await oneShot(directory, await currentClaim(directory))).message.type, 'claim_stopped');
+  assert.equal((await audits(directory)).length, 3);
+}));
+
+test('one-shot claims reject stale, changed, revoked, mismatched or secret-like evidence without writes', async () => {
+  for (const alter of [
+    value => { value.inspection.evidence.total = '5.06'; },
+    value => { value.inspection.evidence.currency = null; },
+    value => { value.inspection.evidence.release_id = 1; },
+    value => { value.inspection.evidence.authorization_revoked = true; },
+    value => { value.inspection.evidence.destination_verified = false; },
+    value => { value.inspection.evidence.terms_verified = false; },
+    value => { value.userReady.ready = false; },
+    value => { value.priorFailure.order_history_count = 1; },
+    value => { value.provenance.history_restore = true; },
+    value => { value.provenance.source = 'trusted_normal_current_dom'; },
+    value => { value.provenance.checkout_document_ref = value.provenance.cart_document_ref; },
+    value => { value.provenance.checkout_observed_at -= 21; value.provenance.cart_observed_at -= 21;
+      value.inspection.evidence.observed_at -= 21; },
+    value => { value.card_number = 'SYNTHETIC_NEVER_LOG_THIS'; },
+  ]) await stateFixture(async (directory, saved) => {
+    const claim = await currentClaim(directory); alter(claim);
+    const result = await oneShot(directory, claim); assert.equal(result.message.type, 'claim_stopped');
+    assert.equal((await audits(directory)).length, 0);
+    assert.ok(!result.output.includes('SYNTHETIC_NEVER_LOG_THIS') && !result.errors.includes('SYNTHETIC_NEVER_LOG_THIS'));
+    for (const [name, bytes] of Object.entries(saved)) assert.equal(await readFile(join(directory, name), 'utf8'), bytes);
+  });
+});
+
+test('one-shot outcome refuses tampered attempt or legacy bytes without appending', async () => {
+  for (const legacy of [false, true]) await stateFixture(async directory => {
+    const claim = await currentClaim(directory), result = await oneShot(directory, claim);
+    const name = legacy ? helper.GUEST_CARD_FENCE : 'guest-checkout-000003.json';
+    const value = JSON.parse(await readFile(join(directory, name), 'utf8')); value.synthetic_tamper = true;
+    const bytes = encoded(value); await writeFile(join(directory, name), bytes);
+    assert.equal((await oneShot(directory, outcomeFor(claim, result.message), { mode: 'outcome' })).message.type, 'claim_stopped');
+    assert.equal((await audits(directory)).length, 3);
+    assert.equal(await readFile(join(directory, name), 'utf8'), bytes);
+  });
+});
+
+test('all dispatch modes share pending/unknown/form-visible/restricted guard and preserve known-expiry reconciliation', async () => {
+  for (const outcome of [null, 'unknown', 'guest_form_visible', 'access_restricted', 'SESSION_EXPIRED']) {
+    await stateFixture(async directory => {
+      const claim = await currentClaim(directory), granted = await oneShot(directory, claim);
+      if (outcome) assert.equal((await oneShot(directory, outcomeFor(claim, granted.message, outcome), { mode: 'outcome' })).code, 0);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      const before = (await audits(directory)).length, legacy = client(directory);
+      try {
+        const start = startFor(await legacy.next()); legacy.send(start);
+        const result = await legacy.next();
+        if (outcome === 'SESSION_EXPIRED') assert.equal(result.stage, 'open_cart');
+        else {
+          assert.equal(result.type, 'stopped'); await legacy.exited;
+          assert.ok(!legacy.output.join('').includes('operator_action'));
+          assert.equal((await audits(directory)).length, before);
+        }
+      } finally { await legacy.close(); }
+    });
+  }
 });

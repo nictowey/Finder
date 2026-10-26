@@ -115,6 +115,134 @@ export function buildOperatorAck(request, templates, operatorProof) {
   return { ...base, outcome: operatorProof.outcome, observed_at: operatorProof.observed_at };
 }
 
+const CLAIM_KEYS = ['type', 'ready_ref', 'scope', 'userReady', 'priorFailure', 'expected_latest_hash', 'provenance', 'inspection'];
+const CLAIM_PROVENANCE_KEYS = ['source', 'navigation', 'scope_digest', 'cart_document_ref', 'checkout_document_ref',
+  'cart_observed_at', 'checkout_observed_at', 'cart_scope_verified', 'go_to_checkout_verified',
+  'history_restore', 'resubmission_prompt', 'extra_agreement_required'];
+const FAILURE_KEYS = ['source', 'last_error_code', 'release_id', 'listing_id', 'seller', 'quantity', 'currency', 'max_total',
+  'card_data_entered', 'pay_invoked', 'approval_invoked', 'capture_invoked', 'failure_observed_at', 'order_history_url',
+  'order_history_archived', 'order_history_status', 'order_history_count', 'order_history_complete',
+  'order_history_observed_at', 'reviewed_at', 'expires_at'];
+const OUTCOMES = ['guest_form_visible', 'SESSION_EXPIRED', 'unknown', 'access_restricted'];
+
+function requireResolvedPreviousAttempt(state) {
+  const index = state.records.findLastIndex(item => item.value.kind === 'attempt');
+  if (index < 0) return;
+  const outcome = state.records[index + 1]?.value;
+  if (outcome?.kind !== 'outcome' || outcome.payload.outcome !== 'SESSION_EXPIRED') {
+    throw new Error('prior_attempt_unresolved');
+  }
+}
+
+function validateCurrentClaim(value, state, anchor) {
+  const now = Date.now() / 1000;
+  if (!metadataOnly(value) || !shape(value, CLAIM_KEYS) || value.type !== 'claim_current_checkout' ||
+      !uuid(value.ready_ref) || value.expected_latest_hash !== state.head) throw new Error('claim_unverified');
+  const { scope, userReady: ready, priorFailure: prior, provenance: p, inspection } = value;
+  const scopeHash = guestCardScopeDigest(scope), parsed = validateGuestCardInspection(inspection, scope);
+  if (!scopeHash || !parsed || !shape(ready, ['source', 'ready', 'scope_digest', 'observed_at', 'expires_at']) ||
+      ready.source !== 'explicit_current_user_ready' || ready.ready !== true || ready.scope_digest !== scopeHash ||
+      !num(ready.observed_at) || !num(ready.expires_at) || !(ready.observed_at <= now && now < ready.expires_at) ||
+      ready.expires_at - ready.observed_at > 300 || !shape(prior, FAILURE_KEYS) ||
+      prior.source !== 'operator_reviewed_normal_discogs_ui' || prior.last_error_code !== 'SESSION_EXPIRED' ||
+      ['release_id', 'listing_id', 'seller', 'quantity', 'currency', 'max_total'].some(key => prior[key] !== scope[key]) ||
+      ['card_data_entered', 'pay_invoked', 'approval_invoked', 'capture_invoked'].some(key => prior[key] !== false) ||
+      prior.order_history_url !== 'https://www.discogs.com/sell/purchases?archived=A&status=All&limit=50' ||
+      prior.order_history_archived !== 'All' || prior.order_history_status !== 'All' || prior.order_history_count !== 0 ||
+      prior.order_history_complete !== true || !['failure_observed_at', 'order_history_observed_at', 'reviewed_at', 'expires_at']
+        .every(key => num(prior[key])) || !(prior.failure_observed_at <= prior.order_history_observed_at &&
+        prior.order_history_observed_at <= prior.reviewed_at && prior.reviewed_at <= now &&
+        now - prior.order_history_observed_at < 300 && now < prior.expires_at &&
+        prior.expires_at - prior.reviewed_at <= 300) || !shape(p, CLAIM_PROVENANCE_KEYS) ||
+      p.source !== 'operator_verified_current_screen' || p.navigation !== 'normal_cart_to_fresh_checkout' ||
+      p.scope_digest !== scopeHash || !uuid(p.cart_document_ref) || !uuid(p.checkout_document_ref) ||
+      p.cart_document_ref === p.checkout_document_ref || p.cart_scope_verified !== true || p.go_to_checkout_verified !== true ||
+      ['history_restore', 'resubmission_prompt', 'extra_agreement_required'].some(key => p[key] !== false) ||
+      !num(p.cart_observed_at) || !num(p.checkout_observed_at) ||
+      !(prior.order_history_observed_at <= p.cart_observed_at && p.cart_observed_at <= p.checkout_observed_at &&
+        p.checkout_observed_at <= now && now - p.cart_observed_at < 300 && now - p.checkout_observed_at < 20) ||
+      p.checkout_observed_at !== inspection.evidence.observed_at) throw new Error('claim_unverified');
+  let lastEffectAt = anchor.lastEffectAt;
+  for (const item of state.records) {
+    const { kind, payload, recorded_at } = item.value;
+    if (kind === 'ready' && (payload.ready_ref === value.ready_ref || payload.intent_id === scope.intent_id)) throw new Error('ready_replayed');
+    if (kind === 'attempt') lastEffectAt = Math.max(lastEffectAt, recorded_at);
+    if (kind === 'outcome') lastEffectAt = Math.max(lastEffectAt, payload.observed_at || 0);
+  }
+  requireResolvedPreviousAttempt(state);
+  if (prior.failure_observed_at < lastEffectAt || prior.order_history_observed_at <
+      (state.records.at(-1)?.value.recorded_at || lastEffectAt)) throw new Error('reconciliation_required');
+  const deadline = Math.min(scope.expires_at * 1000, ready.expires_at * 1000, prior.expires_at * 1000,
+    (prior.order_history_observed_at + 300) * 1000, parsed.expires_at * 1000, (p.checkout_observed_at + 20) * 1000);
+  if (Date.now() >= deadline) throw new Error('claim_expired');
+  return { scopeHash, parsed, deadline };
+}
+
+/** One metadata JSON then exit. Neither command performs any browser action. */
+export async function runCurrentCheckoutClaim({ mode = 'claim', directory = '/state',
+  input = process.stdin, output = process.stdout } = {}) {
+  let lock;
+  const emit = value => new Promise((resolve, reject) => output.write(encoded(value), error => error ? reject(error) : resolve()));
+  try {
+    if (!['claim', 'outcome'].includes(mode)) throw new Error('invalid_mode');
+    let text = '';
+    for await (const chunk of input) {
+      text += chunk.toString(); if (Buffer.byteLength(text) > 16_384) throw new Error('invalid_input');
+    }
+    const value = JSON.parse(text);
+    if (!metadataOnly(value)) throw new Error('invalid_input');
+    await privateDirectory(directory); lock = await lockDirectory(directory);
+    const anchor = await anchors(directory), state = await ledger(directory, anchor);
+    if (mode === 'outcome') {
+      if (!shape(value, ['type', 'intent_id', 'ready_ref', 'scope_digest', 'claim_sha256', 'outcome', 'observed_at']) ||
+          value.type !== 'record_claim_outcome' || !uuid(value.intent_id) || !uuid(value.ready_ref) ||
+          !hash(value.scope_digest) || !hash(value.claim_sha256) || !OUTCOMES.includes(value.outcome) ||
+          !num(value.observed_at) || value.observed_at > Date.now() / 1000) throw new Error('outcome_unverified');
+      const index = state.records.findIndex(item => item.hash === value.claim_sha256), attempt = state.records[index]?.value;
+      if (attempt?.kind !== 'attempt' || attempt.payload.mode !== 'current_checkout_claim' ||
+          ['intent_id', 'ready_ref', 'scope_digest'].some(key => attempt.payload[key] !== value[key]) ||
+          value.observed_at < attempt.recorded_at) throw new Error('claim_unverified');
+      const existing = state.records[index + 1]?.value;
+      if (existing?.kind === 'outcome' && existing.payload.attempt_sha256 === value.claim_sha256 &&
+          existing.payload.outcome === value.outcome && existing.payload.observed_at === value.observed_at) {
+        await emit({ type: 'claim_outcome_recorded', duplicate: true, claim_sha256: value.claim_sha256 }); return 0;
+      }
+      if (state.head !== value.claim_sha256) throw new Error('claim_not_pending');
+      await append(directory, state, anchor, 'outcome', { intent_id: value.intent_id, ready_ref: value.ready_ref,
+        scope_digest: value.scope_digest, attempt_sha256: value.claim_sha256, outcome: value.outcome, observed_at: value.observed_at });
+      await emit({ type: 'claim_outcome_recorded', duplicate: false, claim_sha256: value.claim_sha256 }); return 0;
+    }
+    const { scopeHash, parsed, deadline } = validateCurrentClaim(value, state, anchor);
+    const { scope, ready_ref: readyRef, provenance, inspection } = value;
+    const base = { intent_id: scope.intent_id, ready_ref: readyRef, scope_digest: scopeHash };
+    const check = () => { if (Date.now() >= deadline) throw new Error('claim_expired'); };
+    const permit = { type: 'operator_action', ...base, request_id: randomUUID(), stage: 'open_guest_card', deadline,
+      from_document_ref: provenance.checkout_document_ref, control_ref: parsed.control_ref,
+      inspection_fingerprint: parsed.inspection_fingerprint };
+    const binding = Object.freeze({ url: GUEST_CARD_URL, selector: GUEST_CARD_SELECTOR,
+      control_ref: parsed.control_ref, scope_digest: scopeHash, intent_id: scope.intent_id,
+      inspection_fingerprint: parsed.inspection_fingerprint, expected_scope: Object.freeze({ ...scope }) });
+    check(); await append(directory, state, anchor, 'ready', { ...base, mode: 'current_checkout_claim',
+      ready_observed_at: value.userReady.observed_at, ready_expires_at: value.userReady.expires_at,
+      failure_observed_at: value.priorFailure.failure_observed_at, history_observed_at: value.priorFailure.order_history_observed_at });
+    check(); const reviewHash = await append(directory, state, anchor, 'review', { ...base, mode: 'current_checkout_claim',
+      latest_prior_hash: value.expected_latest_hash, legacy_files: anchor.manifest, provenance,
+      failure_observed_at: value.priorFailure.failure_observed_at, history_observed_at: value.priorFailure.order_history_observed_at,
+      no_card: true, no_pay: true, no_approval: true, no_capture: true });
+    check(); const claimHash = await append(directory, state, anchor, 'attempt', { ...base, mode: 'current_checkout_claim',
+      review_sha256: reviewHash, control_ref: parsed.control_ref, inspection_fingerprint: parsed.inspection_fingerprint, deadline, permit });
+    check();
+    const currentAnchor = await anchors(directory), current = await ledger(directory, currentAnchor);
+    if (currentAnchor.hash !== anchor.hash || current.head !== claimHash || current.records.length !== state.records.length ||
+        !revalidateGuestCardClick(binding, inspection)) throw new Error('claim_changed');
+    check(); await emit({ type: 'checkout_claim_granted', claim_sha256: claimHash, permit,
+      order_status: 'unverified', payment_status: 'unverified', autonomous_checkout: false }); return 0;
+  } catch {
+    await emit({ type: 'claim_stopped', code: 'claim_blocked_or_uncertain',
+      order_status: 'unverified', payment_status: 'unverified' }).catch(() => {}); return 2;
+  } finally { if (lock) await lock.close(); }
+}
+
 async function privateDirectory(directory) {
   const info = await lstat(directory);
   if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid() ||
@@ -273,6 +401,7 @@ export async function runGuestCheckoutOperator({ directory = '/state', input = p
     start = await receive();
     if (!shape(start, ['type', 'ready_ref', 'scope', 'userReady', 'priorFailure', 'expected_latest_hash']) ||
         start.type !== 'start' || !uuid(start.ready_ref) || start.expected_latest_hash !== state.head) throw new Error('invalid_start');
+    requireResolvedPreviousAttempt(state);
     scope = start.scope; scopeHash = guestCardScopeDigest(scope);
     const prior = start.priorFailure, ready = start.userReady;
     if (!scopeHash || !ready || !prior || state.records.some(item =>
@@ -394,6 +523,9 @@ export async function checkOperatorTransport(input = process.stdin, output = pro
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  if (process.argv.length === 3 && ['--claim-current-checkout', '--record-claim-outcome'].includes(process.argv[2])) {
+    process.exit(await runCurrentCheckoutClaim({ mode: process.argv[2] === '--claim-current-checkout' ? 'claim' : 'outcome' }));
+  }
   if (process.argv.length === 3 && process.argv[2] === '--transport-check') {
     process.exit(await checkOperatorTransport());
   }

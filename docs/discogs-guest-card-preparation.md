@@ -294,6 +294,49 @@ synthetic local state, with no Discogs request or new live readiness. It is not
 hosted-page timing, a full run of the exact CUA adapter factory, or proof of live
 checkout, order creation or payment.
 
+### Subsequent hosted Cart-only attempt
+
+The October 26 17:11 UTC readiness produced only a consumed ready record,
+`guest-checkout-000002.json`, at Unix time `1793034785.846`. All/All Purchases
+showed zero orders. The operator opened the existing one-item KC cart; it did
+not invoke Go to Checkout, guest initialization, card entry or payment.
+
+The Cart instruction's 120-second stage ended at `1793034905.854`; the settled
+cart observation was `1793034888.101`, leaving 17.753 seconds after 102.247
+seconds of operator work. Building and sending the two-part ACK had a reported
+tool wall time of 8.6 seconds, excluding the intervening model time. The exact
+server ACK-arrival timestamp was not retained. The process stopped at its
+deadline, so the fixture timing above did not establish reliable hosted timing.
+
+An earlier pre-click `operator_binding_or_screen_unverified` was an internal
+JavaScript validation error, not a platform approval rejection or site denial.
+Replaying the captured fields offline accepted ages through 20 seconds and
+rejected 20.001 seconds; a mocked replay in the same CUA runtime also accepted
+them. The original failed predicate was not logged and remains unverified.
+No guard should be weakened on the assumption that this was simply stale data.
+
+The replacement under development removes navigation ACKs: normal supervised
+CUA navigation is followed by a one-shot, locked claim at the current checkout.
+It retains the same ledger and historical fences, current transaction checks,
+and a durable pending-attempt stop before one form-opening click. This remains
+supervised development tooling, not autonomous server checkout. Purchase testing
+is on hold until the no-submit path is reliable.
+
+The reviewed command contract uses `--claim-current-checkout` with one complete
+metadata JSON document on stdin, then exits. It accepts the exact scope,
+current readiness, fresh All/All reconciliation, normal Cart-to-new-Checkout
+provenance and current inspection. It performs no browser or payment operation.
+Only after the existing locked ledger has fsynced linked ready/review/attempt
+records may it return `checkout_claim_granted`; the original checkout observation
+still limits that permit to 20 seconds. There are no intermediate navigation
+ACKs or terminal-ready process to keep alive.
+
+`--record-claim-outcome` records one outcome bound to the exact claim hash,
+intent, ready reference and scope. It cannot replace an outcome or renew click
+permission. Pending, unknown, access-restricted and visible-form attempts block
+new claims in both this path and the older operator. No legacy file or consumed
+readiness is cleared. These commands are not proof of repeatable live checkout.
+
 At this checkpoint the web and browser services were active, with no restart or
 OOM since their 13:42 start; browser memory was 850.7 MiB of 2 GiB. Monitoring
 remained inactive. These health observations do not verify checkout or payment.
