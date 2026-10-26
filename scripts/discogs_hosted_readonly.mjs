@@ -759,10 +759,21 @@ export async function listenHostedReadOnly(context, socketPath, {
     return Boolean(state && !state.revoked && clock() < state.expires_at &&
       state.attempts < MONITOR_LEASE_MAX_ATTEMPTS);
   };
+  const connections = new Map();
+  let serverClosing = false;
+  const abortConnections = () => {
+    serverClosing = true;
+    for (const [connection, controller] of connections) {
+      controller.abort('request_disconnected');
+      connection.destroy();
+    }
+  };
   const server = createServer(connection => {
+    if (serverClosing) { connection.destroy(); return; }
     let input = Buffer.alloc(0), done = false;
     let activeMonitorTrial = null;
     const controller = new AbortController();
+    connections.set(connection, controller);
     const monitorAbortCause = () => controller.signal.reason === 'request_timed_out' ?
       'request_timed_out' : controller.signal.reason === 'request_disconnected' ?
         'request_disconnected' : 'read_cancelled';
@@ -781,6 +792,7 @@ export async function listenHostedReadOnly(context, socketPath, {
       send(stopped('request_timed_out'));
     });
     connection.on('close', () => {
+      connections.delete(connection);
       done = true;
       controller.abort('request_disconnected');
       invalidateActiveTrial();
@@ -1175,14 +1187,23 @@ export async function listenHostedReadOnly(context, socketPath, {
     }
     await chmod(socketPath, shared ? 0o660 : 0o600);
   } catch (error) {
-    server.close();
+    abortConnections();
+    await new Promise(resolve => server.close(() => resolve()));
     if (bound) await unlink(socketPath).catch(unlinkError => {
       if (unlinkError.code !== 'ENOENT') throw unlinkError;
     });
     throw error;
   } finally { process.umask(previousUmask); }
-  return async () => {
-    await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-    await unlink(socketPath).catch(error => { if (error.code !== 'ENOENT') throw error; });
+  let closing;
+  return () => {
+    if (closing) return closing;
+    // Abort synchronously before destroying clients: delayed awaited reads or
+    // verification writes must observe cancellation, not activate a late lease.
+    abortConnections();
+    closing = (async () => {
+      await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      await unlink(socketPath).catch(error => { if (error.code !== 'ENOENT') throw error; });
+    })();
+    return closing;
   };
 }

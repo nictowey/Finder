@@ -3,6 +3,21 @@
  */
 import { listenHostedReadOnly } from './discogs_hosted_readonly.mjs';
 
+export const HOSTED_BROWSER_SHUTDOWN_MS = 2000;
+
+async function boundedShutdown(operations) {
+  let timer;
+  try {
+    const results = await Promise.race([
+      Promise.allSettled(operations.map(operation => Promise.resolve().then(operation))),
+      new Promise(resolve => { timer = setTimeout(() => resolve(null), HOSTED_BROWSER_SHUTDOWN_MS); }),
+    ]);
+    if (!results || results.some(result => result.status === 'rejected')) {
+      throw new Error('browser_shutdown_unavailable');
+    }
+  } finally { clearTimeout(timer); }
+}
+
 export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPath) {
   if (!firefox || typeof firefox.launchPersistentContext !== 'function' ||
       profilePath !== '/profile' || !['/tmp/sniper-read-only.sock', '/bridge/sniper-read-only.sock'].includes(socketPath)) {
@@ -14,8 +29,50 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
     noDefaultViewport: true,
     firefoxUserPrefs: { 'signon.rememberSignons': false },
   });
-  let closeSocket;
-  try { closeSocket = await listenHostedReadOnly(context, socketPath,
+  let browser, closeSocket, shutdown, closing = false, unavailable = false;
+  let reportUnavailable;
+  const unavailablePromise = new Promise(resolve => { reportUnavailable = resolve; });
+  const close = () => {
+    if (shutdown) return shutdown;
+    closing = true;
+    shutdown = boundedShutdown([
+      () => closeSocket?.(),
+      () => context.close(),
+    ]).finally(() => {
+      context.off?.('close', browserUnavailable);
+      browser?.off?.('disconnected', browserUnavailable);
+    });
+    return shutdown;
+  };
+  const browserUnavailable = () => {
+    if (closing || unavailable) return;
+    unavailable = true;
+    reportUnavailable('browser_unavailable');
+    // During socket startup, the caller closes the newly bound socket before
+    // returning. Once ready, stop accepting/abort requests immediately.
+    if (closeSocket) void close().catch(() => {});
+  };
+  const isAvailable = () => {
+    if (closing || unavailable) return false;
+    try {
+      if (browser?.isConnected() !== true) browserUnavailable();
+    } catch { browserUnavailable(); }
+    return !closing && !unavailable;
+  };
+  Object.defineProperties(close, {
+    unavailable: { value: unavailablePromise },
+    isAvailable: { value: isAvailable },
+  });
+  try {
+    if (typeof context.on !== 'function' || typeof context.off !== 'function' ||
+        typeof context.browser !== 'function') throw new Error('browser_unavailable');
+    context.on('close', browserUnavailable);
+    browser = context.browser();
+    if (!browser || typeof browser.on !== 'function' || typeof browser.off !== 'function' ||
+        typeof browser.isConnected !== 'function') throw new Error('browser_unavailable');
+    browser.on('disconnected', browserUnavailable);
+    if (!isAvailable()) throw new Error('browser_unavailable');
+    closeSocket = await listenHostedReadOnly(context, socketPath,
     socketPath === '/bridge/sniper-read-only.sock' ? {
       durableStopPath: '/bridge/access-stopped',
       operatorBootPath: '/bridge/operator-boot',
@@ -23,10 +80,11 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
       operatorUsedPath: '/bridge/operator-rocky-used',
       operatorCartAckPath: '/bridge/operator-cart-ack',
       operatorCartUsedPath: '/bridge/operator-cart-used',
-    } : {}); }
-  catch (error) { await context.close(); throw error; }
-  return async () => {
-    try { await closeSocket(); }
-    finally { await context.close(); }
-  };
+    } : {});
+    if (!isAvailable()) throw new Error('browser_unavailable');
+    return close;
+  } catch (error) {
+    await close().catch(() => {});
+    throw error;
+  }
 }

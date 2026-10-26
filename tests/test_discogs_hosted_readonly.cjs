@@ -7,6 +7,7 @@ const { stat, mkdtemp, writeFile, readFile, readdir, rm, utimes } = require('nod
 const { tmpdir } = require('node:os');
 const { dirname, join } = require('node:path');
 const { randomUUID } = require('node:crypto');
+const { EventEmitter } = require('node:events');
 let observeCurrentHostedPage, createReleaseNavigator, createListingNavigator,
   listenHostedReadOnly, privateBridgeDirectory, launchHostedReadOnlyBrowser,
   collectHostedRestrictionDom, classifyHostedRestriction,
@@ -1427,9 +1428,11 @@ test('shared browser socket refuses an absent or untrusted bridge directory', as
 
 test('staged launcher uses only approved profile and fixed socket, then closes cleanly', async () => {
   const calls = [];
+  const runningBrowser = Object.assign(new EventEmitter(), { isConnected: () => true });
   const browser = { launchPersistentContext: async (profile, options) => {
     calls.push(['launch', profile, options]);
-    return { pages: () => [], close: async () => calls.push(['close']) };
+    return Object.assign(new EventEmitter(), { pages: () => [],
+      browser: () => runningBrowser, close: async () => calls.push(['close']) });
   } };
   await assert.rejects(launchHostedReadOnlyBrowser(browser, '/another-profile',
     '/tmp/sniper-read-only.sock'), /unsupported_hosted_browser_configuration/);
@@ -1442,6 +1445,52 @@ test('staged launcher uses only approved profile and fixed socket, then closes c
     assert.equal((await stat('/tmp/sniper-read-only.sock')).mode & 0o777, 0o600);
   } finally { await close(); }
   assert.deepEqual(calls.at(-1), ['close']);
+});
+
+test('socket shutdown aborts a pending lease write, closes idle clients and preserves stop/history', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-shutdown-'));
+  let release, entered, writes = 0;
+  const hold = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  const fixture = monitorFixture();
+  const grantId = randomUUID();
+  let socket, client, idle;
+  try {
+    socket = await operatorSocket(fixture.context, directory, {
+      leaseWriteHook: async () => { if (++writes === 1) { entered(); await hold; } },
+    });
+    await writeMonitorLeaseAck(socket, directory, grantId, '28720177');
+    client = connect(socket.path); idle = connect(socket.path);
+    await Promise.all([client, idle].map(connection =>
+      new Promise(resolve => connection.once('connect', resolve))));
+    client.write(JSON.stringify({ action: 'operator_monitor_lease_verify', grant_id: grantId,
+      release_id: '28720177' }) + '\n');
+    await started;
+    const disconnected = Promise.all([client, idle].map(connection =>
+      new Promise(resolve => connection.once('close', resolve))));
+    let deadline;
+    try {
+      await Promise.race([socket.close(), new Promise((_, reject) => {
+        deadline = setTimeout(() => reject(new Error('shutdown_waited_for_client')), 500);
+      })]);
+      await disconnected;
+    } finally { clearTimeout(deadline); }
+    await assert.rejects(stat(socket.path), { code: 'ENOENT' });
+    release();
+    const event = await waitForMonitorEvent(directory, 'lease_stopped', grantId);
+    assert.equal(event.cause, 'request_disconnected');
+    const state = JSON.parse(await readFile(join(directory, 'operator-monitor-lease.json'), 'utf8'));
+    assert.equal(state.revoked, true);
+    assert.equal(await readFile(socket.options.durableStopPath, 'utf8'), 'access_restricted\n');
+    assert.equal(await readFile(join(directory, `operator-monitor-lease-grant-${grantId}-used`), 'utf8'),
+      'consumed\n');
+    assert.ok(!fixture.calls.some(value => Array.isArray(value) && value[0] === 'goto'));
+    await socket.close();
+  } finally {
+    release(); client?.destroy(); idle?.destroy();
+    if (socket) await socket.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('one exact release request uses canonical URL, fixed collector, closes tab, then cools down', async () => {
