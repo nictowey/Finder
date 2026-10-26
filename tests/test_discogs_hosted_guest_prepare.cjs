@@ -35,7 +35,7 @@ const cartMarkup = `<!doctype html><title>Cart</title><h1>You have 1 item in you
 ${go}</div></form>`;
 const summary = `<!doctype html><title>Checkout</title><h1>Checkout from Mailman21842</h1><h2>Items (1)</h2>
 <div class="_checkout-summary__content_fixture"><ul class="_checkout-summary__unordered-list_fixture">
-<li class="_checkout-sell-item__list-item_fixture"><h3 class="_checkout-sell-item__title_fixture">Synthetic KC Single</h3>
+<li class="_checkout-sell-item__list-item_fixture"><h3 class="_checkout-sell-item__title_fixture"><span>Fixture Artist</span><span> - </span><span>Synthetic KC Single</span><span> (7&quot;, 45 RPM, Single)</span></h3>
 <div class="_checkout-sell-item__condition_fixture">Media: Mint<br>Sleeve: Generic</div>
 <div class="_checkout-sell-item__price_fixture">$0.10 USD</div></li></ul>
 <dl class="_checkout-summary__totals_fixture">
@@ -793,3 +793,96 @@ test('unready detail and missing exact header remain unverified; readiness count
     } finally { b.state.merchant.window.close(); b.close(); }
   }
 });
+
+// Source-derived fRu title group from retained SHA1933…27a plus public labels
+// observed by the parent. These are offline fixtures, not a live DOM capture.
+const sourceCore = 'Get Down Tonight';
+const sourceArtist = 'K.C. &amp; The Sunshine Band*';
+const sourceFormat = ' (7&quot;, 45 RPM, Single, Stereo)';
+function titleGroup(core, { artist = sourceArtist, format = sourceFormat } = {}) {
+  return `<h3 class="_checkout-sell-item__title_brkft_27"><span>${artist}</span><span> - </span><span>${core}</span><span>${format}</span></h3>`;
+}
+function withTitle(group) { return summary.replace(/<h3 class="_checkout-sell-item__title_fixture">.*?<\/h3>/u, group); }
+async function titleProbe(core, group) {
+  const detail = detailMarkup.replace('>Synthetic KC Single</a>', `>${core}</a>`).replace('<span>Mint</span>', '<span>Poor</span>');
+  const b = browser({ detail }); b.state.merchant = dom(withCondition(sourceCondition).replace(/<h3 class="_checkout-sell-item__title_fixture">.*?<\/h3>/u, group), CHECKOUT);
+  try {
+    // Isolate each source-title fixture's ephemeral job store; production keeps
+    // its bounded per-process capacity and durable runtime budget unchanged.
+    const isolated = await import('../scripts/discogs_hosted_guest_prepare.mjs?title-fixture=' + randomUUID());
+    const grant = readonlyGrant();
+    const result = await isolated.probeCurrentGuestPreparationEvidence(b.context, grant.request, { authorization: grant.authorization });
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    for (const secret of [core, 'K.C.', 'Sunshine', sourceFormat, sha(core)]) assert.ok(!json(result).includes(secret));
+    return result;
+  } finally { b.state.merchant.window.close(); b.close(); }
+}
+
+test('source-derived artist separator core-title and format spans compare only the semantic core to exact-release detail', async () => {
+  const result = await titleProbe(sourceCore, titleGroup(sourceCore));
+  assert.equal(result.observed.listing_detail_supported, true);
+  assert.equal(result.observed.condition_continuity, true);
+  assert.equal(result.observed.title_continuity, true);
+  assert.equal(result.structure.item_title_present, true);
+});
+
+test('semantic core title uses only whitespace and NFC normalization, preserving case punctuation and parentheses', async () => {
+  for (const [detailCore, checkoutCore, expected] of [
+    ['Cafe\u0301 (Part II)', 'Café   (Part II)', true],
+    ['Title (Live)', 'Title (Live)', true],
+    ['Get Down Tonight', 'Get Down Tonight (Live)', false],
+    ['Get Down Tonight (Live)', 'Get Down Tonight', false],
+    ['Get Down Tonight', 'get down tonight', false],
+    ['Get Down Tonight', 'Get Down Tonight!', false],
+    ['Another Core (1975)', 'Another Core (1975)', true],
+  ]) {
+    const result = await titleProbe(detailCore, titleGroup(checkoutCore));
+    assert.equal(result.observed.title_continuity, expected, JSON.stringify([detailCore, checkoutCore]));
+  }
+});
+
+test('source-shaped multiple artist spans retain joining text inside each span and do not require a fixed artist name', async () => {
+  const group = titleGroup(sourceCore, { artist: 'First Artist &amp; </span><span>Second Artist*' });
+  const result = await titleProbe(sourceCore, group);
+  assert.equal(result.observed.title_continuity, true);
+});
+
+test('unknown hidden nested duplicate separator core artist and format structures cannot qualify a semantic title', async () => {
+  const group = titleGroup(sourceCore);
+  const cases = [
+    `<h3 class="_checkout-sell-item__title_brkft_27">${sourceCore}</h3>`,
+    `<h3 class="_checkout-sell-item__title_brkft_27"><span>${sourceCore}</span></h3>`, // no-release description fallback
+    titleGroup(sourceCore, { artist: '   ' }), titleGroup(sourceCore, { artist: '<em>Nested Artist</em>' }),
+    titleGroup(sourceCore, { format: '' }), titleGroup(sourceCore, { format: '7&quot;, 45 RPM' }),
+    titleGroup(sourceCore, { format: '(7&quot;, 45 RPM)' }), titleGroup(sourceCore, { format: ' (7&quot;, 45 RPM' }),
+    titleGroup(sourceCore, { format: ' (<b>7&quot;</b>, 45 RPM)' }),
+    group.replace('<span> - </span>', '<span>-</span>'),
+    group.replace('<span> - </span>', '<span> - </span><span> - </span>'),
+    group.replace(`<span>${sourceCore}</span>`, `<span>${sourceCore}</span><span>${sourceCore}</span>`),
+    group.replace(`<span>${sourceCore}</span>`, `<span><em>${sourceCore}</em></span>`),
+    group.replace(`<span>${sourceCore}</span>`, `<span hidden>${sourceCore}</span>`),
+    group.replace(`<span>${sourceArtist}</span>`, `<span aria-hidden="true">${sourceArtist}</span>`),
+    group.replace(`<span>${sourceFormat}</span>`, `<span style="display:none">${sourceFormat}</span>`),
+    group.replace('</h3>', '<a>Unknown direct child</a></h3>'),
+    group.replace('</h3>', 'Unknown direct text</h3>'),
+    group + group.replace('<h3 ', '<h3 hidden '),
+  ];
+  for (const malformed of cases) {
+    const result = await titleProbe(sourceCore, malformed);
+    assert.equal(result.observed.title_continuity, false);
+    assert.equal(result.structure.item_title_present, false);
+    assert.ok(result.missing_fields.includes('title_continuity'));
+  }
+});
+
+test('composite cart item-link title remains fail-closed without source-proven cart semantic title structure', async () => ledgerFixture(async f => {
+  const cart = cartMarkup.replace('>Synthetic KC Single</a>', '>Fixture Artist - Synthetic KC Single (7&quot;, 45 RPM, Single)</a>');
+  const b = browser({ cart });
+  try {
+    const result = await execute(f, b);
+    assert.equal(result.code, 'visible_scope_evidence_missing');
+    assert.ok(result.missing_fields.includes('title_continuity'));
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    assert.equal((await records(f.directory)).length, 0);
+  } finally { b.close(); }
+}));

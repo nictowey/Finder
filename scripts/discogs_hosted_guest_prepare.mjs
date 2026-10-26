@@ -96,10 +96,30 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
   };
   const named = (root, tag, prefix) => [...root.querySelectorAll(tag)].filter(node =>
     [...node.classList].some(token => token.startsWith(prefix)));
+  const titleText = value => value.normalize('NFC').replace(/\s+/gu, ' ').trim();
+  const checkoutCoreTitle = heading => {
+    // Retained merchant fRu source renders direct artist SPAN(s), its own
+    // literal separator SPAN, the release.title SPAN, and a final format SPAN.
+    // This narrow KC shape requires nonempty artists and format. The source
+    // permits absent artists/empty format generally; those remain unsupported.
+    const spans = [...heading.childNodes];
+    if (spans.length < 4 || spans.some(node => node.nodeType !== 1 || node.tagName !== 'SPAN' ||
+        !visible(node) || node.childNodes.length === 0 || [...node.childNodes].some(child => child.nodeType !== 3))) return null;
+    const separators = spans.filter(node => node.textContent === ' - ');
+    const separatorIndex = spans.length - 3;
+    if (separators.length !== 1 || spans[separatorIndex] !== separators[0] || separatorIndex < 1) return null;
+    const artists = spans.slice(0, separatorIndex).map(node => titleText(text(node)));
+    if (artists.some(value => !value) || new Set(artists).size !== artists.length) return null;
+    const core = titleText(text(spans[separatorIndex + 1]));
+    const format = spans[separatorIndex + 2].textContent;
+    if (!core || !format.startsWith(' (') || !format.endsWith(')') ||
+        !titleText(format.slice(2, -1)) || format.slice(2, -1) !== format.slice(2, -1).trim()) return null;
+    return core;
+  };
   const digest = async value => [...new Uint8Array(await crypto.subtle.digest('SHA-256',
     new TextEncoder().encode(value)))].map(byte => byte.toString(16).padStart(2, '0')).join('');
   const out = { access: 'normal', ready: document.readyState === 'complete',
-    listing: false, quantity: false, destination: false, title_digest: null,
+    listing: false, quantity: false, destination: false, title_digest: null, title_basis: null,
     media: null, sleeve: null, item: null, item_row_count: 0, item_title_present: false,
     address_container_count: 0, address_line_count: null, address_present: false, agreements: false, existing_form: false, go: false };
   if (/just a moment|attention required|security check|captcha|cloudflare|sign in|log in/iu.test(document.title) ||
@@ -108,7 +128,9 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
   }
   if (stage === 'detail') {
     const headings = [...document.querySelectorAll('main a.hifi-heading-link-large[href="https://www.discogs.com/release/3422100"]')].filter(visible);
-    if (headings.length === 1 && text(headings[0])) out.title_digest = await digest(text(headings[0]));
+    if (headings.length === 1 && text(headings[0])) {
+      out.title_digest = await digest(titleText(text(headings[0]))); out.title_basis = 'detail_exact_release_header_core';
+    }
     return out;
   }
   out.agreements = [...document.querySelectorAll('input[type="checkbox"]')].some(visible);
@@ -120,9 +142,16 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
     const row = rows[0];
     const links = [...row.querySelectorAll('a.item_link[href="/sell/item/1366950910"]')].filter(visible);
     out.listing = links.length === 1;
-    const headings = cart ? links : named(row, 'h3', '_checkout-sell-item__title_').filter(visible);
-    if (headings.length === 1 && text(headings[0])) {
-      out.title_digest = await digest(text(headings[0])); out.item_title_present = true;
+    const headings = cart ? links : named(row, 'h3', '_checkout-sell-item__title_');
+    if (headings.length === 1 && visible(headings[0])) {
+      // Cart semantic title structure has not been captured. Keep its existing
+      // complete visible item-link digest; never strip artist/format there. A
+      // composite cart link still fails the core-title continuity gate.
+      const core = cart ? text(headings[0]) : checkoutCoreTitle(headings[0]);
+      if (core) {
+        out.title_digest = await digest(core); out.item_title_present = true;
+        out.title_basis = cart ? 'cart_full_item_link' : 'checkout_source_span_core';
+      }
     }
     const grades = { Poor: 'P', Fair: 'F', Good: 'G', 'Good Plus': 'G+', 'Very Good': 'VG',
       'Very Good Plus': 'VG+', 'Near Mint': 'NM', Mint: 'M', Generic: 'Generic' };

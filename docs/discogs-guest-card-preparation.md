@@ -722,3 +722,46 @@ expiry is `2026-10-26T20:07:56.158Z`; both inspect and confirm slots were verifi
 unconsumed. No site navigation or qualification read ran after this restart, and
 no initializer/payment authority was enabled. Ephemeral old document/address
 bindings were invalidated by restart; that restart is not evidence of SDK dismissal.
+
+
+### Semantic title comparison repair
+
+The next reviewed two-call live job ran on the ready exact KC item and enhanced
+checkout pages. The single normal canonical item request redirected to the same
+item's `/shop/item/1366950910` page and rendered normally, without a challenge.
+The service verified supported exact listing/release details, seller, quantity,
+Poor/Generic condition continuity, the $5.05 USD merchant aggregate, provider
+frame/control association and the unchanged approved saved address. The sole
+remaining diagnostic was `title_continuity:false`. Both job slots are spent.
+The item page's $0.75 shipping display was kept separate from the unchanged
+selected $4.95 Economy/Media Mail cart shipping; no final-tax assertion followed.
+
+The old collector hashed the complete checkout H3 label against the exact release
+link's title text. These are different semantic units: the observed item title is
+`Get Down Tonight`, whereas checkout displays
+`K.C. & The Sunshine Band* - Get Down Tonight (7", 45 RPM, Single, Stereo)`.
+The retained `fRu` source explicitly renders artist spans, a literal separator
+span, the `release.title` span and a separate format span. The new comparison
+extracts that source-shaped title span, then applies only Unicode NFC and
+whitespace normalization to detail/checkout titles. Case, punctuation, title
+parentheses and edition text remain significant. No candidate title is hardcoded,
+and the exact listing/release/seller checks remain independent requirements.
+
+The extraction rejects ambiguous headings, hidden/nested/unknown child shapes,
+missing or repeated separators, empty titles and unsupported artist/format
+structure. Source-derived regression markup uses the observed public labels;
+it is not a saved raw live DOM. Wrong core titles and editions must still fail.
+The current narrow KC implementation does not support the renderer's generic
+no-artist or empty-format branches without further evidence.
+
+Cart item-link labels are a separate unresolved display contract. Their complete
+visible label digest remains unchanged and fails closed when it is a composite.
+No trailing parentheses or artist prefix is stripped there; no substring match
+or guessed format equivalence is used. A passing checkout diagnostic therefore
+will not by itself establish that the full server preparation path qualifies.
+Actual retained cart structure is still needed to implement that comparison.
+
+No live calls, policy-slot reuse, card initialization or payment were performed
+for this title repair. Its next live verification requires a separately reviewed
+bounded read-only job. The ordinary-reader stop and all historical audit/receipt
+records must remain intact.
