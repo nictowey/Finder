@@ -49,7 +49,8 @@ const CODES = new Set(['scoped_authorization_required', 'prior_attempt_unresolve
   'probe_reference_expired', 'probe_document_changed', 'saved_destination_snapshot_changed',
   'saved_destination_unverified', 'probe_capacity_exceeded', 'single_current_merchant_page_required',
   'cart_structure_captured', 'cart_capture_unverified', 'cart_checkout_preflight_observed',
-  'preflight_authorization_required', 'preflight_confirmation_required', 'preflight_ledger_unverified']);
+  'preflight_authorization_required', 'preflight_confirmation_required', 'preflight_ledger_unverified',
+  'checkout_data_unavailable']);
 const PUBLIC_TAGS = new Set(['A', 'SPAN', 'STRONG', 'B', 'EM', 'I', 'SMALL', 'BR', '#text']);
 const GRADE_TEXT = new Set(['Media', 'Media:', 'Sleeve', 'Sleeve:', 'P', 'Poor', 'Poor (P)',
   'F', 'Fair', 'Fair (F)', 'G', 'Good', 'Good (G)', 'G+', 'Good Plus', 'Good Plus (G+)',
@@ -224,6 +225,17 @@ function safeResult(value, { captureAllowed = false, preflightAllowed = false } 
   }
   if (['not_dispatched', 'outcome_requires_reconciliation'].includes(value?.initialization)) result.initialization = value.initialization;
   if (Array.isArray(value?.missing_fields)) result.missing_fields = value.missing_fields.filter(key => MISSING.has(key));
+  if (preflightAllowed && value?.scope_diagnostic?.schema === 'checkout_scope_predicates_v1') {
+    const diagnostic = value.scope_diagnostic;
+    result.scope_diagnostic = { schema: 'checkout_scope_predicates_v1' };
+    if (['cart', 'checkout'].includes(diagnostic.stage)) result.scope_diagnostic.stage = diagnostic.stage;
+    for (const key of ['quantity_matches', 'destination_matches', 'address_present']) {
+      if (typeof diagnostic[key] === 'boolean') result.scope_diagnostic[key] = diagnostic[key];
+    }
+    if ([0, 1, 2].includes(diagnostic.address_container_count)) result.scope_diagnostic.address_container_count = diagnostic.address_container_count;
+    const lines = diagnostic.address_line_count;
+    if (lines === null || Number.isInteger(lines) && lines >= 0 && lines <= 6) result.scope_diagnostic.address_line_count = lines;
+  }
   if (result.status === 'observed' && value.observed && typeof value.observed === 'object') {
     result.observed = Object.fromEntries([...OBSERVED].filter(key => typeof value.observed[key] === 'boolean').map(key => [key, value.observed[key]]));
     if (value.observed.destination_match === null) result.observed.destination_match = null;

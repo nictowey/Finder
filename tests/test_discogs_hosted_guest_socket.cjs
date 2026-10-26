@@ -403,3 +403,23 @@ test('cart gate diagnostics export only fixed predicate booleans and capped coun
     }
   } finally { await close(); }
 });
+
+test('blocked preflight retains bounded predicate diagnostics without leaking destination values or hashes', async () => {
+  const socket = path(), config = options();
+  config.authorize = async () => ({ schema: 'discogs_guest_preflight_authorization_v1', mode: 'cart_checkout_preflight' });
+  config.fixtureOperations.cart_checkout_preflight = async () => ({ status: 'blocked', code: 'visible_scope_evidence_missing',
+    checkout_navigation_issued: true, card_initialization_issued: false,
+    scope_diagnostic: { schema: 'checkout_scope_predicates_v1', stage: 'checkout', quantity_matches: false,
+      destination_matches: false, address_present: true, address_container_count: 1, address_line_count: 4,
+      address: 'never export', digest: 'never export' }, address: 'never export' });
+  const close = await listenHostedGuestPreparation({}, socket, config);
+  const message = JSON.stringify({ action: 'cart_checkout_preflight', request: {
+    schema: 'discogs_guest_checkout_preflight_v1', phase: 'navigate_checkout_preflight', job_id: randomUUID(), document_ref: randomUUID() } }) + '\n';
+  try {
+    const result = await exchange(socket, message);
+    assert.deepEqual(result.scope_diagnostic, { schema: 'checkout_scope_predicates_v1', stage: 'checkout',
+      quantity_matches: false, destination_matches: false, address_present: true, address_container_count: 1, address_line_count: 4 });
+    assert.equal(result.checkout_navigation_issued, true); assert.equal(result.card_initialization_issued, false);
+    assert.ok(!JSON.stringify(result).includes('never export')); assert.equal(result.payment_allowed, false);
+  } finally { await close(); }
+});

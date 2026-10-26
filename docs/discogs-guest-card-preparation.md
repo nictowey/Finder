@@ -1060,3 +1060,58 @@ Synthetic alternate submit values exercise one normal Go transition with no
 card initialization or claim, while wrong labels, types, forms, hidden/disabled
 controls and late mutations stop before Go. These are offline results; the
 corrected server transition still requires live verification.
+
+### First actual server Cart → Checkout transition (October 26, late UTC)
+
+On deployed `f02749d`, reviewed job `2e8d8100-285c-487d-9cc2-503ae4e5472f`
+used all three phases. Fresh cart/detail inspection verified the exact KC item,
+seller, title, price and quantity; same-document visual acknowledgement bound the
+approved saved destination. The server then dispatched exactly one normal Go
+control and reached `/marketplace/checkout`. No transaction claim, card
+initialization, card entry, payment or order submission followed. The result was
+`visible_scope_evidence_missing` for quantity and destination, with
+`checkout_navigation_issued:true`. The spent job, 50 preservation hashes and
+11-record ledger head remain unchanged. This is actual server navigation proof,
+not a successful final preflight or buyer.
+
+Two distinct issues were investigated without reusing a spent IPC phase. Normal
+Firefox Inspector UI on the already-rendered public Items heading confirmed an H2
+with the known summary-header class prefix and two direct text nodes, `Items `
+and `(1)`. No console evaluation, new page request or payment action was used.
+The retained renderer emits the heading without a count and no address until
+checkout session data exists. The preflight had treated the document load event
+as data readiness. A hydration race fits the transient missing fields, but the
+original instant was not captured well enough to prove this timing diagnosis.
+
+A separate destination mismatch is confirmed: the cart uses terminal country
+label `United States`; checkout's retained `SRu` renderer uses country code `US`.
+Previous successful checkout-local visual binding never tested that cross-page
+comparison. The repair canonicalizes only that exact terminal-country
+equivalence in the private digest. All name/street/city/postal lines and the raw
+same-read mutation checks remain unchanged; no address or digest is exported.
+
+After a fresh navigation, the preflight now waits only for the source-derived
+checkout DOM data to settle, within its original absolute deadline. It does not
+reload, navigate again or wait for a wrong populated quantity/address to become
+acceptable. Full strict validation and document identity checks still follow.
+Cancellation, expiry or a replaced document cannot resume the flow or initialize
+payment. Blocked results retain only fixed predicate booleans and capped counts,
+so an absent address can be distinguished from an actual destination mismatch
+without revealing its content.
+
+Regression fixtures distinguish the actual public Inspector/source facts from
+synthetic hydration timing. They exercise delayed data, exact country
+equivalence, wrong quantity, changed address/country, document replacement,
+cancellation and expiry. A test pass does not establish a new live checkout
+qualification. The current spent job cannot be replayed; another collector
+observation needs separately reviewed bounded read-only scope. Installing new
+browser code would require a service restart, so the current checkout is kept
+intact while that next step is reviewed. No further full navigation test or
+payment is authorized by this repair itself.
+
+The repaired batch passed 101 focused preparation/IPC tests, the exact 518-test
+CI Node list, 3,885 Python tests plus 41 subtests, 110 app tests, lint/format and
+type checking. Independent review accepted it. A synthetic-address replay of the
+actual country labels fails equivalence on `f02749d` and passes on the repair;
+`CA` remains a mismatch on both. The original live quantity failure is still
+classified as a timing inference, not retrospectively proven by these tests.

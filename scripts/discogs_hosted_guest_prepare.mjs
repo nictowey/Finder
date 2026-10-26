@@ -361,7 +361,13 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
     out.address_present = !!lines && lines.length >= 4 && lines.length <= 6 &&
       lines.every(line => line.length > 0 && line.length <= 160) && lines.join('\n').length <= 600;
     if (out.address_present) {
-      const addressText = lines.join('\n'), addressDigest = await digest(addressText);
+      const addressText = lines.join('\n');
+      // Actual cart uses the country label; retained checkout SRu uses its ISO
+      // countryCode. Only the observed terminal US equivalence is supported.
+      // Pre-country normalized lines must remain unchanged during this read.
+      const canonicalLines = [...lines];
+      if (canonicalLines.at(-1) === 'United States') canonicalLines[canonicalLines.length - 1] = 'US';
+      const addressDigest = await digest(canonicalLines.join('\n'));
       const currentAddress = readAddressLines(), currentLines = currentAddress?.lines;
       const currentBinding = cart ? cartBinding() : null;
       if (address.childNodes.length !== initialNodes.length || [...address.childNodes].some((node, index) => node !== initialNodes[index]) ||
@@ -378,6 +384,30 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
 
   if (cart) out.go = !!cartBinding();
   return out;
+}
+
+/** DOM-only settlement signal for retained React checkout renderer. A document
+ * load event is not checkout-data readiness. This never validates an amount,
+ * quantity or destination and never requests a page or operates a control.
+ */
+export function hostedCheckoutDataSettledDom() {
+  if (location.href !== 'https://www.discogs.com/marketplace/checkout') return true;
+  if (/just a moment|attention required|security check|captcha|cloudflare|sign in|log in/iu.test(document.title) ||
+      document.querySelector('input[type="password"],form[action*="/cdn-cgi/"],iframe[src*="challenges.cloudflare.com"],[id*="captcha" i],[class*="captcha" i]')) return true;
+  const named = (tag, prefix) => [...document.querySelectorAll(tag)].filter(node =>
+    [...node.classList].some(token => token.startsWith(prefix)));
+  const headings = named('h2', '_checkout-summary__header_');
+  const containers = named('div', '_ships-to-address__container_');
+  // Invalid/ambiguous populated structures must reach the strict validator,
+  // rather than waiting for them to become acceptable.
+  if (headings.length > 1 || containers.length > 1) return true;
+  if (!headings.length) return false;
+  const label = headings[0].textContent.replace(/\s+/gu, ' ').trim();
+  if (label !== 'Items' && label !== 'Items (1)') return true;
+  // Retained renderer emits "Items " with no count before session data exists.
+  if (label === 'Items' || !containers.length) return false;
+  const addresses = containers[0].querySelectorAll('address');
+  return addresses.length > 0;
 }
 
 /** Same-document final form association recheck on the bound visible Go handle. */
@@ -1208,8 +1238,11 @@ export async function preflightHostedGuestCheckout(context, request, options = {
       return { core: title.title_core, title_digest: title.title_digest, media: detail.media, sleeve: detail.sleeve };
     };
     const detail = await detailRead(); let cartTitle, cartShippingLabel;
-    const basic = dom => {
-      diagnostics = { structure: { address_container_count: dom.address_container_count, address_line_count: dom.address_line_count } };
+    const basic = (dom, stage) => {
+      diagnostics = { scope_diagnostic: { schema: 'checkout_scope_predicates_v1', stage,
+        quantity_matches: dom.quantity === true, destination_matches: dom.destination === true,
+        address_present: dom.address_present === true, address_container_count: dom.address_container_count,
+        address_line_count: dom.address_line_count } };
       if (dom.access !== 'normal') fail('access_restricted');
       if (!dom.ready) fail('page_not_ready');
       if (dom.existing_form) fail('existing_guest_form_preserved');
@@ -1221,7 +1254,7 @@ export async function preflightHostedGuestCheckout(context, request, options = {
       if (page.url() !== CART || !await read(() => page.evaluate(doc => document === doc, job.document_handle))) fail('cart_document_changed');
       const raw = await read(() => page.evaluate(collectCartDom, '1366950910'));
       const dom = await read(() => page.evaluate(collectHostedGuestDom, { stage: 'cart', approvedDestinationDigest: job.approved_destination_digest }));
-      basic(dom);
+      basic(dom, 'cart');
       const selectedLabel = selectedCartShippingLabel(raw);
       if (cartShippingLabel && selectedLabel !== cartShippingLabel) fail('cart_document_changed');
       const parsed = parseCapturedCartCaption(dom.cart_caption, detail.core);
@@ -1248,10 +1281,20 @@ export async function preflightHostedGuestCheckout(context, request, options = {
     const response = await read(() => navigation);
     if (!response || response.url() !== GUEST_CARD_URL || page.url() !== GUEST_CARD_URL) fail('fresh_checkout_required');
     const checkoutDocument = await read(() => page.evaluateHandle(() => document));
+    // Observe settlement in the same new document, within the original absolute
+    // deadline. Never reload or repeat Go when React has not populated its data.
+    try {
+      await read(() => page.waitForFunction(hostedCheckoutDataSettledDom, null,
+        { timeout: Math.max(1, deadline - Date.now()), polling: 'raf' }));
+    } catch (error) {
+      if (error?.name === 'TimeoutError') fail('checkout_data_unavailable');
+      throw error;
+    }
+    if (page.url() !== GUEST_CARD_URL || !await read(() => page.evaluate(doc => document === doc, checkoutDocument))) fail('checkout_document_changed');
     const inspectorPage = { url: () => track(() => page.url()), evaluate: (...args) => track(() => page.evaluate(...args)) };
     const verifyCheckout = async () => {
       const dom = await read(() => page.evaluate(collectHostedGuestDom, { stage: 'checkout', approvedDestinationDigest: job.approved_destination_digest }));
-      basic(dom);
+      basic(dom, 'checkout');
       const summary = await read(() => inspectCurrentEnhancedCheckout(inspectorPage, { signal }));
       if (dom.title_digest !== detail.title_digest || !checkoutCaptionMatchesCart(cartTitle, dom.title_artist, dom.title_formats)) {
         diagnostics.missing_fields = ['title_continuity']; fail('visible_scope_evidence_missing');

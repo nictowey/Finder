@@ -34,7 +34,7 @@ const cartMarkup = `<!doctype html><title>Cart</title><h1>You have 1 item in you
 <tr class="order_total"><td>Total</td><td class="order_summary_value">$5.05 USD</td></tr></table>
 <div class="order_shipping_fields"><select class="shipping_method" name="shipping_method"><option selected>Economy - Media Mail</option></select></div>
 ${go}</div></form>`;
-const summary = `<!doctype html><title>Checkout</title><h1>Checkout from Mailman21842</h1><h2>Items (1)</h2>
+const summary = `<!doctype html><title>Checkout</title><h1>Checkout from Mailman21842</h1><h2 class="_checkout-summary__header_fixture">Items (1)</h2>
 <div class="_checkout-summary__content_fixture"><ul class="_checkout-summary__unordered-list_fixture">
 <li class="_checkout-sell-item__list-item_fixture"><h3 class="_checkout-sell-item__title_fixture"><span>Fixture Artist</span><span> - </span><span>Synthetic KC Single</span><span> (7&quot;, 45 RPM, Single)</span></h3>
 <div class="_checkout-sell-item__condition_fixture">Media: Mint<br>Sleeve: Generic</div>
@@ -64,7 +64,7 @@ function dom(html, url) {
   return d;
 }
 function browser({ cart = cartMarkup, checkout = summary, detail = detailMarkup, provider = providerMarkup,
-  beforeEvaluate, beforeGo, beforeCardClick, afterGo, duplicateFrames = false, frameUrl = PROVIDER } = {}) {
+  beforeEvaluate, beforeGo, beforeCardClick, afterGo, onWaitPoll, duplicateFrames = false, frameUrl = PROVIDER } = {}) {
   const all = [], effects = { go: 0, card: 0, goIssued: 0, cardIssued: 0, pay: 0, pages: 0, evaluate: 0 };
   let navigationResolve = null;
   const main = {}, state = { merchant: dom(cart, CART), detail: dom(detail, DETAIL), provider: dom(provider, frameUrl) };
@@ -105,6 +105,14 @@ function browser({ cart = cartMarkup, checkout = summary, detail = detailMarkup,
     evaluate: (fn, arg) => evaluate('merchant', fn, arg),
     $: async selector => { assert.equal(selector, port.HOSTED_GO_SELECTOR); const e = state.merchant.window.document.querySelector(selector); return e ? handle('merchant', e) : null; },
     waitForNavigation: () => new Promise(resolve => { navigationResolve = resolve; }),
+    waitForFunction: async (fn, arg, options) => {
+      assert.ok(options.timeout > 0 && options.timeout <= 30_000); assert.equal(options.polling, 'raf');
+      for (let poll = 0; poll < 2; poll++) {
+        if (await evaluate('merchant', fn, arg)) return {};
+        if (onWaitPoll) await onWaitPoll({ state, poll, effects });
+      }
+      throw Object.assign(new Error('synthetic DOM did not settle'), { name: 'TimeoutError' });
+    },
     waitForURL: async url => assert.equal(page.url(), url), mainFrame: () => main,
     frames: () => page.url() === CHECKOUT ? duplicateFrames ? [frame, frame] : [frame] : [] };
   const detailPage = { url: () => state.detail.window.location.href,
@@ -170,7 +178,7 @@ test('concrete positive SYNTHETIC EXTENSION navigates once, initializes once, re
 }));
 
 test('observed summary lacks continuity fields: exact missing fields fail closed before card', async () => ledgerFixture(async f => {
-  const captured = summary.replace(/<h2>Items \(1\)<\/h2>/u, '').replace(/<h3 class="_checkout-sell-item__title_fixture">.*?<\/h3>/u, '')
+  const captured = summary.replace(/<h2 class="_checkout-summary__header_fixture">Items \(1\)<\/h2>/u, '').replace(/<h3 class="_checkout-sell-item__title_fixture">.*?<\/h3>/u, '')
     .replace(/<div class="_checkout-sell-item__condition_fixture">.*?<\/div>/u, '').replace(/<div class="_checkout-sell-item__price_fixture">.*?<\/div>/u, '');
   const b = browser({ checkout: captured });
   try {
@@ -1656,4 +1664,92 @@ test('cart diagnostic counts are capped, legacy presence stays observational, an
     assert.equal(result.status, 'observed'); assert.ok(!Object.hasOwn(result, 'cart_reader_diagnostic'));
     assert.equal(result.initialization_allowed, false); assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
   } finally { b.close(); }
+});
+
+test('observed terminal United States cart label equals checkout US without weakening other address lines', async () => {
+  const captured = JSON.parse(await readFile(new URL('./fixtures/discogs_checkout_transition_f02749d.json', 'file://' + __filename), 'utf8'));
+  const country = `<span class="_ships-to-address__line_fixture">${captured.country_labels.checkout}</span>`;
+  const cart = cartMarkup.replace(country, `<span class="_ships-to-address__line_fixture">${captured.country_labels.cart}</span>`);
+  await preflightFixture(async ({ b, execute }) => {
+    assert.equal((await execute()).code, 'cart_checkout_preflight_observed');
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]);
+  }, { cart });
+  for (const replacement of ['CA', 'United States of America', 'Other private address']) {
+    await preflightFixture(async ({ b, execute }) => {
+      const result = await execute(); assert.equal(result.code, 'visible_scope_evidence_missing');
+      assert.deepEqual(result.missing_fields, ['destination']);
+      assert.equal(result.scope_diagnostic.address_present, true);
+      assert.equal(result.scope_diagnostic.destination_matches, false);
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]);
+      assert.ok(!json(result).includes(replacement));
+    }, { cart, checkout: replacement === 'Other private address' ? summary.replace('1 Fixture Street', replacement) : summary.replace(country, `<span class="_ships-to-address__line_fixture">${replacement}</span>`) });
+  }
+});
+
+test('load complete can precede source-shaped checkout data; DOM-only settlement preserves one Go and no initialization', async () => {
+  const captured = JSON.parse(await readFile(new URL('./fixtures/discogs_checkout_transition_f02749d.json', 'file://' + __filename), 'utf8'));
+  let pendingSeen = false;
+  await preflightFixture(async ({ b, execute }) => {
+    const result = await execute(); assert.equal(result.code, 'cart_checkout_preflight_observed', json(result));
+    assert.equal(pendingSeen, true);
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]);
+  }, { afterGo: state => {
+    state.merchant.window.document.querySelector('h2').textContent = captured.retained_renderer.quantity_before_session_data;
+    state.merchant.window.document.querySelector('address').remove();
+  }, onWaitPoll: ({ state }) => {
+    pendingSeen = true;
+    const d = state.merchant.window.document, h = d.querySelector('h2');
+    h.replaceChildren(...captured.quantity_heading.text_nodes.map(text => d.createTextNode(text)));
+    d.querySelector('div._ships-to-address__content_fixture').innerHTML = `<address>${addressMarkup}</address>`;
+  } });
+});
+
+test('wrong populated checkout quantity rejects without waiting for it to become acceptable', async () => preflightFixture(async ({ b, execute }) => {
+  const result = await execute(); assert.equal(result.code, 'visible_scope_evidence_missing');
+  assert.deepEqual(result.missing_fields, ['quantity']);
+  assert.equal(result.scope_diagnostic.quantity_matches, false);
+  assert.equal(result.scope_diagnostic.destination_matches, true);
+  assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]);
+}, { checkout: summary.replace('Items (1)', 'Items (2)'), onWaitPoll: () => { throw new Error('wrong quantity must not be retried'); } }));
+
+test('checkout data never settling stops without a second navigation or initialization', async () => preflightFixture(async ({ b, execute }) => {
+  const result = await execute(); assert.equal(result.code, 'checkout_data_unavailable');
+  assert.equal(result.checkout_navigation_issued, true); assert.equal(result.card_initialization_issued, false);
+  assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]);
+  assert.equal((await execute()).code, 'probe_job_replayed');
+}, { checkout: summary.replace('Items (1)', 'Items') }));
+
+test('checkout document replacement while waiting cannot qualify even if replacement looks correct', async () => preflightFixture(async ({ b, execute }) => {
+  const result = await execute(); assert.equal(result.code, 'checkout_document_changed');
+  assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]);
+}, { checkout: summary.replace('Items (1)', 'Items'), onWaitPoll: ({ state }) => { state.merchant = dom(summary, CHECKOUT); } }));
+
+test('cancellation during DOM settlement drains pending observation and never resumes verification or initialization', async () => {
+  const entered = deferred(), finish = deferred();
+  await preflightFixture(async ({ b, execute, isolated }) => {
+    const controller = new AbortController(), running = execute(controller.signal);
+    await entered.promise; controller.abort();
+    assert.equal((await running).code, 'cancelled');
+    let drained = false;
+    const settlement = isolated.waitForHostedGuestPreparationSettlement(b.context).then(() => { drained = true; });
+    await eventLoopTurn(); assert.equal(drained, false);
+    finish.resolve(); await settlement;
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]);
+    assert.equal((await execute()).code, 'probe_job_replayed');
+  }, { checkout: summary.replace('Items (1)', 'Items'), onWaitPoll: async ({ state }) => {
+    entered.resolve(); await finish.promise; state.merchant.window.document.querySelector('h2').textContent = 'Items (1)';
+  } });
+});
+
+test('original absolute deadline still applies when checkout data arrives late', async () => {
+  const actualNow = Date.now;
+  try {
+    await preflightFixture(async ({ b, execute }) => {
+      const result = await execute(); assert.equal(result.code, 'deadline_expired');
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]);
+    }, { checkout: summary.replace('Items (1)', 'Items'), onWaitPoll: ({ state }) => {
+      state.merchant.window.document.querySelector('h2').textContent = 'Items (1)';
+      Date.now = () => actualNow() + 31_000;
+    } });
+  } finally { Date.now = actualNow; }
 });
