@@ -21,7 +21,7 @@ def render_page(csrf_token: str, nonce: str, *, cloud=False) -> str:
     if cloud:
         page = (
             page.replace(
-                "Purchasing disabled. Rules only. No live discovery.",
+                "Purchasing disabled. See the exact-release read-only schedule below.",
                 "Purchasing disabled. Read-only monitoring.",
             )
             .replace(
@@ -106,7 +106,7 @@ button.secondary { color:var(--accent); background:white; } button:disabled { op
 <header><div><p class="eyebrow">Sniper / Discogs targets</p><h1>Your rules. Your limits.</h1>
 <p class="muted">Save release targets, test your rules, and optionally read a known listing.</p></div>
 <span class="badge">Private · no purchasing</span></header>
-<div class="notice"><strong>Purchasing disabled. Rules only. No live discovery.</strong>
+<div class="notice"><strong>Purchasing disabled. See the exact-release read-only schedule below.</strong>
 <p>Nothing here searches Discogs, contacts a seller, places an order, or sends an alert.
 The optional read button fetches only the listing you supply. Neither a listing read nor a synthetic test verifies a pressing or permits a purchase.</p></div>
 <div id="server-blockers" class="notice" hidden></div>
@@ -150,7 +150,7 @@ Saving the same release updates its rules.</p>
 <button type="button" class="secondary" id="refresh">Refresh</button></div>
 <p class="muted">Load a target to replace the fields on the left. Refresh never replaces your draft.</p>
 <p id="hosted-schedule-status" class="muted">Exact-release browser schedule: checking stopped state.</p>
-<p id="candidate-pipeline-status" class="muted">Candidate checks, one-copy cart rehearsal, and order lifecycle safeguards are fixture-tested only. No purchase authorization, hosted candidate worker, live checkout, or record purchasing is running. Hosted browser reads are stopped. A partial marketplace page cannot establish full availability or qualify a row by itself; each listing needs separate item and final delivered-quote checks.</p>
+<p id="candidate-pipeline-status" class="muted">Candidate checks, one-copy cart rehearsal, and order lifecycle safeguards are fixture-tested only. No purchase authorization, hosted candidate worker, live checkout, or record purchasing is running. Read-only release acquisition status is shown separately below. A partial marketplace page cannot establish full availability or qualify a row by itself; each listing needs separate item and final delivered-quote checks.</p>
 <div id="targets" aria-live="polite"></div></section>
 </div>
 <section class="panel evaluator" aria-labelledby="monitor-release-title">
@@ -307,9 +307,22 @@ function renderSaved() {
   const targets = snapshot.targets;
   el('saved-summary').textContent = `${targets.length} saved ${targets.length === 1 ? 'target' : 'targets'} · revision ${snapshot.revision}`;
   const hosted=snapshot?.hosted_schedule;
+  const enabledIds=Array.isArray(hosted?.monitor_releases) ?
+    hosted.monitor_releases.filter(row=>row?.enabled === true).length : 0;
+  const recorded=Array.isArray(hosted?.targets) ? hosted.targets.filter(row=>
+    row && Number.isSafeInteger(row.release_id) &&
+    Number.isFinite(row.last_attempt) && row.last_attempt > 0 && row.last_attempt < 8640000000000 &&
+    ['baseline','changed','unchanged'].includes(row.last_status)) : [];
+  recorded.sort((a,b)=>b.last_attempt-a.last_attempt);
+  const last=recorded[0];
+  const lastRead=last ? `Last stored complete read: release ${last.release_id}, ${last.last_status} at ${new Date(last.last_attempt*1000).toISOString()}.` :
+    'No completed read is recorded.';
   el('hosted-schedule-status').textContent=hosted?.paused === true ?
-    `Exact-release browser schedule: paused; ${Array.isArray(hosted.monitor_releases) ? hosted.monitor_releases.length : 0} monitor-only IDs saved. No unattended browser reads.` :
-    hosted?.paused === false ? 'Exact-release schedule saved as resumed; this app has no browser reader or running hosted worker.' :
+    `Exact-release browser schedule: paused; ${enabledIds} monitor-only IDs enabled. No unattended browser reads. ${lastRead}` :
+    hosted?.paused === false && hosted.kill_switch === true ?
+      `Exact-release schedule is stopped by its safety control. ${lastRead}` :
+    hosted?.paused === false && hosted.kill_switch === false ?
+      `Exact-release schedule is resumed for ${enabledIds} monitor-only IDs. ${lastRead} This page does not verify worker liveness or future availability.` :
     'Exact-release browser schedule status is unavailable or unverified.';
   if (targets.length === 0) el('targets').append(node('p', 'No targets yet. Add your first set of rules.', 'empty'));
   targets.forEach((target) => {
@@ -395,7 +408,7 @@ function renderMonitorReleases() {
     const card=node('article', '', 'target');
     card.append(node('h3', `Release ${row.release_id}`),
       node('p', row.enabled && hosted.paused === true ? 'Saved for read-only checks; hosted schedule is still paused.' :
-        row.enabled ? 'Saved for read-only checks; this UI has no browser reader or hosted worker.' :
+        row.enabled ? 'Enabled for read-only checks; see the last stored result above. Buying is disabled.' :
         'Paused for this release; no checks requested.', 'muted'));
     const button=node('button', row.enabled ? 'Pause this release' : 'Enable this release',
       'secondary monitor-release-toggle'); button.type='button';

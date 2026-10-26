@@ -126,10 +126,10 @@ function clickText(text) {
 }
 (async()=>{
   dom=open();w=dom.window;d=w.document;await settled(w);
-  assert.match(d.body.textContent,/Purchasing disabled\. Rules only\. No live discovery\./);
+  assert.match(d.body.textContent,/Purchasing disabled\. See the exact-release read-only schedule below\./);
   assert.match(el('candidate-pipeline-status').textContent,/fixture-tested only/);
   assert.match(el('candidate-pipeline-status').textContent,/No purchase authorization, hosted candidate worker, live checkout, or record purchasing is running/);
-  assert.match(el('candidate-pipeline-status').textContent,/Hosted browser reads are stopped/);
+  assert.match(el('candidate-pipeline-status').textContent,/Read-only release acquisition status is shown separately below/);
   assert.match(el('candidate-pipeline-status').textContent,/partial marketplace page.*cannot establish full availability or qualify a row by itself/);
   assert.equal(d.querySelectorAll('script').length,1);assert.equal(d.querySelectorAll('script[src],link[href],img,iframe').length,0);
   assert.equal(d.querySelector('script').nonce,'dom-test-nonce');assert.equal(d.querySelector('style').nonce,'dom-test-nonce');
@@ -145,7 +145,16 @@ function clickText(text) {
   assert.equal(saved.targets.length,0);
   assert.deepEqual(saved.hosted_schedule.monitor_releases.map(row=>row.release_id),[5520534,13053315,28720177]);
   assert.equal(saved.hosted_schedule.paused,true);
-  assert.match(el('hosted-schedule-status').textContent,/paused; 3 monitor-only IDs saved/);
+  assert.match(el('hosted-schedule-status').textContent,/paused; 3 monitor-only IDs enabled/);
+  saved.hosted_schedule.paused=false;saved.hosted_schedule.kill_switch=false;
+  saved.hosted_schedule.targets=[{release_id:5520534,last_attempt:1792975096,
+    last_status:'baseline',failures:0,next_due:1792975996}];
+  el('refresh').click();await settled(w);
+  assert.match(el('hosted-schedule-status').textContent,/Last stored complete read: release 5520534, baseline/);
+  assert.match(el('hosted-schedule-status').textContent,/does not verify worker liveness/);
+  assert.doesNotMatch(el('hosted-schedule-status').textContent,/this app has no browser reader/);
+  saved.hosted_schedule.paused=true;saved.hosted_schedule.kill_switch=true;
+  el('refresh').click();await settled(w);
   assert.equal(posts('/api/listing').length,0);
   const pause=[...d.querySelectorAll('.monitor-release-toggle')][0];pause.click();await settled(w);
   assert.equal(saved.hosted_schedule.monitor_releases[0].enabled,false);
