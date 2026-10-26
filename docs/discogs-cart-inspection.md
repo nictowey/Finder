@@ -456,11 +456,20 @@ configuration; it is not the existing read-only socket or profile mount. The
 browser profile stays owner-only. No mount, listener, acknowledgement or live
 cart authorization was installed by this code change.
 
-The current cart collector cannot establish an empty pre-add cart. The helper
-therefore stops before any click unless a separately verified producer supplies
-that evidence. Two supported DOM reads of the owner's already-open local cart
-timed out before command dispatch; no empty-cart structure was captured. That is
-a browser-tool limitation, not evidence of a Discogs access denial or emptiness.
+Two earlier local DOM-tool reads timed out before command dispatch. A later
+normal hosted Firefox UI visit on October 26 displayed an empty cart without a
+challenge. Inspector verified `#page.cart_page.aside_right.with_tabs`, its
+`#page_content[role="main"]`, the main's `h1` text `Your cart is empty`, and an
+empty `div.orders`. The separate Marketplace H1 lies outside main. No account or
+address data is part of the sanitized fixture. `discogs_empty_cart.mjs` now
+checks that exact structure read-only; a fixed existing-page verifier binds the
+result to the current scope and time. The cart helper checks again before a
+possible click. Intrinsic document age must remain within five seconds; merely
+rereading an old empty tab cannot renew it. Any other cart or checkout page in
+the context invalidates the proof. This is a recently loaded display check,
+not an atomic guarantee of merchant cart state. No automatic refresh was added.
+These collectors are fixture-tested; they have not been
+executed through the hosted program or enabled as a live cart helper.
 
 `PaymentQuoteEvidence` is an assessment-only contract for a future noncommitting
 quote source. The no-order coordinator binds it to the current candidate,
@@ -486,3 +495,45 @@ before calling its simulated adapter. Its additive v1-to-v2 migration preserves
 permanent duplicate fences and treats legacy uncertain/absent attempts without
 a submission timestamp conservatively; an older absence lookup cannot clear
 uncertainty. These are storage and no-submit tests, not live payment proof.
+
+## Enhanced checkout observed on the hosted browser
+
+After that empty-cart observation, one normal visible Add to Cart action added
+only the specifically authorized KC test item. The resulting hosted cart showed
+one item from one seller, explicit USD amounts, selected Economy - Media Mail
+shipping, the existing saved address, and a displayed total equal to the owner's
+ceiling. This was an operator UI inspection, not execution of the dormant helper.
+No order, payment, agreement, address or shipping selection was submitted or
+changed.
+
+This cart's visible navigation button is
+`button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]`, with
+value `Go to Checkout` and type `submit`. Following it normally opened
+`https://www.discogs.com/marketplace/checkout` without creating a visible order.
+The review showed the same one item, saved address, USD subtotal/shipping/total,
+and PayPal plus Debit or Credit Card buttons, both powered by PayPal. No separate
+unpaid-order control was visible. No payment button was operated. There was no
+explicit tax amount or tax-finality evidence captured; this display alone is
+not promoted to a verified all-in payable quote.
+
+The dormant `discogs_hosted_order_commit.mjs` is limited to the previously
+observed legacy `checkout_v1` committing control. It requires exact current
+authorization, candidate, final quote, destination and terms ports, explicit
+matching displayed currency/amounts/tax/shipping, and a durable ledger fence
+before at most one intercepted click. Those live ports are absent. It does not
+operate the enhanced PayPal checkout, create an unpaid-order route, or establish
+that such a route exists. Uncertain results cannot authorize a retry.
+
+Official-document review on October 26 found that the
+[buying guide](https://support.discogs.com/hc/en-us/articles/360001573434-How-To-Buy-Music-On-Discogs)
+(displayed update November 19, 2025) and
+[post-order payment guide](https://support.discogs.com/hc/en-us/articles/360007626933-I-Just-Placed-An-Order-How-Do-I-Pay-For-It)
+(August 22, 2024) describe the older Place order and pay now flow and payment
+from an existing order. They do not identify the observed checkout_v2 control
+or establish its exact order-creation boundary. The current
+[order-status guide](https://support.discogs.com/hc/en-us/articles/360007525494-What-Do-The-Different-Order-Statuses-Mean)
+says PayPal orders normally arrive with payment received and distinguishes
+incomplete payment from uncleared payment. This supports the separate status
+model, not a promise that enhanced checkout can create an unpaid order alone.
+No payment control, hidden legacy control or alternate payment path was used
+to resolve that unknown.

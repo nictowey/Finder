@@ -16,6 +16,12 @@ finds nothing or fails. A read-only order observation can attach a Discogs
 two-part numeric order ID and classify the displayed status independently from
 payment. Identity or price mismatches retain the order ID for review and keep
 the one-copy fence. Later observations cannot roll a paid state back to unpaid.
+Schema v2 records submission time transactionally with that fence. Receipt
+observations preceding submission cannot verify an order or payment. The additive
+v1 migration preserves permanent slots and existing order IDs, but marks legacy
+attempts without a fence timestamp unverified and review-required. The separate
+real-ledger read-only guard can block checkout on any existing release slot;
+it does not reuse the synthetic order-safety executor interface.
 
 Discogs' [developer documentation](https://www.discogs.com/developers)
 illustrates order IDs in `1-1` form. Its

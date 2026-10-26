@@ -108,6 +108,126 @@ def test_order_created_is_not_paid_and_payment_progression_survives_restart(tmp_
         reopened.prepare(replace(proposal, intent_id=str(uuid4())), now=1000)
 
 
+def test_receipt_before_submission_fence_cannot_prove_order_or_payment_after_restart(tmp_path):
+    path = tmp_path / "orders.db"
+    store = DiscogsOrderLedger(path, create=True)
+    proposal = expected()
+    store.prepare(proposal, now=1000)
+    before = store.fence_possible_submit(proposal.intent_id, now=1100)
+    reopened = DiscogsOrderLedger(path)
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT submission_started_at FROM intents").fetchone()[0] == 1100
+    with pytest.raises(OrderEvidenceStopped, match="order_evidence_time_unverified"):
+        reopened.record_read_only_lookup(
+            proposal.intent_id,
+            observed(displayed_status="Payment Received", observed_at=1050),
+            now=1200,
+        )
+    assert reopened.status(proposal.intent_id) == before
+    assert reopened.record_read_only_lookup(proposal.intent_id, None, now=1200) == before
+    paid = reopened.record_read_only_lookup(
+        proposal.intent_id,
+        observed(displayed_status="Payment Received", observed_at=1150),
+        now=1200,
+    )
+    assert paid["state"] == "order_seen" and paid["payment_state"] == "paid"
+    with pytest.raises(OrderEvidenceStopped, match="already_fenced"):
+        reopened.fence_possible_submit(proposal.intent_id, now=1200)
+    with pytest.raises(OrderEvidenceStopped, match="one_copy"):
+        reopened.prepare(replace(proposal, intent_id=str(uuid4())), now=1200)
+
+
+@pytest.mark.parametrize(
+    "legacy_state", ["prepared", "submission_unknown", "order_seen", "identity_conflict"]
+)
+def test_legacy_missing_fence_time_remains_unverified_without_recycling_slot(
+    tmp_path, legacy_state
+):
+    path = tmp_path / "orders.db"
+    store = DiscogsOrderLedger(path, create=True)
+    proposal = expected()
+    store.prepare(proposal, now=1000)
+    if legacy_state != "prepared":
+        store.fence_possible_submit(proposal.intent_id, now=1001)
+    if legacy_state in {"order_seen", "identity_conflict"}:
+        store.record_read_only_lookup(
+            proposal.intent_id,
+            observed(
+                displayed_status="Payment Received",
+                total="26.00" if legacy_state == "identity_conflict" else "25.00",
+            ),
+            now=1101,
+        )
+    before = store.status(proposal.intent_id)
+    assert before["state"] == legacy_state
+    with sqlite3.connect(path) as db:
+        db.execute("ALTER TABLE intents DROP COLUMN submission_started_at")
+        db.execute("PRAGMA user_version=1")
+    reopened = DiscogsOrderLedger(path)
+    result = DiscogsOrderLedger(path).status_for_release(proposal.release_id)
+    assert result["state"] == (
+        "submission_unknown" if legacy_state == "order_seen" else legacy_state
+    )
+    assert result["order_id"] == before["order_id"]
+    assert result["payment_state"] == "unknown"
+    assert result["review_required"] is (legacy_state != "prepared")
+    assert result["may_submit_again"] is False
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.execute("SELECT submission_started_at FROM intents").fetchone()[0] is None
+    if legacy_state == "prepared":
+        reopened.fence_possible_submit(proposal.intent_id, now=1150)
+        assert (
+            reopened.record_read_only_lookup(
+                proposal.intent_id, observed(observed_at=1200), now=1201
+            )["payment_state"]
+            == "unpaid"
+        )
+    else:
+        assert reopened.record_read_only_lookup(proposal.intent_id, None, now=1200) == result
+        with pytest.raises(OrderEvidenceStopped, match="order_evidence_time_unverified"):
+            reopened.record_read_only_lookup(
+                proposal.intent_id,
+                observed(displayed_status="Payment Received", observed_at=1200),
+                now=1201,
+            )
+        assert reopened.status(proposal.intent_id) == result
+        with pytest.raises(OrderEvidenceStopped, match="already_fenced"):
+            reopened.fence_possible_submit(proposal.intent_id, now=1200)
+    with pytest.raises(OrderEvidenceStopped, match="one_copy"):
+        reopened.prepare(replace(proposal, intent_id=str(uuid4())), now=1200)
+
+
+def test_missing_current_fence_timestamp_cannot_verify_receipt(tmp_path):
+    path = tmp_path / "orders.db"
+    store = DiscogsOrderLedger(path, create=True)
+    proposal = expected()
+    store.prepare(proposal, now=1000)
+    before = store.fence_possible_submit(proposal.intent_id, now=1100)
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE intents SET submission_started_at=NULL")
+    with pytest.raises(OrderEvidenceStopped, match="order_evidence_time_unverified"):
+        DiscogsOrderLedger(path).record_read_only_lookup(
+            proposal.intent_id,
+            observed(displayed_status="Payment Received", observed_at=1200),
+            now=1201,
+        )
+    assert store.status(proposal.intent_id) == before
+
+
+def test_release_slot_lookup_is_read_only_and_requires_exact_release(tmp_path):
+    store = ledger(tmp_path)
+    proposal = expected()
+    assert store.status_for_release(proposal.release_id) is None
+    prepared = store.prepare(proposal, now=1000)
+    assert store.status_for_release(proposal.release_id) == prepared
+    assert store.status_for_release(proposal.release_id + 1) is None
+    for release in (True, 0, -1, "28720177"):
+        with pytest.raises(ValueError, match="exact release ID"):
+            store.status_for_release(release)
+    assert store.status(proposal.intent_id) == prepared
+
+
 def test_unknown_or_mismatched_order_page_retains_fence_and_identity(tmp_path):
     store = ledger(tmp_path)
     proposal = expected()

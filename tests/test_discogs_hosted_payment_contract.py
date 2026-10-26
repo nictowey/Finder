@@ -8,6 +8,7 @@ from test_discogs_payment_preflight import quote
 
 from finder.discogs_hosted_checkout import CheckoutStopped, HostedCheckoutPreflight
 from finder.discogs_hosted_checkout_coordinator import HostedNoOrderCoordinator
+from finder.discogs_order_reconciliation import DiscogsOrderLedger, ExpectedOrder
 from finder.discogs_order_safety import OrderSafetyStore
 from finder.discogs_payment_preflight import PaymentQuoteBindings
 from finder.discogs_rules import RulesStore
@@ -157,3 +158,52 @@ def test_existing_order_intent_fences_the_contract_assessment(
     monkeypatch.setattr(orders, "status_for_release", intent)
     with pytest.raises(CheckoutStopped, match="existing_order_intent_blocks"):
         coordinator.inspect_payment_contract(123, "1002", key, bindings, evidence(now, bindings))
+
+
+@pytest.mark.parametrize("appears_during_read", [False, True])
+def test_real_order_ledger_fences_contract_without_using_a_synthetic_order_port(
+    tmp_path, monkeypatch, appears_during_read
+):
+    now, candidates, key, bindings, coordinator = ready(tmp_path)
+    ledger = DiscogsOrderLedger(tmp_path / "real-order-evidence.db", create=True)
+    coordinator = HostedNoOrderCoordinator(candidates, coordinator.preflight, real_orders=ledger)
+    expected = ExpectedOrder(
+        intent_id=str(uuid4()),
+        approval_ref=str(uuid4()),
+        release_id=123,
+        listing_id="1002",
+        seller="ExampleSeller",
+        quoted_total="9.95",
+        currency="USD",
+        quote_fingerprint="a" * 64,
+        rules_revision=1,
+        destination_ref=bindings.destination_ref,
+        payment_ref=bindings.payment_ref,
+        quote_expires_at=now[0] + 60,
+    )
+    if not appears_during_read:
+        ledger.prepare(expected, now=now[0])
+    else:
+        original = candidates.cart_review_bundle
+        calls = []
+
+        def concurrent_intent(*args):
+            current = original(*args)
+            calls.append(True)
+            if len(calls) == 2:
+                ledger.prepare(expected, now=now[0])
+            return current
+
+        monkeypatch.setattr(candidates, "cart_review_bundle", concurrent_intent)
+    assert coordinator.readiness()["real_order_ledger_guard"] == "read_only"
+    assert coordinator.readiness()["order_ledger"] == "unavailable"
+    with pytest.raises(CheckoutStopped, match="existing_order_intent_blocks"):
+        coordinator.inspect_payment_contract(123, "1002", key, bindings, evidence(now, bindings))
+    assert ledger.status(expected.intent_id)["state"] == "prepared"
+
+
+def test_real_order_guard_does_not_replace_synthetic_order_interface(tmp_path):
+    _, candidates, _, _, coordinator = ready(tmp_path)
+    ledger = DiscogsOrderLedger(tmp_path / "real-order-evidence.db", create=True)
+    with pytest.raises(ValueError, match="fixed no-order checkout ports"):
+        HostedNoOrderCoordinator(candidates, coordinator.preflight, orders=ledger)

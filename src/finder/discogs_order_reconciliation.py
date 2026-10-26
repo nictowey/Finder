@@ -18,7 +18,7 @@ from pathlib import Path
 from uuid import UUID
 
 APPLICATION_ID = 1397637171
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ORDER_ID = re.compile(r"^[0-9]{1,20}-[0-9]{1,20}$")
 LISTING_ID = re.compile(r"^[1-9][0-9]{0,15}$")
 FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
@@ -176,17 +176,28 @@ class DiscogsOrderLedger:
                         last_status TEXT,
                         last_observed_at REAL,
                         created_at REAL NOT NULL,
-                        updated_at REAL NOT NULL
+                        updated_at REAL NOT NULL,
+                        submission_started_at REAL
                     );
                     CREATE TRIGGER no_intent_delete BEFORE DELETE ON intents
                       BEGIN SELECT RAISE(ABORT,'order intents cannot be deleted'); END;
                     COMMIT;
                 """)
-            elif (
-                db.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID
-                or db.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION
-            ):
-                raise ValueError("Not a supported Discogs order ledger.")
+            else:
+                version = db.execute("PRAGMA user_version").fetchone()[0]
+                application = db.execute("PRAGMA application_id").fetchone()[0]
+                if application != APPLICATION_ID or version not in {1, SCHEMA_VERSION}:
+                    raise ValueError("Not a supported Discogs order ledger.")
+                if version == 1:
+                    db.execute("BEGIN IMMEDIATE")
+                    if db.execute("PRAGMA user_version").fetchone()[0] == 1:
+                        db.execute("ALTER TABLE intents ADD COLUMN submission_started_at REAL")
+                        db.execute(
+                            "UPDATE intents SET payment_state='unknown',review_required=1,"
+                            "state=CASE WHEN state='order_seen' THEN 'submission_unknown' "
+                            "ELSE state END WHERE state!='prepared'"
+                        )
+                        db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     @contextmanager
     def _db(self):
@@ -236,7 +247,7 @@ class DiscogsOrderLedger:
                 raise OrderEvidenceStopped("one_copy_slot_already_used")
             db.execute(
                 "INSERT INTO intents VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'prepared',NULL,'unknown',0,"
-                "NULL,NULL,?,?)",
+                "NULL,NULL,?,?,NULL)",
                 (
                     expected.release_id,
                     expected.intent_id,
@@ -267,9 +278,9 @@ class DiscogsOrderLedger:
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             changed = db.execute(
-                "UPDATE intents SET state='submission_unknown',updated_at=? "
-                "WHERE intent_id=? AND state='prepared' AND quote_expires_at>?",
-                (now, intent_id, now),
+                "UPDATE intents SET state='submission_unknown',updated_at=?,submission_started_at=?"
+                " WHERE intent_id=? AND state='prepared' AND quote_expires_at>? AND created_at<=?",
+                (now, now, intent_id, now, now),
             ).rowcount
             if changed != 1:
                 raise OrderEvidenceStopped("intent_missing_stale_or_already_fenced")
@@ -290,7 +301,12 @@ class DiscogsOrderLedger:
                 raise OrderEvidenceStopped("no_fenced_submission_to_reconcile")
             if evidence is None:
                 return self._public(row)
-            if evidence.observed_at > now or evidence.observed_at < row["created_at"]:
+            submitted = row["submission_started_at"]
+            if (
+                type(submitted) not in (int, float)
+                or not isfinite(submitted)
+                or not row["created_at"] <= submitted <= evidence.observed_at <= now
+            ):
                 raise OrderEvidenceStopped("order_evidence_time_unverified")
             if (
                 row["last_observed_at"] is not None
@@ -345,4 +361,12 @@ class DiscogsOrderLedger:
         _uuid(intent_id)
         with self._db() as db:
             row = db.execute("SELECT * FROM intents WHERE intent_id=?", (intent_id,)).fetchone()
+            return self._public(row) if row else None
+
+    def status_for_release(self, release_id):
+        """Read the permanent real-order slot without assuming its intent reference."""
+        if type(release_id) is not int or not 0 < release_id <= 9007199254740991:
+            raise ValueError("An exact release ID is required.")
+        with self._db() as db:
+            row = db.execute("SELECT * FROM intents WHERE release_id=?", (release_id,)).fetchone()
             return self._public(row) if row else None

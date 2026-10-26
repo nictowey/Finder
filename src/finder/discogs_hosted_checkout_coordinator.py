@@ -5,6 +5,7 @@ adapter below is an in-memory fixture; it cannot promote a cart read to a
 payable quote or invoke checkout controls.
 """
 
+import sqlite3
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Literal
@@ -14,6 +15,7 @@ from pydantic import Field, field_validator, model_validator
 
 from finder.discogs_candidate_pipeline import CandidatePipeline, CandidateStopped
 from finder.discogs_hosted_checkout import CheckoutStopped, HostedCheckoutPreflight
+from finder.discogs_order_reconciliation import DiscogsOrderLedger, OrderEvidenceStopped
 from finder.discogs_order_safety import OrderSafetyStore, OrderStopped
 from finder.discogs_payment_preflight import (
     PaymentPreflightStopped,
@@ -95,6 +97,7 @@ class HostedNoOrderCoordinator:
         preflight: HostedCheckoutPreflight,
         *,
         orders: OrderSafetyStore | None = None,
+        real_orders: DiscogsOrderLedger | None = None,
         quote_adapter: FixtureQuoteAdapter | None = None,
     ):
         if (
@@ -105,16 +108,20 @@ class HostedNoOrderCoordinator:
             and type(orders) is not OrderSafetyStore
             or quote_adapter is not None
             and type(quote_adapter) is not FixtureQuoteAdapter
+            or real_orders is not None
+            and type(real_orders) is not DiscogsOrderLedger
         ):
             raise ValueError("Only the fixed no-order checkout ports are supported.")
         self.candidates, self.preflight = candidates, preflight
         self.orders, self.quote_adapter = orders, quote_adapter
+        self.real_orders = real_orders
 
     def readiness(self):
         return {
             "cart_preflight": "read_only",
             "final_quote_adapter": "offline_fixture" if self.quote_adapter else "unavailable",
             "order_ledger": "synthetic_intent_guard" if self.orders else "unavailable",
+            "real_order_ledger_guard": "read_only" if self.real_orders else "unavailable",
             "live_order_submission_enabled": False,
             "payment_quote_contract": "assessment_only",
             "purchase_allowed": False,
@@ -230,9 +237,10 @@ class HostedNoOrderCoordinator:
     def _no_existing_order_intent(self, release_id):
         try:
             existing = self.orders.status_for_release(release_id) if self.orders else None
-        except OrderStopped:
+            recorded = self.real_orders.status_for_release(release_id) if self.real_orders else None
+        except (OrderStopped, OrderEvidenceStopped, OSError, sqlite3.Error):
             raise CheckoutStopped("invalid_order_intent_lookup") from None
-        if existing is not None:
+        if existing is not None or recorded is not None:
             raise CheckoutStopped("existing_order_intent_blocks_hosted_checkout")
 
     @staticmethod

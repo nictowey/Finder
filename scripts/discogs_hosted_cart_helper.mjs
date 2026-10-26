@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { collectListingDetailDom, collectListingReadinessDom } from './discogs_listing_detail_snapshot.mjs';
 import { collectCartDom, inspectCurrentCart } from './discogs_cart_inspector.mjs';
 import { prepareCurrentListingCart } from './discogs_cart_prepare.mjs';
+import { inspectCurrentEmptyCart } from './discogs_empty_cart.mjs';
 
 // Future mount only: host /var/lib/sniper/cart-bridge -> container /cart-bridge.
 // Production directory 2710 and socket 0660 are owned by browser UID 10001,
@@ -144,6 +145,35 @@ function itemMatches(detail, scope, url) {
     detail.cart_state === 'addable' && detail.url === url;
 }
 
+/** Fixed read of one existing cart page; never navigates or creates a tab. */
+export function createCurrentEmptyCartVerifier({ clock = () => Date.now() } = {}) {
+  const cartStatePages = pages => pages.filter(page => page && typeof page.url === 'function' &&
+    /^https:\/\/www\.discogs\.com\/(?:sell\/cart|shop\/cart|marketplace\/checkout)(?:[/?#]|$)/u
+      .test(page.url()));
+  return async ({ context, scope, itemDigest, signal }) => {
+    if (signal?.aborted || typeof context?.pages !== 'function') return null;
+    const pages = context.pages();
+    if (!Array.isArray(pages) || pages.length > 16) return null;
+    const carts = pages.filter(page => page && typeof page.url === 'function' &&
+      page.url() === 'https://www.discogs.com/sell/cart/');
+    if (carts.length !== 1 || cartStatePages(pages).length !== 1) return null;
+    const result = await inspectCurrentEmptyCart(carts[0], { signal });
+    if (signal?.aborted || result.status !== 'verified_empty' ||
+        carts[0].url() !== result.cart_url) return null;
+    const currentPages = context.pages();
+    if (!Array.isArray(currentPages) || currentPages.length > 16) return null;
+    const currentCarts = currentPages.filter(page => page && typeof page.url === 'function' &&
+      page.url() === 'https://www.discogs.com/sell/cart/');
+    if (currentCarts.length !== 1 || currentCarts[0] !== carts[0] ||
+        cartStatePages(currentPages).length !== 1) return null;
+    const digest = scopeDigest(scope, itemDigest);
+    if (!digest) return null;
+    return { schema: 'discogs_empty_cart_verified_v1', source: 'visible_cart_dom',
+      empty: true, item_count: 0, seller_count: 0, cart_url: result.cart_url,
+      scope_digest: digest, document_age_ms: result.document_age_ms, observed_at_ms: clock() };
+  };
+}
+
 function restrictedPage(page, scope, itemDigest, initial, signal, deadline, clock,
   state, beforeClick) {
   const check = () => {
@@ -183,11 +213,21 @@ function restrictedPage(page, scope, itemDigest, initial, signal, deadline, cloc
           }
           if (!options || typeof options.timeout !== 'number' ||
               !Number.isFinite(options.timeout)) throw new Error('unbounded_click');
+          const clickHref = await checked(() => item.getAttribute('href'));
+          if (![`/sell/cart/?add=${scope.listing_id}&ev=`,
+            `https://www.discogs.com/sell/cart/?add=${scope.listing_id}&ev=`].includes(clickHref)) {
+            throw new Error('listing_changed_before_click');
+          }
           // Persist a helper-wide uncertainty fence before issuing the click.
           // A timed-out Playwright auto-wait may still dispatch after this call
           // returns; the fence remains until separate human reconciliation.
           await beforeClick();
           check();
+          const href = await checked(() => item.getAttribute('href'));
+          if (page.url() !== initial.url || href !== clickHref ||
+              await checked(() => item.isVisible()) !== true ||
+              await checked(() => item.isDisabled()) !== false ||
+              page.url() !== initial.url) throw new Error('listing_changed_before_click');
           const remaining = Math.min(deadline - clock(), scope.expires_at * 1000 - clock());
           if (remaining <= 0) throw new Error('click_scope_expired');
           state.clickIssued = true;
@@ -299,20 +339,26 @@ export function createCartPrepareHandler({ context, bootId, directory, stopPath,
       // The current cart inspector observes an expected row but cannot prove
       // an empty pre-add cart. Without a separately reviewed producer, stop.
       if (typeof verifyEmptyCart !== 'function') return stopped('pre_cart_state_unverified');
-      const prior = await verifyEmptyCart({ context, scope });
-      if (!live() || prior?.schema !== 'discogs_empty_cart_verified_v1' ||
-          prior.empty !== true || prior.item_count !== 0 ||
-          prior.seller_count !== 0 || prior.source !== 'visible_cart_dom' ||
-          prior.scope_digest !== digest ||
-          !['https://www.discogs.com/sell/cart/',
-            'https://www.discogs.com/shop/cart/'].includes(prior.cart_url) ||
-          typeof prior.observed_at_ms !== 'number' ||
-          prior.observed_at_ms > clock() || clock() - prior.observed_at_ms > 5_000) {
+      const emptyNow = async () => {
+        const prior = await verifyEmptyCart({ context, scope, itemDigest, signal });
+        return live() && prior?.schema === 'discogs_empty_cart_verified_v1' &&
+          prior.empty === true && prior.item_count === 0 &&
+          prior.seller_count === 0 && prior.source === 'visible_cart_dom' &&
+          prior.scope_digest === digest &&
+          prior.cart_url === 'https://www.discogs.com/sell/cart/' &&
+          typeof prior.document_age_ms === 'number' && Number.isFinite(prior.document_age_ms) &&
+          prior.document_age_ms >= 0 && prior.document_age_ms <= 5_000 &&
+          typeof prior.observed_at_ms === 'number' && Number.isFinite(prior.observed_at_ms) &&
+          prior.observed_at_ms <= clock() &&
+          prior.document_age_ms + clock() - prior.observed_at_ms <= 5_000;
+      };
+      if (!await emptyNow()) {
         return stopped('pre_cart_state_unverified');
       }
       const state = { clickIssued: false };
       const beforeClick = async () => {
         if (!live()) throw new Error('click_scope_expired');
+        if (!await emptyNow()) throw new Error('pre_cart_state_unverified');
         await persistMarker(mutationLatch,
           `${bootId}:${scope.idempotency_key}:${digest}:attempting\n`);
         if (!live()) throw new Error('click_scope_expired');

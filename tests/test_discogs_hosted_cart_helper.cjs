@@ -207,7 +207,7 @@ test('changed item comment at final click recheck cannot dispatch click', async 
     const handle = createCartPrepareHandler({ context: fixture.context, bootId,
       directory, stopPath, clock: () => now,
       verifyEmptyCart: async () => ({ schema: 'discogs_empty_cart_verified_v1',
-        source: 'visible_cart_dom', empty: true, item_count: 0, seller_count: 0,
+        source: 'visible_cart_dom', empty: true, item_count: 0, seller_count: 0, document_age_ms: 0,
         scope_digest: scopeDigest(input.scope, input.item_digest),
         cart_url: 'https://www.discogs.com/sell/cart/', observed_at_ms: now }) });
     assert.equal((await handle(input)).code, 'cart_outcome_uncertain');
@@ -259,7 +259,7 @@ test('a scoped click is issued once and uncertain outcome fences all later attem
     const handle = createCartPrepareHandler({ context: fixture.context, bootId, directory,
       stopPath, clock: () => now,
       verifyEmptyCart: async () => ({ schema: 'discogs_empty_cart_verified_v1',
-        source: 'visible_cart_dom', empty: true, item_count: 0, seller_count: 0,
+        source: 'visible_cart_dom', empty: true, item_count: 0, seller_count: 0, document_age_ms: 0,
         scope_digest: scopeDigest(input.scope, input.item_digest), cart_url: 'https://www.discogs.com/sell/cart/',
         observed_at_ms: now }) });
     assert.equal((await handle(input)).code, 'cart_outcome_uncertain');
@@ -289,7 +289,7 @@ test('scope expiry during delayed locator work stops before any click', async ()
     const handle = createCartPrepareHandler({ context: fixture.context, bootId, directory,
       stopPath, clock: () => now[0],
       verifyEmptyCart: async () => ({ schema: 'discogs_empty_cart_verified_v1',
-        source: 'visible_cart_dom', empty: true, item_count: 0, seller_count: 0,
+        source: 'visible_cart_dom', empty: true, item_count: 0, seller_count: 0, document_age_ms: 0,
         scope_digest: scopeDigest(input.scope, input.item_digest), cart_url: 'https://www.discogs.com/sell/cart/',
         observed_at_ms: now[0] }) });
     assert.equal((await handle(input)).code, 'cart_outcome_uncertain');
@@ -313,7 +313,7 @@ test('client disconnect during a locator wait cannot dispatch a late click', asy
     const handle = createCartPrepareHandler({ context: fixture.context, bootId, directory,
       stopPath, clock: () => now,
       verifyEmptyCart: async () => ({ schema: 'discogs_empty_cart_verified_v1',
-        source: 'visible_cart_dom', empty: true, item_count: 0, seller_count: 0,
+        source: 'visible_cart_dom', empty: true, item_count: 0, seller_count: 0, document_age_ms: 0,
         scope_digest: scopeDigest(input.scope, input.item_digest), cart_url: 'https://www.discogs.com/sell/cart/',
         observed_at_ms: now }) });
     assert.equal((await handle(input, controller.signal)).code, 'cart_outcome_uncertain');
@@ -338,7 +338,7 @@ test('disconnect after one issued click retains global latch and prevents later 
     const handle = createCartPrepareHandler({ context: fixture.context, bootId, directory,
       stopPath, clock: () => now,
       verifyEmptyCart: async () => ({ schema: 'discogs_empty_cart_verified_v1',
-        source: 'visible_cart_dom', empty: true, item_count: 0, seller_count: 0,
+        source: 'visible_cart_dom', empty: true, item_count: 0, seller_count: 0, document_age_ms: 0,
         scope_digest: scopeDigest(input.scope, input.item_digest), cart_url: 'https://www.discogs.com/sell/cart/',
         observed_at_ms: now }) });
     assert.equal((await handle(input, controller.signal)).code, 'cart_outcome_uncertain');
@@ -367,7 +367,7 @@ test('reported click timeout remains uncertain and globally fenced', async () =>
     const handle = createCartPrepareHandler({ context: fixture.context, bootId, directory,
       stopPath, clock: () => now,
       verifyEmptyCart: async () => ({ schema: 'discogs_empty_cart_verified_v1',
-        source: 'visible_cart_dom', empty: true, item_count: 0, seller_count: 0,
+        source: 'visible_cart_dom', empty: true, item_count: 0, seller_count: 0, document_age_ms: 0,
         scope_digest: scopeDigest(input.scope, input.item_digest), cart_url: 'https://www.discogs.com/sell/cart/',
         observed_at_ms: now }) });
     assert.equal((await handle(input)).code, 'cart_outcome_uncertain');
@@ -426,7 +426,7 @@ test('global mutation marker sync failure cannot dispatch a click', async () => 
         durableExclusiveMarker(path, content, async () => { throw new Error('directory sync failed'); }) :
         durableExclusiveMarker(path, content),
       verifyEmptyCart: async () => ({ schema: 'discogs_empty_cart_verified_v1',
-        source: 'visible_cart_dom', empty: true, item_count: 0, seller_count: 0,
+        source: 'visible_cart_dom', empty: true, item_count: 0, seller_count: 0, document_age_ms: 0,
         scope_digest: scopeDigest(input.scope, input.item_digest),
         cart_url: 'https://www.discogs.com/sell/cart/', observed_at_ms: now }) });
     assert.equal((await handle(input)).code, 'cart_outcome_uncertain');
@@ -434,3 +434,201 @@ test('global mutation marker sync failure cannot dispatch a click', async () => 
     assert.equal((await lstat(join(directory, 'cart-mutation-reconciliation-required'))).mode & 0o777, 0o600);
   });
 });
+
+function emptyCartDom(changes = {}) {
+  return { schema: 'discogs_empty_cart_dom_v1', status: 'verified_empty',
+    source: 'visible_cart_dom', empty: true, item_count: 0, seller_count: 0, document_age_ms: 0,
+    purchase_allowed: false, ...changes };
+}
+
+test('empty-cart factory uses only existing page URL and the fixed DOM collector', async () => {
+  const { createCurrentEmptyCartVerifier, scopeDigest } = await load();
+  const { collectEmptyCartDom } = await import('../scripts/discogs_empty_cart.mjs');
+  const now = stamp(), input = request(now), calls = [];
+  const forbidden = () => { throw new Error('unexpected browser capability'); };
+  const page = {
+    url: () => { calls.push('url'); return 'https://www.discogs.com/sell/cart/'; },
+    evaluate: async fn => {
+      calls.push('evaluate'); assert.equal(fn, collectEmptyCartDom);
+      return emptyCartDom({ scope_digest: 'f'.repeat(64), observed_at_ms: -1,
+        cart_url: 'https://untrusted.invalid/', secret: 'must-not-return' });
+    },
+    goto: forbidden, getByRole: forbidden, title: forbidden, cookies: forbidden,
+  };
+  const context = { pages: () => { calls.push('pages'); return [page]; },
+    newPage: forbidden, newContext: forbidden, cookies: forbidden };
+  const verify = createCurrentEmptyCartVerifier({ clock: () => { calls.push('clock'); return now; } });
+  const result = await verify({ context, scope: input.scope, itemDigest: input.item_digest });
+  assert.deepEqual(result, { schema: 'discogs_empty_cart_verified_v1', source: 'visible_cart_dom',
+    empty: true, item_count: 0, seller_count: 0,
+    cart_url: 'https://www.discogs.com/sell/cart/',
+    scope_digest: scopeDigest(input.scope, input.item_digest), document_age_ms: result.document_age_ms,
+    observed_at_ms: now });
+  assert.ok(result.document_age_ms >= 0 && result.document_age_ms <= 5_000);
+  assert.equal(calls.filter(call => call === 'evaluate').length, 1);
+  assert.equal(calls.at(-1), 'clock');
+  assert.ok(calls.every(call => ['pages', 'url', 'evaluate', 'clock'].includes(call)));
+});
+
+test('empty-cart factory rejects missing, duplicate and noncanonical current carts before DOM', async () => {
+  const { createCurrentEmptyCartVerifier } = await load();
+  const now = stamp(), input = request(now);
+  const verify = createCurrentEmptyCartVerifier({ clock: () => now });
+  let evaluations = 0;
+  const cart = url => ({ url: () => url, evaluate: async () => { evaluations++; return emptyCartDom(); } });
+  const canonical = 'https://www.discogs.com/sell/cart/';
+  for (const pages of [[], [cart(canonical), cart(canonical)],
+    [cart(`${canonical}?add=1002`)], [cart(canonical.slice(0, -1))],
+    Array.from({ length: 17 }, () => cart(canonical)), null]) {
+    assert.equal(await verify({ context: { pages: () => pages },
+      scope: input.scope, itemDigest: input.item_digest }), null);
+  }
+  assert.equal(evaluations, 0);
+});
+
+test('empty-cart factory rejects changed URL and unverified DOM observations', async () => {
+  const { createCurrentEmptyCartVerifier } = await load();
+  const now = stamp(), input = request(now), canonical = 'https://www.discogs.com/sell/cart/';
+  const verify = createCurrentEmptyCartVerifier({ clock: () => now });
+  for (const changes of [{ empty: false }, { item_count: 1 }, { seller_count: 1 },
+    { source: 'offline_fixture' }, { purchase_allowed: true }, { status: 'blocked' }]) {
+    const page = { url: () => canonical, evaluate: async () => emptyCartDom(changes) };
+    assert.equal(await verify({ context: { pages: () => [page] },
+      scope: input.scope, itemDigest: input.item_digest }), null);
+  }
+  let url = canonical;
+  const changed = { url: () => url, evaluate: async () => {
+    url = 'https://www.discogs.com/sell/item/1002'; return emptyCartDom();
+  } };
+  assert.equal(await verify({ context: { pages: () => [changed] },
+    scope: input.scope, itemDigest: input.item_digest }), null);
+});
+
+test('empty-cart factory forwards cancellation before and during its DOM read', async () => {
+  const { createCurrentEmptyCartVerifier } = await load();
+  const now = stamp(), input = request(now), controller = new AbortController(), calls = [];
+  const verify = createCurrentEmptyCartVerifier({ clock: () => now });
+  const page = { url: () => { calls.push('url'); return 'https://www.discogs.com/sell/cart/'; },
+    evaluate: async () => { calls.push('evaluate'); controller.abort(); return emptyCartDom(); } };
+  assert.equal(await verify({ context: { pages: () => [page] },
+    scope: input.scope, itemDigest: input.item_digest, signal: controller.signal }), null);
+  assert.equal(calls.at(-1), 'evaluate');
+  assert.ok(calls.slice(0, -1).every(call => call === 'url'));
+  const after = [...calls];
+  assert.equal(await verify({ context: { pages: () => { throw new Error('aborted read'); } },
+    scope: input.scope, itemDigest: input.item_digest, signal: controller.signal }), null);
+  assert.deepEqual(calls, after);
+});
+
+test('a second canonical cart appearing during DOM inspection invalidates empty-cart proof', async () => {
+  const { createCurrentEmptyCartVerifier } = await load();
+  const now = stamp(), input = request(now), canonical = 'https://www.discogs.com/sell/cart/';
+  const duplicate = { url: () => canonical, evaluate: async () => { throw new Error('ambiguous cart'); } };
+  const pages = [];
+  pages.push({ url: () => canonical, evaluate: async () => {
+    pages.push(duplicate); return emptyCartDom();
+  } });
+  const verify = createCurrentEmptyCartVerifier({ clock: () => now });
+  assert.equal(await verify({ context: { pages: () => [...pages] },
+    scope: input.scope, itemDigest: input.item_digest }), null);
+});
+
+test('replacing the inspected cart with another canonical cart invalidates its proof', async () => {
+  const { createCurrentEmptyCartVerifier } = await load();
+  const now = stamp(), input = request(now), canonical = 'https://www.discogs.com/sell/cart/';
+  const replacement = { url: () => canonical,
+    evaluate: async () => { throw new Error('replacement was never inspected'); } };
+  let pages;
+  const original = { url: () => canonical,
+    evaluate: async () => { pages = [replacement]; return emptyCartDom(); } };
+  pages = [original];
+  const verify = createCurrentEmptyCartVerifier({ clock: () => now });
+  assert.equal(await verify({ context: { pages: () => [...pages] },
+    scope: input.scope, itemDigest: input.item_digest }), null);
+});
+
+test('other checkout or mutation-result cart pages invalidate an old empty tab', async () => {
+  const { createCurrentEmptyCartVerifier } = await load();
+  const now = stamp(), input = request(now), canonical = 'https://www.discogs.com/sell/cart/';
+  const verify = createCurrentEmptyCartVerifier({ clock: () => now });
+  for (const url of [canonical + '?add=1002&ev=', 'https://www.discogs.com/shop/cart/',
+    'https://www.discogs.com/marketplace/checkout']) {
+    let evaluations = 0;
+    const cart = { url: () => canonical, evaluate: async () => { evaluations++; return emptyCartDom(); } };
+    const other = { url: () => url };
+    assert.equal(await verify({ context: { pages: () => [cart, other] },
+      scope: input.scope, itemDigest: input.item_digest }), null);
+    assert.equal(evaluations, 0);
+    let pages = [cart];
+    cart.evaluate = async () => { pages.push(other); return emptyCartDom(); };
+    assert.equal(await verify({ context: { pages: () => pages },
+      scope: input.scope, itemDigest: input.item_digest }), null);
+  }
+});
+
+test('nonempty cart at the second grounded check stops before the durable click latch', async () => {
+  const { createCartPrepareHandler, createCurrentEmptyCartVerifier, scopeDigest } = await load();
+  await withStore(async ({ directory, stopPath }) => {
+    const now = stamp(), bootId = randomUUID(), input = request(now), fixture = fixturePage();
+    const page = fixture.context.pages()[0];
+    let clicks = 0, cartReads = 0;
+    page.getByRole = (role, options) => ({
+      count: async () => role === 'link' && options.name === 'Add to Cart' ? 1 : 0,
+      nth: () => ({ isVisible: async () => true, isDisabled: async () => false,
+        getAttribute: async () => '/sell/cart/?add=1002&ev=',
+        click: async () => { clicks++; } }),
+    });
+    const cart = { url: () => 'https://www.discogs.com/sell/cart/',
+      evaluate: async () => ++cartReads === 1 ? emptyCartDom() :
+        emptyCartDom({ status: 'blocked', empty: false, item_count: 1 }) };
+    const context = { pages: () => [page, cart] };
+    await ack(directory, bootId, input.scope, scopeDigest(input.scope, input.item_digest));
+    const handle = createCartPrepareHandler({ context, bootId, directory, stopPath,
+      clock: () => now, verifyEmptyCart: createCurrentEmptyCartVerifier({ clock: () => now }) });
+    assert.equal((await handle(input)).code, 'cart_outcome_uncertain');
+    assert.equal(cartReads, 2);
+    assert.equal(clicks, 0);
+    assert.equal((await readdir(directory)).includes('cart-mutation-reconciliation-required'), false);
+  });
+});
+
+for (const change of ['href_absolute', 'href_other_item', 'url', 'visibility', 'disabled']) {
+  test(`post-fsync ${change} change blocks click and retains the mutation latch`, async () => {
+    const { createCartPrepareHandler, scopeDigest, durableExclusiveMarker } = await load();
+    await withStore(async ({ directory, stopPath }) => {
+      const now = stamp(), bootId = randomUUID(), input = request(now), fixture = fixturePage();
+      const page = fixture.context.pages()[0];
+      let href = '/sell/cart/?add=1002&ev=', url = page.url(), visible = true, disabled = false;
+      let clicks = 0, synchronized = false;
+      page.url = () => url;
+      page.getByRole = (role, options) => ({
+        count: async () => role === 'link' && options.name === 'Add to Cart' ? 1 : 0,
+        nth: () => ({ isVisible: async () => visible, isDisabled: async () => disabled,
+          getAttribute: async () => href, click: async () => { clicks++; } }),
+      });
+      await ack(directory, bootId, input.scope, scopeDigest(input.scope, input.item_digest));
+      const handle = createCartPrepareHandler({ context: fixture.context, bootId, directory,
+        stopPath, clock: () => now,
+        persistMarker: async (path, content) => {
+          await durableExclusiveMarker(path, content);
+          if (path.endsWith('cart-mutation-reconciliation-required')) {
+            synchronized = true;
+            if (change === 'href_absolute') href = 'https://www.discogs.com/sell/cart/?add=1002&ev=';
+            if (change === 'href_other_item') href = '/sell/cart/?add=1003&ev=';
+            if (change === 'url') url = 'https://www.discogs.com/sell/item/1003';
+            if (change === 'visibility') visible = false;
+            if (change === 'disabled') disabled = true;
+          }
+        },
+        verifyEmptyCart: async () => ({ schema: 'discogs_empty_cart_verified_v1',
+          source: 'visible_cart_dom', empty: true, item_count: 0, seller_count: 0, document_age_ms: 0,
+          scope_digest: scopeDigest(input.scope, input.item_digest),
+          cart_url: 'https://www.discogs.com/sell/cart/', observed_at_ms: now }) });
+      assert.equal((await handle(input)).code, 'cart_outcome_uncertain');
+      assert.equal(synchronized, true);
+      assert.equal(clicks, 0);
+      assert.equal((await readFile(join(directory, 'cart-mutation-reconciliation-required'), 'utf8')),
+        `${bootId}:${input.scope.idempotency_key}:${scopeDigest(input.scope, input.item_digest)}:attempting\n`);
+    });
+  });
+}
