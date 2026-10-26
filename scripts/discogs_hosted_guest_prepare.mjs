@@ -1,8 +1,9 @@
 /** Fixed server port for the exact KC no-submit test. Uses an existing browser
  * context only; no launch, profile, network client, card entry, Pay or order API.
- * Captured enhanced DOM lacks identity/quantity: that real shape fails closed.
+ * Enhanced summary alone is not exact item authority: fresh fixed cart/detail
+ * continuity and complete current checkout checks remain mandatory.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Readable, Writable } from 'node:stream';
 import { collectListingDetailDom, collectListingReadinessDom } from './discogs_listing_detail_snapshot.mjs';
 import { collectCartDom } from './discogs_cart_inspector.mjs';
@@ -64,6 +65,53 @@ async function ledgerHead(directory, request) {
   return state.current_head;
 }
 
+/** Grounded only in the captured exact-KC cart: one A / sole #text caption,
+ * 7-inch then Single format suffix. The expected core comes from a fresh exact
+ * release header inside this process; no request can supply it. Literal matching
+ * preserves case, punctuation and core parentheses; no generic stripping.
+ */
+export function parseCapturedCartCaption(caption, expectedCore) {
+  const normalize = value => value.normalize('NFC').replace(/\s+/gu, ' ').trim();
+  if (typeof caption !== 'string' || typeof expectedCore !== 'string') return null;
+  caption = normalize(caption); const core = normalize(expectedCore);
+  if (!caption || caption.length > 300 || !core || core.length > 160) return null;
+  const index = caption.indexOf(core);
+  if (index < 3 || caption.indexOf(core, index + 1) !== -1 || caption.slice(index - 3, index) !== ' - ') return null;
+  const artist = caption.slice(0, index - 3), suffix = caption.slice(index + core.length);
+  if (!artist || artist !== artist.trim() || !suffix.startsWith(' (') || !suffix.endsWith(')')) return null;
+  const formats = suffix.slice(2, -1).split(', ');
+  // This is deliberately the observed cart grammar, not a general format parser.
+  if (formats.length !== 2 || formats[0] !== '7"' || formats[1] !== 'Single') return null;
+  return Object.freeze({ core, artist, formats: Object.freeze(formats),
+    full_caption_digest: createHash('sha256').update(caption).digest('hex') });
+}
+
+export function checkoutCaptionMatchesCart(cart, artist, formats) {
+  const known = new Set(['7"', '45 RPM', 'Single', 'Stereo']);
+  if (!cart || !Array.isArray(cart.formats) || typeof artist !== 'string' || artist.normalize('NFC').replace(/\s+/gu, ' ').trim() !== cart.artist ||
+      !Array.isArray(formats) || !formats.length || formats.some(value => !known.has(value)) ||
+      new Set(formats).size !== formats.length) return false;
+  let index = 0;
+  for (const value of formats) if (value === cart.formats[index]) index++;
+  return index === cart.formats.length;
+}
+
+function selectedCartShippingLabel(snapshot) {
+  const methods = snapshot?.shipping_methods;
+  // Mirror the existing inspector's bounded shape and exactly-one-selection
+  // checks; the two labels below are observations, never a shipping edit.
+  if (!methods || methods.selector_count !== 1 || methods.visible !== true || methods.options_over_limit !== false ||
+      !Number.isInteger(methods.option_count) || methods.option_count < 1 || methods.option_count > 20 ||
+      !Array.isArray(methods.options) || methods.options.length !== methods.option_count ||
+      !Number.isInteger(methods.selected_index) || methods.selected_index < 0 || methods.selected_index >= methods.option_count ||
+      !methods.options.every(option => option && typeof option.selected === 'boolean' && typeof option.disabled === 'boolean' &&
+        (option.label === null || typeof option.label === 'string' && option.label.length > 0 && option.label.length <= 100 &&
+          option.label.trim() === option.label && !/[\x00-\x1f\x7f\u2028\u2029\u202a-\u202e\u2066-\u2069]/u.test(option.label))) ||
+      methods.options.filter(option => option.selected).length !== 1) return null;
+  const selected = methods.options[methods.selected_index];
+  return selected.selected && !selected.disabled && ['Economy - Media Mail', 'Economy - Media Mail - $4.95'].includes(selected.label) ? selected.label : null;
+}
+
 /** Browser-side supplemental read. Only standard semantic links/text can supply
  * identity or explicit quantity. These are deliberately absent in the captured
  * enhanced row; no React keys, hidden app state, description guessing or caller
@@ -114,12 +162,14 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
     const format = spans[separatorIndex + 2].textContent;
     if (!core || !format.startsWith(' (') || !format.endsWith(')') ||
         !titleText(format.slice(2, -1)) || format.slice(2, -1) !== format.slice(2, -1).trim()) return null;
-    return core;
+    return { core, artist: titleText(spans.slice(0, separatorIndex).map(node => node.textContent).join('')),
+      formats: format.slice(2, -1).split(', ') };
   };
   const digest = async value => [...new Uint8Array(await crypto.subtle.digest('SHA-256',
     new TextEncoder().encode(value)))].map(byte => byte.toString(16).padStart(2, '0')).join('');
   const out = { access: 'normal', ready: document.readyState === 'complete',
-    listing: false, quantity: false, destination: false, title_digest: null, title_basis: null,
+    listing: false, quantity: false, destination: false, title_digest: null, title_basis: null, title_core: null, title_artist: null, title_formats: null,
+    cart_caption: null, cart_caption_digest: null,
     media: null, sleeve: null, item: null, item_row_count: 0, item_title_present: false,
     address_container_count: 0, address_line_count: null, address_present: false, agreements: false, existing_form: false, go: false };
   if (/just a moment|attention required|security check|captcha|cloudflare|sign in|log in/iu.test(document.title) ||
@@ -129,7 +179,8 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
   if (stage === 'detail') {
     const headings = [...document.querySelectorAll('main a.hifi-heading-link-large[href="https://www.discogs.com/release/3422100"]')].filter(visible);
     if (headings.length === 1 && text(headings[0])) {
-      out.title_digest = await digest(titleText(text(headings[0]))); out.title_basis = 'detail_exact_release_header_core';
+      out.title_core = titleText(text(headings[0]));
+      out.title_digest = await digest(out.title_core); out.title_basis = 'detail_exact_release_header_core';
     }
     return out;
   }
@@ -144,13 +195,22 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
     out.listing = links.length === 1;
     const headings = cart ? links : named(row, 'h3', '_checkout-sell-item__title_');
     if (headings.length === 1 && visible(headings[0])) {
-      // Cart semantic title structure has not been captured. Keep its existing
-      // complete visible item-link digest; never strip artist/format there. A
-      // composite cart link still fails the core-title continuity gate.
-      const core = cart ? text(headings[0]) : checkoutCoreTitle(headings[0]);
-      if (core) {
-        out.title_digest = await digest(core); out.item_title_present = true;
-        out.title_basis = cart ? 'cart_full_item_link' : 'checkout_source_span_core';
+      if (cart) {
+        // Actual capture 1e05b67: this A has exactly one plain text child. Keep
+        // the entire caption, then parse it against the trusted detail core in
+        // the server process. No structured/legacy caption fallback is allowed.
+        if (headings[0].childNodes.length === 1 && headings[0].firstChild.nodeType === 3) {
+          out.cart_caption = titleText(text(headings[0]));
+          out.cart_caption_digest = await digest(out.cart_caption); out.item_title_present = true;
+          out.title_digest = out.cart_caption_digest; out.title_basis = 'cart_captured_single_text_caption';
+        }
+      } else {
+        const title = checkoutCoreTitle(headings[0]);
+        if (title) {
+          out.title_core = title.core; out.title_artist = title.artist; out.title_formats = title.formats;
+          out.title_digest = await digest(title.core); out.item_title_present = true;
+          out.title_basis = 'checkout_source_span_core';
+        }
       }
     }
     const grades = { Poor: 'P', Fair: 'F', Good: 'G', 'Good Plus': 'G+', 'Very Good': 'VG',
@@ -159,7 +219,8 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
       label !== 'Generic' && value === `${label} (${token})`)?.[1] ||
       (/^(?:P|F|G|G\+|VG|VG\+|NM|M)$/u.test(value) ? value : null);
     const conditionNodes = cart ? [] : named(row, 'div', '_checkout-sell-item__condition_');
-    const conditions = cart ? text(row) : conditionNodes.length === 1 ? text(conditionNodes[0]) : '';
+    // Cart grade DOM remains uncaptured/unsupported. Never infer it from row text.
+    const conditions = !cart && conditionNodes.length === 1 ? text(conditionNodes[0]) : '';
     const match = /(?:^| )Media(?: Condition)?\s*:\s*(.*?)\s+Sleeve(?: Condition)?\s*:\s*(.*?)(?= \$|$)/u.exec(conditions);
     if (match) { out.media = grade(match[1]); out.sleeve = grade(match[2]); }
     const prices = cart ? [] : named(row, 'div', '_checkout-sell-item__price_').filter(visible);
@@ -180,25 +241,41 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
   }
   out.address_container_count = Math.min(addresses.length, 2);
   if (addresses.length === 1 && visible(addresses[0])) {
-    const children = [...addresses[0].children];
-    const lines = children.filter(node => node.tagName === 'SPAN' && node.children.length === 0 && visible(node));
-    const sourceShape = cart || lines.every(node => [...node.classList].some(token => token.startsWith('_ships-to-address__line_')));
-    out.address_line_count = lines.length <= 6 ? lines.length : null;
-    out.address_present = sourceShape && lines.length === children.length && lines.length >= 4 && lines.length <= 6 && lines.every(node => text(node));
-    if (out.address_present) {
-      const addressText = lines.map(text).join('\n');
-      const addressDigest = await digest(addressText);
-      if (addresses[0].children.length !== children.length ||
-          [...addresses[0].children].some((node, index) => node !== children[index]) ||
-          lines.some(node => !visible(node)) || lines.map(text).join('\n') !== addressText) {
-        out.address_present = false; return out;
+    const address = addresses[0], initialNodes = [...address.childNodes];
+    const normalized = value => value.normalize('NFC').replace(/\s+/gu, ' ').trim();
+    const readAddressLines = () => {
+      const children = [...address.children];
+      if (children.length >= 4 && children.length <= 6 && children.every(node => node.tagName === 'SPAN' &&
+          node.children.length === 0 && visible(node) && (cart || [...node.classList].some(token => token.startsWith('_ships-to-address__line_')))) &&
+          [...address.childNodes].every(node => node.nodeType === 1 || node.nodeType === 3 && !normalized(node.nodeValue || ''))) {
+        return children.map(node => normalized(text(node)));
       }
+      // Semantic legacy ADDRESS text/BR flow, not an assumed account layout.
+      // Unknown tags, hidden breaks, empty lines and oversized data fail closed.
+      if (!cart || !visible(address) || [...address.childNodes].some(node => node.nodeType !== 3 &&
+          (node.nodeType !== 1 || node.tagName !== 'BR' || !rendered(node) || node.childNodes.length))) return null;
+      const lines = []; let line = '';
+      for (const node of address.childNodes) {
+        if (node.nodeType === 3) line += node.nodeValue || '';
+        else { lines.push(normalized(line)); line = ''; }
+      }
+      if (normalized(line)) lines.push(normalized(line));
+      return lines;
+    };
+    const lines = readAddressLines();
+    out.address_line_count = lines && lines.length <= 6 ? lines.length : null;
+    out.address_present = !!lines && lines.length >= 4 && lines.length <= 6 &&
+      lines.every(line => line.length > 0 && line.length <= 160) && lines.join('\n').length <= 600;
+    if (out.address_present) {
+      const addressText = lines.join('\n'), addressDigest = await digest(addressText);
+      const currentLines = readAddressLines();
+      if (address.childNodes.length !== initialNodes.length || [...address.childNodes].some((node, index) => node !== initialNodes[index]) ||
+          !currentLines || currentLines.join('\n') !== addressText) { out.address_present = false; return out; }
       out.destination = addressDigest === approvedDestinationDigest;
-      // Internal browser-to-server snapshot only. The probe's explicit response
-      // whitelist never exports this fingerprint or any address text.
       if (privateDestinationSnapshot) out.private_destination_snapshot = addressDigest;
     }
   }
+
   if (cart) {
     const controls = document.querySelectorAll('button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]');
     const button = controls[0];
@@ -325,9 +402,10 @@ export async function prepareHostedGuestForm(context, request, options = {}) {
       if (!title.ready || detail.status !== 'observed' || detail.complete !== true || detail.release_id !== scope.release_id ||
           detail.listing_id !== scope.listing_id || detail.seller_handle !== scope.seller || detail.item !== '0.10' ||
           detail.cart_state !== 'already_in_cart' || !title.title_digest) fail('listing_detail_unverified');
-      return { title_digest: title.title_digest, media: detail.media, sleeve: detail.sleeve };
+      return { title_digest: title.title_digest, core_title: title.title_core, media: detail.media, sleeve: detail.sleeve };
     };
     const detail = await detailRead();
+    let cartTitle = null, cartShippingLabel = null;
     if (await bounded(() => page.url()) !== CART) fail('existing_cart_required');
     const cartDocument = await bounded(() => page.evaluateHandle(() => document));
     const supplemental = cart => bounded(() => page.evaluate(collectHostedGuestDom,
@@ -339,8 +417,18 @@ export async function prepareHostedGuestForm(context, request, options = {}) {
       if (dom.agreements) fail('extra_agreement_required');
       const missing = ['quantity', 'destination'].filter(key => dom[key] !== true);
       if (cart && !dom.listing) missing.push('listing');
-      if (dom.title_digest !== detail.title_digest) missing.push('title_continuity');
-      if (dom.media !== detail.media || dom.sleeve !== detail.sleeve) missing.push('condition_continuity');
+      if (cart) {
+        const parsed = parseCapturedCartCaption(dom.cart_caption, detail.core_title);
+        if (!parsed || parsed.full_caption_digest !== dom.cart_caption_digest) missing.push('title_continuity');
+        else if (cartTitle && parsed.full_caption_digest !== cartTitle.full_caption_digest) fail('cart_document_changed');
+        else cartTitle = parsed;
+        // Only Go-to-Checkout eligibility defers the unknown cart conditions.
+        // Fresh exact detail grades are retained; fresh checkout must match both
+        // before any claim/card dispatch. Unknown cart grades never count as proof.
+      } else {
+        if (dom.title_digest !== detail.title_digest || !checkoutCaptionMatchesCart(cartTitle, dom.title_artist, dom.title_formats)) missing.push('title_continuity');
+        if (dom.media !== detail.media || dom.sleeve !== detail.sleeve) missing.push('condition_continuity');
+      }
       if (!cart && dom.item !== '0.10') missing.push('item_price_continuity');
       if (missing.length) { extras.missing_fields = missing; fail('visible_scope_evidence_missing'); }
     };
@@ -349,12 +437,15 @@ export async function prepareHostedGuestForm(context, request, options = {}) {
           !await bounded(() => page.evaluate(expected => document === expected, cartDocument))) fail('cart_document_changed');
       const raw = await bounded(() => page.evaluate(collectCartDom, scope.listing_id));
       const dom = await supplemental(true); qualify(dom, true);
+      const selectedLabel = selectedCartShippingLabel(raw);
+      if (cartShippingLabel && selectedLabel !== cartShippingLabel) fail('cart_document_changed');
       if (stable(await detailRead()) !== stable(detail)) fail('listing_detail_changed');
       if (raw.code !== 'observed' || raw.form_count !== 1 || raw.order_container_count !== 1 || raw.item_row_count !== 1 ||
           raw.listing_matches_expected !== true || raw.canonical_listing_href !== '/sell/item/1366950910' ||
           !dom.go || raw.quantity_control_count !== 0 || raw.missing_address !== false ||
           raw.subtotal?.value !== '$0.10 USD' || raw.shipping?.value !== '$4.95 USD' || raw.total?.value !== '$5.05 USD' ||
-          raw.shipping_methods?.options?.filter(option => option.selected && !option.disabled && option.label === 'Economy - Media Mail').length !== 1) fail('cart_scope_unverified');
+          !selectedLabel) fail('cart_scope_unverified');
+      cartShippingLabel = selectedLabel;
       return dom;
     };
     await cartRead();
@@ -721,6 +812,8 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
       title = await read(() => detailPages[0].evaluate(collectHostedGuestDom, { stage: 'detail' }));
       if (title.access !== 'normal') fail('access_restricted');
     }
+    const cartCaption = cart && title?.ready === true && detail?.status === 'observed' ?
+      parseCapturedCartCaption(dom.cart_caption, title.title_core) : null;
     const observed = {
       summary_supported: cart ? cartDom?.code === 'observed' && cartDom.form_count === 1 && cartDom.order_container_count === 1 && cartDom.summary_count === 1 : summary?.status === 'observed',
       seller_matches: cart ? detail?.seller_handle === authorization.seller && dom.listing === true : summary?.status === 'observed' && summary.seller_handle === authorization.seller,
@@ -730,7 +823,8 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
       destination_match: confirming ? true : null,
       listing_detail_supported: title?.ready === true && detail?.status === 'observed' && detail?.release_id === Number(authorization.release_id) &&
         detail?.listing_id === authorization.listing_id && detail?.seller_handle === authorization.seller,
-      title_continuity: title?.ready === true && detail?.status === 'observed' && !!title.title_digest && dom.title_digest === title.title_digest,
+      title_continuity: title?.ready === true && detail?.status === 'observed' && !!title.title_digest &&
+        (cart ? !!cartCaption && cartCaption.full_caption_digest === dom.cart_caption_digest : dom.title_digest === title.title_digest),
       condition_continuity: title?.ready === true && detail?.status === 'observed' && dom.media === detail.media && dom.sleeve === detail.sleeve,
       item_price_continuity: cart ? cartDom?.subtotal?.value === '$0.10 USD' : dom.item === '0.10',
       provider_frame_associated: false, card_control_unique_visible_enabled: false,
@@ -794,4 +888,150 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
       source: 'current_visible_dom', final_quote_verified: false,
       card_entry_allowed: false, payment_allowed: false, final_submission_allowed: false };
   } catch (error) { return stopped(error?.[STOP] || 'probe_unverified'); }
+}
+
+/** Separately authorized, one-use normal Cart -> fresh Checkout preflight.
+ * No transaction claim, card control, initialization, Pay or order operation.
+ */
+export async function preflightHostedGuestCheckout(context, request, options = {}) {
+  const authorization = options.authorization;
+  const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).sort().join('|') === keys.sort().join('|');
+  if (!context || !exact(request, ['schema', 'job_id', 'phase', 'document_ref']) ||
+      request.schema !== 'discogs_guest_checkout_preflight_v1' || request.phase !== 'navigate_checkout_preflight' ||
+      authorization?.schema !== 'discogs_guest_preflight_authorization_v1' || authorization.mode !== 'cart_checkout_preflight' ||
+      !/^[0-9a-f]{64}$/u.test(authorization.expected_ledger_head || '')) return stopped('preflight_authorization_required');
+  const { mode, expected_ledger_head: expectedHead, ...readonly } = authorization;
+  if (!readonlyAuthorizationValid({ schema: 'discogs_guest_readonly_probe_v1', job_id: request.job_id,
+    phase: 'confirm_saved_destination', document_ref: request.document_ref },
+  { ...readonly, schema: 'discogs_guest_readonly_authorization_v1' })) return stopped('preflight_authorization_required');
+  request = JSON.parse(stable(request));
+  const auth = JSON.parse(stable(authorization)), signal = options.signal;
+  const job = readonlyProbeJobs.get(request.job_id), now = Date.now() / 1000;
+  if (!job || job.context !== context || job.document_ref !== request.document_ref || job.url !== CART ||
+      !job.approved_destination_digest || job.reference_expires_at <= now ||
+      auth.destination_ack.observed_at < job.reference_created_at) return stopped('preflight_confirmation_required');
+  if (job.navigation_consumed) return stopped('probe_job_replayed');
+  if (active.has(context) || ledgerActive) return stopped('operation_busy');
+  if (uncertain.has(context)) return stopped('navigation_requires_reconciliation');
+  job.navigation_consumed = true;
+  const directory = options[fixtureDirectory] || HOSTED_GUEST_LEDGER;
+  const deadline = Math.min(Date.now() + 30000, auth.expires_at * 1000, job.reference_expires_at * 1000,
+    (auth.destination_ack.observed_at + 60) * 1000);
+  const pending = new Set(); let finished = false, released = false, navigationIssued = false;
+  let diagnostics = {};
+  active.add(context); ledgerActive = true;
+  const release = () => { if (finished && !pending.size && !released) { released = true; active.delete(context); ledgerActive = false; } };
+  const check = () => { if (signal?.aborted) fail('cancelled'); if (Date.now() >= deadline) fail('deadline_expired'); };
+  const track = operation => {
+    const task = retainContextTask(context, Promise.resolve().then(() => { check(); return operation(); }));
+    pending.add(task); const settled = () => { pending.delete(task); release(); }; task.then(settled, settled); return task;
+  };
+  const read = async operation => {
+    check(); let timer, onAbort;
+    const task = track(operation);
+    const interruption = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error('deadline_expired'), { [STOP]: 'deadline_expired' })), deadline - Date.now());
+      if (signal) { onAbort = () => reject(Object.assign(new Error('cancelled'), { [STOP]: 'cancelled' })); signal.addEventListener('abort', onAbort, { once: true }); }
+    });
+    try { const value = await Promise.race([task, interruption]); check(); return value; }
+    finally { clearTimeout(timer); if (onAbort) signal.removeEventListener('abort', onAbort); }
+  };
+  const ledgerGuard = async () => {
+    const state = await read(() => checkoutOperator.inspectGuestCheckoutLedger({ directory }));
+    if (!['no_prior_attempt', 'known_session_expired', 'reviewed_form_disposition'].includes(state?.state) ||
+        state.current_head !== expectedHead) fail('preflight_ledger_unverified');
+  };
+  try {
+    await ledgerGuard(); // Distinct navigation disposition gate; never an init grant.
+    const pages = await read(() => context.pages()), page = job.page;
+    const details = pages.filter(candidate => ['https://www.discogs.com/sell/item/1366950910', 'https://www.discogs.com/shop/item/1366950910'].includes(candidate.url()));
+    if (pages.length !== 2 || !pages.includes(page) || details.length !== 1) fail('listing_detail_required');
+    const detailPage = details[0], detailUrl = detailPage.url(), detailDocument = await read(() => detailPage.evaluateHandle(() => document));
+    const detailRead = async () => {
+      if (detailPage.url() !== detailUrl || !await read(() => detailPage.evaluate(doc => document === doc, detailDocument))) fail('listing_detail_changed');
+      const detail = await read(() => detailPage.evaluate(collectListingDetailDom, { release_id: '3422100', listing_id: '1366950910' }));
+      const title = await read(() => detailPage.evaluate(collectHostedGuestDom, { stage: 'detail' }));
+      if (title.access !== 'normal') fail('access_restricted');
+      if (!title.ready || detail.status !== 'observed' || !detail.complete || detail.release_id !== 3422100 ||
+          detail.listing_id !== '1366950910' || detail.seller_handle !== 'Mailman21842' || detail.item !== '0.10' ||
+          detail.cart_state !== 'already_in_cart' || !title.title_core || !title.title_digest) fail('listing_detail_unverified');
+      return { core: title.title_core, title_digest: title.title_digest, media: detail.media, sleeve: detail.sleeve };
+    };
+    const detail = await detailRead(); let cartTitle, cartShippingLabel;
+    const basic = dom => {
+      diagnostics = { structure: { address_container_count: dom.address_container_count, address_line_count: dom.address_line_count } };
+      if (dom.access !== 'normal') fail('access_restricted');
+      if (!dom.ready) fail('page_not_ready');
+      if (dom.existing_form) fail('existing_guest_form_preserved');
+      if (dom.agreements) fail('extra_agreement_required');
+      const missing = ['quantity', 'destination'].filter(key => dom[key] !== true);
+      if (missing.length) { diagnostics.missing_fields = missing; fail('visible_scope_evidence_missing'); }
+    };
+    const cartRead = async () => {
+      if (page.url() !== CART || !await read(() => page.evaluate(doc => document === doc, job.document_handle))) fail('cart_document_changed');
+      const raw = await read(() => page.evaluate(collectCartDom, '1366950910'));
+      const dom = await read(() => page.evaluate(collectHostedGuestDom, { stage: 'cart', approvedDestinationDigest: job.approved_destination_digest }));
+      basic(dom);
+      const selectedLabel = selectedCartShippingLabel(raw);
+      if (cartShippingLabel && selectedLabel !== cartShippingLabel) fail('cart_document_changed');
+      const parsed = parseCapturedCartCaption(dom.cart_caption, detail.core);
+      if (!parsed || parsed.full_caption_digest !== dom.cart_caption_digest) { diagnostics.missing_fields = ['title_continuity']; fail('visible_scope_evidence_missing'); }
+      if (cartTitle && parsed.full_caption_digest !== cartTitle.full_caption_digest) fail('cart_document_changed');
+      if (raw.code !== 'observed' || raw.form_count !== 1 || raw.order_container_count !== 1 || raw.item_row_count !== 1 ||
+          raw.listing_matches_expected !== true || raw.canonical_listing_href !== '/sell/item/1366950910' || !dom.listing || !dom.go ||
+          raw.quantity_control_count !== 0 || raw.missing_address !== false || raw.subtotal?.value !== '$0.10 USD' ||
+          raw.shipping?.value !== '$4.95 USD' || raw.total?.value !== '$5.05 USD' ||
+          !selectedLabel) fail('cart_scope_unverified');
+      if (stable(await detailRead()) !== stable(detail)) fail('listing_detail_changed');
+      cartShippingLabel = selectedLabel;
+      cartTitle = parsed; // Cart grades remain unknown; no row-text inference.
+    };
+    await cartRead(); const go = await read(() => page.$(HOSTED_GO_SELECTOR));
+    if (!go) fail('checkout_control_unverified');
+    await cartRead(); await ledgerGuard();
+    if (!await read(() => go.evaluate(element => element.isConnected && element.ownerDocument === document &&
+      document.querySelectorAll('button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]').length === 1 &&
+      document.querySelector('button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]') === element))) fail('checkout_control_changed');
+    // A document navigation response distinguishes normal navigation from a
+    // same-document URL edit. This fixed wait is registered before the click.
+    const navigation = track(() => page.waitForNavigation({ url: GUEST_CARD_URL, waitUntil: 'load', timeout: Math.max(1, deadline - Date.now()) }));
+    await read(() => { check(); navigationIssued = true; return go.click({ timeout: Math.max(1, deadline - Date.now()), noWaitAfter: true }); });
+    const response = await read(() => navigation);
+    if (!response || response.url() !== GUEST_CARD_URL || page.url() !== GUEST_CARD_URL) fail('fresh_checkout_required');
+    const checkoutDocument = await read(() => page.evaluateHandle(() => document));
+    const inspectorPage = { url: () => track(() => page.url()), evaluate: (...args) => track(() => page.evaluate(...args)) };
+    const verifyCheckout = async () => {
+      const dom = await read(() => page.evaluate(collectHostedGuestDom, { stage: 'checkout', approvedDestinationDigest: job.approved_destination_digest }));
+      basic(dom);
+      const summary = await read(() => inspectCurrentEnhancedCheckout(inspectorPage, { signal }));
+      if (dom.title_digest !== detail.title_digest || !checkoutCaptionMatchesCart(cartTitle, dom.title_artist, dom.title_formats)) {
+        diagnostics.missing_fields = ['title_continuity']; fail('visible_scope_evidence_missing');
+      }
+      if (dom.media !== detail.media || dom.sleeve !== detail.sleeve) { diagnostics.missing_fields = ['condition_continuity']; fail('visible_scope_evidence_missing'); }
+      if (summary.status !== 'observed' || summary.seller_handle !== 'Mailman21842' || summary.displayed.subtotal.amount !== '0.10' ||
+          summary.displayed.shipping.amount !== '4.95' || summary.displayed.total.amount !== '5.05' ||
+          summary.selected_shipping_label !== 'Economy - Media Mail' || dom.item !== '0.10') fail('checkout_scope_unverified');
+    };
+    await verifyCheckout();
+    if (stable(await detailRead()) !== stable(detail)) fail('listing_detail_changed');
+    await ledgerGuard();
+    await verifyCheckout();
+    if (page.url() !== GUEST_CARD_URL || !await read(() => page.evaluate(doc => document === doc, checkoutDocument))) fail('checkout_document_changed');
+    return { status: 'observed', code: 'cart_checkout_preflight_observed', merchant_route: 'enhanced_checkout',
+      normal_cart_transition_verified: true, cart_conditions_verified: false, checkout_conditions_verified: true,
+      destination_binding_available: true, destination_match: true, initialization_allowed: false,
+      card_entry_allowed: false, payment_allowed: false, final_submission_allowed: false,
+      order_status: 'unverified', payment_status: 'unverified' };
+  } catch (error) {
+    if (navigationIssued) uncertain.add(context);
+    return stopped(error?.[STOP] || 'unknown_internal_stop', { ...diagnostics, checkout_navigation_issued: navigationIssued,
+      card_initialization_issued: false, initialization: 'not_dispatched', normal_cart_transition_verified: false });
+  } finally { finished = true; release(); }
+}
+export const preflightCurrentGuestCheckout = preflightHostedGuestCheckout;
+/** Isolated fixture only; production always inspects the existing fixed ledger. */
+export function createHostedGuestPreflightFixture({ context, directory, authorization, signal } = {}) {
+  if (process.env.NODE_TEST_CONTEXT === undefined || !directory?.startsWith('/')) throw new Error('test_context_required');
+  return request => preflightHostedGuestCheckout(context, request, { authorization, signal, [fixtureDirectory]: directory });
 }

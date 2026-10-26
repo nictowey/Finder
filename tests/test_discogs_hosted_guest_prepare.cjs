@@ -1,7 +1,8 @@
 'use strict';
 // No live browser or provider request. Observed selectors/summary/source-derived
 // address shape are sanitized. Positive continuity/detail/address/cart-count
-// markup below is an EXPLICITLY SYNTHETIC EXTENSION, not captured server DOM.
+// markup below is an EXPLICITLY SYNTHETIC EXTENSION. Its cart caption follows
+// the sole-text structure captured in hosted capture 1e05b67; labels are synthetic.
 const assert = require('node:assert/strict');
 const { before, test } = require('node:test');
 const { JSDOM } = require('jsdom');
@@ -25,7 +26,7 @@ const addressMarkup = ADDRESS.map(line => `<span class="_ships-to-address__line_
 const go = '<button class="order_button checkout_v2" name="Action.ProceedCommerceCheckout" type="submit" value="Go to Checkout">Go to Checkout</button>';
 const cartMarkup = `<!doctype html><title>Cart</title><h1>You have 1 item in your cart from 1 seller.</h1>
 <form class="legacy"><div id="cart-order-fixture" class="order_container"><table><tr class="order_row"><td>
-<a class="item_link" href="/sell/item/1366950910">Synthetic KC Single</a>
+<a class="item_link" href="/sell/item/1366950910">Fixture Artist - Synthetic KC Single (7&quot;, Single)</a>
 <span>Media: Mint Sleeve: Generic</span></td></tr></table>
 <div id="shipping_address_fixture"><address>${addressMarkup}</address><a class="edit_shipping_address">Edit</a></div>
 <table class="order_summary"><tr class="order_subtotal"><td>Subtotal</td><td class="order_summary_value">$0.10 USD</td></tr>
@@ -65,6 +66,7 @@ function dom(html, url) {
 function browser({ cart = cartMarkup, checkout = summary, detail = detailMarkup, provider = providerMarkup,
   beforeEvaluate, beforeGo, beforeCardClick, afterGo, duplicateFrames = false, frameUrl = PROVIDER } = {}) {
   const all = [], effects = { go: 0, card: 0, goIssued: 0, cardIssued: 0, pay: 0, pages: 0, evaluate: 0 };
+  let navigationResolve = null;
   const main = {}, state = { merchant: dom(cart, CART), detail: dom(detail, DETAIL), provider: dom(provider, frameUrl) };
   all.push(...Object.values(state));
   const evaluate = async (which, fn, arg) => {
@@ -83,6 +85,7 @@ function browser({ cart = cartMarkup, checkout = summary, detail = detailMarkup,
         effects.goIssued++; if (beforeGo) await beforeGo(state);
         effects.go++; assert.equal(element.getAttribute('name'), 'Action.ProceedCommerceCheckout');
         state.merchant = dom(checkout, CHECKOUT); all.push(state.merchant); if (afterGo) await afterGo(state);
+        if (navigationResolve) { const url = state.merchant.window.location.href; navigationResolve({ url: () => url }); navigationResolve = null; }
       } else {
         effects.cardIssued++;
         if (beforeCardClick) await beforeCardClick(state);
@@ -101,6 +104,7 @@ function browser({ cart = cartMarkup, checkout = summary, detail = detailMarkup,
     evaluateHandle: async () => state.merchant.window.document,
     evaluate: (fn, arg) => evaluate('merchant', fn, arg),
     $: async selector => { assert.equal(selector, port.HOSTED_GO_SELECTOR); const e = state.merchant.window.document.querySelector(selector); return e ? handle('merchant', e) : null; },
+    waitForNavigation: () => new Promise(resolve => { navigationResolve = resolve; }),
     waitForURL: async url => assert.equal(page.url(), url), mainFrame: () => main,
     frames: () => page.url() === CHECKOUT ? duplicateFrames ? [frame, frame] : [frame] : [] };
   const detailPage = { url: () => state.detail.window.location.href,
@@ -875,8 +879,8 @@ test('unknown hidden nested duplicate separator core artist and format structure
   }
 });
 
-test('composite cart item-link title remains fail-closed without source-proven cart semantic title structure', async () => ledgerFixture(async f => {
-  const cart = cartMarkup.replace('>Synthetic KC Single</a>', '>Fixture Artist - Synthetic KC Single (7&quot;, 45 RPM, Single)</a>');
+test('uncaptured cart format caption remains fail-closed without broad format stripping', async () => ledgerFixture(async f => {
+  const cart = cartMarkup.replace('>Fixture Artist - Synthetic KC Single (7&quot;, Single)</a>', '>Fixture Artist - Synthetic KC Single (7&quot;, 45 RPM, Single)</a>');
   const b = browser({ cart });
   try {
     const result = await execute(f, b);
@@ -894,7 +898,7 @@ function cartCaptureGrant() {
 
 test('separate capture mode returns only bounded exact-KC public title subtree and narrow grade tokens without address or values', async () => {
   const grade = '<span><b>Media:</b><span>Poor (P)</span><br><b>Sleeve:</b><span>Generic</span></span>';
-  const cart = cartMarkup.replace('>Synthetic KC Single</a>', '><span>KC - </span><strong>Get Down Tonight</strong><small> (7&quot;, 45 RPM)</small></a>')
+  const cart = cartMarkup.replace('>Fixture Artist - Synthetic KC Single (7&quot;, Single)</a>', '><span>KC - </span><strong>Get Down Tonight</strong><small> (7&quot;, 45 RPM)</small></a>')
     .replace('<span>Media: Mint Sleeve: Generic</span>', grade);
   const b = browser({ cart }), grant = cartCaptureGrant();
   const address = b.state.merchant.window.document.querySelector('address');
@@ -927,7 +931,7 @@ test('unsupported grade parent is omitted without dropping useful public title o
   const b = browser({ cart });
   try {
     const result = await probe(b, cartCaptureGrant());
-    assert.equal(result.code, 'cart_structure_captured'); assert.equal(result.cart_structure.title_link.text, 'Synthetic KC Single');
+    assert.equal(result.code, 'cart_structure_captured'); assert.equal(result.cart_structure.title_link.text, 'Fixture Artist - Synthetic KC Single (7", Single)');
     assert.equal(result.cart_structure.grade_nodes.length, 0); assert.ok(!json(result).includes('PRIVATE_SELLER_MESSAGE'));
   } finally { b.close(); }
 });
@@ -948,12 +952,12 @@ test('capture authority cannot cross-use ordinary inspect or confirmation grants
 test('ambiguous off-target hidden unsafe oversized or deeply nested title structure fails without partial capture', async () => {
   for (const cart of [
     cartMarkup.replace('/sell/item/1366950910', '/sell/item/1366950910?secret=PRIVATE'),
-    cartMarkup.replace('>Synthetic KC Single</a>', ' hidden>Synthetic KC Single</a>'),
-    cartMarkup.replace('>Synthetic KC Single</a>', '><span hidden>PRIVATE_HIDDEN</span>Public</a>'),
-    cartMarkup.replace('>Synthetic KC Single</a>', '><input value="PRIVATE_INPUT"></a>'),
-    cartMarkup.replace('>Synthetic KC Single</a>', '><script>PRIVATE_SCRIPT</script>Public</a>'),
-    cartMarkup.replace('>Synthetic KC Single</a>', '><span><span><span><span><span>Too deep</span></span></span></span></span></a>'),
-    cartMarkup.replace('>Synthetic KC Single</a>', '>' + 'X'.repeat(301) + '</a>'),
+    cartMarkup.replace('>Fixture Artist - Synthetic KC Single (7&quot;, Single)</a>', ' hidden>Synthetic KC Single</a>'),
+    cartMarkup.replace('>Fixture Artist - Synthetic KC Single (7&quot;, Single)</a>', '><span hidden>PRIVATE_HIDDEN</span>Public</a>'),
+    cartMarkup.replace('>Fixture Artist - Synthetic KC Single (7&quot;, Single)</a>', '><input value="PRIVATE_INPUT"></a>'),
+    cartMarkup.replace('>Fixture Artist - Synthetic KC Single (7&quot;, Single)</a>', '><script>PRIVATE_SCRIPT</script>Public</a>'),
+    cartMarkup.replace('>Fixture Artist - Synthetic KC Single (7&quot;, Single)</a>', '><span><span><span><span><span>Too deep</span></span></span></span></span></a>'),
+    cartMarkup.replace('>Fixture Artist - Synthetic KC Single (7&quot;, Single)</a>', '>' + 'X'.repeat(301) + '</a>'),
     cartMarkup.replace('</td></tr>', '</td></tr><tr class="order_row" hidden><td>Other</td></tr>'),
   ]) {
     const b = browser({ cart });
@@ -976,4 +980,198 @@ test('capture rejects a changed cart document and access restrictions without na
   const blocked = browser({ cart: cartMarkup.replace('<title>Cart</title>', '<title>Security check</title>') });
   try { assert.equal((await probe(blocked, cartCaptureGrant())).code, 'access_restricted'); assert.deepEqual([blocked.effects.go, blocked.effects.card], [0, 0]); }
   finally { blocked.close(); }
+});
+
+// Literal sanitized real hosted capture 1e05b67; CI never reads /tmp captures.
+const ACTUAL_KC_CART_CAPTION = 'K.C. & The Sunshine Band* - Get Down Tonight (7", Single)';
+test('captured sole-text cart caption parses against a fresh literal core and retains full-caption digest', () => {
+  const parsed = port.parseCapturedCartCaption(ACTUAL_KC_CART_CAPTION, 'Get Down Tonight');
+  assert.equal(parsed.core, 'Get Down Tonight'); assert.equal(parsed.artist, 'K.C. & The Sunshine Band*');
+  assert.deepEqual(parsed.formats, ['7"', 'Single']); assert.equal(parsed.full_caption_digest, sha(ACTUAL_KC_CART_CAPTION));
+  assert.equal(port.checkoutCaptionMatchesCart(parsed, parsed.artist, ['7"', '45 RPM', 'Single', 'Stereo']), true);
+  assert.equal(port.parseCapturedCartCaption('Artist - Café (Live) (7", Single)', 'Cafe\u0301 (Live)').core, 'Café (Live)');
+  for (const caption of [
+    'Artist - Get Down Tonight (Live) (7", Single)', 'Artist - get down tonight (7", Single)',
+    'Get Down Tonight Ensemble - Get Down Tonight (7", Single)', 'Artist - Wrong Core (7", Single)',
+    'Artist - Get Down Tonight (Single, 7")', 'Artist - Get Down Tonight (7", Single, Single)',
+    'Artist - Get Down Tonight (7", Reissue)', 'Artist - Get Down Tonight (7",45 RPM,Single)',
+  ]) assert.equal(port.parseCapturedCartCaption(caption, 'Get Down Tonight'), null);
+  for (const [artist, formats] of [['Different Artist', ['7"', 'Single']], [parsed.artist, ['Single', '7"']],
+    [parsed.artist, ['7"', 'Single', 'Single']], [parsed.artist, ['7"', 'Reissue', 'Single']]]) {
+    assert.equal(port.checkoutCaptionMatchesCart(parsed, artist, formats), false);
+  }
+});
+
+async function preflightFixture(run, config = {}, seed) {
+  await ledgerFixture(async f => {
+    if (seed) await seed(f);
+    const b = browser(config), isolated = await import('../scripts/discogs_hosted_guest_prepare.mjs?preflight-fixture=' + randomUUID());
+    const grant = readonlyGrant();
+    const callProbe = g => isolated.probeCurrentGuestPreparationEvidence(b.context, g.request, { authorization: g.authorization });
+    try {
+      const first = await callProbe(grant);
+      assert.equal(first.status, 'observed', JSON.stringify(first));
+      const ack = confirmation(grant, first), confirmed = await callProbe(ack);
+      assert.equal(confirmed.code, 'approved_saved_destination_bound', JSON.stringify(confirmed));
+      const state = await operator.inspectGuestCheckoutLedger({ directory: f.directory });
+      const request = { schema: 'discogs_guest_checkout_preflight_v1', job_id: grant.request.job_id,
+        phase: 'navigate_checkout_preflight', document_ref: first.document_ref };
+      const authorization = { ...ack.authorization, schema: 'discogs_guest_preflight_authorization_v1',
+        mode: 'cart_checkout_preflight', expected_ledger_head: state.current_head };
+      const execute = (signal, auth = authorization, req = request) => isolated.createHostedGuestPreflightFixture({
+        context: b.context, directory: f.directory, authorization: auth, signal })(req);
+      await run({ f, b, isolated, grant, request, authorization, execute });
+    } finally { b.close(); }
+  });
+}
+
+test('separate confirmed cart preflight navigates once with unknown cart grades, fully verifies checkout, and never claims or initializes', async () => preflightFixture(async ({ f, b, execute }) => {
+  b.frame.$ = () => { throw new Error('FORBIDDEN_CARD_ACCESS'); };
+  const result = await execute();
+  assert.equal(result.code, 'cart_checkout_preflight_observed', JSON.stringify(result));
+  assert.equal(result.cart_conditions_verified, false); assert.equal(result.checkout_conditions_verified, true);
+  assert.equal(result.normal_cart_transition_verified, true); assert.equal(result.initialization_allowed, false);
+  assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]); assert.equal((await records(f.directory)).length, 0);
+  assert.equal((await execute()).code, 'probe_job_replayed');
+}));
+
+test('preflight refuses changed exact identity price destination caption or ledger before Go', async () => {
+  for (const mode of ['listing', 'price', 'destination', 'caption', 'head']) await preflightFixture(async ({ f, b, execute, authorization }) => {
+    const document = b.state.merchant.window.document;
+    if (mode === 'listing') document.querySelector('a.item_link').setAttribute('href', '/sell/item/999');
+    if (mode === 'price') document.querySelector('tr.order_total td.order_summary_value').textContent = '$5.06 USD';
+    if (mode === 'destination') document.querySelector('address span').textContent = 'Other private address';
+    if (mode === 'caption') document.querySelector('a.item_link').textContent = 'Other Artist - Synthetic KC Single (7", Reissue)';
+    const result = await execute(null, mode === 'head' ? { ...authorization, expected_ledger_head: 'f'.repeat(64) } : authorization);
+    assert.equal(result.status, 'blocked'); assert.deepEqual([b.effects.go, b.effects.card], [0, 0]);
+    assert.equal((await records(f.directory)).length, 0); assert.ok(!json(result).includes('Other private address'));
+  });
+});
+
+test('fresh checkout wrong core artist format conditions amount and changed detail cannot produce preflight success or any init', async () => {
+  for (const config of [
+    { checkout: summary.replace('<span>Synthetic KC Single</span>', '<span>Wrong Core</span>') },
+    { checkout: summary.replace('<span>Fixture Artist</span>', '<span>Other Artist</span>') },
+    { checkout: summary.replace('7&quot;, 45 RPM, Single', '7&quot;, Reissue, Single') },
+    { checkout: summary.replace('Media: Mint', 'Media: Poor (P)') },
+    { checkout: summary.replace('$5.05 USD', '$5.06 USD') },
+    { afterGo: state => { state.detail.window.document.querySelector('a.hifi-heading-link-large').textContent = 'Changed Core'; } },
+  ]) await preflightFixture(async ({ f, b, execute }) => {
+    const result = await execute(); assert.equal(result.status, 'blocked');
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]); assert.equal((await records(f.directory)).length, 0);
+  }, config);
+});
+
+test('pending or unknown ledger is not a navigation grant even when its exact head is supplied', async () => preflightFixture(async ({ b, execute }) => {
+  const before = b.effects.pages;
+  assert.equal((await execute()).code, 'preflight_ledger_unverified');
+  assert.equal(b.effects.pages, before); assert.deepEqual([b.effects.go, b.effects.card], [0, 0]);
+}, {}, async f => {
+  const actor = browser(); try { await execute(f, actor); } finally { actor.close(); }
+}));
+
+test('preflight rejects fabricated historical fields and readonly auth without a scoped navigation grant', async () => preflightFixture(async ({ b, execute, authorization, request }) => {
+  assert.equal((await execute(null, { ...authorization, schema: 'discogs_guest_readonly_authorization_v1' })).code, 'preflight_authorization_required');
+  assert.equal((await execute(null, authorization, { ...request, priorFailure: { last_error_code: 'SESSION_EXPIRED' } })).code, 'preflight_authorization_required');
+  assert.equal(b.effects.go, 0);
+}));
+
+test('semantic cart address text/BR flow normalizes privately like source-derived checkout lines without approving unknown markup', async () => {
+  for (const markup of [ADDRESS.join('<br>'), ADDRESS.map(value => `<span>${value}</span>`).join('')]) {
+    await preflightFixture(async ({ b, execute }) => {
+      const result = await execute(); assert.equal(result.code, 'cart_checkout_preflight_observed', JSON.stringify(result));
+      assert.deepEqual([b.effects.go, b.effects.card], [1, 0]);
+      for (const value of ADDRESS) assert.ok(!json(result).includes(value));
+    }, { cart: cartMarkup.replace(`<address>${addressMarkup}</address>`, `<address>${markup}</address>`) });
+  }
+  for (const markup of [ADDRESS.join('<br hidden>'), '<input value="PRIVATE">' + ADDRESS.join('<br>'), ADDRESS.slice(0, 2).join('<br>')]) {
+    const b = browser({ cart: cartMarkup.replace(`<address>${addressMarkup}</address>`, `<address>${markup}</address>`) });
+    try { const result = await probe(b, readonlyGrant()); assert.equal(result.address_present, false); assert.equal(b.effects.go, 0); }
+    finally { b.close(); }
+  }
+});
+
+test('actual hosted capture caption anchors the synthetic end-to-end preflight with Poor/Generic and ordered richer checkout formats', async () => {
+  const cart = cartMarkup.replace('Fixture Artist - Synthetic KC Single (7&quot;, Single)', ACTUAL_KC_CART_CAPTION);
+  const detail = detailMarkup.replace('>Synthetic KC Single</a>', '>Get Down Tonight</a>').replace('<span>Mint</span>', '<span>Poor</span>');
+  const checkout = withCondition(sourceCondition).replace(/<h3 class="_checkout-sell-item__title_fixture">.*?<\/h3>/u, titleGroup('Get Down Tonight'));
+  await preflightFixture(async ({ b, execute, f }) => {
+    const result = await execute(); assert.equal(result.code, 'cart_checkout_preflight_observed', JSON.stringify(result));
+    assert.equal(result.cart_conditions_verified, false); assert.equal(result.checkout_conditions_verified, true);
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]); assert.equal((await records(f.directory)).length, 0);
+  }, { cart, detail, checkout });
+});
+
+test('checkout qualification state changed during final checks blocks observation and never initializes', async () => {
+  for (const mode of ['condition', 'destination', 'total']) {
+    let checkoutReads = 0;
+    await preflightFixture(async ({ b, execute, f }) => {
+      const result = await execute(); assert.equal(result.status, 'blocked');
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]); assert.equal((await records(f.directory)).length, 0);
+    }, { beforeEvaluate: ({ fn, arg, state }) => {
+      if (fn.name === 'collectHostedGuestDom' && arg?.stage === 'checkout' && ++checkoutReads === 2) {
+        const document = state.merchant.window.document;
+        if (mode === 'condition') document.querySelector('._checkout-sell-item__condition_fixture').textContent = 'Media: Poor (P) Sleeve: Generic';
+        if (mode === 'destination') document.querySelector('address span').textContent = 'Other destination';
+        if (mode === 'total') document.querySelector('._checkout-summary__total--color-red_fixture dd').textContent = '$5.06 USD';
+      }
+    } });
+  }
+});
+
+test('cancelled dispatched preflight navigation holds common settlement and never proceeds to checkout reads or initialization', async () => {
+  const entered = deferred(), finish = deferred();
+  await preflightFixture(async ({ b, execute, isolated }) => {
+    const controller = new AbortController(), running = execute(controller.signal); await entered.promise; controller.abort();
+    const result = await running; assert.equal(result.code, 'cancelled');
+    const before = b.effects.evaluate; let drained = false;
+    const settlement = isolated.waitForHostedGuestPreparationSettlement(b.context).then(() => { drained = true; });
+    await eventLoopTurn(); assert.equal(drained, false);
+    finish.resolve(); await settlement; await eventLoopTurn();
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]); assert.equal(b.effects.evaluate, before);
+  }, { beforeGo: async () => { entered.resolve(); await finish.promise; } });
+});
+
+test('observed selected Economy label with explicit $4.95 suffix is accepted only with independent unchanged USD quote', async () => {
+  const cart = cartMarkup.replace('<option selected>Economy - Media Mail</option>', '<option selected>Economy - Media Mail - $4.95</option>');
+  await preflightFixture(async ({ b, execute }) => {
+    assert.equal((await execute()).code, 'cart_checkout_preflight_observed'); assert.deepEqual([b.effects.go, b.effects.card], [1, 0]);
+  }, { cart });
+  for (const changed of [cart.replace('order_shipping_amount order_summary_value">$4.95 USD', 'order_shipping_amount order_summary_value">$4.96 USD'),
+    cart.replace('Economy - Media Mail - $4.95</option>', 'Economy - Media Mail - $4.96</option>')]) {
+    await preflightFixture(async ({ b, execute }) => { assert.equal((await execute()).status, 'blocked'); assert.deepEqual([b.effects.go, b.effects.card], [0, 0]); }, { cart: changed });
+  }
+});
+
+test('a selected label changing between accepted bare and suffixed forms during preflight blocks before Go', async () => {
+  let reads = 0, armed = false;
+  await preflightFixture(async ({ b, execute }) => {
+    armed = true;
+    const result = await execute(); assert.equal(result.code, 'cart_document_changed'); assert.deepEqual([b.effects.go, b.effects.card], [0, 0]);
+  }, { beforeEvaluate: ({ fn, state }) => {
+    if (armed && fn.name === 'collectCartDom' && ++reads === 2) state.merchant.window.document.querySelector('option').textContent = 'Economy - Media Mail - $4.95';
+  } });
+});
+
+test('shipping option shape requires exactly one selected total and a matching bounded selected index', async () => {
+  const multiple = cartMarkup.replace('name="shipping_method">', 'name="shipping_method" multiple>')
+    .replace('</option>', '</option><option selected>Unknown service</option>');
+  await preflightFixture(async ({ b, execute }) => {
+    assert.equal((await execute()).code, 'cart_scope_unverified'); assert.deepEqual([b.effects.go, b.effects.card], [0, 0]);
+  }, { cart: multiple });
+  for (const mode of ['wrong_index', 'wrong_count', 'hidden', 'two_selectors']) await preflightFixture(async ({ b, execute }) => {
+    const evaluate = b.page.evaluate;
+    b.page.evaluate = async (fn, arg) => {
+      const snapshot = await evaluate(fn, arg);
+      if (fn.name === 'collectCartDom') {
+        const methods = snapshot.shipping_methods;
+        if (mode === 'wrong_index') { methods.options.push({ label: 'Unknown', selected: false, disabled: false }); methods.option_count = 2; methods.selected_index = 1; }
+        if (mode === 'wrong_count') methods.option_count = 2;
+        if (mode === 'hidden') methods.visible = false;
+        if (mode === 'two_selectors') methods.selector_count = 2;
+      }
+      return snapshot;
+    };
+    assert.equal((await execute()).code, 'cart_scope_unverified'); assert.deepEqual([b.effects.go, b.effects.card], [0, 0]);
+  });
 });

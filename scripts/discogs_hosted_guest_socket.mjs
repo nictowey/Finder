@@ -48,7 +48,8 @@ const CODES = new Set(['scoped_authorization_required', 'prior_attempt_unresolve
   'readonly_authorization_required', 'probe_job_replayed', 'probe_reference_unverified',
   'probe_reference_expired', 'probe_document_changed', 'saved_destination_snapshot_changed',
   'saved_destination_unverified', 'probe_capacity_exceeded', 'single_current_merchant_page_required',
-  'cart_structure_captured', 'cart_capture_unverified']);
+  'cart_structure_captured', 'cart_capture_unverified', 'cart_checkout_preflight_observed',
+  'preflight_authorization_required', 'preflight_confirmation_required', 'preflight_ledger_unverified']);
 const PUBLIC_TAGS = new Set(['A', 'SPAN', 'STRONG', 'B', 'EM', 'I', 'SMALL', 'BR', '#text']);
 const GRADE_TEXT = new Set(['Media', 'Media:', 'Sleeve', 'Sleeve:', 'P', 'Poor', 'Poor (P)',
   'F', 'Fair', 'Fair (F)', 'G', 'Good', 'Good (G)', 'G+', 'Good Plus', 'Good Plus (G+)',
@@ -87,13 +88,30 @@ function sanitizedCartStructure(value) {
   return { row_count: 1, listing_href: '/sell/item/1366950910',
     title_link: { tag: 'A', text: value.title_link.text, nodes: title }, grade_nodes: grades };
 }
-function safeResult(value, { captureAllowed = false } = {}) {
+function safeResult(value, { captureAllowed = false, preflightAllowed = false } = {}) {
+  // Observed effects are facts, not capabilities: never rewrite a reported
+  // initialization into false merely because this action forbids it.
+  if ((preflightAllowed || value?.code === 'cart_checkout_preflight_observed') &&
+      value?.card_initialization_issued === true) {
+    return { ...stop('preflight_scope_violation'), stop_required: true,
+      initialization_allowed: false, card_initialization_allowed: false,
+      card_initialization_issued: true, initialization: 'outcome_requires_reconciliation',
+      ...(typeof value.checkout_navigation_issued === 'boolean' ?
+        { checkout_navigation_issued: value.checkout_navigation_issued } : {}) };
+  }
   const result = stop(CODES.has(value?.code) ? value.code : 'operation_unavailable');
   if (value?.status === 'observed' && ['current_dom_evidence_only', 'approved_saved_destination_bound'].includes(value.code)) result.status = 'observed';
   if (value?.status === 'observed' && value.code === 'cart_structure_captured') {
     const structure = captureAllowed ? sanitizedCartStructure(value.cart_structure) : null;
     if (!structure) return stop('cart_capture_unverified');
     result.status = 'observed'; result.cart_structure = structure;
+  }
+  if (value?.status === 'observed' && value.code === 'cart_checkout_preflight_observed') {
+    if (!preflightAllowed) return stop('preflight_authorization_required');
+    result.status = 'observed'; result.initialization_allowed = false; result.card_initialization_allowed = false;
+    for (const key of ['normal_cart_transition_verified', 'cart_conditions_verified', 'checkout_conditions_verified']) {
+      if (typeof value[key] === 'boolean') result[key] = value[key];
+    }
   }
   for (const key of ['checkout_navigation_issued', 'card_initialization_issued']) {
     if (typeof value?.[key] === 'boolean') result[key] = value[key];
@@ -154,7 +172,8 @@ export async function listenHostedGuestPreparation(context, socketPath, {
       (directory.uid !== process.getuid() || (directory.mode & 0o7777) !== 0o2710 || directory.gid !== 113)) {
     throw new TypeError('private_bridge_directory_required');
   }
-  const operations = fixtureOperations || { prepare_guest_form: guestPreparation.prepareHostedGuestForm, probe_guest_evidence: guestPreparation.probeCurrentGuestPreparationEvidence };
+  const operations = fixtureOperations || { prepare_guest_form: guestPreparation.prepareHostedGuestForm, probe_guest_evidence: guestPreparation.probeCurrentGuestPreparationEvidence,
+    cart_checkout_preflight: guestPreparation.preflightHostedGuestCheckout };
   let closing = false, closePromise;
   const connections = new Map();
   const server = createServer(connection => {
@@ -180,7 +199,7 @@ export async function listenHostedGuestPreparation(context, socketPath, {
       try { message = JSON.parse(input.subarray(0, newline).toString('utf8')); } catch { return send(stop('unsupported_guest_request')); }
       if (!message || typeof message !== 'object' || Array.isArray(message) ||
           Object.keys(message).sort().join('|') !== 'action|request' ||
-          !['prepare_guest_form', 'probe_guest_evidence'].includes(message.action) ||
+          !['prepare_guest_form', 'probe_guest_evidence', 'cart_checkout_preflight'].includes(message.action) ||
           !message.request || typeof message.request !== 'object' || Array.isArray(message.request)) return send(stop('unsupported_guest_request'));
       const release = acquireContextLease();
       if (typeof release !== 'function') return send(stop('read_in_progress'));
@@ -192,9 +211,16 @@ export async function listenHostedGuestPreparation(context, socketPath, {
         if (controller.signal.aborted || closing) return;
         const authorization = await authorize(message.request, { signal: controller.signal });
         if (controller.signal.aborted || closing) return;
+        if (message.action === 'cart_checkout_preflight' &&
+            (authorization?.schema !== 'discogs_guest_preflight_authorization_v1' || authorization.mode !== 'cart_checkout_preflight')) {
+          return send(stop('preflight_authorization_required'));
+        }
         const result = await operations[message.action](context, message.request, { authorization, signal: controller.signal });
         if (!controller.signal.aborted && !closing) send(safeResult(result, { captureAllowed: message.action === 'probe_guest_evidence' &&
-          message.request.phase === 'capture_cart_structure' && authorization?.mode === 'capture_cart_structure' }));
+          message.request.phase === 'capture_cart_structure' && authorization?.mode === 'capture_cart_structure',
+          preflightAllowed: message.action === 'cart_checkout_preflight' &&
+          message.request.schema === 'discogs_guest_checkout_preflight_v1' && message.request.phase === 'navigate_checkout_preflight' &&
+          authorization?.schema === 'discogs_guest_preflight_authorization_v1' && authorization.mode === 'cart_checkout_preflight' }));
       } catch { if (!controller.signal.aborted) send(stop('operation_unavailable')); }
       finally {
         // Cancellation can return before a dispatched Playwright call settles.

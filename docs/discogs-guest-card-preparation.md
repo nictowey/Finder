@@ -866,3 +866,47 @@ history still match their prior hashes; the browser remained healthy without an
 OOM at roughly 510 MiB / 2 GiB. No provider initializer, card entry, payment or
 order submission was invoked. Cart title/grade qualification still needs a
 grounded semantic comparison before the full preparation flow can qualify.
+
+### Cart-to-checkout qualification split
+
+The captured cart link is parsed against the full, freshly observed exact-release
+title as a literal anchor. One unique artist/core/format decomposition is required;
+case, punctuation and parentheses within the release title remain significant.
+The initial supported suffix is precisely the captured `7", Single` grammar,
+not a generic format extractor. The full cart caption digest must remain stable
+across rechecks. Checkout's source-defined artist/title/format spans must then
+match the core and artist exactly, with the cart format tokens appearing in order
+within the supported checkout format tokens. Unknown or ambiguous shapes stop.
+
+The cart grade DOM remains unsupported. Its grades stay unknown, and never count
+as accepted condition evidence. The reviewed split permits only normal,
+noncommitting Go to Checkout after exact listing/detail seller and release,
+quantity, amount, saved destination, normal access and ledger checks. Fresh
+checkout conditions must match the independently verified detail conditions
+before any initialization claim or card control could be reached.
+
+A separate bounded navigation-preflight policy is being implemented for the
+server test: inspect, same-document saved-destination confirmation, then one
+verified Go to Checkout. It retains private address binding inside the browser
+process and spends an immutable navigation receipt before that effect. It does
+not accept fabricated recovery history or transaction grants and cannot call the
+card initializer, claim writer, payment or order controls. An explicit ledger-head
+binding preserves historical disposition evidence without treating navigation
+permission as initialization permission. Live results remain a separate gate.
+
+The integrated implementation passed 85 focused module/policy/socket tests,
+including a replay of the retained public caption and negative identity, title,
+format, condition, amount, address, shipping-selection, ledger and cancellation
+cases. Required full checks passed: 3,885 Python tests plus 41 subtests, 110 app
+tests, lint, formatting and type checking. Independent combined review accepted
+the change. This is still offline verification until the bounded server run.
+
+The navigation scope is a new three-use pinned job, not reuse of a spent read.
+It binds the exact immutable ledger head, current Cart document and confirmed
+private destination. The navigation receipt is persisted before dispatch.
+The separate `cart_checkout_preflight` action cannot call the initializer and
+rejects unexpected effect reports rather than hiding them. Unknown cart grades
+remain explicit in its result. The observed selected method's bare label or exact
+`Economy - Media Mail - $4.95` rendering is accepted only alongside independently
+verified USD amounts and one unchanged selected option; arbitrary suffixes or
+inferred currency are not accepted.

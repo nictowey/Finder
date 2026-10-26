@@ -246,3 +246,43 @@ test('cart capture output admits only bounded exact-listing public title/grade n
     }
   } finally { await close(); }
 });
+
+test('separate fixed preflight action reports only noncommitting diagnostics and cannot masquerade as a readonly probe', async () => {
+  const socket = path(), config = options(); let preflights = 0, prepares = 0;
+  config.authorize = async () => ({ schema: 'discogs_guest_preflight_authorization_v1', mode: 'cart_checkout_preflight' });
+  const result = { status: 'observed', code: 'cart_checkout_preflight_observed', checkout_navigation_issued: true,
+    normal_cart_transition_verified: true, checkout_conditions_verified: true, cart_conditions_verified: false,
+    initialization_allowed: true, card_initialization_allowed: true, card_entry_allowed: true, payment_allowed: true, final_submission_allowed: true,
+    destination_match: true, destination_binding_available: true, address: 'not exported' };
+  config.fixtureOperations.cart_checkout_preflight = async () => { preflights++; return result; };
+  config.fixtureOperations.probe_guest_evidence = async () => result;
+  config.fixtureOperations.prepare_guest_form = async () => { prepares++; throw new Error('forbidden'); };
+  const close = await listenHostedGuestPreparation({}, socket, config);
+  const message = JSON.stringify({ action: 'cart_checkout_preflight', request: {
+    schema: 'discogs_guest_checkout_preflight_v1', phase: 'navigate_checkout_preflight', job_id: randomUUID(), document_ref: randomUUID() } }) + '\n';
+  try {
+    const observed = await exchange(socket, message); assert.equal(observed.status, 'observed');
+    assert.equal(observed.checkout_navigation_issued, true); assert.equal(observed.normal_cart_transition_verified, true);
+    assert.equal(observed.initialization_allowed, false); assert.equal(observed.card_initialization_allowed, false);
+    assert.equal(observed.final_submission_allowed, false); assert.equal(Object.hasOwn(observed, 'address'), false);
+    assert.equal((await exchange(socket, request('probe_guest_evidence'))).code, 'preflight_authorization_required');
+    assert.equal(preflights, 1); assert.equal(prepares, 0);
+    result.card_initialization_issued = true;
+    const violation = await exchange(socket, message);
+    assert.equal(violation.status, 'blocked'); assert.equal(violation.code, 'preflight_scope_violation');
+    assert.equal(violation.card_initialization_issued, true); assert.equal(violation.initialization, 'outcome_requires_reconciliation');
+    assert.equal(violation.checkout_navigation_issued, true); assert.equal(violation.stop_required, true);
+    assert.equal(violation.card_entry_allowed, false); assert.equal(violation.payment_allowed, false);
+    assert.equal(violation.final_submission_allowed, false); assert.equal(preflights, 2);
+    delete result.card_initialization_issued;
+    config.authorize = async () => ({ schema: 'discogs_guest_readonly_authorization_v1' });
+    // Listener captures its trusted callback at startup; a separate listener
+    // exercises a readonly grant against the navigation action below.
+  } finally { await close(); }
+  config.authorize = async () => ({ schema: 'discogs_guest_readonly_authorization_v1' });
+  const readonlyClose = await listenHostedGuestPreparation({}, socket, config);
+  try {
+    assert.equal((await exchange(socket, message)).code, 'preflight_authorization_required');
+    assert.equal(preflights, 2); assert.equal(prepares, 0);
+  } finally { await readonlyClose(); }
+});

@@ -149,3 +149,66 @@ test('separate cart capture policy admits only one exact read and survives resta
     approved_destination_ref: 'saved_shipping_address', observed_at: 1000 };
   await f.write(); await assert.rejects(f.load(), /invalid_guest_qualification_policy/);
 });
+
+async function preflightFixture(t) {
+  const f = await fixture(t);
+  f.policy.schema = 'discogs_guest_cart_preflight_policy_v1'; f.policy.action = 'cart_checkout_preflight';
+  f.policy.max_calls = 3; f.policy.expected_ledger_head = 'a'.repeat(64);
+  await f.write(); const issuer = await f.load(); const documentRef = randomUUID();
+  const nav = { schema: 'discogs_guest_checkout_preflight_v1', job_id: f.policy.job_id,
+    phase: 'navigate_checkout_preflight', document_ref: documentRef };
+  const confirm = { schema: f.inspect.schema, job_id: f.policy.job_id, phase: 'confirm_saved_destination', document_ref: documentRef };
+  const acknowledge = async () => {
+    f.setTime(1020); f.policy.destination_ack = { source: 'operator_visual_saved_destination_match', document_ref: documentRef,
+      approved_destination_ref: 'saved_shipping_address', observed_at: 1020 }; await f.write();
+  };
+  return { ...f, issuer, nav, confirm, acknowledge };
+}
+
+test('new preflight job requires ordered inspect and exact acknowledged confirmation before its one durable navigation authorization', async t => {
+  const f = await preflightFixture(t);
+  assert.equal(await f.issuer.authorize(f.nav), null);
+  assert.equal(await f.issuer.accessGuard('cart_checkout_preflight', f.inspect), false);
+  assert.equal(await f.issuer.accessGuard('probe_guest_evidence', f.inspect), true);
+  const inspect = await f.issuer.authorize(f.inspect);
+  assert.equal(inspect.schema, 'discogs_guest_readonly_authorization_v1'); assert.equal(Object.hasOwn(inspect, 'mode'), false);
+  await f.acknowledge(); assert.equal(await f.issuer.authorize(f.nav), null);
+  const confirm = await f.issuer.authorize(f.confirm);
+  assert.equal(confirm.schema, 'discogs_guest_readonly_authorization_v1');
+  assert.equal(await f.issuer.accessGuard('probe_guest_evidence', f.nav), false);
+  assert.equal(await f.issuer.accessGuard('prepare_guest_form', f.nav), false);
+  assert.equal(await f.issuer.accessGuard('cart_checkout_preflight', f.nav), true);
+  const grants = await Promise.all([f.issuer.authorize(f.nav), f.issuer.authorize(f.nav)]);
+  assert.equal(grants.filter(Boolean).length, 1);
+  const grant = grants.find(Boolean);
+  assert.equal(grant.schema, 'discogs_guest_preflight_authorization_v1'); assert.equal(grant.mode, 'cart_checkout_preflight');
+  assert.equal(grant.expected_ledger_head, f.policy.expected_ledger_head);
+  assert.equal(Object.hasOwn(grant, 'priorFailure'), false); assert.equal(Object.hasOwn(grant, 'testAuthorization'), false);
+  assert.equal(await (await f.load()).authorize(f.nav), null);
+  const receipt = JSON.parse(await readFile(join(f.directory, `guest-qualification-${f.policy.job_id}-4-checkout-preflight.json`), 'utf8'));
+  assert.equal(receipt.document_ref, f.nav.document_ref); assert.equal(receipt.destination_ack_observed_at, 1020);
+});
+
+test('preflight confirmation pins exact acknowledgement; changed ack, cancellation, expiry and broad request cannot authorize navigation', async t => {
+  const f = await preflightFixture(t); assert.ok(await f.issuer.authorize(f.inspect)); await f.acknowledge();
+  assert.ok(await f.issuer.authorize(f.confirm));
+  assert.equal(await f.issuer.authorize({ ...f.nav, priorFailure: {} }), null);
+  assert.equal(await f.issuer.authorize({ ...f.nav, document_ref: randomUUID() }), null);
+  const original = { ...f.policy.destination_ack }; f.policy.destination_ack.document_ref = randomUUID(); await f.write();
+  assert.equal(await f.issuer.authorize({ ...f.nav, document_ref: f.policy.destination_ack.document_ref }), null);
+  f.policy.destination_ack = original; await f.write();
+  const controller = new AbortController(); controller.abort(); assert.equal(await f.issuer.authorize(f.nav, { signal: controller.signal }), null);
+  f.setTime(1081); assert.equal(await f.issuer.authorize(f.nav), null);
+  const files = await readdir(f.directory); assert.equal(files.some(file => file.endsWith('-4-checkout-preflight.json')), false);
+});
+
+test('preflight ledger head and mode are immutable, and older read-only/capture policies cannot authorize navigation', async t => {
+  const f = await preflightFixture(t);
+  f.policy.expected_ledger_head = 'b'.repeat(64); await f.write(); await assert.rejects(f.load(), /invalid_guest_qualification_policy/);
+  delete f.policy.expected_ledger_head; await f.write(); await assert.rejects(f.load(), /invalid_guest_qualification_policy/);
+  const old = await fixture(t); await old.write(); const oldIssuer = await old.load();
+  assert.equal(await oldIssuer.authorize({ ...f.nav, job_id: old.policy.job_id }), null);
+  assert.equal(await oldIssuer.accessGuard('cart_checkout_preflight', { ...f.nav, job_id: old.policy.job_id }), false);
+  old.policy.schema = 'discogs_guest_cart_capture_policy_v1'; old.policy.job_id = randomUUID(); old.policy.max_calls = 1; await old.write();
+  assert.equal(await (await old.load()).authorize({ ...f.nav, job_id: old.policy.job_id }), null);
+});
