@@ -108,16 +108,18 @@ def test_monitor_only_release_does_not_require_or_create_buying_criteria(tmp_pat
     CloudApp(database, ORIGIN, verifier())
     clock = [datetime(2026, 10, 25, tzinfo=UTC).timestamp()]
     reader_calls = []
+    observed_ids = [1001]
 
     def read(release):
         reader_calls.append(release)
-        return page(clock[0])
+        return page(clock[0], tuple(observed_ids))
 
     worker = scheduler(database, clock, read)
     with pytest.raises(ValueError):
         worker.set_monitor_release(123, True, expected_rules_revision=-1.0)
     revision = worker.set_monitor_release(123, True, expected_rules_revision=0)
     assert revision == 1
+    assert worker.health()["monitor_releases"] == [{"release_id": 123, "enabled": True}]
     with pytest.raises(RuntimeError):
         worker.set_monitor_release(123, True, expected_rules_revision=0)
     store = RulesStore(database)
@@ -135,13 +137,21 @@ def test_monitor_only_release_does_not_require_or_create_buying_criteria(tmp_pat
     assert captures == []
     assert worker.snapshots.snapshot()["releases"][0]["release_id"] == 123
     assert worker.health()["purchase_allowed"] is False
+    observed_ids.append(1002)
+    clock[0] += MIN_INTERVAL + 1
+    assert worker.tick()["status"] == "changed"
+    assert [(row["kind"], row["listing_id"]) for row in worker.outbox.pending()] == [
+        ("new", "1002")
+    ]
+    assert worker.reconcile_outbox() == 1
+    worker.set_paused(True, expected_revision=worker.health()["revision"])
     worker.set_monitor_release(123, False, expected_rules_revision=1)
     clock[0] += MIN_INTERVAL + 1
     assert worker.tick()["status"] == "idle"
-    assert reader_calls == [123]
+    assert reader_calls == [123, 123]
 
 
-def test_disabling_monitor_during_read_rejects_inflight_baseline(tmp_path):
+def test_monitor_edit_during_running_read_is_rejected(tmp_path):
     database = tmp_path / "monitor-race.db"
     RulesStore(database, create=True).close()
     CloudApp(database, ORIGIN, verifier())
@@ -162,6 +172,21 @@ def test_disabling_monitor_during_read_rejects_inflight_baseline(tmp_path):
     assert worker.tick()["status"] == "blocked"
     assert worker.snapshots.snapshot()["releases"][0]["baseline_revision"] == 0
     assert change_ids(database) == []
+    assert worker.health()["monitor_releases"] == [{"release_id": 123, "enabled": True}]
+
+
+def test_monitoring_owned_release_does_not_capture_buy_candidate(setup):
+    database, clock = setup
+    store = RulesStore(database)
+    store.mark_owned(123, True, 1)
+    store.close()
+    captures = []
+    worker = scheduler(database, clock, lambda _: page(clock[0]))
+    worker.set_monitor_release(123, True, expected_rules_revision=2)
+    worker.candidates = SimpleNamespace(capture=lambda *args, **kwargs: captures.append(args))
+    resume(worker)
+    assert worker.tick()["status"] == "baseline"
+    assert captures == []
 
 
 def test_unwired_reader_stops_if_schedule_was_resumed(setup):
@@ -177,6 +202,12 @@ def test_local_rule_editor_without_cloud_control_reports_stopped(tmp_path):
     RulesStore(database, create=True).close()
     worker = HostedReleaseScheduler(database, reader=None)
     assert worker.health()["kill_switch"] is True
+    store = RulesStore(database)
+    assert store.db.execute("SELECT killed,revision FROM cloud_control WHERE id=1").fetchone() == (
+        1,
+        0,
+    )
+    store.close()
     resume(worker)
     assert worker.tick()["status"] == "idle"
 
@@ -225,7 +256,7 @@ def test_failed_and_partial_reads_preserve_baseline_and_backoff(setup, failure):
     assert worker.snapshots.snapshot()["releases"][0]["baseline_revision"] == 1
     assert change_ids(database) == []
     assert worker.tick()["status"] == "idle"
-    assert worker.health()["paused"] is (failure == "challenge")
+    assert worker.health()["paused"] is (failure in {"socket_error", "challenge"})
 
 
 @pytest.mark.parametrize("change", ["pause", "rules", "control", "baseline"])
@@ -262,7 +293,10 @@ def test_inflight_revision_or_pause_change_rejects_observation(setup, change):
     assert worker.health()["last_error"] == "read_or_revision_failed"
 
 
-def test_socket_client_fixed_action_and_rejects_wrong_or_incomplete_response(monkeypatch):
+@pytest.mark.parametrize("lease_read", [False, True])
+def test_socket_client_fixed_action_and_rejects_wrong_or_incomplete_response(
+    monkeypatch, lease_read
+):
     path = Path(f"/tmp/sniper-dry-{uuid.uuid4().hex[:12]}.sock")
     captured = []
     response = {
@@ -272,6 +306,8 @@ def test_socket_client_fixed_action_and_rejects_wrong_or_incomplete_response(mon
         "purchase_allowed": False,
         "observation": page(datetime(2026, 10, 25, tzinfo=UTC).timestamp()),
     }
+    if lease_read:
+        response["monitor_lease_remaining"] = 5
     server = socket.socket(socket.AF_UNIX)
     server.bind(str(path))
     path.chmod(0o600)
@@ -289,14 +325,17 @@ def test_socket_client_fixed_action_and_rejects_wrong_or_incomplete_response(mon
     thread.start()
     try:
         monkeypatch.setattr(socket.socket, "connect", LOCAL_SOCKET_CONNECT)
-        reader = HostedSocketReader(path)
+        reader = HostedSocketReader(path, lease_read=lease_read)
         assert reader.ready() is True
         assert reader(123)["release_id"] == 123
     finally:
         thread.join(timeout=2)
         server.close()
         path.unlink(missing_ok=True)
-    assert json.loads(captured[0]) == {"action": "observe_release", "release_id": "123"}
+    assert json.loads(captured[0]) == {
+        "action": "operator_monitor_lease_read" if lease_read else "observe_release",
+        "release_id": "123",
+    }
     assert all(field in response["observation"]["rows"][0]["fields"] for field in FIELD_NAMES)
 
 

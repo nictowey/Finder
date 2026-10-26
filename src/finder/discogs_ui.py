@@ -153,6 +153,21 @@ Saving the same release updates its rules.</p>
 <p id="candidate-pipeline-status" class="muted">Candidate checks, one-copy cart rehearsal, and order lifecycle safeguards are fixture-tested only. No purchase authorization, hosted candidate worker, live checkout, or record purchasing is running. Hosted browser reads are stopped. A partial marketplace page cannot establish full availability or qualify a row by itself; each listing needs separate item and final delivered-quote checks.</p>
 <div id="targets" aria-live="polite"></div></section>
 </div>
+<section class="panel evaluator" aria-labelledby="monitor-release-title">
+<h2 id="monitor-release-title">Monitor-only release IDs</h2>
+<p class="muted">Save an exact Discogs release ID or release link without setting buying rules.
+Saving an ID does not start the hosted browser schedule, create a quote, or permit a purchase.</p>
+<form id="monitor-release-form"><label for="monitor-release-id">Release ID or link</label>
+<input id="monitor-release-id" required maxlength="500" autocomplete="off" placeholder="e.g. 28720177 or a Discogs release link">
+<div class="actions"><button type="submit" id="save-monitor-release" disabled>Save for read-only monitoring</button></div></form>
+<div id="monitor-releases" aria-live="polite"></div>
+</section>
+<section class="panel evaluator" aria-labelledby="change-alerts-title">
+<h2 id="change-alerts-title">Listing changes for review</h2>
+<p class="muted">In-app review only. No email, push message, cart action, or purchase is sent.
+A listing change does not verify the pressing, availability, or delivered total.</p>
+<div id="change-alert-list" aria-live="polite"></div>
+</section>
 <section id="monitor-panel" class="panel evaluator" aria-labelledby="monitor-title" hidden>
 <h2 id="monitor-title">Cloud monitoring</h2>
 <p id="monitor-status" class="notice"></p>
@@ -237,12 +252,17 @@ function updateButtons() {
   el('monitor-once').disabled=pending || needsRefresh || monitor?.configured !== true || snapshot?.kill_switch !== false;
   el('track-listing-button').disabled=pending || needsRefresh || !monitor || !el('track-target').value;
   document.querySelectorAll('.ownership').forEach((button) => { button.disabled = pending || needsRefresh; });
+  el('save-monitor-release').disabled=pending || needsRefresh || snapshot?.hosted_schedule?.paused !== true;
+  document.querySelectorAll('.monitor-release-toggle').forEach((button) => {
+    button.disabled=pending || needsRefresh || snapshot?.hosted_schedule?.paused !== true;
+  });
 }
 function setPending(next) {
   pending = next;
   el('target-form').setAttribute('aria-busy', String(next));
   el('evaluate-form').setAttribute('aria-busy', String(next));
   el('listing-form').setAttribute('aria-busy', String(next));
+  el('monitor-release-form').setAttribute('aria-busy', String(next));
   el('targets').setAttribute('aria-busy', String(next));
   updateButtons();
 }
@@ -288,7 +308,7 @@ function renderSaved() {
   el('saved-summary').textContent = `${targets.length} saved ${targets.length === 1 ? 'target' : 'targets'} · revision ${snapshot.revision}`;
   const hosted=snapshot?.hosted_schedule;
   el('hosted-schedule-status').textContent=hosted?.paused === true ?
-    `Exact-release browser schedule: paused; ${Array.isArray(hosted.targets) ? hosted.targets.length : 0} due-state entries. No unattended browser reads.` :
+    `Exact-release browser schedule: paused; ${Array.isArray(hosted.monitor_releases) ? hosted.monitor_releases.length : 0} monitor-only IDs saved. No unattended browser reads.` :
     hosted?.paused === false ? 'Exact-release schedule saved as resumed; this app has no browser reader or running hosted worker.' :
     'Exact-release browser schedule status is unavailable or unverified.';
   if (targets.length === 0) el('targets').append(node('p', 'No targets yet. Add your first set of rules.', 'empty'));
@@ -353,8 +373,87 @@ function renderSaved() {
     const warning=node('p', 'Saved rules or owned markers changed after this read. Read the listing again explicitly before relying on this comparison.', 'error');
     warning.id='listing-result-stale'; el('listing-result').prepend(warning);
   }
+  renderMonitorReleases();
+  renderInAppAlerts();
   renderMonitor();
   updateButtons();
+}
+function renderMonitorReleases() {
+  const box=el('monitor-releases'); box.replaceChildren();
+  const hosted=snapshot?.hosted_schedule;
+  if (!hosted || !Array.isArray(hosted.monitor_releases) || hosted.monitor_releases.length > 100 ||
+      hosted.monitor_releases.some((row) => !row || !Number.isSafeInteger(row.release_id) || row.release_id < 1 ||
+        typeof row.enabled !== 'boolean')) {
+    box.append(node('p', 'Monitor-only saved state is unavailable. No read has started.', 'error'));
+    return;
+  }
+  if (!hosted.monitor_releases.length) {
+    box.append(node('p', 'No monitor-only releases saved. The schedule remains off.', 'muted'));
+    return;
+  }
+  hosted.monitor_releases.forEach((row) => {
+    const card=node('article', '', 'target');
+    card.append(node('h3', `Release ${row.release_id}`),
+      node('p', row.enabled && hosted.paused === true ? 'Saved for read-only checks; hosted schedule is still paused.' :
+        row.enabled ? 'Saved for read-only checks; this UI has no browser reader or hosted worker.' :
+        'Paused for this release; no checks requested.', 'muted'));
+    const button=node('button', row.enabled ? 'Pause this release' : 'Enable this release',
+      'secondary monitor-release-toggle'); button.type='button';
+    button.addEventListener('click', () => persist('/api/monitor-release',
+      {release_id:row.release_id, enabled:!row.enabled},
+      `Monitor-only release ${row.release_id} ${row.enabled ? 'paused' : 'enabled'}. Hosted schedule remains paused; purchasing disabled.`));
+    card.append(button); box.append(card);
+  });
+}
+function renderInAppAlerts() {
+  const box=el('change-alert-list'); box.replaceChildren();
+  const alerts=snapshot?.in_app_alerts;
+  if (!alerts || alerts.channel !== 'in_app_only' || alerts.messages_sent !== 0 ||
+      alerts.purchase_allowed !== false || !Array.isArray(alerts.pending) || alerts.pending.length > 500 ||
+      !(alerts.control_revision === null || Number.isSafeInteger(alerts.control_revision))) {
+    box.append(node('p', 'Change review status is unavailable. Refresh before acknowledging anything.', 'error'));
+    return;
+  }
+  if (!alerts.pending.length) {
+    box.append(node('p', 'No pending listing changes. This does not prove that monitoring is running or no copies are for sale.', 'muted'));
+    return;
+  }
+  const valid=alerts.pending.every((change) =>
+    change && Number.isSafeInteger(change.change_sequence) && change.change_sequence > 0 &&
+    Number.isSafeInteger(change.release_id) && change.release_id > 0 &&
+    /^[1-9][0-9]{0,15}$/.test(String(change.listing_id)) &&
+    Number.isSafeInteger(Number(change.listing_id)) &&
+    ['new','changed','disappeared','reappeared'].includes(change.kind) &&
+    change.delivery === 'in_app_only' && change.purchase_allowed === false);
+  if (!valid) {
+    box.append(node('p', 'An alert was malformed. Refresh before reviewing changes.', 'error'));
+    return;
+  }
+  alerts.pending.forEach((change) => {
+    const card=node('article', '', 'target');
+    card.append(node('h3', `${readable(change.kind)} · release ${change.release_id}`),
+      node('p', `Listing ${change.listing_id} · observed ${change.observed_at || 'time unknown'}. Review only; no buying action.`, 'muted'));
+    const link=node('a', 'Open listing on Discogs');
+    link.href=`https://www.discogs.com/sell/item/${change.listing_id}`;
+    link.target='_blank'; link.rel='noopener noreferrer'; card.append(link);
+    const button=node('button', 'Mark reviewed', 'secondary alert-ack'); button.type='button';
+    button.addEventListener('click', () => acknowledgeInAppAlert(change.change_sequence));
+    card.append(button); box.append(card);
+  });
+}
+async function acknowledgeInAppAlert(sequence) {
+  if (pending || needsRefresh || !snapshot?.in_app_alerts) return;
+  setPending(true); message('Recording in-app review…');
+  try {
+    await request('/api/change-alert/ack', {change_sequences:[sequence],
+      expected_revision:snapshot.revision,
+      expected_control_revision:snapshot.in_app_alerts.control_revision});
+    needsRefresh=true; await refreshState();
+    message('Listing change marked reviewed in this private app. No external message or purchase was sent.');
+  } catch (error) {
+    needsRefresh=true;
+    message(`${errorText(error)} Review state may have changed. Refresh before trying again.`, true);
+  } finally { setPending(false); }
 }
 function sourceLink(kind, reference, label) {
   if (!/^[1-9][0-9]{0,15}$/.test(String(reference)) || !Number.isSafeInteger(Number(reference))) return node('span', 'Source link unavailable');
@@ -477,6 +576,16 @@ el('target-form').addEventListener('submit', async (event) => {
   let target;
   try { target=targetFromForm(); } catch (error) { message(errorText(error), true); return; }
   await persist('/api/target', {target}, 'Target rules saved. Purchasing remains disabled. Your form and JSON drafts are unchanged.');
+});
+el('monitor-release-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (pending || needsRefresh || snapshot?.hosted_schedule?.paused !== true) return;
+  const release_id=value('monitor-release-id');
+  if (!release_id || release_id.length > 500) {
+    message('Supply one exact Discogs release ID or release link.', true); return;
+  }
+  await persist('/api/monitor-release', {release_id, enabled:true},
+    'Monitor-only release saved. The hosted browser schedule remains paused; purchasing disabled.');
 });
 el('refresh').addEventListener('click', async () => {
   if (pending) return; setPending(true); message('Refreshing saved rules without changing your drafts…');

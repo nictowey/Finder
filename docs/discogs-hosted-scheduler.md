@@ -1,19 +1,25 @@
 # Hosted exact-release scheduler: disabled integration
 
-`HostedReleaseScheduler` is an opt-in, single-read tick around the fixed
-`observe_release` Unix-socket action and `ReleaseSnapshots.ingest`. The
+`HostedReleaseScheduler` is an opt-in, single-read tick around a fixed
+read-only Unix-socket action and `ReleaseSnapshots.ingest`. A running worker
+uses `operator_monitor_lease_read`, which remains blocked without a scoped
+browser lease. The
 `finder-monitor` entry point wires the private socket reader to a durable worker
 loop, but is **not installed or running as a VPS service**. Without `--run` it
 only prints health. Even with `--run` it exits if the schedule is paused, the
 kill switch is active, or the reader is unavailable; it never resumes a schedule.
+`--run` also requires one or more explicit `--release-id` values and cannot
+select other saved releases. This is a worker scope, not browser access recovery.
 The web app does not start a worker or call `tick`. A new rules database
 starts with this schedule paused, the cloud kill switch stopped, and no targets.
 An ID-only `discogs_monitor_releases` table now lets the scheduler observe an
 exact release without inventing a price, condition, seller or destination
 buying rule. Saves require the current rules revision and invalidate an
 in-flight observation. Complete snapshots and changes are retained for these
-read-only targets, while candidate capture is skipped unless a separate active
-buying rule exists. This schema addition does not save any targets, start the
+read-only targets, while candidate capture is skipped unless a separate active,
+unowned buying rule exists. The initial database creates a stopped cloud-control
+row; health lists ID-only targets even before their first due read. This schema
+addition does not save any targets, start the
 worker, clear the browser stop or enable orders.
 The authenticated cloud `/api/snapshot` and private local rule editor report its
 paused state, next request, per-target due/failure state and last error. `set_paused`
@@ -27,8 +33,9 @@ and a 120-second lease before touching the reader. A restarted or second worker
 cannot immediately repeat a read. The socket client sends only the ID and fixed
 action; the browser code constructs the canonical URL. The client rejects an
 insecure socket, malformed response, wrong release, incomplete snapshot or any
-purchase-enabled field. Reader access restrictions pause the schedule; other
-failures back off up to 24 hours. No error is interpreted as zero listings.
+purchase-enabled field. Reader access restrictions and uncertain socket outcomes
+pause the schedule; other failures back off up to 24 hours. No error is
+interpreted as zero listings.
 
 The snapshot importer checks saved rules, cloud control, scheduler revision and
 lease token in one write transaction. A pause or rules/control/baseline change
@@ -48,6 +55,12 @@ atomic marketplace snapshot. The existing diff ledger tracks
 new, disappeared, changed and reappeared listing IDs without treating any change
 as sale or verified pressing. This path never qualifies a delivered total or
 enables purchase.
+Successful complete snapshots materialize retained change sequences into a
+durable in-app review outbox. Startup reconciliation is idempotent after a crash;
+acknowledgment shares the existing change ledger. This sends no push, email or
+other message. With three targets and a global 15-minute request slot, each
+release may be observed roughly every 45 minutes. The separate five-minute
+snapshot-freshness flag is not a claim of continuous live availability.
 
 An optional `CandidatePipeline` captures new, changed and reappeared listing
 events while the same revisioned snapshot lease is held. It retains one row per
@@ -81,16 +94,27 @@ Cloudflare verification himself, and a scoped current-cart read succeeded, so
 the last observed page was not an ongoing cart challenge. Existing recovery
 controls permit only separately acknowledged, single-use reads of the already
 open Rocky release or the exact DS2 cart; they do not resume ordinary reads or
-clear this latch. There is no implemented general operator reset. Returning to
-ordinary unattended reads would require a separately reviewed recovery design
-and site-access basis; installing the new worker does not change either gate.
+clear this latch. There is no implemented general operator reset. The reviewed
+bounded lease uses a separate fixed read action; installing the worker alone
+does not change the historical stop.
 The scoped operator-recovery bridge was deployed and completed one read of each
 of releases `28720177`, `5520534` and `13053315` on October 25, 2026. Each
 returned a complete single-page observation, as recorded in
 [discogs-monitor-recovery.md](discogs-monitor-recovery.md). The historical
 marker remains, and neither the recurring worker nor the purchase path was
-activated. The site-access basis and repeated live-monitoring checks remain
-unverified.
+activated. Repeated live-monitoring behavior remains unverified. The site
+terms concern is disclosed in the recovery document; Nic requested private-use
+monitoring after that disclosure. A new live restriction still stops reads.
+
+The next browser-lease implementation is **offline only**. It requires a fresh
+owner-acknowledged normal marketplace page, keeps the historical stop marker,
+and allows only six attempts across the same three IDs over two hours. A
+durable 15-minute global slot and attempt count survive service restart; the
+boot-bound lease itself must be reverified after restart. It revokes on an
+actual access restriction or uncertain result and honors a reported
+`Retry-After` on 429/503. It has not been installed on the hosted browser or
+activated, and no recurring worker is running. A successful lease trial would
+still not prove uninterrupted long-term availability or checkout.
 
 The reviewer applies exact-release and observation freshness, release quantity,
 seller-comment damage, media/sleeve grade, seller reputation and all-in

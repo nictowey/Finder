@@ -7,15 +7,29 @@ import sys
 from contextlib import nullcontext
 from pathlib import Path
 
+from finder.discogs_change_outbox import InAppChangeOutbox
 from finder.discogs_hosted_scheduler import HostedReleaseScheduler
 from finder.discogs_listing import ListingReader, ListingReadError, observation
-from finder.discogs_rules import RulesStore
+from finder.discogs_rules import RulesStore, release_id
 from finder.discogs_ui import render_page
 from finder.local_web import LocalReviewHandler, LocalReviewServer, local_boundary
 from finder.offline import _check_environment
 
 
 class DiscogsHandler(LocalReviewHandler):
+    def _outbox(self):
+        database = Path(self.server.workspace.db.execute("PRAGMA database_list").fetchone()[2])
+        return InAppChangeOutbox(database)
+
+    def _control_revision(self):
+        store = self.server.workspace.db
+        if not store.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cloud_control'"
+        ).fetchone():
+            return None
+        row = store.execute("SELECT revision FROM cloud_control WHERE id=1").fetchone()
+        return row[0] if row else None
+
     def do_GET(self):
         if self.headers.get_all("Content-Length", []) not in ([], ["0"]):
             self.send_error(400)
@@ -29,10 +43,28 @@ class DiscogsHandler(LocalReviewHandler):
                 nonce=nonce,
             )
         elif self.path == "/api/snapshot":
+            saved = self.server.workspace.snapshot()
+            control_revision = self._control_revision()
+            outbox = self._outbox()
+            try:
+                outbox.materialize(
+                    expected_rules_revision=saved["revision"],
+                    expected_control_revision=control_revision,
+                )
+            except RuntimeError:
+                self._json(409, {"error": "State changed during review. Refresh to try again."})
+                return
             self._json(
                 200,
                 {
-                    **self.server.workspace.snapshot(),
+                    **saved,
+                    "in_app_alerts": {
+                        "channel": "in_app_only",
+                        "messages_sent": 0,
+                        "purchase_allowed": False,
+                        "control_revision": control_revision,
+                        "pending": outbox.pending(),
+                    },
                     "capabilities": {
                         "listing_read_enabled": getattr(self.server, "listing_reader", None)
                         is not None,
@@ -96,6 +128,40 @@ class DiscogsHandler(LocalReviewHandler):
                 "expected_revision",
             }:
                 result = self.server.workspace.mark_owned(**data)
+            elif self.path == "/api/change-alert/ack" and set(data) == {
+                "change_sequences",
+                "expected_revision",
+                "expected_control_revision",
+            }:
+                result = self._outbox().acknowledge(
+                    data["change_sequences"],
+                    expected_rules_revision=data["expected_revision"],
+                    expected_control_revision=data["expected_control_revision"],
+                )
+            elif self.path == "/api/monitor-release" and set(data) == {
+                "release_id",
+                "enabled",
+                "expected_revision",
+            }:
+                schedule = getattr(self.server, "hosted_schedule", None)
+                if schedule is None or schedule.health()["paused"] is not True:
+                    self._json(
+                        409, {"error": "The read-only schedule must be paused before saving."}
+                    )
+                    return
+                ident = release_id(data["release_id"])
+                revision = schedule.set_monitor_release(
+                    ident,
+                    data["enabled"],
+                    expected_rules_revision=data["expected_revision"],
+                )
+                result = {
+                    "release_id": ident,
+                    "enabled": data["enabled"],
+                    "rules_revision": revision,
+                    "hosted_schedule": schedule.health(),
+                    "purchase_allowed": False,
+                }
             else:
                 self._json(404, {"error": "Unknown route or request fields."})
                 return
@@ -103,6 +169,12 @@ class DiscogsHandler(LocalReviewHandler):
         except ListingReadError as error:
             self._json(502, {"error": str(error)})
         except ValueError:
+            if self.path == "/api/change-alert/ack":
+                self._json(400, {"error": "Invalid or expired change. Refresh before reviewing."})
+                return
+            if self.path == "/api/monitor-release":
+                self._json(400, {"error": "Use one exact Discogs release ID or release link."})
+                return
             self._json(
                 400,
                 {

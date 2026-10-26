@@ -7,6 +7,7 @@ import pytest
 from test_discogs_rules import target
 from test_local_web import MemorySocket
 
+from finder.discogs_change_outbox import InAppChangeOutbox
 from finder.discogs_hosted_scheduler import HostedReleaseScheduler
 from finder.discogs_rules import RulesStore
 from finder.discogs_web import DiscogsHandler, DiscogsServer
@@ -24,7 +25,17 @@ def store(tmp_path):
     result.close()
 
 
-def request(store, path="/", data=None, *, token="token", origin=ORIGIN, host=None, reader=None):
+def request(
+    store,
+    path="/",
+    data=None,
+    *,
+    token="token",
+    origin=ORIGIN,
+    host=None,
+    reader=None,
+    schedule=None,
+):
     body = b"" if data is None else json.dumps(data).encode()
     method = "GET" if data is None else "POST"
     headers = f"Host: {host or f'127.0.0.1:{PORT}'}\r\n"
@@ -37,6 +48,8 @@ def request(store, path="/", data=None, *, token="token", origin=ORIGIN, host=No
     server = SimpleNamespace(
         workspace=store, server_port=PORT, origin=ORIGIN, csrf_token="token", listing_reader=reader
     )
+    if schedule is not None:
+        server.hosted_schedule = schedule
     DiscogsHandler(connection, ("127.0.0.1", 1234), server)
     head, _, result = bytes(connection.output).partition(b"\r\n\r\n")
     return int(head.split(b" ")[1]), result
@@ -50,6 +63,13 @@ def test_page_and_snapshot(store):
     status, body = request(store, "/api/snapshot")
     assert status == 200 and json.loads(body)["purchasing_enabled"] is False
     assert json.loads(body)["hosted_schedule"]["paused"] is True
+    assert json.loads(body)["in_app_alerts"] == {
+        "channel": "in_app_only",
+        "messages_sent": 0,
+        "purchase_allowed": False,
+        "control_revision": None,
+        "pending": [],
+    }
     assert json.loads(body)["capabilities"] == {
         "listing_read_enabled": False,
         "order_authorization_configured": False,
@@ -121,6 +141,115 @@ def test_guards(store):
     assert request(store, "/api/target", data, origin="https://evil.test")[0] == 403
     assert request(store, host="evil.test")[0] == 421
     assert store.snapshot()["targets"] == []
+
+
+def test_in_app_change_review_is_loopback_scoped_and_csrf_protected(store):
+    database = Path(store.db.execute("PRAGMA database_list").fetchone()[2])
+    InAppChangeOutbox(database)
+    with store.db:
+        store.db.execute(
+            "INSERT INTO discogs_release_changes "
+            "(release_id,revision,observed_at,kind,listing_id,fields) "
+            "VALUES(123,1,1792886400,'new','456','{}')"
+        )
+    status, body = request(store, "/api/snapshot")
+    alert = json.loads(body)["in_app_alerts"]
+    assert status == 200 and len(alert["pending"]) == 1
+    assert alert["pending"][0]["listing_id"] == "456"
+    assert alert["pending"][0]["delivery"] == "in_app_only"
+    assert alert["pending"][0]["purchase_allowed"] is False
+    sequence = alert["pending"][0]["change_sequence"]
+    ack = {
+        "change_sequences": [sequence],
+        "expected_revision": 0,
+        "expected_control_revision": None,
+    }
+    assert request(store, "/api/change-alert/ack", ack, token="wrong")[0] == 403
+    assert request(store, "/api/change-alert/ack", ack, origin="https://evil.test")[0] == 403
+    assert request(store, "/api/change-alert/ack", ack, host="evil.test")[0] == 421
+    assert request(store, "/api/change-alert/ack", {**ack, "expected_revision": 1})[0] == 409
+    assert len(json.loads(request(store, "/api/snapshot")[1])["in_app_alerts"]["pending"]) == 1
+    status, body = request(store, "/api/change-alert/ack", ack)
+    assert status == 200 and json.loads(body)["messages_sent"] == 0
+    assert request(store, "/api/change-alert/ack", ack)[0] == 200
+    assert json.loads(request(store, "/api/snapshot")[1])["in_app_alerts"]["pending"] == []
+    assert request(store, "/api/change-alert/ack", {**ack, "change_sequences": [999]})[0] == 400
+
+
+def test_three_monitor_only_ids_save_and_pause_without_buying_rules_or_reads(store):
+    database = Path(store.db.execute("PRAGMA database_list").fetchone()[2])
+    schedule = HostedReleaseScheduler(database, reader=None)
+    supplied = [
+        "https://www.discogs.com/release/28720177-DJ-Esco-Hosted-By-Future-4-56-Nights",
+        "5520534",
+        "https://www.discogs.com/release/13053315-Metro-Boomin-Not-All-Heroes-Wear-Capes",
+    ]
+    for revision, value in enumerate(supplied):
+        data = {"release_id": value, "enabled": True, "expected_revision": revision}
+        assert request(store, "/api/monitor-release", data, schedule=schedule)[0] == 200
+    snapshot = json.loads(request(store, "/api/snapshot", schedule=schedule)[1])
+    assert snapshot["targets"] == []
+    assert snapshot["purchasing_enabled"] is False
+    assert snapshot["hosted_schedule"]["paused"] is True
+    assert snapshot["hosted_schedule"]["reader_ready"] is False
+    assert snapshot["hosted_schedule"]["monitor_releases"] == [
+        {"release_id": ident, "enabled": True} for ident in (5520534, 13053315, 28720177)
+    ]
+    assert (
+        request(
+            store,
+            "/api/monitor-release",
+            {
+                "release_id": 5520534,
+                "enabled": False,
+                "expected_revision": 3,
+            },
+            schedule=schedule,
+        )[0]
+        == 200
+    )
+    assert schedule.health()["paused"] is True
+    assert schedule.health()["monitor_releases"][0] == {
+        "release_id": 5520534,
+        "enabled": False,
+    }
+    assert store.snapshot()["targets"] == []
+
+
+def test_monitor_only_save_requires_current_revision_and_origin_csrf(store):
+    database = Path(store.db.execute("PRAGMA database_list").fetchone()[2])
+    schedule = HostedReleaseScheduler(database, reader=None)
+    data = {"release_id": 28720177, "enabled": True, "expected_revision": 0}
+    assert request(store, "/api/monitor-release", data, schedule=schedule, token="wrong")[0] == 403
+    assert (
+        request(store, "/api/monitor-release", data, schedule=schedule, origin="https://evil.test")[
+            0
+        ]
+        == 403
+    )
+    assert request(store, "/api/monitor-release", {**data, "extra": 1}, schedule=schedule)[0] == 404
+    assert (
+        request(store, "/api/monitor-release", {**data, "enabled": "true"}, schedule=schedule)[0]
+        == 400
+    )
+    assert schedule.health()["monitor_releases"] == []
+    assert request(store, "/api/monitor-release", data, schedule=schedule)[0] == 200
+    assert request(store, "/api/monitor-release", data, schedule=schedule)[0] == 409
+    schedule.set_paused(False, expected_revision=0)
+    assert (
+        request(
+            store,
+            "/api/monitor-release",
+            {
+                "release_id": 5520534,
+                "enabled": True,
+                "expected_revision": 1,
+            },
+            schedule=schedule,
+        )[0]
+        == 409
+    )
+    assert schedule.health()["monitor_releases"] == [{"release_id": 28720177, "enabled": True}]
 
 
 def test_owned_marker_requires_revision(store):

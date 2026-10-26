@@ -41,3 +41,15 @@ purchase scope and payment handoff, then build and validate a provider-specific
 order adapter and reconciliation route under separate authorization. The
 offline cross-file rechecks are not a live provider-side transaction. Live
 collection, cart writes, and orders remain off.
+
+`HostedNoOrderCoordinator` combines the existing read-only cart preflight with
+the optional order ledger's exact-release intent lookup. It blocks before a
+cart read if any intent already occupies that release's one-copy slot, even
+when the caller supplies a different UUID. Opaque destination/payment
+references and a rules revision can be checked without storing an address or
+card. Its only injectable quote adapter is an in-memory offline fixture; it
+defaults to unavailable. The fixture requires explicit item, shipping, tax,
+fees and matching arithmetic, but cannot verify a live final payable amount.
+The coordinator rechecks the candidate sequence and observation fingerprint
+after reading that fixture. It never prepares a live order, and its `submit`
+method always stops. No hosted service constructs it yet.

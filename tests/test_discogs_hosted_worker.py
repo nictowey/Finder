@@ -8,7 +8,7 @@ from test_discogs_hosted_scheduler import page, resume, scheduler
 from test_discogs_hosted_scheduler import setup as hosted_setup
 from test_discogs_release_snapshots import listing
 
-from finder.discogs_hosted_scheduler import MIN_INTERVAL, HostedReadError
+from finder.discogs_hosted_scheduler import MIN_INTERVAL, HostedReadError, HostedReleaseScheduler
 from finder.discogs_hosted_worker import run
 from finder.discogs_release_snapshots import assemble_release_pages
 from finder.discogs_rules import RulesStore, release_id
@@ -83,10 +83,14 @@ def test_user_supplied_release_ids_remain_independent_read_only_inputs(url, expe
 
 def test_worker_exits_without_reader_when_paused_or_stopped(setup, tmp_path):
     database, clock = setup
-    assert run(database, tmp_path / "absent.sock", threading.Event())["reason"] == "schedule_paused"
+    assert (
+        run(database, tmp_path / "absent.sock", threading.Event(), allowed_releases=[123])["reason"]
+        == "schedule_paused"
+    )
     resume(scheduler(database, clock, lambda _: page(clock[0])))
     assert (
-        run(database, tmp_path / "absent.sock", threading.Event())["reason"] == "reader_unavailable"
+        run(database, tmp_path / "absent.sock", threading.Event(), allowed_releases=[123])["reason"]
+        == "reader_unavailable"
     )
 
 
@@ -102,7 +106,7 @@ def test_worker_does_not_repeat_after_restart(setup, monkeypatch, tmp_path):
             reads.append(release)
             return page(clock[0])
 
-    monkeypatch.setattr("finder.discogs_hosted_worker.HostedSocketReader", lambda _: Reader())
+    monkeypatch.setattr("finder.discogs_hosted_worker.HostedSocketReader", lambda *a, **k: Reader())
     resume(scheduler(database, clock, Reader()))
 
     class StopAfterWait:
@@ -115,8 +119,14 @@ def test_worker_does_not_repeat_after_restart(setup, monkeypatch, tmp_path):
         def wait(self, _):
             self.stopped = True
 
-    assert run(database, tmp_path / "socket", StopAfterWait())["reason"] == "signal"
-    assert run(database, tmp_path / "socket", StopAfterWait())["reason"] == "signal"
+    assert (
+        run(database, tmp_path / "socket", StopAfterWait(), allowed_releases=[123])["reason"]
+        == "signal"
+    )
+    assert (
+        run(database, tmp_path / "socket", StopAfterWait(), allowed_releases=[123])["reason"]
+        == "signal"
+    )
     assert reads == [123]
 
 
@@ -147,6 +157,31 @@ def test_multiple_exact_release_targets_have_independent_due_slots(setup):
     assert seen == [123, 456]
 
 
+def test_running_worker_scope_excludes_unrelated_saved_target(setup):
+    database, clock = setup
+    store = RulesStore(database)
+    second = copy.deepcopy(store.snapshot()["targets"][0])
+    second["release_id"] = 456
+    store.save(second, 1)
+    store.close()
+    seen = []
+
+    def read(release):
+        seen.append(release)
+        return {
+            **page(clock[0]),
+            "release_id": release,
+            "url": f"https://www.discogs.com/sell/release/{release}",
+        }
+
+    worker = HostedReleaseScheduler(database, read, clock=lambda: clock[0], allowed_releases=[456])
+    resume(worker)
+    assert worker.tick()["status"] == "baseline"
+    assert seen == [456]
+    with pytest.raises(ValueError):
+        run(database, database, threading.Event(), allowed_releases=[])
+
+
 def test_access_restriction_pauses_worker_with_explicit_code(setup, monkeypatch, tmp_path):
     database, clock = setup
 
@@ -158,9 +193,9 @@ def test_access_restriction_pauses_worker_with_explicit_code(setup, monkeypatch,
             raise HostedReadError("access_restricted", stop=True)
 
     monkeypatch.setattr(
-        "finder.discogs_hosted_worker.HostedSocketReader", lambda _: RestrictedReader()
+        "finder.discogs_hosted_worker.HostedSocketReader", lambda *a, **k: RestrictedReader()
     )
     resume(scheduler(database, clock, RestrictedReader()))
-    result = run(database, tmp_path / "socket", threading.Event())
+    result = run(database, tmp_path / "socket", threading.Event(), allowed_releases=[123])
     assert result == {"status": "stopped", "reason": "access_restricted", "purchase_allowed": False}
     assert scheduler(database, clock, RestrictedReader()).health()["paused"] is True

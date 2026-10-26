@@ -382,6 +382,14 @@ class OrderSafetyStore:
             row = db.execute("SELECT * FROM intents WHERE intent_id=?", (intent_id,)).fetchone()
             return self._status(row) if row else None
 
+    def status_for_release(self, release_id):
+        """Read the permanent one-copy slot without assuming an intent UUID."""
+        if type(release_id) is not int or not 0 < release_id <= MAX_ID:
+            raise OrderStopped("invalid_release_id")
+        with self._connection() as db:
+            row = db.execute("SELECT * FROM intents WHERE release_id=?", (release_id,)).fetchone()
+            return self._status(row) if row else None
+
     @staticmethod
     def _receipt(row, receipt):
         return (

@@ -76,19 +76,20 @@ bounded checks. Discogs' current
 [Terms of Service](https://support.discogs.com/hc/en-us/articles/360009334333-Terms-of-Service)
 license excludes collection and use of product listings, descriptions and
 prices, and use of data-mining, robots, scraping or similar extraction tools,
-without express written consent. No such consent or other supported basis for
-this recurring site-page collection is verified. Nic declined support outreach;
-the successful one-time trial does not remove this blocker. The separate
+without express written consent. No such consent is verified. Nic declined
+support outreach and, after this concern was disclosed, asked to proceed with
+private-use monitoring. That decision does not override a future live access
+restriction or prove the site permits the collection. The separate
 [API Terms](https://support.discogs.com/hc/en-us/articles/360009334593-API-Terms-of-Use)
 also limit inconsistent automated access, but the site Terms apply directly to
 the proposed hosted browser route.
 
-If a supported access basis is established, the next change would require
-review of an **explicit bounded read-only lease**: only saved exact releases,
-expiration and request caps, a permitted cadence, no overlapping reads, durable
-stop on a fresh challenge or denial, and a way to revoke without erasing the
-historical stop record. No lease or stop-clearing transition is implemented.
-Saving targets or starting the worker before that review is out of scope.
+The next technical transition uses an **explicit bounded read-only lease**:
+only the three supplied exact releases, expiration and request caps, a
+15-minute global request slot, no overlapping reads, durable stop on a fresh
+challenge or denial, and revocation without erasing the historical stop record.
+The lease has been implemented and tested offline, but is not deployed or
+activated. Saving targets alone cannot clear the old stop or start the worker.
 
 Technical validation after an allowed lease would still need at least two
 successive live snapshots of the same release to prove new, changed,

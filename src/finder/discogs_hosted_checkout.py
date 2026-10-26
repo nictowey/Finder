@@ -253,10 +253,39 @@ class HostedCheckoutPreflight:
         )
         if target is None or evidence.listing_id != listing_id:
             raise CheckoutStopped("cart_identity_unverified")
+        for value in (
+            evidence.subtotal,
+            evidence.shipping,
+            evidence.tax,
+            evidence.fees,
+            evidence.displayed_total,
+        ):
+            if value is not None and (
+                type(value) is not tuple
+                or len(value) != 2
+                or type(value[0]) is not str
+                or not MONEY.fullmatch(value[0])
+                or type(value[1]) is not str
+                or value[1] not in {"USD", "EUR", "GBP", "CAD", "AUD"}
+            ):
+                raise CheckoutStopped("cart_evidence_unverified")
+        components = tuple(
+            value
+            for value in (evidence.subtotal, evidence.shipping, evidence.tax, evidence.fees)
+            if value is not None
+        )
         total = evidence.displayed_total
-        if total and total[1] != target["currency"]:
+        if any(value[1] != target["currency"] for value in (*components, total) if value):
             raise CheckoutStopped("cart_currency_mismatch")
-        if total and Decimal(total[0]) > Decimal(target["max_total"]):
+        # Known nonnegative components are a lower bound even when tax or fees
+        # are deferred. A displayed total below that bound is contradictory,
+        # never a cheaper final quote.
+        lower_bound = sum((Decimal(value[0]) for value in components), Decimal(0))
+        if total and Decimal(total[0]) < lower_bound:
+            raise CheckoutStopped("cart_displayed_total_inconsistent")
+        if max(lower_bound, Decimal(total[0]) if total else Decimal(0)) > Decimal(
+            target["max_total"]
+        ):
             raise CheckoutStopped("observed_total_above_ceiling")
         return {
             "status": "blocked",
@@ -265,6 +294,8 @@ class HostedCheckoutPreflight:
             "release_id": release_id,
             "listing_id": listing_id,
             "rules_revision": after["snapshot"]["revision"],
+            "candidate_sequence": after["candidate_sequence"],
+            "observation_fingerprint": after["listing"]["observation_fingerprint"],
             "claim_state": "cart_observed",
             "evidence": evidence,
             "unverified": (

@@ -345,7 +345,7 @@ async function writeCartAck(socket) {
 }
 
 function monitorFixture({ currentId = '28720177', currentTitle = 'Discogs marketplace',
-  trialStatus = 200, hold = null, currentHold = null,
+  trialStatus = 200, trialRetryAfter = null, hold = null, currentHold = null,
   onCurrentEvaluate = () => {}, onTrialGoto = () => {} } = {}) {
   const calls = [];
   const currentUrl = `https://www.discogs.com/sell/release/${currentId}`;
@@ -367,7 +367,8 @@ function monitorFixture({ currentId = '28720177', currentTitle = 'Discogs market
     return {
       goto: async (next) => { calls.push(['goto', next]); url = next; onTrialGoto();
         if (hold) await hold;
-        return { status: () => trialStatus }; },
+        return { status: () => trialStatus,
+          headerValue: () => Promise.resolve(trialRetryAfter) }; },
       url: () => url,
       title: async () => 'Discogs marketplace',
       waitForSelector: async () => {},
@@ -384,6 +385,11 @@ async function writeMonitorAck(socket, directory, grantId, releaseId) {
   const bootId = (await readFile(socket.options.operatorBootPath, 'utf8')).trim();
   await writeFile(join(directory, `operator-monitor-grant-${grantId}-ack`),
     `operator_confirmed_monitor_release:${releaseId}:${grantId}:${bootId}\n`, { mode: 0o600 });
+}
+async function writeMonitorLeaseAck(socket, directory, grantId, releaseId) {
+  const bootId = (await readFile(socket.options.operatorBootPath, 'utf8')).trim();
+  await writeFile(join(directory, `operator-monitor-lease-grant-${grantId}-ack`),
+    `operator_confirmed_monitor_lease:${releaseId}:${grantId}:${bootId}\n`, { mode: 0o600 });
 }
 async function waitForMonitorEvent(directory, event, grantId) {
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -716,6 +722,188 @@ test('timed-out or disconnected trial loses all remaining scoped reads', async (
       } finally { release(); await socket.close(); }
     } finally { await rm(directory, { recursive: true, force: true }); }
   }
+});
+
+test('read-only monitor lease needs a fresh current-page ack, is capped, and leaves old stop', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-lease-'));
+  const fixture = monitorFixture(); let now = Date.now(); const grantId = randomUUID();
+  const verify = JSON.stringify({ action: 'operator_monitor_lease_verify', grant_id: grantId,
+    release_id: '28720177' }) + '\n';
+  const read = id => JSON.stringify({ action: 'operator_monitor_lease_read', release_id: id }) + '\n';
+  try {
+    const socket = await operatorSocket(fixture.context, directory, { clock: () => now });
+    try {
+      stopped(await sendSocket(socket.path, verify), 'operator_acknowledgement_required');
+      await writeMonitorLeaseAck(socket, directory, grantId, '28720177');
+      assert.equal((await sendSocket(socket.path, verify)).status, 'verified');
+      stopped(await sendSocket(socket.path, verify), 'monitor_lease_already_active');
+      stopped(await sendSocket(socket.path, read('4204639')), 'unsupported_monitor_lease');
+      stopped(await sendSocket(socket.path, JSON.stringify({ action: 'observe_release',
+        release_id: '28720177' }) + '\n'), 'access_restricted');
+      for (let index = 0; index < 6; index++) {
+        if (index) now += 15 * 60_000 + 1;
+        const result = await sendSocket(socket.path, read(['28720177', '5520534',
+          '13053315'][index % 3]));
+        assert.equal(result.status, 'observed');
+        assert.equal(result.monitor_lease_remaining, 5 - index);
+        if (index === 0) stopped(await sendSocket(socket.path, read('5520534')),
+          'monitor_lease_cooldown');
+      }
+      stopped(await sendSocket(socket.path, read('28720177')), 'monitor_lease_unavailable');
+      stopped(await sendSocket(socket.path, verify), 'operator_acknowledgement_required');
+      const state = JSON.parse(await readFile(join(directory, 'operator-monitor-lease.json'), 'utf8'));
+      assert.equal(state.attempts, 6); assert.equal(state.revoked, true);
+      assert.equal(fixture.calls.filter(value => Array.isArray(value) && value[0] === 'goto').length, 6);
+      assert.ok((await readdir(directory)).includes('access-stopped'));
+    } finally { await socket.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('monitor lease retains its slot across browser restart and requires fresh verification', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-lease-'));
+  const fixture = monitorFixture(); let now = Date.now(); const firstGrant = randomUUID();
+  const read = JSON.stringify({ action: 'operator_monitor_lease_read',
+    release_id: '28720177' }) + '\n';
+  try {
+    const first = await operatorSocket(fixture.context, directory, { clock: () => now });
+    await writeMonitorLeaseAck(first, directory, firstGrant, '28720177');
+    assert.equal((await sendSocket(first.path, JSON.stringify({
+      action: 'operator_monitor_lease_verify', grant_id: firstGrant,
+      release_id: '28720177' }) + '\n')).status, 'verified');
+    assert.equal((await sendSocket(first.path, read)).status, 'observed');
+    await first.close();
+    const restarted = await operatorSocket(fixture.context, directory, { clock: () => now });
+    try {
+      stopped(await sendSocket(restarted.path, read), 'monitor_lease_unavailable');
+      stopped(await sendSocket(restarted.path, JSON.stringify({
+        action: 'operator_monitor_lease_revoke' }) + '\n'), 'monitor_lease_stopped');
+      const nextGrant = randomUUID();
+      await writeMonitorLeaseAck(restarted, directory, nextGrant, '28720177');
+      assert.equal((await sendSocket(restarted.path, JSON.stringify({
+        action: 'operator_monitor_lease_verify', grant_id: nextGrant,
+        release_id: '28720177' }) + '\n')).status, 'verified');
+      stopped(await sendSocket(restarted.path, read), 'monitor_lease_cooldown');
+      now += 15 * 60_000 + 1;
+      assert.equal((await sendSocket(restarted.path, read)).status, 'observed');
+      assert.equal(fixture.calls.filter(value => Array.isArray(value) && value[0] === 'goto').length, 2);
+    } finally { await restarted.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('wrong or challenged current page consumes lease grant without enabling reads', async () => {
+  for (const options of [{ currentId: '5520534' },
+    { currentTitle: 'Just a moment... Cloudflare' }]) {
+    const directory = await mkdtemp(join(tmpdir(), 'sniper-lease-'));
+    const fixture = monitorFixture(options), grantId = randomUUID();
+    try {
+      const socket = await operatorSocket(fixture.context, directory);
+      try {
+        await writeMonitorLeaseAck(socket, directory, grantId, '28720177');
+        const verify = JSON.stringify({ action: 'operator_monitor_lease_verify',
+          grant_id: grantId, release_id: '28720177' }) + '\n';
+        stopped(await sendSocket(socket.path, verify), options.currentId ?
+          'exact_current_page_not_unique' : 'access_restricted');
+        stopped(await sendSocket(socket.path, verify), 'monitor_lease_unavailable');
+        stopped(await sendSocket(socket.path, JSON.stringify({
+          action: 'operator_monitor_lease_read', release_id: '28720177' }) + '\n'),
+        'monitor_lease_unavailable');
+        assert.ok(!fixture.calls.some(value => Array.isArray(value) && value[0] === 'goto'));
+      } finally { await socket.close(); }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }
+});
+
+test('monitor lease stops on denial, uncertainty, and concurrent attempts', async () => {
+  for (const mode of ['denial', 'timeout', 'disconnect']) {
+    const directory = await mkdtemp(join(tmpdir(), 'sniper-lease-'));
+    let release, entered;
+    const hold = new Promise(resolve => { release = resolve; });
+    const started = new Promise(resolve => { entered = resolve; });
+    const fixture = monitorFixture({ trialStatus: mode === 'denial' ? 403 : 200,
+      hold: mode === 'denial' ? null : hold, onTrialGoto: () => entered() });
+    const grantId = randomUUID();
+    try {
+      const socket = await operatorSocket(fixture.context, directory,
+        { monitorTrialTimeoutMs: 30 });
+      try {
+        await writeMonitorLeaseAck(socket, directory, grantId, '28720177');
+        assert.equal((await sendSocket(socket.path, JSON.stringify({
+          action: 'operator_monitor_lease_verify', grant_id: grantId,
+          release_id: '28720177' }) + '\n')).status, 'verified');
+        const read = JSON.stringify({ action: 'operator_monitor_lease_read',
+          release_id: '28720177' }) + '\n';
+        if (mode === 'denial') {
+          stopped(await sendSocket(socket.path, read), 'access_restricted');
+        } else if (mode === 'timeout') {
+          const pending = sendSocket(socket.path, read);
+          await started;
+          stopped(await sendSocket(socket.path, read), 'read_in_progress');
+          stopped(await pending, 'request_timed_out');
+        } else {
+          const client = connect(socket.path);
+          await new Promise(resolve => client.once('connect', resolve));
+          client.write(read);
+          await started;
+          const closed = new Promise(resolve => client.once('close', resolve));
+          client.destroy(); await closed;
+        }
+        release();
+        const audit = await waitForMonitorEvent(directory, 'lease_stopped', grantId);
+        assert.equal(audit.cause, mode === 'denial' ? 'http_403' :
+          mode === 'timeout' ? 'request_timed_out' : 'request_disconnected');
+        stopped(await sendSocket(socket.path, read), 'monitor_lease_unavailable');
+        assert.ok((await readdir(directory)).includes('access-stopped'));
+      } finally { release(); await socket.close(); }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }
+});
+
+test('monitor lease honors Retry-After and expires without another read', async () => {
+  for (const trialStatus of [429, 503]) {
+    const directory = await mkdtemp(join(tmpdir(), 'sniper-lease-'));
+    const fixture = monitorFixture({ trialStatus, trialRetryAfter: '3600' });
+    let now = Date.now(); const grantId = randomUUID();
+    try {
+      const socket = await operatorSocket(fixture.context, directory, { clock: () => now });
+      try {
+        await writeMonitorLeaseAck(socket, directory, grantId, '28720177');
+        assert.equal((await sendSocket(socket.path, JSON.stringify({
+          action: 'operator_monitor_lease_verify', grant_id: grantId,
+          release_id: '28720177' }) + '\n')).status, 'verified');
+        const read = JSON.stringify({ action: 'operator_monitor_lease_read',
+          release_id: '28720177' }) + '\n';
+        stopped(await sendSocket(socket.path, read), trialStatus === 429 ?
+          'rate_limited' : 'service_unavailable');
+        now += 15 * 60_000 + 1;
+        stopped(await sendSocket(socket.path, read), 'monitor_lease_cooldown');
+        now += 2 * 60 * 60_000;
+        stopped(await sendSocket(socket.path, read), 'monitor_lease_unavailable');
+        assert.equal(fixture.calls.filter(value => Array.isArray(value) && value[0] === 'goto').length, 1);
+      } finally { await socket.close(); }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }
+});
+
+test('an in-flight read cannot complete after the bounded lease expires', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-lease-'));
+  let now = Date.now();
+  const fixture = monitorFixture({ onTrialGoto: () => { now += 2 * 60 * 60_000 + 1; } });
+  const grantId = randomUUID();
+  try {
+    const socket = await operatorSocket(fixture.context, directory, { clock: () => now });
+    try {
+      await writeMonitorLeaseAck(socket, directory, grantId, '28720177');
+      assert.equal((await sendSocket(socket.path, JSON.stringify({
+        action: 'operator_monitor_lease_verify', grant_id: grantId,
+        release_id: '28720177' }) + '\n')).status, 'verified');
+      const read = JSON.stringify({ action: 'operator_monitor_lease_read',
+        release_id: '28720177' }) + '\n';
+      stopped(await sendSocket(socket.path, read), 'monitor_lease_unavailable');
+      const state = JSON.parse(await readFile(join(directory, 'operator-monitor-lease.json'), 'utf8'));
+      assert.equal(state.attempts, 1); assert.equal(state.revoked, true);
+      stopped(await sendSocket(socket.path, read), 'monitor_lease_unavailable');
+    } finally { await socket.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test('one-use current cart recovery reads exact visible row and preserves global stop', async () => {

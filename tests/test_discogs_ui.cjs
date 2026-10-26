@@ -9,7 +9,9 @@ require('node:net').Socket.prototype.connect=() => { throw new Error('Network di
 require('node:dns').lookup=() => { throw new Error('DNS disabled.'); };
 const denyDispatcher={dispatch(){throw new Error('External resource forbidden.');},close(){return Promise.resolve();},destroy(){return Promise.resolve();}};
 const clone=value=>structuredClone(value);
-let saved={revision:0,targets:[],owned:[],mode:'dry_run',purchasing_enabled:false,capabilities:{listing_read_enabled:false}};
+let saved={revision:0,targets:[],owned:[],mode:'dry_run',purchasing_enabled:false,capabilities:{listing_read_enabled:false},
+  in_app_alerts:{channel:'in_app_only',messages_sent:0,purchase_allowed:false,control_revision:null,pending:[]},
+  hosted_schedule:{paused:true,monitor_releases:[],targets:[],reader_ready:false,purchase_allowed:false}};
 let mutationFailure=null, readFailure=null, failReadAfterSave=false, delayed=null;
 let evaluation={eligible_for_review:false,reasons:['Pressing evidence is unknown.'],total:null,purchase_allowed:false};
 let listingFailure=null;
@@ -21,7 +23,7 @@ let listingResponse={listing:{listing_id:'456',release_id:123,media:'VG+',sleeve
 const calls=[],errors=[],requestTimeouts=[];
 const response=(status,data)=>({ok:status>=200 && status<300,status,json:async()=>clone(data)});
 async function mockFetch(path, options) {
-  assert.ok(['/api/snapshot','/api/target','/api/owned','/api/evaluate','/api/listing'].includes(path));
+  assert.ok(['/api/snapshot','/api/target','/api/owned','/api/evaluate','/api/listing','/api/change-alert/ack','/api/monitor-release'].includes(path));
   assert.equal(options.mode,'same-origin');assert.equal(options.redirect,'error');assert.equal(options.credentials,'omit');
   assert.equal(options.cache,'no-store');calls.push({path,options});
   if(path === '/api/snapshot') {
@@ -33,6 +35,28 @@ async function mockFetch(path, options) {
   assert.equal(options.headers['Content-Type'],'application/json');
   const input=JSON.parse(options.body);
   if(delayed) await delayed.promise;
+  if(path === '/api/change-alert/ack') {
+    assert.deepEqual(Object.keys(input).sort(),['change_sequences','expected_control_revision','expected_revision']);
+    assert.equal(input.expected_revision,saved.revision);
+    assert.equal(input.expected_control_revision,null);
+    saved.in_app_alerts.pending=saved.in_app_alerts.pending.filter(row=>!input.change_sequences.includes(row.change_sequence));
+    return response(200,{acknowledged_change_sequences:input.change_sequences,messages_sent:0});
+  }
+  if(path === '/api/monitor-release') {
+    assert.deepEqual(Object.keys(input).sort(),['enabled','expected_revision','release_id']);
+    assert.equal(input.expected_revision,saved.revision);
+    assert.equal(typeof input.enabled,'boolean');
+    assert.equal(saved.hosted_schedule.paused,true);
+    const match=String(input.release_id).match(/(?:release\/)?([1-9][0-9]*)/);
+    assert.ok(match);
+    const release_id=Number(match[1]);assert.ok(Number.isSafeInteger(release_id));
+    saved.hosted_schedule.monitor_releases=saved.hosted_schedule.monitor_releases
+      .filter(row=>row.release_id!==release_id).concat({release_id,enabled:input.enabled})
+      .sort((a,b)=>a.release_id-b.release_id);
+    saved.revision++;
+    return response(200,{release_id,enabled:input.enabled,rules_revision:saved.revision,
+      hosted_schedule:saved.hosted_schedule,purchase_allowed:false});
+  }
   if(path === '/api/listing') {
     assert.deepEqual(Object.keys(input).sort(),['listing','release_id']);
     assert.equal(typeof input.release_id,'number');assert.equal(typeof input.listing,'string');
@@ -114,6 +138,29 @@ function clickText(text) {
   submit('listing-form');await settled(w);assert.equal(posts('/api/listing').length,0);
   assert.equal(el('destination-country').value,'US');assert.equal(el('destination-postal').value,'');
   assert.equal(el('enabled').checked,true);
+  for(const entry of ['https://www.discogs.com/release/28720177-56-Nights','5520534',
+    'https://www.discogs.com/release/13053315-Not-All-Heroes']) {
+    el('monitor-release-id').value=entry;submit('monitor-release-form');await settled(w);
+  }
+  assert.equal(saved.targets.length,0);
+  assert.deepEqual(saved.hosted_schedule.monitor_releases.map(row=>row.release_id),[5520534,13053315,28720177]);
+  assert.equal(saved.hosted_schedule.paused,true);
+  assert.match(el('hosted-schedule-status').textContent,/paused; 3 monitor-only IDs saved/);
+  assert.equal(posts('/api/listing').length,0);
+  const pause=[...d.querySelectorAll('.monitor-release-toggle')][0];pause.click();await settled(w);
+  assert.equal(saved.hosted_schedule.monitor_releases[0].enabled,false);
+  assert.equal(saved.hosted_schedule.paused,true);
+  const alertText='<img src=x onerror="window.pwned=true">';
+  saved.in_app_alerts.pending=[{change_sequence:1,release_id:123,listing_id:'456',kind:'new',
+    observed_at:alertText,delivery:'in_app_only',purchase_allowed:false}];
+  el('refresh').click();await settled(w);
+  assert.match(el('change-alert-list').textContent,/In-app|Review only; no buying action/);
+  assert.equal(el('change-alert-list').querySelectorAll('img,script').length,0);
+  assert.equal(el('change-alert-list').querySelector('a').href,'https://www.discogs.com/sell/item/456');
+  clickText('Mark reviewed');await settled(w);
+  assert.equal(posts('/api/change-alert/ack').length,1);
+  assert.equal(saved.in_app_alerts.pending.length,0);
+  assert.match(el('change-alert-list').textContent,/No pending listing changes/);
   assert.equal(el('destination-postal').required,true);assert.equal(el('destination-postal').maxLength,16);
   for(const postal of ['90210','90210-1234','SW1A 1AA']) {el('destination-postal').value=postal;assert.equal(el('destination-postal').checkValidity(),true);}
   for(const postal of ['','90210_1234','90210\\1234']) {el('destination-postal').value=postal;assert.equal(el('destination-postal').checkValidity(),false);}

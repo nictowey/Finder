@@ -4,7 +4,7 @@
  */
 import { createServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { chmod, lstat, readFile, stat, unlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { collectCartDom, inspectCurrentCartDom } from './discogs_cart_inspector.mjs';
 import { collectReleaseMarketplaceDom } from './discogs_release_snapshot.mjs';
@@ -28,6 +28,8 @@ const CART_GRANT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[
 const MONITOR_TEST_RELEASES = new Set(['28720177', '5520534', '13053315']);
 const MONITOR_TRIAL_TTL_MS = 60 * 60_000;
 const MONITOR_ACK_TTL_MS = 5 * 60_000;
+const MONITOR_LEASE_TTL_MS = 2 * 60 * 60_000;
+const MONITOR_LEASE_MAX_ATTEMPTS = 6;
 
 export function privateBridgeDirectory(directory, uid = process.getuid()) {
   return Boolean(directory?.isDirectory?.() && directory.uid === uid &&
@@ -576,15 +578,52 @@ export async function listenHostedReadOnly(context, socketPath, {
   let monitorTrial = null;
   let monitorRecoveryBusy = false;
   const monitorDirectory = durableStopPath ? dirname(durableStopPath) : null;
+  const monitorLeasePath = monitorDirectory ? join(monitorDirectory, 'operator-monitor-lease.json') : null;
   const monitorAudit = async (grantId, event, releaseId, cause = null) => {
     const allowed = new Set(['verified', 'verification_stopped', 'trial_started', 'trial_observed',
-      'trial_stopped', 'trials_complete_review_required']);
+      'trial_stopped', 'trials_complete_review_required', 'lease_armed',
+      'lease_read_started', 'lease_observed', 'lease_stopped']);
     if (!allowed.has(event) || (cause !== null &&
         !/^[a-z0-9_]{1,48}$/u.test(cause))) throw new TypeError('invalid_monitor_audit');
     const record = { event, release_id: releaseId, grant_id: grantId, cause,
       time: new Date(clock()).toISOString(), purchase_allowed: false };
     await writeFile(join(monitorDirectory, `operator-monitor-event-${randomUUID()}`),
       JSON.stringify(record) + '\n', { flag: 'wx', mode: 0o600 });
+  };
+  const readMonitorLease = async () => {
+    const info = await lstat(monitorLeasePath).catch(error => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!info) return null;
+    if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o777) !== 0o600 ||
+        info.size > 1024) throw new TypeError('invalid_monitor_lease');
+    const state = JSON.parse(await readFile(monitorLeasePath, 'utf8'));
+    if (!state || typeof state !== 'object' || Array.isArray(state) ||
+        !CART_GRANT_ID.test(state.grant_id) || !MONITOR_TEST_RELEASES.has(state.verified_release) ||
+        typeof state.boot_id !== 'string' || !CART_GRANT_ID.test(state.boot_id) ||
+        !Number.isSafeInteger(state.expires_at) || !Number.isSafeInteger(state.next_allowed_at) ||
+        !Number.isSafeInteger(state.attempts) || state.attempts < 0 ||
+        state.attempts > MONITOR_LEASE_MAX_ATTEMPTS || typeof state.revoked !== 'boolean') {
+      throw new TypeError('invalid_monitor_lease');
+    }
+    return state;
+  };
+  const writeMonitorLease = async state => {
+    const temporary = join(monitorDirectory, `operator-monitor-lease-${randomUUID()}.tmp`);
+    await writeFile(temporary, JSON.stringify(state) + '\n', { flag: 'wx', mode: 0o600 });
+    try { await rename(temporary, monitorLeasePath); }
+    finally { await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
+  };
+  const revokeMonitorLease = async (state, cause) => {
+    if (state.revoked) return;
+    await writeMonitorLease({ ...state, revoked: true });
+    await monitorAudit(state.grant_id, 'lease_stopped', state.verified_release, cause);
+  };
+  const activeMonitorLease = async () => {
+    const state = await readMonitorLease();
+    return Boolean(state && !state.revoked && clock() < state.expires_at &&
+      state.attempts < MONITOR_LEASE_MAX_ATTEMPTS);
   };
   const server = createServer(connection => {
     let input = Buffer.alloc(0), done = false;
@@ -644,6 +683,10 @@ export async function listenHostedReadOnly(context, socketPath, {
             !MONITOR_TEST_RELEASES.has(releaseId) || monitorTrial) {
           return send(stopped('unsupported_monitor_recovery'));
         }
+        try {
+          if (await activeMonitorLease()) return send(stopped('unsupported_monitor_recovery'));
+        } catch { return send(stopped('monitor_recovery_unavailable')); }
+        if (busy || monitorRecoveryBusy || monitorTrial) return send(stopped('read_in_progress'));
         busy = true;
         monitorRecoveryBusy = true;
         connection.setTimeout(monitorVerifyTimeoutMs);
@@ -737,6 +780,148 @@ export async function listenHostedReadOnly(context, socketPath, {
           monitorTrial = null;
           return send(stopped('monitor_trial_unavailable'));
         } finally { busy = false; monitorRecoveryBusy = false; activeMonitorTrial = null; }
+      }
+      if (request?.action === 'operator_monitor_lease_verify') {
+        const keys = Reflect.ownKeys(request);
+        const grantId = Object.getOwnPropertyDescriptor(request, 'grant_id')?.value;
+        const releaseId = Object.getOwnPropertyDescriptor(request, 'release_id')?.value;
+        if (!durableStopPath || !accessStopped || busy || monitorRecoveryBusy || monitorTrial ||
+            keys.length !== 3 || !keys.includes('grant_id') || !keys.includes('release_id') ||
+            typeof grantId !== 'string' || !CART_GRANT_ID.test(grantId) ||
+            !MONITOR_TEST_RELEASES.has(releaseId)) {
+          return send(stopped('unsupported_monitor_lease'));
+        }
+        busy = true;
+        monitorRecoveryBusy = true;
+        connection.setTimeout(monitorVerifyTimeoutMs);
+        try {
+          const previous = await readMonitorLease();
+          if (previous && !previous.revoked && clock() < previous.expires_at &&
+              previous.attempts < MONITOR_LEASE_MAX_ATTEMPTS) {
+            return send(stopped('monitor_lease_already_active'));
+          }
+          const ackPath = join(monitorDirectory, `operator-monitor-lease-grant-${grantId}-ack`);
+          const usedPath = join(monitorDirectory, `operator-monitor-lease-grant-${grantId}-used`);
+          const ack = await lstat(ackPath).catch(() => null);
+          if (!ack?.isFile() || ack.uid !== process.getuid() ||
+              (ack.mode & 0o777) !== 0o600 || clock() + 1_000 < ack.mtimeMs ||
+              clock() - ack.mtimeMs > MONITOR_ACK_TTL_MS ||
+              await readFile(ackPath, 'utf8') !==
+                `operator_confirmed_monitor_lease:${releaseId}:${grantId}:${bootId}\n`) {
+            return send(stopped('operator_acknowledgement_required'));
+          }
+          await writeFile(usedPath, 'consumed\n', { flag: 'wx', mode: 0o600 });
+          const verified = await verifyCurrentMonitorPage(context, releaseId, controller.signal);
+          if (controller.signal.aborted || done) {
+            await monitorAudit(grantId, 'verification_stopped', releaseId, monitorAbortCause());
+            return send(stopped('read_cancelled'));
+          }
+          if (verified.status !== 'verified') {
+            await monitorAudit(grantId, 'verification_stopped', releaseId,
+              verified.restriction_cause || verified.code);
+            return send(verified);
+          }
+          const lease = { grant_id: grantId, verified_release: releaseId, boot_id: bootId,
+            expires_at: clock() + MONITOR_LEASE_TTL_MS,
+            next_allowed_at: Math.max(clock(), previous?.next_allowed_at || 0),
+            attempts: 0, revoked: false };
+          if (controller.signal.aborted || done) return send(stopped('read_cancelled'));
+          await monitorAudit(grantId, 'lease_armed', releaseId);
+          if (controller.signal.aborted || done) return send(stopped('read_cancelled'));
+          await writeMonitorLease(lease);
+          if (controller.signal.aborted || done) {
+            await revokeMonitorLease(lease, monitorAbortCause());
+            return send(stopped('read_cancelled'));
+          }
+          return send({ ...verified, monitor_lease_expires_at: lease.expires_at,
+            monitor_lease_remaining: MONITOR_LEASE_MAX_ATTEMPTS });
+        } catch { return send(stopped('monitor_lease_unavailable')); }
+        finally { busy = false; monitorRecoveryBusy = false; }
+      }
+      if (request?.action === 'operator_monitor_lease_revoke') {
+        if (!durableStopPath || busy || monitorRecoveryBusy ||
+            Reflect.ownKeys(request).length !== 1) return send(stopped('unsupported_monitor_lease'));
+        busy = true;
+        monitorRecoveryBusy = true;
+        try {
+          const lease = await readMonitorLease();
+          if (!lease) return send(stopped('monitor_lease_unavailable'));
+          await revokeMonitorLease(lease, 'operator_revoked');
+          return send(stopped('monitor_lease_stopped'));
+        } catch { return send(stopped('monitor_lease_unavailable')); }
+        finally { busy = false; monitorRecoveryBusy = false; }
+      }
+      if (request?.action === 'operator_monitor_lease_read') {
+        const keys = Reflect.ownKeys(request);
+        const releaseId = Object.getOwnPropertyDescriptor(request, 'release_id')?.value;
+        if (!durableStopPath || !accessStopped || busy || monitorRecoveryBusy || monitorTrial ||
+            keys.length !== 2 || !keys.includes('release_id') ||
+            !MONITOR_TEST_RELEASES.has(releaseId)) {
+          return send(stopped('unsupported_monitor_lease'));
+        }
+        busy = true;
+        monitorRecoveryBusy = true;
+        connection.setTimeout(monitorTrialTimeoutMs);
+        let attempted = null;
+        try {
+          const lease = await readMonitorLease();
+          if (!lease || lease.revoked || lease.boot_id !== bootId) {
+            return send(stopped('monitor_lease_unavailable'));
+          }
+          if (clock() >= lease.expires_at || lease.attempts >= MONITOR_LEASE_MAX_ATTEMPTS) {
+            await revokeMonitorLease(lease, clock() >= lease.expires_at ? 'expired' : 'cap_reached');
+            return send(stopped('monitor_lease_unavailable'));
+          }
+          if (clock() < lease.next_allowed_at) {
+            return send({ ...stopped('monitor_lease_cooldown'),
+              cooldown_seconds: Math.ceil((lease.next_allowed_at - clock()) / 1000) });
+          }
+          attempted = { ...lease, attempts: lease.attempts + 1,
+            next_allowed_at: clock() + MIN_RELEASE_INTERVAL_MS };
+          // Persist the request slot before opening a browser tab. A crash loses a slot.
+          await writeMonitorLease(attempted);
+          await monitorAudit(lease.grant_id, 'lease_read_started', releaseId);
+          if (controller.signal.aborted || done) {
+            await revokeMonitorLease(attempted, monitorAbortCause());
+            return send(stopped('monitor_lease_stopped'));
+          }
+          const result = await navigateRelease({ action: 'observe_release', release_id: releaseId },
+            { signal: controller.signal });
+          if (controller.signal.aborted || done) {
+            await revokeMonitorLease(attempted, monitorAbortCause());
+            return send(stopped('monitor_lease_stopped'));
+          }
+          if (clock() >= attempted.expires_at) {
+            await revokeMonitorLease(attempted, 'expired');
+            return send(stopped('monitor_lease_unavailable'));
+          }
+          if (['rate_limited', 'service_unavailable', 'release_cooldown'].includes(result?.code)) {
+            const delay = Number.isSafeInteger(result.cooldown_seconds) &&
+              result.cooldown_seconds > 0 ? result.cooldown_seconds * 1000 : 0;
+            await writeMonitorLease({ ...attempted,
+              next_allowed_at: Math.max(attempted.next_allowed_at, clock() + delay) });
+            return send(result);
+          }
+          if (result?.status !== 'observed' || result.purchase_allowed !== false) {
+            await revokeMonitorLease(attempted, result?.restriction_cause ||
+              result?.code || 'unverified_result');
+            return send(result || stopped('monitor_lease_stopped'));
+          }
+          await monitorAudit(lease.grant_id, 'lease_observed', releaseId);
+          if (controller.signal.aborted || done) {
+            await revokeMonitorLease(attempted, monitorAbortCause());
+            return send(stopped('monitor_lease_stopped'));
+          }
+          if (clock() >= attempted.expires_at) {
+            await revokeMonitorLease(attempted, 'expired');
+            return send(stopped('monitor_lease_unavailable'));
+          }
+          return send({ ...result, monitor_lease_remaining:
+            MONITOR_LEASE_MAX_ATTEMPTS - attempted.attempts });
+        } catch {
+          if (attempted) await revokeMonitorLease(attempted, 'uncertain_result').catch(() => {});
+          return send(stopped('monitor_lease_stopped'));
+        } finally { busy = false; monitorRecoveryBusy = false; }
       }
       if (request?.action === 'operator_current_release') {
         if (!durableStopPath || !accessStopped || busy ||

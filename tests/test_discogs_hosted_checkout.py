@@ -201,6 +201,48 @@ def test_observed_cart_above_rule_ceiling_stops(candidate_state, monkeypatch):
         HostedCheckoutPreflight(candidates, HostedCartReadOnlyReader()).inspect(123, "1002", KEY)
 
 
+@pytest.mark.parametrize(
+    ("amounts", "reason"),
+    [
+        (
+            {"subtotal": ("40.00", "USD"), "shipping": ("15.00", "USD"), "displayed_total": None},
+            "observed_total_above_ceiling",
+        ),
+        (
+            {
+                "subtotal": ("40.00", "USD"),
+                "shipping": ("5.00", "USD"),
+                "displayed_total": ("44.00", "USD"),
+            },
+            "cart_displayed_total_inconsistent",
+        ),
+        (
+            {"subtotal": ("40.00", "USD"), "shipping": ("5.00", "EUR"), "displayed_total": None},
+            "cart_currency_mismatch",
+        ),
+    ],
+)
+def test_cart_known_components_fail_closed_without_a_final_quote(candidate_state, amounts, reason):
+    database, now, claims = candidate_state
+    candidates, _ = flow(database, now, claims)
+    assert candidates.review_one()["status"] == "review_only"
+    candidates.reserve_rehearsal(123, "1002", KEY)
+    claims.transition(KEY, "attempting")
+    claims.transition(KEY, "cart_observed")
+    evidence = CartEvidence(
+        "1002",
+        amounts["subtotal"],
+        amounts["shipping"],
+        None,
+        None,
+        amounts["displayed_total"],
+        None,
+        True,
+    )
+    with pytest.raises(CheckoutStopped, match=f"^{reason}$"):
+        HostedCheckoutPreflight(candidates, lambda _listing: evidence).inspect(123, "1002", KEY)
+
+
 def test_stale_or_unreconciled_claim_stops_before_browser_read(candidate_state):
     database, now, claims = candidate_state
     candidates, scheduler = flow(database, now, claims)
@@ -258,6 +300,8 @@ def test_injected_reader_cannot_promote_unverified_cart(candidate_state):
         replace(evidence, listing_id="1003"),
         replace(evidence, final_quote_verified=True),
         replace(evidence, purchase_allowed=True),
+        replace(evidence, shipping=("nan", "USD")),
+        replace(evidence, shipping=("5.00", ["USD"])),
     ):
         with pytest.raises(CheckoutStopped, match="cart_evidence_unverified"):
             HostedCheckoutPreflight(candidates, lambda _listing, value=invalid: value).inspect(

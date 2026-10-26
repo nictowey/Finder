@@ -348,6 +348,10 @@ read an optional durable claim. Its return always has `purchase_allowed: false`,
 checkout, payment, or order method. A visible cart total is explicitly **not** a verified
 delivered final quote: destination, shipping and tax can change, and any newly
 displayed payable charge would need fresh review.
+The hosted Python preflight now treats known, same-currency cart components as
+a lower bound. It stops on mixed currencies, a displayed total below that bound,
+or a bound above the saved ceiling even when tax or final total is deferred.
+These checks do not make the displayed amount a final payable quote.
 
 `src/finder/discogs_cart_claims.py` provides an isolated SQLite one-copy claim primitive.
 It reserves a release with one UUID idempotency key and records `reserved`, `attempting`,

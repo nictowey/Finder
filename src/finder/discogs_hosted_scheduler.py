@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 
 from finder.discogs_candidate_pipeline import CandidateStopped
+from finder.discogs_change_outbox import InAppChangeOutbox
 from finder.discogs_release_snapshots import (
     ReleaseSnapshots,
     RenderedReleaseSnapshot,
@@ -46,8 +47,11 @@ class HostedReadError(Exception):
 class HostedSocketReader:
     """Send only the fixed observe_release action over an owner-only local socket."""
 
-    def __init__(self, path):
+    def __init__(self, path, *, lease_read=False):
+        if type(lease_read) is not bool:
+            raise ValueError("Lease read mode must be explicit.")
         self.path = Path(path)
+        self.lease_read = lease_read
 
     def ready(self):
         try:
@@ -74,7 +78,8 @@ class HostedSocketReader:
             raise ValueError("Invalid exact release ID.")
         if not self.ready():
             raise HostedReadError("socket_not_private", stop=True)
-        request = json.dumps({"action": "observe_release", "release_id": str(release)}) + "\n"
+        action = "operator_monitor_lease_read" if self.lease_read else "observe_release"
+        request = json.dumps({"action": action, "release_id": str(release)}) + "\n"
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
             connection.settimeout(95)
             connection.connect(str(self.path))
@@ -103,8 +108,25 @@ class HostedSocketReader:
             raise HostedReadError(
                 code,
                 cooldown,
-                stop=code in {"auth_required", "access_restricted", "unsupported_read_request"},
+                stop=code
+                in {
+                    "auth_required",
+                    "access_restricted",
+                    "unsupported_read_request",
+                    "request_timed_out",
+                    "request_disconnected",
+                    "read_cancelled",
+                    "monitor_lease_unavailable",
+                    "monitor_lease_exhausted",
+                    "monitor_lease_stopped",
+                    "unsupported_monitor_lease",
+                },
             )
+        if self.lease_read and (
+            type(response.get("monitor_lease_remaining")) is not int
+            or not 0 <= response["monitor_lease_remaining"] < 6
+        ):
+            raise HostedReadError("invalid_monitor_lease_response", stop=True)
         if "pages" in response:
             if "observation" in response or not isinstance(response["pages"], list):
                 raise HostedReadError("ambiguous_page_response", stop=True)
@@ -124,9 +146,27 @@ class HostedSocketReader:
 class HostedReleaseScheduler:
     """One serialized read per tick; disabled until explicitly resumed and wired."""
 
-    def __init__(self, database, reader, *, clock=time.time, snapshots=None, candidates=None):
+    def __init__(
+        self,
+        database,
+        reader,
+        *,
+        clock=time.time,
+        snapshots=None,
+        candidates=None,
+        allowed_releases=None,
+    ):
         self.database, self.reader, self.clock = database, reader, clock
+        if allowed_releases is not None:
+            allowed_releases = frozenset(allowed_releases)
+            if not allowed_releases or any(
+                type(release) is not int or not 0 < release <= 9007199254740991
+                for release in allowed_releases
+            ):
+                raise ValueError("Worker scope requires exact release IDs.")
+        self.allowed_releases = allowed_releases
         self.snapshots = snapshots or ReleaseSnapshots(database, clock=clock)
+        self.outbox = InAppChangeOutbox(database, clock=clock)
         self.candidates = candidates
         store = RulesStore(database)
         try:
@@ -146,6 +186,11 @@ class HostedReleaseScheduler:
                     CREATE TABLE IF NOT EXISTS discogs_monitor_releases (
                         release_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL
                         CHECK(enabled IN (0,1)));
+                    CREATE TABLE IF NOT EXISTS cloud_control (
+                        id INTEGER PRIMARY KEY CHECK(id=1),
+                        killed INTEGER NOT NULL CHECK(killed IN(0,1)),
+                        revision INTEGER NOT NULL DEFAULT 0);
+                    INSERT OR IGNORE INTO cloud_control VALUES(1,1,0);
                 """)
         finally:
             store.close()
@@ -165,6 +210,11 @@ class HostedReleaseScheduler:
                 store.db.execute("BEGIN IMMEDIATE")
                 if store.snapshot()["revision"] != expected_rules_revision:
                     raise RuntimeError("Saved state changed.")
+                paused = store.db.execute(
+                    "SELECT paused FROM discogs_hosted_schedule WHERE id=1"
+                ).fetchone()
+                if not paused or paused[0] != 1:
+                    raise RuntimeError("Pause monitoring before editing read targets.")
                 store.db.execute(
                     "INSERT INTO discogs_monitor_releases(release_id,enabled) VALUES(?,?) "
                     "ON CONFLICT(release_id) DO UPDATE SET enabled=excluded.enabled",
@@ -193,6 +243,21 @@ class HostedReleaseScheduler:
         finally:
             store.close()
 
+    def reconcile_outbox(self):
+        """Requeue retained changes after a crash without sending a notification."""
+        store = RulesStore(self.database)
+        try:
+            rules_revision = store.snapshot()["revision"]
+            control = _cloud_control(store)
+            if control is None:
+                raise RuntimeError("Stopped control state is unavailable.")
+            return self.outbox.materialize(
+                expected_rules_revision=rules_revision,
+                expected_control_revision=control[1],
+            )
+        finally:
+            store.close()
+
     def health(self):
         store = RulesStore(self.database)
         try:
@@ -204,6 +269,12 @@ class HostedReleaseScheduler:
                 "SELECT release_id,next_due,failures,last_status,last_attempt "
                 "FROM discogs_hosted_due ORDER BY release_id"
             ).fetchall()
+            monitor_releases = [
+                {"release_id": row[0], "enabled": bool(row[1])}
+                for row in store.db.execute(
+                    "SELECT release_id,enabled FROM discogs_monitor_releases ORDER BY release_id"
+                )
+            ]
             control = _cloud_control(store)
             return {
                 "paused": bool(row[0]),
@@ -213,6 +284,8 @@ class HostedReleaseScheduler:
                 "last_error": row[4],
                 "kill_switch": not control or bool(control[0]),
                 "reader_ready": bool(getattr(self.reader, "ready", lambda: False)()),
+                "worker_scope": sorted(self.allowed_releases) if self.allowed_releases else None,
+                "monitor_releases": monitor_releases,
                 "targets": [
                     dict(
                         zip(
@@ -257,6 +330,8 @@ class HostedReleaseScheduler:
                         ),
                     }
                 )
+                if self.allowed_releases is not None:
+                    enabled = [release for release in enabled if release in self.allowed_releases]
                 store.db.execute(
                     "DELETE FROM discogs_hosted_due WHERE release_id NOT IN "
                     "(SELECT release_id FROM targets UNION SELECT release_id "
@@ -302,7 +377,12 @@ class HostedReleaseScheduler:
                     rules["revision"],
                     control[1],
                     baseline[0] if baseline else 0,
-                    any(t["release_id"] == release and t["enabled"] for t in rules["targets"]),
+                    any(
+                        t["release_id"] == release
+                        and t["enabled"]
+                        and release not in rules["owned"]
+                        for t in rules["targets"]
+                    ),
                 )
         finally:
             store.close()
@@ -338,6 +418,10 @@ class HostedReleaseScheduler:
                 expected_schedule_revision=schedule_revision,
                 expected_schedule_token=token,
             )
+            self.outbox.materialize(
+                expected_rules_revision=rules_revision,
+                expected_control_revision=control_revision,
+            )
             if self.candidates is not None and buying_rule:
                 self.candidates.capture(
                     release,
@@ -350,7 +434,9 @@ class HostedReleaseScheduler:
             error = exc
         except CandidateStopped:
             error = HostedReadError("candidate_capture_stopped", stop=True)
-        except (OSError, TimeoutError, ValueError, RuntimeError):
+        except (OSError, TimeoutError):
+            error = HostedReadError("uncertain_reader_outcome", stop=True)
+        except (ValueError, RuntimeError):
             error = HostedReadError("read_or_revision_failed")
         except Exception:
             # Unknown reader failures must stop, without logging the session or payload.
