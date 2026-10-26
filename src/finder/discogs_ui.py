@@ -128,8 +128,8 @@ Saving the same release updates its rules.</p>
 <label>Minimum sleeve grade<select id="min-sleeve" name="min_sleeve">
 <option>P</option><option>F</option><option>G</option><option>G+</option><option>VG</option><option selected>VG+</option><option>NM</option><option>M</option>
 </select></label>
-<label>Minimum seller positive %<input id="min-seller-percent" name="min_seller_percent" type="number" required min="0" max="100" step="0.01" value="99" inputmode="decimal"></label>
-<label>Minimum feedback count<input id="min-feedback" name="min_feedback" type="number" required min="0" max="10000000" step="1" value="100" inputmode="numeric"></label>
+<label>Minimum seller positive %<input id="min-seller-percent" name="min_seller_percent" type="number" required min="0" max="100" step="0.01" value="99" inputmode="decimal"><small>Use 0 for no rating requirement.</small></label>
+<label>Minimum feedback count<input id="min-feedback" name="min_feedback" type="number" required min="0" max="10000000" step="1" value="100" inputmode="numeric"><small>Use 0 for no feedback-count requirement.</small></label>
 <label>Maximum total<input id="max-total" name="max_total" type="text" required inputmode="decimal" maxlength="10"
  pattern="[0-9]{1,7}([.][0-9]{1,2})?" placeholder="e.g. 50.00">
 <small>Item + shipping + tax + fees. Your limit, not a market valuation.</small></label>
@@ -139,7 +139,7 @@ Saving the same release updates its rules.</p>
  minlength="2" maxlength="2" value="US" autocomplete="off" autocapitalize="characters" spellcheck="false">
 <small>Two-letter country code.</small></label>
 <label>Destination postal code<input id="destination-postal" name="destination_postal" type="text" required maxlength="16" pattern="[A-Za-z0-9 \-]{1,16}" autocomplete="off" spellcheck="false">
-<small>Stored in your private workspace to check the supplied destination.</small></label>
+<small>Required before activating a rule. A paused draft can leave it blank.</small></label>
 <label class="check full"><input id="enabled" name="enabled" type="checkbox" checked>
 <span>Active target<small>Uncheck to pause this target and block rule eligibility. Scheduled reads also require an enabled cloud monitor.</small></span></label>
 </div><div class="actions"><button type="submit" id="save-target" disabled>Save target rules</button>
@@ -332,7 +332,8 @@ function renderSaved() {
     detail(facts, 'Minimum grades', `Media ${target.min_media ?? 'unknown'} / sleeve ${target.min_sleeve ?? 'unknown'}`);
     detail(facts, 'Seller threshold', `${target.min_seller_percent ?? 'unknown'}% positive · ${target.min_feedback ?? 'unknown'} feedback`);
     detail(facts, 'Maximum total', `${target.max_total ?? 'unknown'} ${target.currency ?? ''}`);
-    detail(facts, 'Destination', `${target.destination_country ?? 'unknown'} ${target.destination_postal ?? 'unknown'}`);
+    detail(facts, 'Destination', target.destination_postal ?
+      `${target.destination_country} ${target.destination_postal}` : 'Not set · paused draft');
     detail(facts, 'Target status', target.enabled === false ? 'Paused · blocks rule eligibility' : 'Active · rules only');
     const owned=snapshot.owned.includes(target.release_id);
     detail(facts, 'Already-owned marker', owned ? 'Yes · blocks rule eligibility' : 'Not marked');
@@ -345,6 +346,7 @@ function renderSaved() {
         currency:'currency', 'destination-country':'destination_country', 'destination-postal':'destination_postal'};
       Object.entries(fields).forEach(([id, field]) => { el(id).value = target[field] ?? ''; });
       el('enabled').checked=target.enabled !== false;
+      syncDestinationRequirement();
       el('draft-note').textContent = `Editing rules for release ${target.release_id}. Saving updates that release; changing the ID saves a different target.`;
       message(`Loaded release ${target.release_id} into the form. No rules have been changed.`);
       el('release-id').focus();
@@ -547,13 +549,20 @@ async function refreshState() {
   const data=validateSnapshot(await request('/api/snapshot'));
   snapshot=data; needsRefresh=false; renderSaved();
 }
+function syncDestinationRequirement() {
+  const active=el('enabled').checked;
+  el('destination-country').required=active;
+  el('destination-postal').required=active;
+}
 function targetFromForm() {
+  const postal=value('destination-postal');
+  const active=el('enabled').checked;
   const target={release_id:value('release-id'), label:value('label'), min_media:value('min-media'),
     min_sleeve:value('min-sleeve'), min_seller_percent:Number(value('min-seller-percent')),
     min_feedback:Number(value('min-feedback')), max_total:value('max-total'), currency:value('currency'),
-    destination_country:value('destination-country').toUpperCase(), destination_postal:value('destination-postal'),
-    enabled:el('enabled').checked};
-  if (!target.release_id || !target.destination_postal) throw new Error('Supply a release ID or link and destination postal code.');
+    destination_country:postal ? value('destination-country').toUpperCase() : null,
+    destination_postal:postal || null, enabled:active};
+  if (!target.release_id || (active && !postal)) throw new Error('Supply a release ID or link and, for active rules, a destination postal code.');
   if (!Number.isFinite(target.min_seller_percent) || !Number.isSafeInteger(target.min_feedback)) {
     throw new Error('Use a valid seller percentage and a whole feedback count.');
   }
@@ -590,6 +599,7 @@ el('target-form').addEventListener('submit', async (event) => {
   try { target=targetFromForm(); } catch (error) { message(errorText(error), true); return; }
   await persist('/api/target', {target}, 'Target rules saved. Purchasing remains disabled. Your form and JSON drafts are unchanged.');
 });
+el('enabled').addEventListener('change', syncDestinationRequirement);
 el('monitor-release-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   if (pending || needsRefresh || snapshot?.hosted_schedule?.paused !== true) return;

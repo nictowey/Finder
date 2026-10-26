@@ -8,7 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from finder.discogs_completeness import assess_media_completeness, current_release_media
 from finder.discogs_media_defects import assess_media_defects
@@ -51,8 +51,8 @@ class Target(StrictInput):
     min_feedback: int = Field(ge=0, le=10000000)
     max_total: str
     currency: Literal["USD", "EUR", "GBP", "CAD", "AUD"]
-    destination_country: str = Field(pattern=r"^[A-Z]{2}$")
-    destination_postal: str = Field(pattern=r"^[A-Za-z0-9 -]{1,16}$")
+    destination_country: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
+    destination_postal: str | None = Field(default=None, pattern=r"^[A-Za-z0-9 -]{1,16}$")
 
     _release = field_validator("release_id", mode="before")(release_id)
     _amount = field_validator("max_total", mode="before")(amount)
@@ -67,9 +67,19 @@ class Target(StrictInput):
     @field_validator("destination_postal")
     @classmethod
     def postal(cls, value):
+        if value is None:
+            return None
         if not value.strip():
             raise ValueError("Destination postal code is required.")
         return value.strip().upper()
+
+    @model_validator(mode="after")
+    def destination_for_active_target(self):
+        if (self.destination_country is None) != (self.destination_postal is None):
+            raise ValueError("Destination country and postal code must be supplied together.")
+        if self.enabled and self.destination_postal is None:
+            raise ValueError("An active target requires a shipping destination.")
+        return self
 
 
 class Observation(StrictInput):
@@ -152,9 +162,13 @@ def evaluate(target: Target, observation: Observation, *, now: datetime, already
             getattr(target, "min_" + field)
         ):
             reasons.append(f"{field.capitalize()} condition is unknown or below minimum.")
-    if observation.seller_percent is None or observation.seller_percent < target.min_seller_percent:
+    if target.min_seller_percent > 0 and (
+        observation.seller_percent is None or observation.seller_percent < target.min_seller_percent
+    ):
         reasons.append("Seller rating is unknown or below minimum.")
-    if observation.feedback is None or observation.feedback < target.min_feedback:
+    if target.min_feedback > 0 and (
+        observation.feedback is None or observation.feedback < target.min_feedback
+    ):
         reasons.append("Seller feedback count is unknown or below minimum.")
     if (
         observation.destination_country != target.destination_country

@@ -88,7 +88,8 @@ async function mockFetch(path, options) {
     assert.equal(typeof input.target.min_feedback,'number');
     assert.equal(typeof input.target.enabled,'boolean');
     const releaseId=Number(input.target.release_id.match(/(?:release\/)?([0-9]+)/)[1]);
-    const target={...input.target,release_id:releaseId,destination_postal:input.target.destination_postal.toUpperCase()};
+    const target={...input.target,release_id:releaseId,
+      destination_postal:input.target.destination_postal?.toUpperCase() ?? null};
     saved.targets=saved.targets.filter(row=>row.release_id!==releaseId).concat(target);
   } else {
     assert.deepEqual(Object.keys(input).sort(),['expected_revision','owned','release_id']);
@@ -342,6 +343,21 @@ function clickText(text) {
   const readsBeforeDisable=posts('/api/listing').length;
   saved.capabilities.listing_read_enabled=false;el('refresh').click();await settled(w);
   submit('listing-form');await settled(w);assert.equal(el('read-listing').disabled,true);assert.equal(posts('/api/listing').length,readsBeforeDisable);
+  // A second release can carry independent paused criteria without inventing a destination.
+  fill({'release-id':'28720177','max-total':'10.00','min-media':'VG+','min-sleeve':'VG+',
+    'min-seller-percent':'0','min-feedback':'0','destination-postal':''});
+  el('enabled').checked=false;el('enabled').dispatchEvent(new w.Event('change'));
+  assert.equal(el('destination-postal').required,false);
+  submit('target-form');await settled(w);
+  const nights=saved.targets.find(row=>row.release_id===28720177);
+  assert.equal(nights.enabled,false);assert.equal(nights.max_total,'10.00');
+  assert.equal(nights.min_media,'VG+');assert.equal(nights.min_sleeve,'VG+');
+  assert.equal(nights.min_seller_percent,0);assert.equal(nights.min_feedback,0);
+  assert.equal(nights.destination_country,null);assert.equal(nights.destination_postal,null);
+  const loadNights=[...el('targets').querySelectorAll('button')]
+    .find(button=>button.textContent==='Load these rules into the form' && button.closest('article')?.textContent.includes('28720177'));
+  assert.ok(loadNights);loadNights.click();assert.equal(el('max-total').value,'10.00');
+  assert.equal(el('enabled').checked,false);assert.equal(el('destination-postal').required,false);
   saved.capabilities={listing_read_enabled:'true'};el('refresh').click();await settled(w);assert.equal(el('read-listing').disabled,true);
   delete saved.capabilities;el('refresh').click();await settled(w);assert.equal(el('read-listing').disabled,true);
   assert.ok(requestTimeouts.includes(25000));assert.ok(requestTimeouts.includes(10000));

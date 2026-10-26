@@ -10,21 +10,20 @@ NOW = datetime(2026, 10, 24, 15, tzinfo=UTC)
 
 
 def target(**changes):
-    return Target.model_validate(
-        dict(
-            release_id="https://www.discogs.com/release/123-Example",
-            label="Example",
-            min_media="VG+",
-            min_sleeve="VG",
-            min_seller_percent=99.0,
-            min_feedback=100,
-            max_total="50",
-            currency="USD",
-            destination_country="US",
-            destination_postal="03106",
-            **changes,
-        )
+    data = dict(
+        release_id="https://www.discogs.com/release/123-Example",
+        label="Example",
+        min_media="VG+",
+        min_sleeve="VG",
+        min_seller_percent=99.0,
+        min_feedback=100,
+        max_total="50",
+        currency="USD",
+        destination_country="US",
+        destination_postal="03106",
     )
+    data.update(changes)
+    return Target.model_validate(data)
 
 
 def observation(**changes):
@@ -58,6 +57,30 @@ def test_threshold_inclusive_but_never_purchase():
     assert result["eligible_for_review"]
     assert result["total"] == "50.00"
     assert result["purchase_allowed"] is False
+
+
+def test_paused_draft_can_omit_destination_but_cannot_qualify():
+    draft = target(enabled=False, destination_country=None, destination_postal=None)
+    assert draft.destination_postal is None
+    result = evaluate(draft, observation(), now=NOW)
+    assert not result["eligible_for_review"]
+    assert "Target is paused." in result["reasons"]
+    with pytest.raises(ValidationError):
+        target(enabled=True, destination_country=None, destination_postal=None)
+    with pytest.raises(ValidationError):
+        target(enabled=False, destination_country="US", destination_postal=None)
+
+
+def test_zero_seller_threshold_means_no_rating_or_feedback_gate():
+    unrestricted = target(min_seller_percent=0, min_feedback=0)
+    result = evaluate(unrestricted, observation(seller_percent=None, feedback=None), now=NOW)
+    assert result["eligible_for_review"]
+    assert result["purchase_allowed"] is False
+    unknown_total = evaluate(
+        unrestricted, observation(seller_percent=None, feedback=None, tax=None), now=NOW
+    )
+    assert not unknown_total["eligible_for_review"]
+    assert "Item, shipping, tax and mandatory fees must all be known." in unknown_total["reasons"]
 
 
 @pytest.mark.parametrize(
@@ -158,6 +181,29 @@ def test_store_revision_reopen_one_copy(tmp_path):
     store.mark_owned(123, False, 3)
     assert store.snapshot()["owned"] == []
     store.close()
+
+
+def test_paused_destination_free_rule_round_trips_and_stays_paused(tmp_path):
+    path = tmp_path / "rules.sqlite3"
+    store = RulesStore(path, create=True)
+    draft = target(
+        enabled=False,
+        destination_country=None,
+        destination_postal=None,
+        min_seller_percent=0,
+        min_feedback=0,
+        max_total="10",
+        min_sleeve="VG+",
+    )
+    assert store.save(draft.model_dump(), 0)["revision"] == 1
+    store.close()
+    reopened = RulesStore(path)
+    saved = Target.model_validate(reopened.snapshot()["targets"][0])
+    reopened.close()
+    assert saved == draft
+    assert not evaluate(saved, observation(seller_percent=None, feedback=None), now=NOW)[
+        "eligible_for_review"
+    ]
 
 
 def test_no_overwrite_or_legacy_migration(tmp_path):
