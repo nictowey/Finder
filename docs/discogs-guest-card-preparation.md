@@ -840,3 +840,29 @@ hidden/ambiguous/oversized title nodes, document changes and cancellation. Tests
 also make address text and input-value accessors throw, proving this collector
 does not read those fields. Independent review accepted the combined scope.
 These are offline results; the cart semantic title parser is still unchanged.
+
+The capture code `1e05b67f719fd9ca2c304a80286688caf91eb118` passed all
+required local gates (3,885 Python tests plus 41 subtests, 110 app tests, lint,
+format and type checking) and exact CI. The Discogs, feedback/PostgreSQL and
+sandbox checks passed; the production job was intentionally skipped. Image
+`sniper-browser-view:cart-capture-1e05b67` started at
+`2026-10-26T20:32:10.299527385Z`. All three deployed module hashes matched the
+tested source. The historical stop, six spent qualification receipts and all
+transaction audit/fence records matched their pre-installation hashes.
+
+A single normal cart load rendered the one KC copy and $5.05 USD aggregate
+without a challenge. The separately pinned job
+`37f72f79-8951-405b-814c-acef94191ddf` then returned
+`cart_structure_captured`: one row and the exact bare item link, whose only child
+was a text node containing
+`K.C. & The Sunshine Band* - Get Down Tonight (7", Single)`.
+There are no separate artist/title/format spans to select in that cart link.
+The narrow grade collector returned `grade_nodes:[]`; this means unsupported
+structure, not absent or accepted grades. This is actual hosted DOM evidence,
+not a screenshot-inferred selector or a synthetic fixture.
+
+The new capture receipt is spent. The six earlier receipts and transaction
+history still match their prior hashes; the browser remained healthy without an
+OOM at roughly 510 MiB / 2 GiB. No provider initializer, card entry, payment or
+order submission was invoked. Cart title/grade qualification still needs a
+grounded semantic comparison before the full preparation flow can qualify.
