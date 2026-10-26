@@ -781,3 +781,37 @@ second installation restart for an issuer that pins its job at startup. It grant
 no preparation or transaction action. No site request or qualification read was
 made after this deployment; actual title qualification remains pending the next
 bounded check. Cart title qualification still requires its own grounded evidence.
+
+
+### Live semantic-title verification
+
+The separately reviewed two-call job on `title-454cce0` completed both phases.
+A single normal canonical KC load rendered the exact listing through its normal
+same-item `/shop/item/1366950910` alias without a challenge. Key-by-key normal URL
+entry was visually verified before Return, avoiding the earlier truncated input.
+The item remained in cart. The existing cart still displayed one copy, seller
+Mailman21842, Poor/Generic and selected $4.95 Economy/Media Mail shipping; no cart
+contents, address or shipping option were changed.
+
+Both actual service observations returned `title_continuity:true` with supported
+exact listing/release details and matching conditions. After fresh visual saved-
+address acknowledgement, the second result was `approved_saved_destination_bound`
+with `missing_fields:[]`. Summary, seller, $0.10 item + $4.95 shipping = $5.05 USD
+aggregate, quantity, title, conditions, item-price continuity, provider-frame and
+unique enabled card-control checks were all true. The public grade diagnostics
+were P/Generic; detail diagnostic was observed/complete, error null, main count1,
+release-link count2 and grade count1. No guest form was present. This verifies the
+deployed semantic title repair in the hosted service, not just a fixture.
+
+The cart's visually observed label remained the artist/title/format composite
+ending `(7", Single)`. No cart-node DOM capture or cart semantic extraction was
+performed by these two checkout observations. Its full-label gate therefore
+remains unqualified; a separately scoped read-only cart-node observation is the
+next evidence needed for the full preflight. The configuration remains read-only
+and grants no preparation action, card entry, payment or final submission.
+
+Both slots are consumed, with all six receipts across the three jobs retained.
+The historical access stop and successful outcome/disposition hashes are unchanged;
+image `title-454cce0` remains healthy without an OOM or additional restart. No
+initializer was invoked, and merchant order/payment status and final tax/payment
+quote remain unverified. No extra site read or new job was created after this run.
