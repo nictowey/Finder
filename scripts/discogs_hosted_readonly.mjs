@@ -24,6 +24,9 @@ const SHARED_SOCKET = '/bridge/sniper-read-only.sock';
 const SHARED_GROUP = 113;
 const OPERATOR_RELEASE = '4204639';
 const OPERATOR_CART_LISTING = '3526572746';
+const OPERATOR_ITEM_RELEASE = '3422100';
+const OPERATOR_ITEM_LISTING = '1366950910';
+const OPERATOR_ITEM_SELLER = 'Mailman21842';
 const CART_GRANT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const MONITOR_TEST_RELEASES = new Set(['28720177', '5520534', '13053315']);
 const MONITOR_TRIAL_TTL_MS = 60 * 60_000;
@@ -195,6 +198,43 @@ async function observeOperatorCurrentRelease(context) {
     return bounded({ status: 'observed', source: 'hosted_browser_read_only', observation,
       stop_required: true, purchase_allowed: false });
   } catch { return stopped('hosted_read_failed'); }
+}
+
+/** One read of an operator-opened exact item. No navigation or cart capability. */
+async function observeOperatorCurrentListing(context, signal) {
+  if (signal?.aborted) return stopped('read_cancelled');
+  if (!context || typeof context.pages !== 'function') return stopped('browser_context_unavailable');
+  try {
+    const pages = context.pages();
+    if (!Array.isArray(pages) || pages.length > 16) return stopped('browser_pages_unavailable');
+    const matches = pages.filter(page => page && typeof page.url === 'function' &&
+      typeof page.title === 'function' && typeof page.evaluate === 'function' &&
+      exactUrl('current_listing', OPERATOR_ITEM_LISTING, page.url()));
+    if (matches.length !== 1) return stopped('exact_current_page_not_unique');
+    const page = matches[0], url = page.url();
+    const title = await beforeDeadline(() => page.title());
+    if (signal?.aborted) return stopped('read_cancelled');
+    if (page.url() !== url) return stopped('page_changed_during_read');
+    if (/just a moment|attention required|security check|captcha|cloudflare|sign in|log in/iu.test(title)) {
+      return stopped('access_restricted');
+    }
+    const readiness = await beforeDeadline(() => page.evaluate(collectListingReadinessDom));
+    if (signal?.aborted) return stopped('read_cancelled');
+    if (readiness?.password_input_present || readiness?.challenge_marker_present) {
+      return stopped('access_restricted');
+    }
+    if (readiness?.main_count !== 1 || readiness.details_count !== 1 ||
+        readiness.grade_count !== 1) return stopped('listing_not_ready');
+    const result = await observeCurrentHostedPage(context, { action: 'current_listing',
+      release_id: OPERATOR_ITEM_RELEASE, listing_id: OPERATOR_ITEM_LISTING });
+    if (signal?.aborted) return stopped('read_cancelled');
+    if (page.url() !== url) return stopped('page_changed_during_read');
+    if (result.status !== 'observed' || result.observation?.seller_handle !== OPERATOR_ITEM_SELLER) {
+      return stopped(result.status === 'observed' ? 'listing_seller_identity_unverified' :
+        result.code || 'listing_observation_unverified');
+    }
+    return result;
+  } catch { return stopped(signal?.aborted ? 'read_cancelled' : 'hosted_read_failed'); }
 }
 
 /** Verify a user-opened normal release page without navigation or session access. */
@@ -527,6 +567,18 @@ export function createListingNavigator(context, { now = () => Date.now() } = {})
   };
 }
 
+/** Shared exclusive, boot-bound operator acknowledgement for a fixed read scope. */
+async function consumeScopedOperatorGrant(ackPath, usedPath, expected, now, maxAgeMs = null) {
+  const ack = await lstat(ackPath).catch(() => null);
+  if (!ack?.isFile() || ack.uid !== process.getuid() ||
+      (ack.mode & 0o777) !== 0o600 ||
+      maxAgeMs !== null && (now + 1_000 < ack.mtimeMs || now - ack.mtimeMs > maxAgeMs) ||
+      await readFile(ackPath, 'utf8') !== expected) return false;
+  // Exclusive creation consumes the grant before any browser inspection.
+  await writeFile(usedPath, 'consumed\n', { flag: 'wx', mode: 0o600 });
+  return true;
+}
+
 /** Local Unix socket only; the caller must keep it inside a private container. */
 export async function listenHostedReadOnly(context, socketPath, {
   durableStopPath = null, operatorBootPath = null, operatorAckPath = null, operatorUsedPath = null,
@@ -534,6 +586,7 @@ export async function listenHostedReadOnly(context, socketPath, {
   clock = () => Date.now(),
   monitorVerifyTimeoutMs = READ_TIMEOUT_MS,
   monitorTrialTimeoutMs = RELEASE_PAGINATION_BUDGET_MS,
+  operatorListingTimeoutMs = READ_TIMEOUT_MS,
   leaseWriteHook = null,
 } = {}) {
   if (!Number.isSafeInteger(monitorVerifyTimeoutMs) || monitorVerifyTimeoutMs < 1 ||
@@ -542,6 +595,8 @@ export async function listenHostedReadOnly(context, socketPath, {
       monitorTrialTimeoutMs > RELEASE_PAGINATION_BUDGET_MS) {
     throw new TypeError('invalid_monitor_timeout');
   }
+  if (!Number.isSafeInteger(operatorListingTimeoutMs) || operatorListingTimeoutMs < 1 ||
+      operatorListingTimeoutMs > READ_TIMEOUT_MS) throw new TypeError('invalid_listing_timeout');
   if (leaseWriteHook !== null && typeof leaseWriteHook !== 'function') {
     throw new TypeError('invalid_lease_write_hook');
   }
@@ -984,18 +1039,39 @@ export async function listenHostedReadOnly(context, socketPath, {
           `operator_confirmed_current_cart:${OPERATOR_CART_LISTING}:${bootId}\n`;
         busy = true;
         try {
-          const ack = await lstat(ackPath).catch(() => null);
-          if (!ack?.isFile() || ack.uid !== process.getuid() ||
-              (ack.mode & 0o777) !== 0o600 ||
-              await readFile(ackPath, 'utf8') !== expectedAck) {
+          if (!await consumeScopedOperatorGrant(ackPath, usedPath, expectedAck, clock())) {
             return send(stopped('operator_acknowledgement_required'));
           }
-          // Consume before looking at the browser; an uncertain read cannot replay.
-          await writeFile(usedPath, 'consumed\n', { flag: 'wx', mode: 0o600 });
           return send(await observeOperatorCurrentCart(context));
         } catch {
           return send(stopped('operator_recovery_unavailable'));
         } finally { busy = false; }
+      }
+      if (request?.action === 'operator_current_listing') {
+        const keys = Reflect.ownKeys(request);
+        const grantId = Object.getOwnPropertyDescriptor(request, 'grant_id')?.value;
+        if (!durableStopPath || !accessStopped || busy || monitorRecoveryBusy ||
+            keys.length !== 4 || !keys.includes('grant_id') || !keys.includes('release_id') ||
+            !keys.includes('listing_id') || typeof grantId !== 'string' ||
+            !CART_GRANT_ID.test(grantId) || request.release_id !== OPERATOR_ITEM_RELEASE ||
+            request.listing_id !== OPERATOR_ITEM_LISTING) {
+          return send(stopped('unsupported_operator_recovery'));
+        }
+        busy = true;
+        connection.setTimeout(operatorListingTimeoutMs);
+        try {
+          const ackPath = join(monitorDirectory, `operator-listing-grant-${grantId}-ack`);
+          const usedPath = join(monitorDirectory, `operator-listing-grant-${grantId}-used`);
+          const expectedAck = `operator_confirmed_current_listing:${OPERATOR_ITEM_RELEASE}:` +
+            `${OPERATOR_ITEM_LISTING}:${grantId}:${bootId}\n`;
+          if (!await consumeScopedOperatorGrant(ackPath, usedPath, expectedAck, clock(),
+            MONITOR_ACK_TTL_MS)) return send(stopped('operator_acknowledgement_required'));
+          if (controller.signal.aborted || done) return send(stopped('read_cancelled'));
+          const result = await observeOperatorCurrentListing(context, controller.signal);
+          if (controller.signal.aborted || done) return send(stopped('read_cancelled'));
+          return send(result);
+        } catch { return send(stopped('operator_recovery_unavailable')); }
+        finally { busy = false; }
       }
       if (accessStopped) return send(stopped('access_restricted'));
       if (Date.now() < restrictedUntil) return send({ ...stopped('rate_limited'),

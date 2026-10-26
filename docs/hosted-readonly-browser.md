@@ -146,6 +146,23 @@ replayed grant, wrong page, challenge, or unsupported cart shape stops. The
 bridge does not mint acknowledgements: each new grant requires a distinct,
 specifically approved operator action, and the global stop remains in place.
 
+An additional **not yet deployed** fixed item-page recovery uses the same
+exclusive, boot-bound grant mechanism for listing `1366950910`, release
+`3422100`, and seller handle `Mailman21842` only. Its action is
+`operator_current_listing` with those two IDs and a lowercase UUIDv4
+`grant_id`. The owner-only `operator-listing-grant-<grant_id>-ack` contains
+`operator_confirmed_current_listing:3422100:1366950910:<grant_id>:<current-boot-id>`
+and must be created within five minutes of the user's confirmation of the
+normally opened item page. The matching `-used` marker is created exclusively
+before inspection. It reads the already-open exact item page, rejects a
+challenge, changed page, incomplete item or different/missing seller handle,
+and cannot navigate, edit the cart or order. Timeout and disconnection consume
+the grant without late success. Installing the bridge code will restart the
+browser and close its displayed page; the user must reopen and verify the item
+normally before the acknowledgement. Existing access-stop and trial history
+remain. The seller-profile selector has only synthetic fixture coverage until
+this permitted live read; a missing match must fail closed.
+
 ## Approved private socket handoff (stopped)
 
 The owner approved Sniper code reading the signed-in browser through a restricted

@@ -446,6 +446,43 @@ function operatorCartFixture({ url = cartUrl, title = 'Shopping Cart', changed =
   return { context, calls };
 }
 
+function operatorListingFixture({ url = 'https://www.discogs.com/sell/item/1366950910',
+  title = 'Item for sale', seller = 'Mailman21842', changed = false,
+  challenge = false, hold = null, duplicate = false } = {}) {
+  const calls = [];
+  const page = new Proxy({
+    url() { calls.push('url'); return changed && calls.includes('detail') ?
+      'https://www.discogs.com/sell/item/1366950911' : url; },
+    async title() { calls.push('title'); return title; },
+    async evaluate(fn, expected) {
+      if (fn === collectListingReadinessDom) {
+        calls.push('readiness');
+        return { main_count: 1, details_count: 1, grade_count: 1,
+          challenge_marker_present: challenge, password_input_present: false };
+      }
+      assert.equal(fn, collectListingDetailDom);
+      assert.deepEqual(expected, { release_id: '3422100', listing_id: '1366950910' });
+      calls.push('detail');
+      if (hold) await hold;
+      return { ...observedItem(), release_id: 3422100, listing_id: '1366950910',
+        url, seller_handle: seller };
+    },
+  }, { get(target, key) {
+    assert.ok(['url', 'title', 'evaluate'].includes(key), `Forbidden listing action: ${String(key)}`);
+    return target[key];
+  } });
+  const context = new Proxy({ pages() { calls.push('pages'); return duplicate ? [page, page] : [page]; } },
+    { get(target, key) { assert.equal(key, 'pages'); return target[key]; } });
+  return { context, calls };
+}
+
+async function writeListingGrantAck(socket, directory, grantId) {
+  const bootId = (await readFile(socket.options.operatorBootPath, 'utf8')).trim();
+  await writeFile(join(directory, `operator-listing-grant-${grantId}-ack`),
+    `operator_confirmed_current_listing:3422100:1366950910:${grantId}:${bootId}\n`,
+    { mode: 0o600 });
+}
+
 test('monitor recovery needs a fresh acknowledged normal page, then three bounded trials and review', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'sniper-monitor-'));
   const fixture = monitorFixture(); let now = Date.now();
@@ -1005,6 +1042,166 @@ test('a scoped cart grant is single-use and never clears the consumed legacy gra
       assert.equal(fixture.calls.filter(call => call === 'evaluate').length, 2);
       assert.ok(!fixture.calls.some(call => ['goto', 'click', 'newPage'].includes(call)));
     } finally { await socket.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('one-use exact item grant reads the existing page without navigation or cart writes', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-item-grant-'));
+  const fixture = operatorListingFixture();
+  const grantId = randomUUID();
+  const request = { action: 'operator_current_listing', release_id: '3422100',
+    listing_id: '1366950910', grant_id: grantId };
+  try {
+    let socket = await operatorSocket(fixture.context, directory);
+    try {
+      stopped(await sendSocket(socket.path, JSON.stringify(request) + '\n'),
+        'operator_acknowledgement_required');
+      assert.deepEqual(fixture.calls, []);
+      await writeListingGrantAck(socket, directory, grantId);
+      const result = await sendSocket(socket.path, JSON.stringify(request) + '\n');
+      assert.equal(result.status, 'observed');
+      assert.equal(result.observation.release_id, 3422100);
+      assert.equal(result.observation.listing_id, '1366950910');
+      assert.equal(result.observation.seller_handle, 'Mailman21842');
+      assert.equal(result.purchase_allowed, false);
+      assert.equal((await readFile(join(directory, `operator-listing-grant-${grantId}-used`),
+        'utf8')), 'consumed\n');
+      stopped(await sendSocket(socket.path, JSON.stringify(request) + '\n'),
+        'operator_recovery_unavailable');
+      stopped(await sendSocket(socket.path, JSON.stringify({ action: 'current_listing',
+        release_id: '3422100', listing_id: '1366950910' }) + '\n'), 'access_restricted');
+      assert.ok(!fixture.calls.some(call => ['goto', 'click', 'newPage'].includes(call)));
+    } finally { await socket.close(); }
+    socket = await operatorSocket(fixture.context, directory);
+    try {
+      stopped(await sendSocket(socket.path, JSON.stringify(request) + '\n'),
+        'operator_acknowledgement_required');
+    } finally { await socket.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('item grant rejects wrong scope, seller, page and challenge without retry', async () => {
+  for (const [config, code] of [
+    [{}, 'observed'],
+    [{ seller: 'DifferentSeller' }, 'listing_seller_identity_unverified'],
+    [{ url: 'https://www.discogs.com/sell/item/1366950911' }, 'exact_current_page_not_unique'],
+    [{ changed: true }, 'page_changed_during_read'],
+    [{ challenge: true }, 'access_restricted'],
+    [{ title: 'Just a moment... Cloudflare' }, 'access_restricted'],
+    [{ duplicate: true }, 'exact_current_page_not_unique'],
+  ]) {
+    const directory = await mkdtemp(join(tmpdir(), 'sniper-item-grant-'));
+    const fixture = operatorListingFixture(config);
+    const grantId = randomUUID();
+    const request = { action: 'operator_current_listing', release_id: '3422100',
+      listing_id: '1366950910', grant_id: grantId };
+    try {
+      const socket = await operatorSocket(fixture.context, directory);
+      try {
+        await writeListingGrantAck(socket, directory, grantId);
+        for (const wrong of [{ ...request, listing_id: '1366950911' },
+          { ...request, release_id: '3422101' }, { ...request, grant_id: '../x' },
+          { ...request, click: true }]) {
+          stopped(await sendSocket(socket.path, JSON.stringify(wrong) + '\n'),
+            'unsupported_operator_recovery');
+        }
+        const result = await sendSocket(socket.path, JSON.stringify(request) + '\n');
+        if (code === 'observed') assert.equal(result.status, 'observed');
+        else stopped(result, code);
+        stopped(await sendSocket(socket.path, JSON.stringify(request) + '\n'),
+          'operator_recovery_unavailable');
+        assert.ok(!fixture.calls.some(call => ['goto', 'click', 'newPage'].includes(call)));
+      } finally { await socket.close(); }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }
+});
+
+test('item timeout consumes grant and cannot yield late success', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-item-grant-'));
+  let release;
+  const hold = new Promise(resolve => { release = resolve; });
+  const fixture = operatorListingFixture({ hold });
+  const grantId = randomUUID();
+  const request = { action: 'operator_current_listing', release_id: '3422100',
+    listing_id: '1366950910', grant_id: grantId };
+  try {
+    const socket = await operatorSocket(fixture.context, directory,
+      { operatorListingTimeoutMs: 20 });
+    try {
+      await writeListingGrantAck(socket, directory, grantId);
+      stopped(await sendSocket(socket.path, JSON.stringify(request) + '\n'),
+        'request_timed_out');
+      release();
+      stopped(await sendSocket(socket.path, JSON.stringify(request) + '\n'),
+        'operator_recovery_unavailable');
+      assert.equal((await readFile(join(directory, `operator-listing-grant-${grantId}-used`),
+        'utf8')), 'consumed\n');
+    } finally { release(); await socket.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('item disconnect consumes grant and stale acknowledgement never starts a read', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-item-grant-'));
+  let release;
+  const hold = new Promise(resolve => { release = resolve; });
+  const fixture = operatorListingFixture({ hold });
+  const grantId = randomUUID();
+  const request = { action: 'operator_current_listing', release_id: '3422100',
+    listing_id: '1366950910', grant_id: grantId };
+  const usedPath = join(directory, `operator-listing-grant-${grantId}-used`);
+  try {
+    const socket = await operatorSocket(fixture.context, directory);
+    try {
+      await writeListingGrantAck(socket, directory, grantId);
+      const ackPath = join(directory, `operator-listing-grant-${grantId}-ack`);
+      const stale = new Date(Date.now() - 6 * 60_000);
+      await utimes(ackPath, stale, stale);
+      stopped(await sendSocket(socket.path, JSON.stringify(request) + '\n'),
+        'operator_acknowledgement_required');
+      assert.deepEqual(fixture.calls, []);
+      await writeListingGrantAck(socket, directory, grantId);
+      const client = connect(socket.path);
+      await new Promise(resolve => client.once('connect', resolve));
+      client.write(JSON.stringify(request) + '\n');
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (await stat(usedPath).catch(() => null)) break;
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      assert.ok(await stat(usedPath));
+      client.destroy();
+      release();
+      await new Promise(resolve => setTimeout(resolve, 10));
+      stopped(await sendSocket(socket.path, JSON.stringify(request) + '\n'),
+        'operator_recovery_unavailable');
+      assert.equal(fixture.calls.filter(call => call === 'detail').length, 1);
+    } finally { release(); await socket.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('concurrent exact-item grant requests cannot spend the same read twice', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-item-grant-'));
+  let release;
+  const hold = new Promise(resolve => { release = resolve; });
+  const fixture = operatorListingFixture({ hold });
+  const grantId = randomUUID();
+  const request = JSON.stringify({ action: 'operator_current_listing',
+    release_id: '3422100', listing_id: '1366950910', grant_id: grantId }) + '\n';
+  try {
+    const socket = await operatorSocket(fixture.context, directory);
+    try {
+      await writeListingGrantAck(socket, directory, grantId);
+      const first = sendSocket(socket.path, request);
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (fixture.calls.includes('detail')) break;
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      assert.ok(fixture.calls.includes('detail'));
+      stopped(await sendSocket(socket.path, request), 'read_in_progress');
+      release();
+      assert.equal((await first).status, 'observed');
+      stopped(await sendSocket(socket.path, request), 'operator_recovery_unavailable');
+      assert.equal(fixture.calls.filter(call => call === 'detail').length, 1);
+    } finally { release(); await socket.close(); }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
