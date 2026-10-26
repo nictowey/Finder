@@ -99,6 +99,7 @@ class OrderPageEvidence:
     """Normalized future read-only order detail; no reader is supplied here."""
 
     order_id: str
+    release_id: int
     listing_id: str
     seller: str
     total: str
@@ -111,6 +112,8 @@ class OrderPageEvidence:
         if (
             type(self.order_id) is not str
             or not ORDER_ID.fullmatch(self.order_id)
+            or type(self.release_id) is not int
+            or not 0 < self.release_id <= 9007199254740991
             or type(self.listing_id) is not str
             or not LISTING_ID.fullmatch(self.listing_id)
             or type(self.seller) is not str
@@ -299,7 +302,8 @@ class DiscogsOrderLedger:
                     db.execute("SELECT * FROM intents WHERE intent_id=?", (intent_id,)).fetchone()
                 )
             matches = (
-                row["listing_id"] == evidence.listing_id
+                row["release_id"] == evidence.release_id
+                and row["listing_id"] == evidence.listing_id
                 and row["seller"].casefold() == evidence.seller.casefold()
                 and row["quoted_total"] == evidence.total
                 and row["currency"] == evidence.currency

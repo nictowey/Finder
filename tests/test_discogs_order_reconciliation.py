@@ -37,6 +37,7 @@ def expected(**changes):
 def observed(**changes):
     values = {
         "order_id": "123456-789012",
+        "release_id": 28720177,
         "listing_id": "3526572746",
         "seller": "sampleseller",
         "total": "25.00",
@@ -63,6 +64,8 @@ def test_actual_discogs_order_id_shape_and_status_evidence_validation():
         observed(total="unknown")
     with pytest.raises(ValueError):
         observed(source="checkout_submit")
+    with pytest.raises(ValueError):
+        observed(release_id=0)
     with pytest.raises(ValueError):
         expected(destination_ref="real address")
 
@@ -128,6 +131,22 @@ def test_unknown_or_mismatched_order_page_retains_fence_and_identity(tmp_path):
     assert conflict["state"] == "identity_conflict"
     assert conflict["order_id"] == "123456-789012"
     assert conflict["may_submit_again"] is False
+
+
+def test_wrong_exact_release_keeps_order_id_and_never_calls_it_paid(tmp_path):
+    store = ledger(tmp_path)
+    proposal = expected()
+    store.prepare(proposal, now=1000)
+    store.fence_possible_submit(proposal.intent_id, now=1001)
+    result = store.record_read_only_lookup(
+        proposal.intent_id,
+        observed(release_id=5520534, displayed_status="Payment Received"),
+        now=1101,
+    )
+    assert result["state"] == "identity_conflict"
+    assert result["order_id"] == "123456-789012"
+    assert result["payment_state"] == "unknown"
+    assert result["may_submit_again"] is False
 
 
 def test_status_unknown_and_stale_or_regressive_evidence_fail_closed(tmp_path):
