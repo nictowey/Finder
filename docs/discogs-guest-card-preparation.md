@@ -37,9 +37,11 @@ buyer or a completed order.
 | Existing cart | One selected item and seller; selected shipping; explicit USD subtotal, shipping and Total | Read the existing item; do not repeat Add to Cart. A changed item, destination, total or deferred notice stops. |
 | Review | Visible `Go to Checkout` opens `/marketplace/checkout` | This route was exercised without entering payment details. Recheck the one-item summary, saved destination and aggregate Total. |
 | Payment choice | Visible `PayPal` and `Debit or Credit Card`, powered by PayPal | The card control was previously observed as a link with `data-funding-source="card"`, `aria-label="Debit or Credit Card"` and `aria-disabled="false"` in the provider buttons frame. These are observed selectors, not proof of an order or a reusable saved card. |
-| One-use card initialization | One operator-assisted normal card-button click after durable fencing | It returned a visible PayPal-session-expired message. No card form was observed, no card data entered and no capture/approval control operated. The consumed fence was retained, and initialization was not retried. |
+| First card initialization | One operator-assisted normal card-button click after durable fencing | It returned a visible PayPal-session-expired message. No card form was observed, no card data entered and no capture/approval control operated. The first fence stayed consumed; no blind retry occurred. |
 | Initial reconciliation | Normal `/sell/purchases`, all statuses, Not Archived, after the attempt | It displayed zero orders and cart count one; this first view did not cover archived orders. |
 | Full reconciliation | Normal Purchases filters `Archived: All`, `Status: All`; `/sell/purchases?archived=A&status=All&limit=50` | The fresh view displayed `0–0 of 0`, `No orders found` and cart count one. This includes active and archived orders, but does not prove that no provider draft exists. |
+| Reviewed recovery | Normal cart → `Go to Checkout`, fresh exact-item/total/destination checks, then one separately fenced card-button click | The guest form opened without an error or challenge. The original fence remained unchanged and the fixed recovery slot was consumed. The later navigation-reopen attempt below also executed once and is spent. |
+| Reviewed navigation reopening | Fresh all-status/all-archive zero-order review, the existing merchant checkout at $5.05 USD, then one separately fenced card-button click | It returned `SESSION_EXPIRED`; no guest form opened. The navigation slot was consumed, all earlier records were retained and no retry followed. |
 
 The merchant origin is `https://www.discogs.com`. The observed SDK buttons frame
 uses `https://www.paypal.com/smart/buttons`; query parameters are deliberately
@@ -75,13 +77,143 @@ absence of a provider draft. Use the visible cart and `Go to Checkout` controls,
 not an inferred session-creation endpoint. Recheck the exact item, aggregate
 $5.05 USD total, saved destination, terms and normal access before dispatch.
 
-At this documentation milestone, the recovery helper has passed 29 focused
-tests and independent review; no second initialization has executed. The original consumed fence must remain
-byte-for-byte unchanged in the same record directory. The recovery requires a
-separate immutable reconciliation record bound to that original fence and the
-new exact scope, followed by one fixed second-attempt fence before the possible
-click. It must not delete/reset the first record, substitute another directory
-or permit further retry chaining. Any new unknown outcome stops again.
+After focused tests and independent review, one recovery executed with a separate
+immutable reconciliation record bound to the original fence and new exact scope,
+plus the fixed second-attempt fence before the click. The original consumed fence
+was retained byte-for-byte in the same directory. Neither record was deleted or
+reset. Directory substitution, reuse of a spent slot and automatic retry chaining
+remain prohibited; the separately bounded navigation-reopen slot below is also
+now spent.
+
+## Guest form observed after recovery
+
+The form was visibly observed at 14:32:59.258 UTC on October 26, 2026
+(Unix time `1793025179.258`),
+under recovery intent `2c6ce1cd-cbd9-4acb-ab58-748c55e630f4`. The reviewed test scope
+was one copy of listing `1366950910`, release `3422100`, seller `Mailman21842`.
+The fresh merchant review showed one item, the saved shipping address and Total
+$5.05 USD before the recovery click.
+
+The blank guest form showed email, card number, expiry, CSC, billing country
+(United States), first/last name, street, apartment, city, state, ZIP and mobile
+fields. These are visually observed field labels; input selectors and exact
+hosted-field frame identities have not yet been verified. No field values were
+entered or recorded.
+
+**`Ship to billing address` was checked by default.** This means the original
+Discogs shipping destination cannot be assumed to remain the provider delivery
+destination after billing entry. Reverify delivery against the approved saved
+destination before any final payment, without reading or logging card values or
+retaining the full address. The checkbox was not changed during this observation.
+
+The visible notice says continuing confirms the buyer is 18 years or older. The
+final blue control reads `Pay $5.05`. The merchant still explicitly showed USD;
+a separate provider currency code was not observed. Do not promote that button
+label into a fully verified final quote or accept its terms automatically.
+
+No card data was entered, no checkbox changed and `Pay` was not pressed. Order
+and payment remain unverified; initialization may have created a provider draft.
+The successful form opening is not a receipt, a purchase or proof of autonomous
+card payment. The consumed recovery slot cannot authorize another initialization;
+the separately reviewed navigation-reopen slot below also executed and is spent.
+
+## Subsequent navigation and handoff correction
+
+After the successful form observation, the user reported a white screen and
+confirmed that no card details had been entered. The current tab showed
+`chrome://browser/content/blanktab.html`; its visible Back-history menu retained
+`Discogs Checkout` immediately before that entry. This establishes same-tab
+navigation, not a demonstrated tab closure. The container and Firefox process
+remained running with no OOM or service restart. The input responsible is not
+proven. A prior intended `Ctrl+Home` scroll and later unexpected shortcut/menu
+behavior make shortcut translation a risk; do not attribute it to the site or
+claim a verified keyboard cause.
+
+A separately reviewed single Back-history selection returned to the normal
+merchant checkout, showing the same one-item seller summary and Total $5.05 USD,
+without a challenge or resubmission prompt. The guest fields were absent and the
+payment-choice buttons were visible again. At that point inspection stopped:
+neither button was clicked and no third initialization was performed. A later,
+separately reviewed navigation-reopen attempt is recorded below; the earlier
+consumed initialization records remain intact.
+
+For future secure handoff, position the form with mouse scrolling only, then
+freeze all agent input, screenshots and page inspection while the user enters
+card details. Do not use a keyboard shortcut to reposition the payment page.
+Resuming inspection requires the user's explicit ready signal and privacy-safe
+selection of only the necessary non-sensitive evidence.
+
+### Reviewed navigation reopening — executed and spent
+
+A separate review accepted preparing **one** fixed navigation-reopen slot after
+the user's confirmation of no card entry or `Pay` action, a current all-status /
+all-archive Purchases view showing zero orders, and the observed blank-tab Back
+history and return to merchant payment choices. This is an implementation
+exception to the default denial, not reuse of either consumed initialization.
+The immutable navigation-review and attempt records linked the raw SHA256 hashes
+of the original initialization fence, recovery reconciliation record and
+recovery-attempt fence, plus the new exact one-copy KC scope and $5.05 USD ceiling.
+The prior records were retained; the new strict review and attempt fence are
+consumed. Review expiry, order-history freshness (observation plus 300 seconds),
+current quote and cancellation gates applied before dispatch.
+
+The fresh all-status/all-archive zero-order view was observed at
+15:13:10.354 UTC (Unix time `1793027590.354`). Exactly one navigation-reopen
+dispatch followed under intent `d4b81e41-1351-414b-8b77-1bab9953e629`. At
+15:14:07.142 UTC (Unix time `1793027647.142`), the same merchant checkout and
+$5.05 USD summary showed the exact session-expired message quoted above. No
+guest form opened, no card data was entered and `Pay` was not clicked. The
+helper returned `guest_card_initialization_uncertain` with
+`outcome_requires_reconciliation`; order and payment remain unverified.
+
+The returned old checkout session was expired; this is not an inferred access
+denial. A future legitimate session refresh would require the normal cart →
+`Go to Checkout` flow, but that was neither executed nor authorized as a follow-on
+in this step. No retry occurred. This spent slot permits no automatic follow-on
+initialization, record reset, directory substitution or retry chain.
+
+Only mouse scrolling may preposition the form for handoff. Then freeze **all
+screenshots, DOM/page reads, logging and agent input** during human card entry.
+Resume only after the user's explicit ready signal and a privacy-safe handoff;
+do not inspect or record sensitive form values.
+
+### Fresh-session preparation — not executed
+
+After that expired attempt, normal All-archive / All-status Purchases again
+showed zero orders at Unix time `1793027941.218`. A second tab's normal cart
+showed the same single KC listing and Mailman21842: $0.10 USD plus selected
+Economy Media Mail shipping of $4.95, Total $5.05 USD, with the saved destination
+present and unchanged. `Go to Checkout` was **not** pressed; the first tab still
+contained the expired checkout. This reconciliation does not establish absence
+of a provider draft or a completed payment.
+
+After `SESSION_EXPIRED`, preparation must start from the normal cart and create
+a fresh checkout through `Go to Checkout`; a Back-restored checkout is not a
+fresh session, even when its summary still shows the approved total.
+`prepareFreshGuestCheckoutSession` implements this sequence as an offline-tested
+injected coordinator. Its actual browser ports remain unimplemented and
+unverified; it is not enabled live navigation or autonomous checkout.
+The four ports are `openCartViaVisibleControl`, `inspectCurrentCart`,
+`clickGoToCheckout` and `inspectFreshCheckout`. A scope-bound explicit human-ready
+token is required before any navigation and is valid for at most 60 seconds.
+The preparation itself is bounded to 30 seconds and to the earlier evidence,
+scope and readiness expiry. Each mutating port must call the supplied
+`revalidateBeforeDispatch()` immediately before its effect after any await;
+revocation, expiry or cancellation makes that guard fail and aborts its signal.
+The coordinator rejects Back/history-restored documents and returns only fresh
+merchant-review provenance, with initialization and payment still disabled.
+
+No new live initialization may run until the user explicitly signals readiness.
+The prepared sequence is: fresh order-history reconciliation → exact cart item,
+quote and destination checks → normal `Go to Checkout` → fresh merchant review
+checks → a separately reviewed, durably fenced card-button click → mouse-only
+form positioning → freeze all screenshots, DOM/page reads, logging and agent
+input for secure human card entry. Earlier fence and review records remain
+unchanged. This sequence has not yet been dispatched.
+
+At this checkpoint the web and browser services were active, with no restart or
+OOM since their 13:42 start; browser memory was 850.7 MiB of 2 GiB. Monitoring
+remained inactive. These health observations do not verify checkout or payment.
 
 ## Amount and runtime evidence
 
@@ -97,8 +229,10 @@ maximum is 90 seconds, bounded further by the exact approval/evidence expiry.
 The private operator transport has no browser, network or payment access. A
 fresh operator revalidation precedes its sole CUA click, and the durable record
 is retained on timeout or uncertainty. This is test evidence, not an enabled
-production checkout adapter. Final provider form fields, agreements, payment,
-receipt normalization and order-versus-paid reconciliation remain unverified.
+production checkout adapter. Provider field labels and the visible pay control
+are now observed, but their DOM selectors, final quote/delivery/terms validation,
+payment, receipt normalization and order-versus-paid reconciliation remain
+unverified.
 
 ## Verification and provenance
 
@@ -115,4 +249,7 @@ injected ports. It does not establish live provider payment or receipt behavior.
 The recovery tests additionally cover incomplete or stale reconciliation,
 approval binding, original-record tampering, competing recovery workers and
 crash/restart. Its dispatch deadline includes the order-history freshness limit.
-There is only one fixed recovery slot; its consumption permits no further chain.
+The fixed expired-session recovery and navigation-reopen slots are both spent
+and cannot be reused. Neither path permits an automatic follow-on chain. The
+navigation attempt's session-expired outcome is not a successful provider-form,
+order or payment verification.

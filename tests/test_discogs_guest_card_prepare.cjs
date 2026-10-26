@@ -10,10 +10,14 @@ const { pathToFileURL } = require('node:url');
 const { spawnSync } = require('node:child_process');
 let prepareExactGuestCard, GUEST_CARD_URL, GUEST_CARD_SELECTOR, GUEST_CARD_FENCE,
   validateGuestCardInspection, revalidateGuestCardClick, guestCardScopeDigest,
-  GUEST_CARD_RECOVERY_REVIEW, GUEST_CARD_RECOVERY_FENCE;
+  GUEST_CARD_RECOVERY_REVIEW, GUEST_CARD_RECOVERY_FENCE,
+  GUEST_CARD_NAVIGATION_REOPEN_REVIEW, GUEST_CARD_NAVIGATION_REOPEN_FENCE,
+  prepareFreshGuestCheckoutSession;
 before(async () => ({ prepareExactGuestCard, GUEST_CARD_URL, GUEST_CARD_SELECTOR, GUEST_CARD_FENCE,
   validateGuestCardInspection, revalidateGuestCardClick, guestCardScopeDigest,
-  GUEST_CARD_RECOVERY_REVIEW, GUEST_CARD_RECOVERY_FENCE } =
+  GUEST_CARD_RECOVERY_REVIEW, GUEST_CARD_RECOVERY_FENCE,
+  GUEST_CARD_NAVIGATION_REOPEN_REVIEW, GUEST_CARD_NAVIGATION_REOPEN_FENCE,
+  prepareFreshGuestCheckoutSession } =
   await import('../scripts/discogs_guest_card_prepare.mjs')));
 const NOW = 1_800_000_000_000;
 const UUID = '123e4567-e89b-42d3-a456-426614174000';
@@ -530,4 +534,373 @@ test('recovery crash or disconnected outcome never enables another attempt after
     assert.deepEqual(fresh.calls, []);
     assert.deepEqual(await readFile(join(directory, GUEST_CARD_FENCE)), setup.originalBytes);
   });
+});
+
+async function navigationFixture(directory) {
+  const recovery = await recoveryFixture(directory), reopened = recovery.make();
+  assert.equal((await prepareExactGuestCard(reopened.ports, recovery.retryScope,
+    { ...reopened.options, recoveryReview: recovery.review })).status, 'handoff_required');
+  const previous = {};
+  for (const name of [GUEST_CARD_FENCE, GUEST_CARD_RECOVERY_REVIEW, GUEST_CARD_RECOVERY_FENCE]) {
+    previous[name] = await readFile(join(directory, name));
+  }
+  const old = JSON.parse(previous[GUEST_CARD_FENCE]), spent = JSON.parse(previous[GUEST_CARD_RECOVERY_FENCE]);
+  const hashBytes = value => createHash('sha256').update(value).digest('hex');
+  const now = NOW + 600_000; // Historical recovery review expired, and stays unchanged.
+  const navScope = { ...scope(), intent_id: '123e4567-e89b-42d3-a456-426614174002',
+    issued_at: now / 1000 - 1, expires_at: now / 1000 + 120 };
+  const review = { schema: 'discogs_guest_card_navigation_reopen_review_v1',
+    source: 'operator_reviewed_normal_discogs_ui', authorization_ref: navScope.approval_ref,
+    original_fence_sha256: hashBytes(previous[GUEST_CARD_FENCE]),
+    original_intent_id: old.intent_id, original_scope_digest: old.scope_digest,
+    recovery_review_sha256: hashBytes(previous[GUEST_CARD_RECOVERY_REVIEW]),
+    recovery_fence_sha256: hashBytes(previous[GUEST_CARD_RECOVERY_FENCE]),
+    recovery_intent_id: spent.intent_id, recovery_scope_digest: spent.scope_digest,
+    reopen_intent_id: navScope.intent_id, reopen_scope_digest: guestCardScopeDigest(navScope, { now: now / 1000 }),
+    release_id: 3422100, listing_id: '1366950910', seller: 'Mailman21842', quantity: 1,
+    currency: 'USD', max_total: '5.05', reason: 'form_lost_by_same_tab_navigation',
+    prior_form_visible: true, form_observed_at: NOW / 1000 + 21,
+    navigation_kind: 'same_tab_blank_then_history_back', navigation_observed_at: NOW / 1000 + 22,
+    card_data_entered: false, pay_invoked: false, approval_invoked: false, capture_invoked: false,
+    current_form_present: false, current_checkout_normal: true, resubmission_prompt: false,
+    challenge_present: false,
+    order_history_url: 'https://www.discogs.com/sell/purchases?archived=A&status=All&limit=50',
+    order_history_archived: 'All', order_history_status: 'All', order_history_count: 0,
+    order_history_complete: true, order_history_observed_at: now / 1000 - 2,
+    reviewed_at: now / 1000 - 1, expires_at: now / 1000 + 100, max_additional_attempts: 1 };
+  const currentInspection = () => {
+    const value = inspection(); value.evidence.observed_at = now / 1000;
+    value.evidence.expires_at = navScope.expires_at; return value;
+  };
+  const make = ({ inspectHook = null, clickHook = null } = {}) => fixture(directory, {
+    expectedScope: navScope, currentTime: now,
+    inspectHook: (_value, reads, options) => inspectHook ?
+      inspectHook(currentInspection(), reads, options) : currentInspection(),
+    clickHook: async (binding, options) => {
+      assert.equal(revalidateGuestCardClick(binding, currentInspection(), { now: now / 1000 }), true);
+      return clickHook ? clickHook(binding, options) :
+        { schema: 'discogs_guest_card_click_v1', outcome: 'guest_form_visible' };
+    },
+  });
+  return { previous, recovery, navScope, review, now, make, currentInspection };
+}
+
+test('explicit navigation reopen permits expired historical review and preserves all original bytes', async () => temporary(async directory => {
+  const setup = await navigationFixture(directory), item = setup.make();
+  assert.ok(setup.recovery.review.expires_at < setup.now / 1000);
+  const result = await prepareExactGuestCard(item.ports, setup.navScope,
+    { ...item.options, navigationReopenReview: setup.review });
+  assert.equal(result.status, 'handoff_required');
+  assert.equal(item.calls.filter(call => call === 'click').length, 1);
+  for (const [name, bytes] of Object.entries(setup.previous)) {
+    assert.deepEqual(await readFile(join(directory, name)), bytes);
+  }
+  for (const name of [GUEST_CARD_NAVIGATION_REOPEN_REVIEW, GUEST_CARD_NAVIGATION_REOPEN_FENCE]) {
+    assert.equal((await stat(join(directory, name))).mode & 0o777, 0o600);
+  }
+  const next = setup.make();
+  assert.equal((await prepareExactGuestCard(next.ports, setup.navScope,
+    next.options)).code, 'guest_card_initialization_already_fenced');
+  assert.deepEqual(next.calls, []);
+}));
+
+test('navigation reopen rejects wrong chain, scope, stale orders and any potentially committing state', async () => {
+  for (const patch of [{ authorization_ref: OTHER }, { original_scope_digest: 'c'.repeat(64) },
+    { recovery_review_sha256: 'c'.repeat(64) }, { recovery_fence_sha256: 'c'.repeat(64) },
+    { recovery_intent_id: UUID }, { reopen_scope_digest: 'c'.repeat(64) },
+    { listing_id: '999' }, { reason: 'SESSION_EXPIRED' }, { prior_form_visible: false },
+    { card_data_entered: true }, { pay_invoked: true }, { approval_invoked: true },
+    { capture_invoked: true }, { current_form_present: true }, { current_checkout_normal: false },
+    { resubmission_prompt: true }, { challenge_present: true }, { order_history_complete: false },
+    { order_history_count: 1 }, { order_history_archived: 'Not Archived' },
+    { order_history_status: 'Invoice Sent' }, { expires_at: NOW / 1000 + 599 },
+    { order_history_observed_at: NOW / 1000 + 299 }]) await temporary(async directory => {
+    const setup = await navigationFixture(directory), item = setup.make();
+    const result = await prepareExactGuestCard(item.ports, setup.navScope,
+      { ...item.options, navigationReopenReview: { ...setup.review, ...patch } });
+    assert.equal(result.code, 'guest_card_navigation_reopen_unverified', JSON.stringify(patch));
+    assert.deepEqual(item.calls, []);
+    await assert.rejects(stat(join(directory, GUEST_CARD_NAVIGATION_REOPEN_REVIEW)), { code: 'ENOENT' });
+  });
+});
+
+test('navigation/recovery reviews cannot be combined and new UUID cannot reopen a spent slot', async () => temporary(async directory => {
+  const setup = await navigationFixture(directory), item = setup.make();
+  assert.equal((await prepareExactGuestCard(item.ports, setup.navScope,
+    { ...item.options, recoveryReview: setup.recovery.review,
+      navigationReopenReview: setup.review })).code, 'guest_card_navigation_reopen_unverified');
+  assert.deepEqual(item.calls, []);
+  assert.equal((await prepareExactGuestCard(item.ports, setup.navScope,
+    { ...item.options, navigationReopenReview: setup.review })).status, 'handoff_required');
+  const nextScope = { ...setup.navScope, intent_id: '123e4567-e89b-42d3-a456-426614174003' };
+  const nextReview = { ...setup.review, reopen_intent_id: nextScope.intent_id,
+    reopen_scope_digest: guestCardScopeDigest(nextScope, { now: setup.now / 1000 }) };
+  const next = setup.make();
+  assert.equal((await prepareExactGuestCard(next.ports, nextScope,
+    { ...next.options, navigationReopenReview: nextReview })).code,
+  'guest_card_navigation_reopen_already_fenced');
+  assert.deepEqual(next.calls, []);
+}));
+
+test('navigation reopen guards historical hash mutation before dispatch', async () => {
+  for (const name of [GUEST_CARD_FENCE, GUEST_CARD_RECOVERY_REVIEW, GUEST_CARD_RECOVERY_FENCE,
+    GUEST_CARD_NAVIGATION_REOPEN_REVIEW]) await temporary(async directory => {
+    const setup = await navigationFixture(directory);
+    const item = setup.make({ inspectHook: async (value, reads) => {
+      if (reads === 3) await writeFile(join(directory, name), '{}\n');
+      return value;
+    } });
+    const result = await prepareExactGuestCard(item.ports, setup.navScope,
+      { ...item.options, navigationReopenReview: setup.review });
+    assert.equal(result.code, 'guest_card_initialization_uncertain');
+    assert.ok(!item.calls.includes('click'));
+    assert.ok((await stat(join(directory, GUEST_CARD_NAVIGATION_REOPEN_FENCE))).isFile());
+  });
+});
+
+test('new navigation history and current page deadlines stop a pending operator read', async () => {
+  for (const gate of ['history', 'review', 'page']) await temporary(async directory => {
+    const setup = await navigationFixture(directory); let now = setup.now;
+    const review = { ...setup.review };
+    if (gate === 'history') review.order_history_observed_at = now / 1000 - 299;
+    if (gate === 'review') review.expires_at = now / 1000 + 1;
+    const item = setup.make({ inspectHook: async (value, reads, options) => {
+      if (gate === 'page') value.evidence.expires_at = setup.now / 1000 + 1;
+      if (reads === 3) {
+        assert.equal(options.deadline, setup.now + 1000);
+        await new Promise(resolve => setImmediate(resolve)); now += 1001;
+      }
+      return value;
+    } });
+    assert.equal((await prepareExactGuestCard(item.ports, setup.navScope,
+      { ...item.options, clock: () => now, navigationReopenReview: review })).code,
+    'guest_card_initialization_uncertain');
+    assert.ok(!item.calls.includes('click'));
+  });
+});
+
+test('navigation reopen concurrency, crash and timeout keep the single slot spent across restart', async () => {
+  for (const mode of ['concurrent', 'crash', 'timeout']) await temporary(async directory => {
+    const setup = await navigationFixture(directory);
+    if (mode === 'concurrent') {
+      const a = setup.make(), b = setup.make();
+      const results = await Promise.all([a, b].map(item => prepareExactGuestCard(item.ports,
+        setup.navScope, { ...item.options, navigationReopenReview: setup.review })));
+      assert.equal(results.filter(value => value.status === 'handoff_required').length, 1);
+      assert.equal([...a.calls, ...b.calls].filter(call => call === 'click').length, 1);
+    } else if (mode === 'crash') {
+      const moduleUrl = pathToFileURL(resolve('scripts/discogs_guest_card_prepare.mjs')).href;
+      const source = `import {prepareExactGuestCard} from ${JSON.stringify(moduleUrl)};
+        const scope=${JSON.stringify(setup.navScope)}; const value=${JSON.stringify(setup.currentInspection())};let reads=0;
+        await prepareExactGuestCard({inspectActualControl:async()=>{if(++reads===3)process.exit(42);return value;},
+          clickExactlyOnce:async()=>{process.exit(99);}},scope,{enablePreparation:true,
+          fenceDirectory:${JSON.stringify(directory)},navigationReopenReview:${JSON.stringify(setup.review)},clock:()=>${setup.now}});`;
+      const child = spawnSync(process.execPath, ['--input-type=module', '-e', source], { timeout: 5000 });
+      assert.equal(child.status, 42, child.stderr.toString());
+    } else {
+      const item = setup.make({ clickHook: async (_binding, { signal }) => {
+        await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+        return { schema: 'discogs_guest_card_click_v1', outcome: 'guest_form_visible' };
+      } });
+      assert.equal((await prepareExactGuestCard(item.ports, setup.navScope,
+        { ...item.options, timeoutMs: 100, navigationReopenReview: setup.review })).code,
+      'guest_card_initialization_uncertain');
+    }
+    const fresh = setup.make();
+    assert.equal((await prepareExactGuestCard(fresh.ports, setup.navScope,
+      { ...fresh.options, navigationReopenReview: setup.review })).code,
+    'guest_card_navigation_reopen_already_fenced');
+    assert.deepEqual(fresh.calls, []);
+    for (const [name, bytes] of Object.entries(setup.previous)) {
+      assert.deepEqual(await readFile(join(directory, name)), bytes);
+    }
+  });
+});
+
+function freshSessionFixture({ openHook, cartHook, goHook, checkoutHook } = {}) {
+  const calls = [], currentScope = scope();
+  const userReady = { source: 'explicit_current_user_ready', ready: true,
+    scope_digest: guestCardScopeDigest(currentScope, { now: NOW / 1000 }),
+    observed_at: NOW / 1000 - 1, expires_at: NOW / 1000 + 50 };
+  const priorFailure = { source: 'operator_reviewed_normal_discogs_ui',
+    last_error_code: 'SESSION_EXPIRED', release_id: 3422100, listing_id: '1366950910',
+    seller: 'Mailman21842', quantity: 1, currency: 'USD', max_total: '5.05',
+    card_data_entered: false, pay_invoked: false, approval_invoked: false, capture_invoked: false,
+    failure_observed_at: NOW / 1000 - 100,
+    order_history_url: 'https://www.discogs.com/sell/purchases?archived=A&status=All&limit=50',
+    order_history_archived: 'All', order_history_status: 'All', order_history_count: 0,
+    order_history_complete: true, order_history_observed_at: NOW / 1000 - 10,
+    reviewed_at: NOW / 1000 - 5, expires_at: NOW / 1000 + 100 };
+  const page = cart => ({ schema: 'discogs_guest_session_page_v1',
+    source: 'trusted_normal_current_dom', url: cart ? 'https://www.discogs.com/sell/cart/' : GUEST_CARD_URL,
+    document_ref: cart ? UUID : OTHER, access: 'normal', history_restore: false,
+    resubmission_prompt: false, extra_agreement_required: false,
+    selected_shipping_ref: UUID, selected_shipping_label: 'Economy - Media Mail',
+    go_to_checkout: cart ? { action_kind: 'normal_go_to_checkout', label: 'Go to Checkout',
+      count: 1, visible: true, enabled: true, control_ref: UUID } : null,
+    evidence: evidence() });
+  const ports = {
+    openCartViaVisibleControl: async options => {
+      calls.push('open_cart'); assert.equal(options.signal.aborted, false);
+      assert.equal(options.revalidateBeforeDispatch(), true);
+      assert.deepEqual(options.expected_scope, currentScope);
+      const proof = { action: 'visible_cart_control', document_ref: UUID };
+      return openHook ? openHook(proof, options) : proof;
+    },
+    inspectCurrentCart: async options => {
+      calls.push('inspect_cart'); return cartHook ? cartHook(page(true), options) : page(true);
+    },
+    clickGoToCheckout: async (binding, options) => {
+      calls.push('go_to_checkout');
+      assert.equal(options.revalidateBeforeDispatch(), true);
+      assert.equal(binding.action_kind, 'normal_go_to_checkout');
+      assert.equal(binding.label, 'Go to Checkout');
+      assert.equal(binding.control_ref, UUID); assert.equal(binding.from_document_ref, UUID);
+      assert.ok(!Object.hasOwn(binding, 'url') && !Object.hasOwn(binding, 'selector'));
+      const proof = { action: 'normal_go_to_checkout', control_ref: UUID,
+        from_document_ref: UUID, to_document_ref: OTHER, cart_fingerprint: binding.cart_fingerprint };
+      return goHook ? goHook(proof, options) : proof;
+    },
+    inspectFreshCheckout: async options => {
+      calls.push('inspect_checkout'); return checkoutHook ? checkoutHook(page(false), options) : page(false);
+    },
+  };
+  return { ports, currentScope, userReady, priorFailure, calls,
+    options: { userReady, priorFailure, clock: () => NOW } };
+}
+
+test('fresh session coordinator uses normal cart then Go to Checkout and returns provenance only', async () => {
+  const item = freshSessionFixture();
+  const result = await prepareFreshGuestCheckoutSession(item.ports, item.currentScope, item.options);
+  assert.deepEqual(item.calls, ['open_cart', 'inspect_cart', 'go_to_checkout', 'inspect_checkout']);
+  assert.equal(result.status, 'prepared_review_only');
+  assert.equal(result.initialization_allowed, false);
+  assert.equal(result.payment_form_verified, false);
+  assert.equal(result.purchase_allowed, false);
+  assert.equal(result.provenance.cart_document_ref, UUID);
+  assert.equal(result.provenance.checkout_document_ref, OTHER);
+  assert.equal(result.provenance.expires_at, NOW / 1000 + 30);
+});
+
+test('fresh current scoped human readiness is required before any navigation', async () => {
+  for (const patch of [null, { ready: false }, { source: 'standing_permission' },
+    { scope_digest: 'c'.repeat(64) }, { expires_at: NOW / 1000 },
+    { observed_at: NOW / 1000 - 61, expires_at: NOW / 1000 + 1 }]) {
+    const item = freshSessionFixture();
+    const token = patch === null ? null : { ...item.userReady, ...patch };
+    const result = await prepareFreshGuestCheckoutSession(item.ports, item.currentScope,
+      { ...item.options, userReady: token });
+    assert.equal(result.code, 'fresh_checkout_preconditions_unverified');
+    assert.deepEqual(item.calls, []);
+  }
+});
+
+test('fresh session preparation rejects incomplete reconciliation or any card/Pay/approval/capture', async () => {
+  for (const patch of [{ last_error_code: 'UNKNOWN' }, { card_data_entered: true },
+    { pay_invoked: true }, { approval_invoked: true }, { capture_invoked: true },
+    { order_history_archived: 'Not Archived' }, { order_history_status: 'Invoice Sent' },
+    { order_history_count: 1 }, { order_history_complete: false },
+    { order_history_observed_at: NOW / 1000 - 301 }]) {
+    const item = freshSessionFixture();
+    const result = await prepareFreshGuestCheckoutSession(item.ports, item.currentScope,
+      { ...item.options, priorFailure: { ...item.priorFailure, ...patch } });
+    assert.equal(result.code, 'fresh_checkout_preconditions_unverified');
+    assert.deepEqual(item.calls, []);
+  }
+});
+
+test('fresh cart identity, all-in limit, destination, shipping and normal control remain required', async () => {
+  for (const patch of [{ access: 'challenge' }, { extra_agreement_required: true },
+    { evidence: { listing_id: '999' } }, { evidence: { total: '5.06' } },
+    { evidence: { currency: null } }, { evidence: { destination_verified: false } },
+    { evidence: { deferred_total_notice: true } }, { selected_shipping_label: '' },
+    { go_to_checkout: { count: 2 } }, { go_to_checkout: { label: 'Pay now' } }]) {
+    const item = freshSessionFixture({ cartHook: value => ({ ...value, ...patch,
+      evidence: { ...value.evidence, ...patch.evidence },
+      go_to_checkout: { ...value.go_to_checkout, ...patch.go_to_checkout } }) });
+    const result = await prepareFreshGuestCheckoutSession(item.ports, item.currentScope, item.options);
+    assert.equal(result.code, 'fresh_checkout_preparation_stopped');
+    assert.deepEqual(item.calls, ['open_cart', 'inspect_cart']);
+  }
+});
+
+test('Back/restored or unchanged documents cannot become fresh checkout provenance', async () => {
+  for (const mode of ['back_action', 'same_document', 'history_restore', 'wrong_document', 'shipping_changed']) {
+    const item = freshSessionFixture({
+      goHook: proof => mode === 'back_action' ? { ...proof, action: 'history_back' } :
+        mode === 'same_document' ? { ...proof, to_document_ref: UUID } : proof,
+      checkoutHook: value => mode === 'history_restore' ? { ...value, history_restore: true } :
+        mode === 'wrong_document' ? { ...value, document_ref: UUID } :
+        mode === 'shipping_changed' ? { ...value, selected_shipping_ref: OTHER } : value,
+    });
+    const result = await prepareFreshGuestCheckoutSession(item.ports, item.currentScope, item.options);
+    assert.equal(result.code, 'fresh_checkout_preparation_stopped');
+    assert.equal(item.calls.filter(value => value === 'go_to_checkout').length, 1);
+  }
+});
+
+test('lost readiness or expiry during preparation prevents the next action and final ready report', async () => {
+  for (const stage of ['cart_revoked', 'cart_expired', 'checkout_revoked']) {
+    let now = NOW, item;
+    item = freshSessionFixture({ cartHook: async value => {
+      if (stage === 'cart_revoked') item.userReady.ready = false;
+      if (stage === 'cart_expired') { await new Promise(resolve => setImmediate(resolve)); now += 1001; }
+      return value;
+    }, checkoutHook: value => { if (stage === 'checkout_revoked') item.userReady.ready = false; return value; } });
+    if (stage === 'cart_expired') item.userReady.expires_at = NOW / 1000 + 1;
+    const result = await prepareFreshGuestCheckoutSession(item.ports, item.currentScope,
+      { ...item.options, clock: () => now });
+    assert.equal(result.code, 'fresh_checkout_preparation_stopped');
+    if (stage !== 'checkout_revoked') assert.ok(!item.calls.includes('go_to_checkout'));
+  }
+});
+
+test('timeout holds single-flight until the pending normal navigation settles; never dispatches late', async () => {
+  let release;
+  const wait = new Promise(resolve => { release = resolve; });
+  const item = freshSessionFixture({ openHook: async proof => { await wait; return proof; } });
+  const result = await prepareFreshGuestCheckoutSession(item.ports, item.currentScope,
+    { ...item.options, timeoutMs: 20 });
+  assert.equal(result.code, 'fresh_checkout_preparation_stopped');
+  const other = freshSessionFixture();
+  assert.equal((await prepareFreshGuestCheckoutSession(other.ports, other.currentScope,
+    other.options)).code, 'fresh_checkout_in_progress');
+  assert.deepEqual(other.calls, []);
+  release(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(item.calls, ['open_cart']);
+  assert.equal((await prepareFreshGuestCheckoutSession(other.ports, other.currentScope,
+    other.options)).status, 'prepared_review_only');
+});
+
+test('cancellation after Go to Checkout stops before checkout read and never retries or initializes', async () => {
+  const controller = new AbortController();
+  const item = freshSessionFixture({ goHook: proof => { controller.abort(); return proof; } });
+  const result = await prepareFreshGuestCheckoutSession(item.ports, item.currentScope,
+    { ...item.options, signal: controller.signal });
+  assert.equal(result.code, 'fresh_checkout_preparation_stopped');
+  assert.deepEqual(item.calls, ['open_cart', 'inspect_cart', 'go_to_checkout']);
+  assert.equal(result.initialization_allowed, false);
+  assert.equal(result.may_retry, false);
+});
+
+test('mutating ports recheck readiness after an await and dispatch zero effects if revoked', async () => {
+  for (const stage of ['open_cart', 'go_to_checkout']) {
+    let item, effects = 0;
+    const guardedEffect = async (proof, options) => {
+      await new Promise(resolve => setImmediate(resolve));
+      item.userReady.ready = false;
+      const allowed = options.revalidateBeforeDispatch();
+      assert.equal(allowed, false);
+      assert.equal(options.signal.aborted, true);
+      if (allowed) effects++;
+      return proof;
+    };
+    item = freshSessionFixture(stage === 'open_cart' ? { openHook: guardedEffect } :
+      { goHook: guardedEffect });
+    const result = await prepareFreshGuestCheckoutSession(item.ports, item.currentScope, item.options);
+    assert.equal(result.code, 'fresh_checkout_preparation_stopped');
+    assert.equal(effects, 0);
+    assert.ok(!item.calls.includes('inspect_checkout'));
+    if (stage === 'open_cart') assert.ok(!item.calls.includes('go_to_checkout'));
+  }
 });

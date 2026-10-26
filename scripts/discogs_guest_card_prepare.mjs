@@ -13,6 +13,8 @@ export const GUEST_CARD_SELECTOR = '[role="link"][data-funding-source="card"][ar
 export const GUEST_CARD_FENCE = 'guest-card-1366950910-init.fence';
 export const GUEST_CARD_RECOVERY_REVIEW = 'guest-card-1366950910-recovery-review.json';
 export const GUEST_CARD_RECOVERY_FENCE = 'guest-card-1366950910-recovery-attempt-1.fence';
+export const GUEST_CARD_NAVIGATION_REOPEN_REVIEW = 'guest-card-1366950910-navigation-reopen-review.json';
+export const GUEST_CARD_NAVIGATION_REOPEN_FENCE = 'guest-card-1366950910-navigation-reopen-attempt-1.fence';
 export const GUEST_CARD_MAX_PREPARATION_MS = 90_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const HASH = /^[0-9a-f]{64}$/u;
@@ -38,6 +40,16 @@ const RECOVERY_KEYS = ['schema', 'source', 'authorization_ref', 'original_fence_
   'capture_invoked', 'failure_observed_at', 'order_history_url', 'order_history_archived',
   'order_history_status', 'order_history_count', 'order_history_complete',
   'order_history_observed_at', 'reviewed_at', 'expires_at', 'max_additional_attempts'];
+const NAVIGATION_KEYS = ['schema', 'source', 'authorization_ref', 'original_fence_sha256',
+  'original_intent_id', 'original_scope_digest', 'recovery_review_sha256', 'recovery_fence_sha256',
+  'recovery_intent_id', 'recovery_scope_digest', 'reopen_intent_id', 'reopen_scope_digest',
+  'release_id', 'listing_id', 'seller', 'quantity', 'currency', 'max_total', 'reason',
+  'prior_form_visible', 'form_observed_at', 'navigation_kind', 'navigation_observed_at',
+  'card_data_entered', 'pay_invoked', 'approval_invoked', 'capture_invoked',
+  'current_form_present', 'current_checkout_normal', 'resubmission_prompt', 'challenge_present',
+  'order_history_url', 'order_history_archived', 'order_history_status', 'order_history_count',
+  'order_history_complete', 'order_history_observed_at', 'reviewed_at', 'expires_at',
+  'max_additional_attempts'];
 
 function record(value, keys) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
@@ -76,16 +88,8 @@ function exactScope(scope, now) {
 export function guestCardScopeDigest(scope, { now = Date.now() / 1000 } = {}) {
   return number(now) && exactScope(scope, now) ? digest(scope) : null;
 }
-function inspect(value, scope, now) {
-  if (!record(value, ['schema', 'url', 'access', 'control', 'evidence']) ||
-      value.schema !== 'discogs_guest_card_inspection_v1' || value.url !== GUEST_CARD_URL ||
-      value.access !== 'normal' || !record(value.control, CONTROL_KEYS) ||
-      !record(value.evidence, EVIDENCE_KEYS)) return null;
-  const c = value.control, e = value.evidence;
-  if (c.count !== 1 || c.visible !== true || c.enabled !== true || c.role !== 'link' ||
-      c.funding_source !== 'card' || c.aria_label !== 'Debit or Credit Card' ||
-      c.aria_disabled !== 'false' || !uuid(c.control_ref) ||
-      e.source !== 'trusted_current_checkout' ||
+function checkoutEvidence(e, scope, now) {
+  if (!record(e, EVIDENCE_KEYS) || e.source !== 'trusted_current_checkout' ||
       e.release_id !== scope.release_id || e.listing_id !== scope.listing_id ||
       e.seller !== scope.seller || e.quantity !== 1 || e.item_count !== 1 || e.seller_count !== 1 ||
       e.rules_revision !== scope.rules_revision || e.rules_current !== true ||
@@ -116,8 +120,18 @@ function inspect(value, scope, now) {
       known.reduce((sum, amount) => sum + amount, 0n) > total ||
       total > cents(scope.max_total)) return null;
   const stable = { ...e }; delete stable.observed_at;
-  return Object.freeze({ ref: c.control_ref, expiresAt: e.expires_at * 1000,
-    fingerprint: digest({ control: c, evidence: stable }) });
+  return { stable, expiresAt: e.expires_at * 1000 };
+}
+function inspect(value, scope, now) {
+  if (!record(value, ['schema', 'url', 'access', 'control', 'evidence']) ||
+      value.schema !== 'discogs_guest_card_inspection_v1' || value.url !== GUEST_CARD_URL ||
+      value.access !== 'normal' || !record(value.control, CONTROL_KEYS)) return null;
+  const c = value.control, verified = checkoutEvidence(value.evidence, scope, now);
+  if (!verified || c.count !== 1 || c.visible !== true || c.enabled !== true || c.role !== 'link' ||
+      c.funding_source !== 'card' || c.aria_label !== 'Debit or Credit Card' ||
+      c.aria_disabled !== 'false' || !uuid(c.control_ref)) return null;
+  return Object.freeze({ ref: c.control_ref, expiresAt: verified.expiresAt,
+    fingerprint: digest({ control: c, evidence: verified.stable }) });
 }
 
 /** Pure validation for a future actual browser port; never grants access. */
@@ -195,7 +209,7 @@ async function ownerRecord(directory, filename, maxBytes = 4096) {
       hash: createHash('sha256').update(bytes).digest('hex') };
   } finally { await file.close(); }
 }
-function recoveryMatches(review, original, scope, now) {
+function historicalReviewMatches(review, original) {
   const old = original.value;
   return record(old, ['schema', 'intent_id', 'scope_digest', 'created_at', 'release_id',
     'listing_id', 'state']) && old.schema === 'discogs_guest_card_init_fence_v1' &&
@@ -203,13 +217,12 @@ function recoveryMatches(review, original, scope, now) {
     old.release_id === 3422100 && old.listing_id === '1366950910' &&
     old.state === 'initialization_outcome_unknown' && record(review, RECOVERY_KEYS) &&
     review.schema === 'discogs_guest_card_recovery_review_v1' &&
-    review.source === 'operator_reviewed_normal_discogs_ui' &&
-    review.authorization_ref === scope.approval_ref &&
+    review.source === 'operator_reviewed_normal_discogs_ui' && uuid(review.authorization_ref) &&
     review.original_fence_sha256 === original.hash &&
     review.original_intent_id === old.intent_id && review.original_scope_digest === old.scope_digest &&
-    review.retry_intent_id === scope.intent_id && review.retry_scope_digest === digest(scope) &&
-    review.release_id === scope.release_id && review.listing_id === scope.listing_id &&
-    review.seller === scope.seller && review.quantity === 1 && review.currency === 'USD' &&
+    uuid(review.retry_intent_id) && hash(review.retry_scope_digest) &&
+    review.release_id === 3422100 && review.listing_id === '1366950910' &&
+    review.seller === 'Mailman21842' && review.quantity === 1 && review.currency === 'USD' &&
     review.max_total === '5.05' && review.terminal_error_code === 'SESSION_EXPIRED' &&
     review.guest_form_opened === false && review.card_data_entered === false &&
     review.approval_invoked === false && review.capture_invoked === false &&
@@ -220,6 +233,56 @@ function recoveryMatches(review, original, scope, now) {
     number(review.order_history_observed_at) && number(review.reviewed_at) && number(review.expires_at) &&
     old.created_at <= review.failure_observed_at &&
     review.failure_observed_at <= review.order_history_observed_at &&
+    review.order_history_observed_at <= review.reviewed_at &&
+    review.reviewed_at - review.order_history_observed_at <= 300 &&
+    review.reviewed_at < review.expires_at && review.expires_at - review.reviewed_at <= 300;
+}
+function recoveryMatches(review, original, scope, now) {
+  return historicalReviewMatches(review, original) && review.authorization_ref === scope.approval_ref &&
+    review.retry_intent_id === scope.intent_id && review.retry_scope_digest === digest(scope) &&
+    review.reviewed_at <= now && now - review.order_history_observed_at <= 300 &&
+    now < review.expires_at && review.expires_at <= scope.expires_at;
+}
+function historicalChainMatches(chain) {
+  const { original, review, spent } = chain, attempt = spent.value;
+  return historicalReviewMatches(review.value, original) &&
+    record(attempt, ['schema', 'attempt', 'original_fence_sha256', 'reconciliation_sha256',
+      'intent_id', 'scope_digest', 'created_at', 'state']) &&
+    attempt.schema === 'discogs_guest_card_recovery_attempt_v1' && attempt.attempt === 1 &&
+    attempt.original_fence_sha256 === original.hash && attempt.reconciliation_sha256 === review.hash &&
+    attempt.intent_id === review.value.retry_intent_id && attempt.scope_digest === review.value.retry_scope_digest &&
+    attempt.state === 'initialization_outcome_unknown' && number(attempt.created_at) &&
+    review.value.reviewed_at <= attempt.created_at && attempt.created_at < review.value.expires_at &&
+    attempt.created_at - review.value.order_history_observed_at <= 300;
+}
+function navigationMatches(review, chain, scope, now) {
+  return historicalChainMatches(chain) && record(review, NAVIGATION_KEYS) &&
+    review.schema === 'discogs_guest_card_navigation_reopen_review_v1' &&
+    review.source === 'operator_reviewed_normal_discogs_ui' &&
+    review.authorization_ref === scope.approval_ref && review.original_fence_sha256 === chain.original.hash &&
+    review.original_intent_id === chain.original.value.intent_id &&
+    review.original_scope_digest === chain.original.value.scope_digest &&
+    review.recovery_review_sha256 === chain.review.hash && review.recovery_fence_sha256 === chain.spent.hash &&
+    review.recovery_intent_id === chain.spent.value.intent_id &&
+    review.recovery_scope_digest === chain.spent.value.scope_digest &&
+    review.reopen_intent_id === scope.intent_id && review.reopen_scope_digest === digest(scope) &&
+    review.release_id === scope.release_id && review.listing_id === scope.listing_id &&
+    review.seller === scope.seller && review.quantity === 1 && review.currency === 'USD' &&
+    review.max_total === '5.05' && review.reason === 'form_lost_by_same_tab_navigation' &&
+    review.prior_form_visible === true && review.navigation_kind === 'same_tab_blank_then_history_back' &&
+    review.card_data_entered === false && review.pay_invoked === false &&
+    review.approval_invoked === false && review.capture_invoked === false &&
+    review.current_form_present === false && review.current_checkout_normal === true &&
+    review.resubmission_prompt === false && review.challenge_present === false &&
+    review.order_history_url === 'https://www.discogs.com/sell/purchases?archived=A&status=All&limit=50' &&
+    review.order_history_archived === 'All' && review.order_history_status === 'All' &&
+    review.order_history_count === 0 && review.order_history_complete === true &&
+    review.max_additional_attempts === 1 && number(review.form_observed_at) &&
+    number(review.navigation_observed_at) && number(review.order_history_observed_at) &&
+    number(review.reviewed_at) && number(review.expires_at) &&
+    chain.spent.value.created_at <= review.form_observed_at &&
+    review.form_observed_at <= review.navigation_observed_at &&
+    review.navigation_observed_at <= review.order_history_observed_at &&
     review.order_history_observed_at <= review.reviewed_at && review.reviewed_at <= now &&
     now - review.order_history_observed_at <= 300 && now < review.expires_at &&
     review.expires_at - review.reviewed_at <= 300 && review.expires_at <= scope.expires_at;
@@ -239,11 +302,15 @@ function recoveryMatches(review, original, scope, now) {
  * SESSION_EXPIRED and complete current all-status/all-archive zero-order review,
  * with no form/card/approval/capture. Original bytes are never rewritten. The
  * immutable review itself consumes that exceptional slot if execution crashes
- * before the additional attempt fence is written. No further recovery exists.
+ * before the additional attempt fence is written. A separately reviewed, fixed
+ * navigationReopenReview may authorize one final reopening after the prior form
+ * was lost by same-tab navigation with no card/Pay/approval/capture. It binds the
+ * unchanged historical chain and fresh normal checkout/all-orders evidence; it
+ * is mutually exclusive with recoveryReview and cannot chain or reset a slot.
  */
 export async function prepareExactGuestCard(ports, scope, {
   enablePreparation = false, fenceDirectory = null, signal = null,
-  clock = () => Date.now(), timeoutMs = 30_000, recoveryReview = null,
+  clock = () => Date.now(), timeoutMs = 30_000, recoveryReview = null, navigationReopenReview = null,
 } = {}) {
   if (enablePreparation !== true) return stopped('guest_card_preparation_disabled');
   const now = clock();
@@ -254,6 +321,12 @@ export async function prepareExactGuestCard(ports, scope, {
     return stopped('guest_card_scope_or_ports_unverified');
   }
   scope = Object.freeze({ ...scope });
+  if (navigationReopenReview !== null) {
+    if (recoveryReview !== null || !record(navigationReopenReview, NAVIGATION_KEYS)) {
+      return stopped('guest_card_navigation_reopen_unverified');
+    }
+    navigationReopenReview = Object.freeze({ ...navigationReopenReview });
+  }
   if (recoveryReview !== null) {
     if (!record(recoveryReview, RECOVERY_KEYS)) return stopped('guest_card_recovery_unverified');
     recoveryReview = Object.freeze({ ...recoveryReview });
@@ -263,7 +336,7 @@ export async function prepareExactGuestCard(ports, scope, {
   if (signal?.aborted) return stopped('guest_card_cancelled');
   signal?.addEventListener('abort', onAbort, { once: true });
   let deadline = Math.min(now + timeoutMs, scope.expires_at * 1000);
-  let fenced = false, inspection, original = null, recoveryHashes = null;
+  let fenced = false, inspection, original = null, recoveryHashes = null, navigation = null;
   const live = () => !controller.signal.aborted && number(clock()) && clock() < deadline &&
     exactScope(scope, clock() / 1000);
   const checked = async operation => {
@@ -291,6 +364,20 @@ export async function prepareExactGuestCard(ports, scope, {
   };
   const recoveryCurrent = async () => {
     if (!original) return;
+    if (navigation) {
+      const chain = { original: await checked(() => ownerRecord(fenceDirectory, GUEST_CARD_FENCE)),
+        review: await checked(() => ownerRecord(fenceDirectory, GUEST_CARD_RECOVERY_REVIEW)),
+        spent: await checked(() => ownerRecord(fenceDirectory, GUEST_CARD_RECOVERY_FENCE)) };
+      const currentReview = await checked(() => ownerRecord(fenceDirectory, GUEST_CARD_NAVIGATION_REOPEN_REVIEW));
+      const currentSpent = await checked(() => ownerRecord(fenceDirectory, GUEST_CARD_NAVIGATION_REOPEN_FENCE));
+      if (chain.original.hash !== original.hash || chain.review.hash !== navigation.review.hash ||
+          chain.spent.hash !== navigation.spent.hash || currentReview.hash !== recoveryHashes.review ||
+          currentSpent.hash !== recoveryHashes.spent ||
+          !navigationMatches(currentReview.value, chain, scope, clock() / 1000)) {
+        throw new Error('navigation_reopen_changed');
+      }
+      return;
+    }
     const old = await checked(() => ownerRecord(fenceDirectory, GUEST_CARD_FENCE));
     const review = await checked(() => ownerRecord(fenceDirectory, GUEST_CARD_RECOVERY_REVIEW));
     const spent = await checked(() => ownerRecord(fenceDirectory, GUEST_CARD_RECOVERY_FENCE));
@@ -305,20 +392,32 @@ export async function prepareExactGuestCard(ports, scope, {
       throw error;
     }));
     if (existing) {
-      if (!recoveryReview) return stopped('guest_card_initialization_already_fenced', true);
+      if (!recoveryReview && !navigationReopenReview) return stopped('guest_card_initialization_already_fenced', true);
       original = await checked(() => ownerRecord(fenceDirectory, GUEST_CARD_FENCE));
-      if (!recoveryMatches(recoveryReview, original, scope, clock() / 1000)) {
+      if (navigationReopenReview) {
+        navigation = { original,
+          review: await checked(() => ownerRecord(fenceDirectory, GUEST_CARD_RECOVERY_REVIEW)),
+          spent: await checked(() => ownerRecord(fenceDirectory, GUEST_CARD_RECOVERY_FENCE)) };
+        if (!navigationMatches(navigationReopenReview, navigation, scope, clock() / 1000)) {
+          return stopped('guest_card_navigation_reopen_unverified', true);
+        }
+      } else if (!recoveryMatches(recoveryReview, original, scope, clock() / 1000)) {
         return stopped('guest_card_recovery_unverified', true);
       }
-      deadline = Math.min(deadline, recoveryReview.expires_at * 1000,
-        (recoveryReview.order_history_observed_at + 300) * 1000);
-      for (const name of [GUEST_CARD_RECOVERY_REVIEW, GUEST_CARD_RECOVERY_FENCE]) {
+      const currentReview = navigationReopenReview || recoveryReview;
+      deadline = Math.min(deadline, currentReview.expires_at * 1000,
+        (currentReview.order_history_observed_at + 300) * 1000);
+      const slots = navigation ? [GUEST_CARD_NAVIGATION_REOPEN_REVIEW, GUEST_CARD_NAVIGATION_REOPEN_FENCE] :
+        [GUEST_CARD_RECOVERY_REVIEW, GUEST_CARD_RECOVERY_FENCE];
+      for (const name of slots) {
         if (await checked(() => lstat(join(fenceDirectory, name)).catch(error => {
           if (error.code === 'ENOENT') return null;
           throw error;
-        }))) return stopped('guest_card_recovery_already_fenced', true);
+        }))) return stopped(navigation ? 'guest_card_navigation_reopen_already_fenced' :
+          'guest_card_recovery_already_fenced', true);
       }
-    } else if (recoveryReview) return stopped('guest_card_recovery_unverified');
+    } else if (recoveryReview || navigationReopenReview) return stopped(navigationReopenReview ?
+      'guest_card_navigation_reopen_unverified' : 'guest_card_recovery_unverified');
     inspection = await read();
     const second = await read();
     if (second.fingerprint !== inspection.fingerprint) return stopped('guest_card_context_changed');
@@ -326,7 +425,19 @@ export async function prepareExactGuestCard(ports, scope, {
     // timeout can still leave a permanent slot; never infer safe retry from it.
     fenced = true;
     try {
-      if (original) {
+      if (navigation) {
+        const reviewHash = await checked(() => persistRecord(fenceDirectory,
+          GUEST_CARD_NAVIGATION_REOPEN_REVIEW, navigationReopenReview));
+        const spentHash = await checked(() => persistRecord(fenceDirectory, GUEST_CARD_NAVIGATION_REOPEN_FENCE, {
+          schema: 'discogs_guest_card_navigation_reopen_attempt_v1', attempt: 1,
+          original_fence_sha256: original.hash, recovery_review_sha256: navigation.review.hash,
+          recovery_fence_sha256: navigation.spent.hash, reconciliation_sha256: reviewHash,
+          intent_id: scope.intent_id, scope_digest: digest(scope),
+          created_at: clock() / 1000, state: 'initialization_outcome_unknown',
+        }));
+        recoveryHashes = { review: reviewHash, spent: spentHash };
+        await recoveryCurrent();
+      } else if (original) {
         const reviewHash = await checked(() => persistRecord(fenceDirectory,
           GUEST_CARD_RECOVERY_REVIEW, recoveryReview));
         const spentHash = await checked(() => persistRecord(fenceDirectory, GUEST_CARD_RECOVERY_FENCE, {
@@ -340,7 +451,8 @@ export async function prepareExactGuestCard(ports, scope, {
       } else await checked(() => persistFence(fenceDirectory, scope, clock() / 1000));
     }
     catch (error) {
-      if (error.code === 'EEXIST') return stopped(original ? 'guest_card_recovery_already_fenced' :
+      if (error.code === 'EEXIST') return stopped(navigation ? 'guest_card_navigation_reopen_already_fenced' :
+        original ? 'guest_card_recovery_already_fenced' :
         'guest_card_initialization_already_fenced', true);
       throw error;
     }
@@ -364,5 +476,131 @@ export async function prepareExactGuestCard(ports, scope, {
   } finally {
     controller.abort('finished');
     signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+const READY_KEYS = ['source', 'ready', 'scope_digest', 'observed_at', 'expires_at'];
+const FAILURE_KEYS = ['source', 'last_error_code', 'release_id', 'listing_id', 'seller',
+  'quantity', 'currency', 'max_total', 'card_data_entered', 'pay_invoked', 'approval_invoked',
+  'capture_invoked', 'failure_observed_at', 'order_history_url', 'order_history_archived',
+  'order_history_status', 'order_history_count', 'order_history_complete',
+  'order_history_observed_at', 'reviewed_at', 'expires_at'];
+const SESSION_PAGE_KEYS = ['schema', 'source', 'url', 'document_ref', 'access', 'history_restore',
+  'resubmission_prompt', 'extra_agreement_required', 'selected_shipping_ref',
+  'selected_shipping_label', 'go_to_checkout', 'evidence'];
+let freshCheckoutBusy = false;
+
+/** Offline coordinator only. The injected normal-UI ports are not installed.
+ * It opens the visible cart, then its verified visible Go to Checkout control;
+ * no SDK/payment control, direct provider request, card data or fence is used.
+ * Ports must await their action, honor signal/deadline, and verify the literal
+ * semantic control/current document before dispatch. Their document refs must
+ * represent actually observed documents, not invented fresh provenance.
+ * ALL mutating ports (openCartViaVisibleControl and clickGoToCheckout) MUST call
+ * options.revalidateBeforeDispatch() immediately before their normal UI effect,
+ * after any await. False means no effect: the guard also aborts their signal.
+ * userReady is an explicit current human-readiness token bound to this scope;
+ * changing/revoking it or aborting the signal stops subsequent actions.
+ */
+export async function prepareFreshGuestCheckoutSession(ports, scope, {
+  userReady, priorFailure, signal = null, clock = () => Date.now(), timeoutMs = 30_000,
+} = {}) {
+  const stop = code => ({ schema: 'discogs_fresh_guest_checkout_v1', status: 'blocked', code,
+    initialization_allowed: false, payment_form_verified: false, purchase_allowed: false, may_retry: false });
+  const now = clock() / 1000;
+  if (freshCheckoutBusy) return stop('fresh_checkout_in_progress');
+  if (!number(now) || !exactScope(scope, now) || !record(userReady, READY_KEYS) ||
+      userReady.source !== 'explicit_current_user_ready' || userReady.ready !== true ||
+      userReady.scope_digest !== digest(scope) || !number(userReady.observed_at) ||
+      !number(userReady.expires_at) || !(userReady.observed_at <= now && now < userReady.expires_at) ||
+      userReady.expires_at - userReady.observed_at > 60 || !record(priorFailure, FAILURE_KEYS) ||
+      priorFailure.source !== 'operator_reviewed_normal_discogs_ui' ||
+      priorFailure.last_error_code !== 'SESSION_EXPIRED' ||
+      ['release_id', 'listing_id', 'seller', 'quantity', 'currency', 'max_total'].some(key => priorFailure[key] !== scope[key]) ||
+      ['card_data_entered', 'pay_invoked', 'approval_invoked', 'capture_invoked'].some(key => priorFailure[key] !== false) ||
+      priorFailure.order_history_url !== 'https://www.discogs.com/sell/purchases?archived=A&status=All&limit=50' ||
+      priorFailure.order_history_archived !== 'All' || priorFailure.order_history_status !== 'All' ||
+      priorFailure.order_history_count !== 0 || priorFailure.order_history_complete !== true ||
+      !['failure_observed_at', 'order_history_observed_at', 'reviewed_at', 'expires_at'].every(key => number(priorFailure[key])) ||
+      !(priorFailure.failure_observed_at <= priorFailure.order_history_observed_at &&
+        priorFailure.order_history_observed_at <= priorFailure.reviewed_at && priorFailure.reviewed_at <= now &&
+        now - priorFailure.order_history_observed_at < 300 && now < priorFailure.expires_at &&
+        priorFailure.expires_at - priorFailure.reviewed_at <= 300) ||
+      !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000 ||
+      !ports || ['openCartViaVisibleControl', 'inspectCurrentCart', 'clickGoToCheckout', 'inspectFreshCheckout']
+        .some(key => typeof ports[key] !== 'function')) return stop('fresh_checkout_preconditions_unverified');
+  scope = Object.freeze({ ...scope }); priorFailure = Object.freeze({ ...priorFailure });
+  const readiness = canonical(userReady), controller = new AbortController(), pending = new Set();
+  let deadline = Math.min(clock() + timeoutMs, scope.expires_at * 1000, userReady.expires_at * 1000,
+    priorFailure.expires_at * 1000, (priorFailure.order_history_observed_at + 300) * 1000);
+  const cancel = () => controller.abort('cancelled');
+  const live = () => !signal?.aborted && !controller.signal.aborted && clock() < deadline &&
+    record(userReady, READY_KEYS) && canonical(userReady) === readiness;
+  const checked = async operation => {
+    if (!live()) throw new Error('stopped');
+    let timer, onAbort;
+    const interrupted = new Promise((_, reject) => {
+      onAbort = () => reject(new Error('stopped'));
+      controller.signal.addEventListener('abort', onAbort, { once: true });
+      timer = setTimeout(() => controller.abort('timed_out'), Math.max(1, deadline - clock()));
+    });
+    try {
+      const work = Promise.resolve(operation()); pending.add(work);
+      work.then(() => pending.delete(work), () => pending.delete(work));
+      const value = await Promise.race([work, interrupted]);
+      if (!live()) throw new Error('stopped');
+      return value;
+    } finally { clearTimeout(timer); controller.signal.removeEventListener('abort', onAbort); }
+  };
+  const revalidateBeforeDispatch = () => {
+    if (live()) return true;
+    controller.abort('readiness_or_deadline_lost');
+    return false;
+  };
+  const options = () => ({ signal: controller.signal, deadline, expected_scope: scope,
+    revalidateBeforeDispatch });
+  const page = (value, url, documentRef, cart) => {
+    if (!record(value, SESSION_PAGE_KEYS) || value.schema !== 'discogs_guest_session_page_v1' ||
+        value.source !== 'trusted_normal_current_dom' || value.url !== url ||
+        value.document_ref !== documentRef || value.access !== 'normal' || value.history_restore !== false ||
+        value.resubmission_prompt !== false || value.extra_agreement_required !== false ||
+        !uuid(value.selected_shipping_ref) || typeof value.selected_shipping_label !== 'string' ||
+        value.selected_shipping_label.trim().length < 1 || value.selected_shipping_label.length > 100) throw new Error('unverified_page');
+    const evidence = checkoutEvidence(value.evidence, scope, clock() / 1000), control = value.go_to_checkout;
+    if (!evidence || (cart ? !record(control, ['action_kind', 'label', 'count', 'visible', 'enabled', 'control_ref']) ||
+        control.action_kind !== 'normal_go_to_checkout' || control.label !== 'Go to Checkout' ||
+        control.count !== 1 || control.visible !== true || control.enabled !== true || !uuid(control.control_ref) :
+        control !== null)) throw new Error('unverified_cart_or_checkout');
+    deadline = Math.min(deadline, evidence.expiresAt);
+    return { ...value, fingerprint: digest({ ...value, evidence: evidence.stable }) };
+  };
+  freshCheckoutBusy = true; signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    const opened = await checked(() => ports.openCartViaVisibleControl(options()));
+    if (!record(opened, ['action', 'document_ref']) || opened.action !== 'visible_cart_control' ||
+        !uuid(opened.document_ref)) throw new Error('cart_navigation_unverified');
+    const cart = page(await checked(() => ports.inspectCurrentCart(options())),
+      'https://www.discogs.com/sell/cart/', opened.document_ref, true);
+    const binding = Object.freeze({ action_kind: 'normal_go_to_checkout', label: 'Go to Checkout',
+      control_ref: cart.go_to_checkout.control_ref, from_document_ref: cart.document_ref,
+      cart_fingerprint: cart.fingerprint, expected_scope: scope });
+    const transition = await checked(() => ports.clickGoToCheckout(binding, options()));
+    if (!record(transition, ['action', 'control_ref', 'from_document_ref', 'to_document_ref', 'cart_fingerprint']) ||
+        transition.action !== 'normal_go_to_checkout' || transition.control_ref !== binding.control_ref ||
+        transition.from_document_ref !== cart.document_ref || transition.cart_fingerprint !== cart.fingerprint ||
+        !uuid(transition.to_document_ref) || transition.to_document_ref === cart.document_ref) throw new Error('fresh_navigation_unverified');
+    const checkout = page(await checked(() => ports.inspectFreshCheckout(options())),
+      GUEST_CARD_URL, transition.to_document_ref, false);
+    if (checkout.selected_shipping_ref !== cart.selected_shipping_ref ||
+        checkout.selected_shipping_label !== cart.selected_shipping_label || !live()) throw new Error('checkout_changed');
+    return { ...stop('fresh_checkout_provenance_observed'), status: 'prepared_review_only',
+      provenance: { source: 'normal_cart_to_fresh_checkout', scope_digest: digest(scope),
+        cart_document_ref: cart.document_ref, checkout_document_ref: checkout.document_ref,
+        observed_at: clock() / 1000, expires_at: deadline / 1000 } };
+  } catch { return stop('fresh_checkout_preparation_stopped'); }
+  finally {
+    controller.abort('finished'); signal?.removeEventListener('abort', cancel);
+    if (pending.size) void Promise.allSettled([...pending]).then(() => { freshCheckoutBusy = false; });
+    else freshCheckoutBusy = false;
   }
 }
