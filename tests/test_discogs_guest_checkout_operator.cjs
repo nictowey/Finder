@@ -411,10 +411,11 @@ async function currentClaim(directory) {
     inspection: { schema: 'discogs_guest_card_inspection_v1', url: helper.GUEST_CARD_URL, access: 'normal',
       control: templates.card_control, evidence: { ...templates.checkout.evidence, observed_at: observed } } };
 }
-async function oneShot(directory, value, { mode = 'claim', crashBeforePermit = false } = {}) {
+async function oneShot(directory, value, { mode = 'claim', crashBeforePermit = false, inputFailure = false } = {}) {
   const source = `import {runCurrentCheckoutClaim} from ${JSON.stringify(moduleURL)};
     process.exit(await runCurrentCheckoutClaim({directory:process.argv[1],mode:${JSON.stringify(mode)}
-      ${crashBeforePermit ? ",output:{write(){process.kill(process.pid,'SIGKILL')}}" : ''}}));`;
+      ${crashBeforePermit ? ",output:{write(){process.kill(process.pid,'SIGKILL')}}" : ''}
+      ${inputFailure ? ",input:{async *[Symbol.asyncIterator](){throw new Error('SYNTHETIC_NEVER_LOG_THIS')}}" : ''}}));`;
   const child = spawn(process.execPath, ['--input-type=module', '-e', source, directory], { stdio: ['pipe', 'pipe', 'pipe'] });
   let output = '', errors = ''; child.stdout.on('data', chunk => { output += chunk; });
   child.stderr.on('data', chunk => { errors += chunk; }); child.stdin.on('error', () => {});
@@ -530,3 +531,59 @@ test('all dispatch modes share pending/unknown/form-visible/restricted guard and
     });
   }
 });
+
+function noSubmitAuthorization(claim) {
+  const now = Date.now() / 1000;
+  const result = { ...claim }; delete result.userReady;
+  result.testAuthorization = { source: 'explicit_user_authorized_no_submit_test', approval_ref: claim.scope.approval_ref,
+    scope_digest: claim.provenance.scope_digest, attempt_id: claim.scope.intent_id,
+    authorized_at: now - 3600, issued_at: now, expires_at: now + 300,
+    card_entry_allowed: false, payment_allowed: false, final_submission_allowed: false };
+  return result;
+}
+
+test('no-submit test authorization is distinct from human readiness and records original approval without payment authority', async () => stateFixture(async directory => {
+  const claim = noSubmitAuthorization(await currentClaim(directory));
+  const result = await oneShot(directory, claim);
+  assert.equal(result.message.type, 'checkout_claim_granted');
+  for (const key of ['human_payment_ready', 'card_entry_allowed', 'payment_allowed', 'final_submission_allowed']) {
+    assert.equal(result.message[key], false);
+  }
+  const ready = (await audits(directory))[0].payload;
+  assert.equal(ready.authorization_source, 'explicit_user_authorized_no_submit_test');
+  assert.equal(ready.authorized_at, claim.testAuthorization.authorized_at);
+  assert.deepEqual(ready.testAuthorization, claim.testAuthorization);
+  assert.ok(!Object.hasOwn(ready, 'ready_observed_at'));
+  assert.equal((await oneShot(directory, noSubmitAuthorization(await currentClaim(directory)))).message.stop_reason, 'prior_attempt_unresolved');
+}));
+
+test('no-submit authorization rejects changed references, flags, stale issue and mixed human authority before writes', async () => {
+  for (const alter of [
+    value => { value.testAuthorization.card_entry_allowed = true; },
+    value => { value.testAuthorization.payment_allowed = true; },
+    value => { value.testAuthorization.final_submission_allowed = true; },
+    value => { value.testAuthorization.approval_ref = randomUUID(); },
+    value => { value.testAuthorization.scope_digest = 'a'.repeat(64); },
+    value => { value.testAuthorization.attempt_id = randomUUID(); },
+    value => { value.testAuthorization.issued_at -= 301; value.testAuthorization.expires_at -= 301; },
+    value => { value.testAuthorization.expires_at += 1; },
+    value => { value.testAuthorization.authorized_at = value.testAuthorization.issued_at + 1; },
+    value => { value.userReady = { ready: true }; },
+  ]) await stateFixture(async directory => {
+    const claim = noSubmitAuthorization(await currentClaim(directory)); alter(claim);
+    const result = await oneShot(directory, claim);
+    assert.equal(result.message.type, 'claim_stopped');
+    assert.ok(['test_authorization_unverified', 'authorization_unverified'].includes(result.message.stop_reason));
+    assert.equal((await audits(directory)).length, 0);
+  });
+});
+
+test('one-shot failure reasons are fixed allowlisted labels and never echo arbitrary exception content', async () => stateFixture(async directory => {
+  const claim = await currentClaim(directory);
+  const unexpected = await oneShot(directory, claim, { inputFailure: true });
+  assert.equal(unexpected.message.stop_reason, 'unknown_internal_stop');
+  assert.ok(!unexpected.output.includes('SYNTHETIC_NEVER_LOG_THIS') && !unexpected.errors.includes('SYNTHETIC_NEVER_LOG_THIS'));
+  claim.inspection.evidence.total = '5.06';
+  assert.equal((await oneShot(directory, claim)).message.stop_reason, 'scope_or_quote_unverified');
+  assert.equal((await audits(directory)).length, 0);
+}));

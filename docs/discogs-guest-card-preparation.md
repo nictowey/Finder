@@ -337,6 +337,15 @@ permission. Pending, unknown, access-restricted and visible-form attempts block
 new claims in both this path and the older operator. No legacy file or consumed
 readiness is cleared. These commands are not proof of repeatable live checkout.
 
+A diagnostic run without a person standing by uses the distinct
+`testAuthorization` input, sourced from explicit no-submit test approval. It
+retains that approval's original time separately from a fresh operator attempt
+issued for at most 300 seconds; it never fabricates human payment readiness.
+The claim explicitly reports human payment readiness false and card entry,
+payment and final submission disabled. The same original checkout observation,
+transaction checks and pending-attempt rules still apply. Failures report only
+fixed, allowlisted stop reasons, with no exception text or account data.
+
 At this checkpoint the web and browser services were active, with no restart or
 OOM since their 13:42 start; browser memory was 850.7 MiB of 2 GiB. Monitoring
 remained inactive. These health observations do not verify checkout or payment.
