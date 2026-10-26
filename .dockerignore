@@ -9,6 +9,15 @@
 !scripts/
 !scripts/discogs_hosted_readonly.mjs
 !scripts/discogs_hosted_browser_runtime.mjs
+!scripts/discogs_hosted_guest_prepare.mjs
+!scripts/discogs_hosted_guest_socket.mjs
+!scripts/discogs_cart_inspector.mjs
+!scripts/discogs_listing_detail_snapshot.mjs
+!scripts/discogs_release_snapshot.mjs
+!scripts/discogs_browser_memory.mjs
+!scripts/discogs_enhanced_checkout.mjs
+!scripts/discogs_guest_card_prepare.mjs
+!scripts/discogs_guest_checkout_operator.mjs
 !scripts/sniper-browser-bridge-runner.mjs
 **/__pycache__
 **/*.pyc

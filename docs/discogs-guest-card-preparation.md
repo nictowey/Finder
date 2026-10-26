@@ -442,9 +442,9 @@ complete All/All merchant history showing zero orders. A new immutable review
 must link the successful claim/outcome and this disposition before another
 exact-scope no-submit claim may run. A challenge, order, incomplete history or
 uncertain disposition stops it. No user card standby or test purchase is needed.
-The current `guest_form_visible` guard remains in force. There is no enabled
-form-dismissal disposition input yet; a zero-order view alone cannot mint
-another claim through the current CLI.
+The current `guest_form_visible` guard remains in force. The append-only disposition command described below now supports recording
+that reviewed evidence; a zero-order view alone still cannot mint another claim.
+No disposition has been recorded for the live form.
 
 The captured checkout source distinguishes a creation transaction ID from the
 merchant order ID returned after approval/capture. That supports treating an
@@ -508,3 +508,72 @@ The fixed expired-session recovery and navigation-reopen slots are both spent
 and cannot be reused. Neither path permits an automatic follow-on chain. The
 navigation attempt's session-expired outcome is not a successful provider-form,
 order or payment verification.
+
+
+### Fixed server preparation implementation (not activated)
+
+The existing Firefox launcher now accepts an optional, locally supplied
+`guestPreparation` configuration. Its default runner does not supply one, so
+no preparation socket is opened by default. This is actual browser-context code,
+not a renamed CUA actor. The fixed operation reads normal rendered DOM and frame
+associations in the Firefox process, validates the existing exact KC item and
+cart, follows the verified Go to Checkout control, then revalidates the fresh
+checkout and card control before a single fenced initialization. It has no card
+entry, Pay, approval, capture, arbitrary URL, selector or script operation.
+
+The separate fixed IPC address is `/bridge/sniper-guest-prepare.sock`, mode
+0600, owned by the existing browser UID. It does not grant the scheduler group
+access to this write operation. The ordinary read-only socket and preparation
+port share one browser-context lease. The original access-stop marker and all
+old claim records remain unchanged. Local trusted `accessGuard` and `authorize`
+callbacks must authorize the exact operation and bind the approved destination
+reference/digest; a request cannot approve itself or choose a directory. The
+runner has no production issuer configured. Adding that issuer or activating
+this socket is a distinct remaining integration step, not an accomplished live
+capability.
+
+The ledger is checked before any preparation DOM access or navigation. A visible
+form, unresolved/unknown attempt, or crash leaving only a ready/review prefix
+blocks a new preparation. Cancellation cannot resume a later click. Actual
+underlying work must settle or the context remains fenced against overlapping
+work. Probe results contain only allowlisted evidence booleans and missing-field
+codes; no address lines, payment inputs or provider query parameters are returned.
+The probe does not navigate, click, write a claim or establish transaction safety.
+
+Evidence levels remain separate. Existing source/DOM observations establish the
+Go to Checkout selector, enhanced summary prefixes, provider button origin and
+card control semantics. Positive server integration fixtures extend the available
+summary with explicitly synthetic quantity/title/condition/address markup; they
+are not captures of the current hosted form. The captured summary-only shape
+fails closed with specific missing continuity fields. The server port therefore
+has not been live-qualified. After initialization it records `unknown` rather
+than claiming a successful form from unobserved guest-field anatomy. This safely
+fences another attempt but does not finish automated checkout.
+
+### Append-only blank-form disposition
+
+`--record-form-disposition` accepts only reviewed normal SDK dismissal evidence
+linked to the exact successful claim and outcome hashes. Required ordered
+observations are: a fresh blank form with no card entry/Pay/approval/capture;
+normal visible SDK close; form absent on a supported merchant page; then fresh,
+complete Purchases history with Archived All, Status All and zero orders. This
+appends a new disposition record and never edits or deletes the successful
+outcome. It does not prove provider draft cancellation or backend order timing.
+Unknown or access-restricted outcomes cannot be resolved through this path.
+
+The disposition's `expires_at` is the deadline for recording its original fresh
+observations, not reusable buying authority. Once written it is historical audit
+evidence. A later no-submit claim needs a new exact scope/test authorization,
+the latest disposition hash, a genuinely newer complete order-history read after
+the disposition write, and fresh checkout evidence. Human/payment and legacy
+paths remain blocked. A new claim consumes the latest audit head, so a concurrent
+worker or partial ready/review write cannot replay the same disposition.
+
+No live dismissal, new order-history read, disposition write, browser restart,
+preparation activation, new initialization, card entry or payment was performed
+for this implementation. The currently successful live form claim remains
+pending its reviewed disposition. The next live phase must first confirm blank
+state and normal dismissal is supported, record the reviewed observations, and
+qualify the actual server DOM/destination/frame association without inferring
+missing fields. Another initialization is not permitted merely because these
+offline fixtures passed.

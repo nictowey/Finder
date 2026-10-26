@@ -4,6 +4,15 @@ USER root
 COPY scripts/discogs_hosted_readonly.mjs /app/scripts/discogs_hosted_readonly.mjs
 COPY scripts/discogs_cart_inspector.mjs /app/scripts/discogs_cart_inspector.mjs
 COPY scripts/discogs_listing_detail_snapshot.mjs /app/scripts/discogs_listing_detail_snapshot.mjs
+COPY scripts/discogs_release_snapshot.mjs /app/scripts/discogs_release_snapshot.mjs
+COPY scripts/discogs_browser_memory.mjs /app/scripts/discogs_browser_memory.mjs
 COPY scripts/discogs_hosted_browser_runtime.mjs /app/scripts/discogs_hosted_browser_runtime.mjs
+COPY scripts/discogs_hosted_guest_prepare.mjs /app/scripts/discogs_hosted_guest_prepare.mjs
+COPY scripts/discogs_hosted_guest_socket.mjs /app/scripts/discogs_hosted_guest_socket.mjs
+COPY scripts/discogs_enhanced_checkout.mjs /app/scripts/discogs_enhanced_checkout.mjs
+COPY scripts/discogs_guest_card_prepare.mjs /app/scripts/discogs_guest_card_prepare.mjs
+COPY scripts/discogs_guest_checkout_operator.mjs /app/scripts/discogs_guest_checkout_operator.mjs
 COPY scripts/sniper-browser-bridge-runner.mjs /app/scripts/sniper-browser-runner.mjs
 USER 10001:10001
+RUN python3 -c 'import fcntl' \
+    && node --input-type=module -e "await import('/app/scripts/discogs_hosted_guest_socket.mjs')"

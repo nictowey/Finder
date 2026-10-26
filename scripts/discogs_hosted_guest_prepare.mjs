@@ -1,0 +1,532 @@
+/** Fixed server port for the exact KC no-submit test. Uses an existing browser
+ * context only; no launch, profile, network client, card entry, Pay or order API.
+ * Captured enhanced DOM lacks identity/quantity: that real shape fails closed.
+ */
+import { randomUUID } from 'node:crypto';
+import { Readable, Writable } from 'node:stream';
+import { collectListingDetailDom } from './discogs_listing_detail_snapshot.mjs';
+import { collectCartDom } from './discogs_cart_inspector.mjs';
+import { inspectCurrentEnhancedCheckout } from './discogs_enhanced_checkout.mjs';
+import * as checkoutOperator from './discogs_guest_checkout_operator.mjs';
+import { guestCardScopeDigest, validateGuestCardInspection, revalidateGuestCardClick,
+  GUEST_CARD_URL, GUEST_CARD_SELECTOR } from './discogs_guest_card_prepare.mjs';
+
+export const HOSTED_GUEST_LEDGER = '/bridge/guest-card-actions';
+export const HOSTED_GO_SELECTOR = 'button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]';
+const CART = 'https://www.discogs.com/sell/cart/';
+const active = new WeakSet(), uncertain = new WeakSet();
+const pendingByContext = new WeakMap();
+let ledgerActive = false;
+const stable = value => JSON.stringify(value);
+const STOP = Symbol('fixed_guest_stop');
+const fail = code => { throw Object.assign(new Error(code), { [STOP]: code }); };
+const stopped = (code, extras = {}) => ({ status: 'blocked', code, form_visible: false,
+  card_entry_allowed: false, payment_allowed: false, final_submission_allowed: false,
+  order_status: 'unverified', payment_status: 'unverified', ...extras });
+
+/** Runtime waits after a returned cancellation/timeout before releasing its
+ * common browser lease. Both raw DOM reads and dispatched actions are retained;
+ * settlement never resumes a stopped flow or clears reconciliation requirements.
+ */
+function retainContextTask(context, task) {
+  let state = pendingByContext.get(context);
+  if (!state) {
+    let resolve;
+    const settled = new Promise(done => { resolve = done; });
+    state = { tasks: new Set(), settled, resolve }; pendingByContext.set(context, state);
+  }
+  state.tasks.add(task);
+  const release = () => {
+    state.tasks.delete(task);
+    if (state.tasks.size === 0) {
+      if (pendingByContext.get(context) === state) pendingByContext.delete(context);
+      state.resolve();
+    }
+  };
+  task.then(release, release);
+  return task;
+}
+export function waitForHostedGuestPreparationSettlement(context) {
+  return pendingByContext.get(context)?.settled || Promise.resolve();
+}
+
+/** The existing operator owns all anchor, lock, chain and pending checks. */
+async function ledgerHead(directory, request) {
+  if (typeof checkoutOperator.inspectGuestCheckoutLedger !== 'function') fail('ledger_inspection_unavailable');
+  const state = await checkoutOperator.inspectGuestCheckoutLedger({ directory });
+  if (state?.no_submit_init_allowed !== true || !/^[0-9a-f]{64}$/u.test(state.current_head || '')) fail('prior_attempt_unresolved');
+  // A recorded disposition is historical evidence. Its recording-time expiry
+  // is not refreshed here; a new exact scope, authorization and later complete
+  // order-history review are still required by the authoritative claim writer.
+  if (state.init_allowed !== true && request.priorFormDisposition_sha256 !== state.current_head) fail('form_disposition_required');
+  if (state.init_allowed === true && request.priorFormDisposition_sha256) fail('form_disposition_unverified');
+  return state.current_head;
+}
+
+/** Browser-side supplemental read. Only standard semantic links/text can supply
+ * identity or explicit quantity. These are deliberately absent in the captured
+ * enhanced row; no React keys, hidden app state, description guessing or caller
+ * booleans qualify it. Address prefixes come from merchant bundle SHA256
+ * 1933d4028b07f0194e350adc6d4608ac1a9364344ab5b52c0a3d26532f7fb27a.
+ * Only a match against the ephemeral server-local approved address digest leaves
+ * the browser. No raw address is returned or logged.
+ */
+export async function collectHostedGuestDom({ stage, approvedDestinationDigest }) {
+  const cart = stage === 'cart';
+  const visible = element => {
+    if (!element?.isConnected) return false;
+    for (let node = element; node; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (node.hidden || node.getAttribute('aria-hidden') === 'true' || style.display === 'none' ||
+          ['hidden', 'collapse'].includes(style.visibility) || style.opacity === '0') return false;
+    }
+    return [...element.getClientRects()].some(rect => rect.width > 0 && rect.height > 0);
+  };
+  const text = element => {
+    if (!visible(element)) return '';
+    const walk = node => node.nodeType === 3 ? node.nodeValue : node.nodeType === 1 && visible(node) ?
+      node.tagName === 'BR' ? ' ' : [...node.childNodes].map(walk).join('') : '';
+    return walk(element).replace(/\s+/gu, ' ').trim();
+  };
+  const named = (root, tag, prefix) => [...root.querySelectorAll(tag)].filter(node =>
+    [...node.classList].some(token => token.startsWith(prefix)));
+  const digest = async value => [...new Uint8Array(await crypto.subtle.digest('SHA-256',
+    new TextEncoder().encode(value)))].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  const out = { access: 'normal', ready: document.readyState === 'complete',
+    listing: false, quantity: false, destination: false, title_digest: null,
+    media: null, sleeve: null, item: null, agreements: false, existing_form: false, go: false };
+  if (/just a moment|attention required|security check|captcha|cloudflare|sign in|log in/iu.test(document.title) ||
+      document.querySelector('input[type="password"],form[action*="/cdn-cgi/"],iframe[src*="challenges.cloudflare.com"],[id*="captcha" i],[class*="captcha" i]')) {
+    out.access = 'access_restricted'; return out;
+  }
+  if (stage === 'detail') {
+    const headings = [...document.querySelectorAll('main a.hifi-heading-link-large[href="https://www.discogs.com/release/3422100"]')].filter(visible);
+    if (headings.length === 1 && text(headings[0])) out.title_digest = await digest(text(headings[0]));
+    return out;
+  }
+  out.agreements = [...document.querySelectorAll('input[type="checkbox"]')].some(visible);
+  const fields = document.querySelectorAll('#card-fields-container');
+  out.existing_form = [...fields].some(node => node.childElementCount > 0 && visible(node));
+  const rows = cart ? document.querySelectorAll('tr.order_row') : named(document, 'li', '_checkout-sell-item__list-item_');
+  if (rows.length === 1 && visible(rows[0])) {
+    const row = rows[0];
+    const links = [...row.querySelectorAll('a.item_link[href="/sell/item/1366950910"]')].filter(visible);
+    out.listing = links.length === 1;
+    const headings = cart ? links : named(row, 'h3', '_checkout-sell-item__title_').filter(visible);
+    if (headings.length === 1 && text(headings[0])) out.title_digest = await digest(text(headings[0]));
+    const grades = { Poor: 'P', Fair: 'F', Good: 'G', 'Good Plus': 'G+', 'Very Good': 'VG',
+      'Very Good Plus': 'VG+', 'Near Mint': 'NM', Mint: 'M', Generic: 'Generic' };
+    const grade = value => grades[value] || (/^(?:P|F|G|G\+|VG|VG\+|NM|M)$/u.test(value) ? value : null);
+    const conditions = cart ? text(row) : text(named(row, 'div', '_checkout-sell-item__condition_')[0]);
+    const match = /(?:^| )Media(?: Condition)?\s*:\s*(.*?)\s+Sleeve(?: Condition)?\s*:\s*(.*?)(?= \$|$)/u.exec(conditions);
+    if (match) { out.media = grade(match[1]); out.sleeve = grade(match[2]); }
+    const prices = cart ? [] : named(row, 'div', '_checkout-sell-item__price_').filter(visible);
+    if (prices.length === 1) out.item = /^\$(0\.10) USD$/u.exec(text(prices[0]))?.[1] || null;
+  }
+  // The observed cart sentence supplies the explicit quantity and seller count.
+  // The enhanced Items (1) heading is continuity evidence only, never an ID.
+  const declarations = [...document.querySelectorAll('h1,h2,p,span')].filter(visible).map(text);
+  out.quantity = cart ? declarations.filter(value => /^You have [0-9]+ items? in your cart from [0-9]+ sellers?\.$/u.test(value)).length === 1 &&
+    declarations.includes('You have 1 item in your cart from 1 seller.') :
+    declarations.filter(value => /^Items \([0-9]+\)$/u.test(value)).length === 1 && declarations.includes('Items (1)');
+  let addresses;
+  if (cart) addresses = [...document.querySelectorAll('[id^="shipping_address_"] address')];
+  else {
+    const containers = named(document, 'div', '_ships-to-address__container_');
+    const content = containers.length === 1 ? named(containers[0], 'div', '_ships-to-address__content_') : [];
+    addresses = content.length === 1 ? [...content[0].querySelectorAll('address')] : [];
+  }
+  if (addresses.length === 1 && visible(addresses[0])) {
+    const children = [...addresses[0].children];
+    const lines = children.filter(node => node.tagName === 'SPAN' && node.children.length === 0 && visible(node));
+    const sourceShape = cart || lines.every(node => [...node.classList].some(token => token.startsWith('_ships-to-address__line_')));
+    out.destination = sourceShape && lines.length === children.length && lines.length >= 4 && lines.length <= 6 &&
+      await digest(lines.map(text).join('\n')) === approvedDestinationDigest;
+  }
+  if (cart) {
+    const controls = document.querySelectorAll('button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]');
+    const button = controls[0];
+    out.go = controls.length === 1 && visible(button) && !button.disabled && !button.matches(':disabled') &&
+      button.getAttribute('aria-disabled') !== 'true' && button.type === 'submit' &&
+      button.value === 'Go to Checkout' && text(button) === 'Go to Checkout' &&
+      button.closest('form.legacy') !== null;
+  }
+  return out;
+}
+
+/** Exact observed provider URL, with private query parameters discarded. */
+export function isObservedCardFrame(url) {
+  try { const parsed = new URL(url); return parsed.origin === 'https://www.paypal.com' &&
+    parsed.pathname === '/smart/buttons' && !parsed.username && !parsed.password && !parsed.hash; }
+  catch { return false; }
+}
+
+async function helperMessage(mode, directory, value) {
+  let output = '';
+  const sink = new Writable({ write(chunk, encoding, done) { output += chunk.toString(); done(); } });
+  await checkoutOperator.runCurrentCheckoutClaim({ mode, directory, input: Readable.from([stable(value)]), output: sink });
+  return JSON.parse(output);
+}
+function authorizationValid(request, authorization) {
+  const now = Date.now() / 1000, s = request?.scope, t = request?.testAuthorization;
+  const p = request?.priorFailure;
+  const exactKeys = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).sort().join('|') === keys.sort().join('|');
+  const priorKeys = ['source', 'last_error_code', 'release_id', 'listing_id', 'seller', 'quantity', 'currency', 'max_total',
+    'card_data_entered', 'pay_invoked', 'approval_invoked', 'capture_invoked', 'failure_observed_at', 'order_history_url',
+    'order_history_archived', 'order_history_status', 'order_history_count', 'order_history_complete', 'order_history_observed_at', 'reviewed_at', 'expires_at'];
+  const reconciled = exactKeys(p, priorKeys) && p?.source === 'operator_reviewed_normal_discogs_ui' && p.last_error_code === 'SESSION_EXPIRED' &&
+    ['release_id', 'listing_id', 'seller', 'quantity', 'currency', 'max_total'].every(key => p[key] === s?.[key]) &&
+    ['card_data_entered', 'pay_invoked', 'approval_invoked', 'capture_invoked'].every(key => p[key] === false) &&
+    p.order_history_url === 'https://www.discogs.com/sell/purchases?archived=A&status=All&limit=50' &&
+    p.order_history_archived === 'All' && p.order_history_status === 'All' && p.order_history_count === 0 &&
+    p.order_history_complete === true && ['failure_observed_at', 'order_history_observed_at', 'reviewed_at', 'expires_at'].every(key => Number.isFinite(p[key])) &&
+    p.failure_observed_at <= p.order_history_observed_at && p.order_history_observed_at <= p.reviewed_at &&
+    p.reviewed_at <= now && now - p.order_history_observed_at < 300 && now < p.expires_at && p.expires_at - p.reviewed_at <= 300;
+  const digest = guestCardScopeDigest(s), uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+  return request && Object.keys(request).filter(key => key !== 'priorFormDisposition_sha256').sort().join('|') === ['job_id', 'ready_ref', 'scope', 'testAuthorization', 'priorFailure'].sort().join('|') &&
+    (!Object.hasOwn(request, 'priorFormDisposition_sha256') || /^[0-9a-f]{64}$/u.test(request.priorFormDisposition_sha256)) &&
+    authorization && digest && reconciled && uuid.test(request.job_id) && uuid.test(request.ready_ref) &&
+    authorization.job_id === request.job_id && authorization.scope_digest === digest &&
+    authorization.approved_destination_ref === s.destination_ref &&
+    /^[0-9a-f]{64}$/u.test(authorization.approved_destination_digest) &&
+    exactKeys(t, ['source', 'approval_ref', 'scope_digest', 'attempt_id', 'authorized_at', 'issued_at', 'expires_at',
+      'card_entry_allowed', 'payment_allowed', 'final_submission_allowed']) && t?.source === 'explicit_user_authorized_no_submit_test' && t.approval_ref === s.approval_ref &&
+    t.scope_digest === digest && t.attempt_id === s.intent_id &&
+    t.card_entry_allowed === false && t.payment_allowed === false && t.final_submission_allowed === false &&
+    ['authorized_at', 'issued_at', 'expires_at'].every(key => Number.isFinite(t[key])) && t.authorized_at >= 0 && t.authorized_at <= t.issued_at && t.issued_at <= now && now < t.expires_at &&
+    t.expires_at - t.issued_at <= 300;
+}
+
+/** SAME-process browser port. options.authorization must come from the fixed
+ * operation's local owner/scoped authorization issuer, never a request boolean.
+ * ledgerDirectory is fixed in production; isolated fixtures use the test factory.
+ */
+export async function prepareHostedGuestForm(context, request, options = {}) {
+  if (!context || typeof context !== 'object' || !authorizationValid(request, options.authorization)) return stopped('scoped_authorization_required');
+  if (active.has(context) || ledgerActive) return stopped('operation_busy');
+  if (uncertain.has(context)) return stopped('navigation_requires_reconciliation');
+  const directory = options[fixtureDirectory] || HOSTED_GUEST_LEDGER;
+  if (options.ledgerDirectory && options.ledgerDirectory !== HOSTED_GUEST_LEDGER) return stopped('fixed_ledger_required');
+  const authorization = Object.freeze({ ...options.authorization });
+  request = JSON.parse(stable(request)); // Snapshot authorization/scope across every await.
+  const scope = Object.freeze(request.scope), signal = options.signal;
+  const deadline = Math.min(Date.now() + 90000, scope.expires_at * 1000, request.testAuthorization.expires_at * 1000);
+  let grant = null, navigationIssued = false, cardIssued = false;
+  const refs = { cart: randomUUID(), checkout: randomUUID(), card: randomUUID() };
+  active.add(context); ledgerActive = true;
+  // Promise.race only stops our continuation. A dispatched Playwright action or
+  // durable claim can still settle later, so retain both flight guards until
+  // every operation actually settles. Its completion never resumes the flow.
+  const pending = new Set();
+  let finished = false, released = false;
+  const releaseIfSettled = () => {
+    if (finished && pending.size === 0 && !released) {
+      released = true; active.delete(context); ledgerActive = false;
+    }
+  };
+  const check = () => {
+    if (signal?.aborted) fail('cancelled');
+    if (Date.now() >= deadline) fail('deadline_expired');
+  };
+  const bounded = async operation => {
+    check(); let timer, onAbort;
+    const interrupt = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error('deadline_expired'), { [STOP]: 'deadline_expired' })), deadline - Date.now());
+      if (signal) { onAbort = () => reject(Object.assign(new Error('cancelled'), { [STOP]: 'cancelled' })); signal.addEventListener('abort', onAbort, { once: true }); }
+    });
+    const task = retainContextTask(context, Promise.resolve().then(() => { check(); return operation(); }));
+    pending.add(task);
+    const settled = () => { pending.delete(task); releaseIfSettled(); };
+    task.then(settled, settled); // Observe both outcomes; never queue another UI action.
+    try { const value = await Promise.race([task, interrupt]); check(); return value; }
+    finally { clearTimeout(timer); if (onAbort) signal.removeEventListener('abort', onAbort); }
+  };
+  const extras = { initialization: 'not_dispatched' };
+  try {
+    const head = await bounded(() => ledgerHead(directory, request));
+    const pages = await bounded(() => context.pages());
+    if (!Array.isArray(pages)) fail('existing_cart_required');
+    const cartPages = pages.filter(page => page.url() === CART);
+    const detailPages = pages.filter(page => ['https://www.discogs.com/sell/item/1366950910', 'https://www.discogs.com/shop/item/1366950910'].includes(page.url()));
+    if (cartPages.length !== 1) fail('single_existing_cart_required');
+    if (detailPages.length !== 1) fail('listing_detail_required');
+    if (pages.length !== 2) fail('unrelated_browser_page_present');
+    const page = cartPages[0], detailPage = detailPages[0];
+    // The inspector has its own read timeout. Retain its raw promises too, so
+    // an inner timeout cannot release the runtime lease over a pending DOM read.
+    const inspectorPage = {
+      url: () => retainContextTask(context, Promise.resolve().then(() => { check(); return page.url(); })),
+      evaluate: (...args) => retainContextTask(context, Promise.resolve().then(() => { check(); return page.evaluate(...args); })),
+    };
+    const detailUrl = detailPage.url();
+    const detailDocument = await bounded(() => detailPage.evaluateHandle(() => document));
+    const detailRead = async () => {
+      if (detailPage.url() !== detailUrl || !await bounded(() => detailPage.evaluate(expected => document === expected, detailDocument))) fail('listing_detail_changed');
+      const detail = await bounded(() => detailPage.evaluate(collectListingDetailDom, { release_id: '3422100', listing_id: '1366950910' }));
+      const title = await bounded(() => detailPage.evaluate(collectHostedGuestDom, { stage: 'detail' }));
+      if (title.access !== 'normal') fail('access_restricted');
+      if (!title.ready || detail.status !== 'observed' || detail.complete !== true || detail.release_id !== scope.release_id ||
+          detail.listing_id !== scope.listing_id || detail.seller_handle !== scope.seller || detail.item !== '0.10' ||
+          detail.cart_state !== 'already_in_cart' || !title.title_digest) fail('listing_detail_unverified');
+      return { title_digest: title.title_digest, media: detail.media, sleeve: detail.sleeve };
+    };
+    const detail = await detailRead();
+    if (await bounded(() => page.url()) !== CART) fail('existing_cart_required');
+    const cartDocument = await bounded(() => page.evaluateHandle(() => document));
+    const supplemental = cart => bounded(() => page.evaluate(collectHostedGuestDom,
+      { stage: cart ? 'cart' : 'checkout', approvedDestinationDigest: authorization.approved_destination_digest }));
+    const qualify = (dom, cart) => {
+      if (dom.access !== 'normal') fail('access_restricted');
+      if (!dom.ready) fail('page_not_ready');
+      if (dom.existing_form) fail('existing_guest_form_preserved');
+      if (dom.agreements) fail('extra_agreement_required');
+      const missing = ['quantity', 'destination'].filter(key => dom[key] !== true);
+      if (cart && !dom.listing) missing.push('listing');
+      if (dom.title_digest !== detail.title_digest) missing.push('title_continuity');
+      if (dom.media !== detail.media || dom.sleeve !== detail.sleeve) missing.push('condition_continuity');
+      if (!cart && dom.item !== '0.10') missing.push('item_price_continuity');
+      if (missing.length) { extras.missing_fields = missing; fail('visible_scope_evidence_missing'); }
+    };
+    const cartRead = async () => {
+      if (await bounded(() => page.url()) !== CART ||
+          !await bounded(() => page.evaluate(expected => document === expected, cartDocument))) fail('cart_document_changed');
+      const raw = await bounded(() => page.evaluate(collectCartDom, scope.listing_id));
+      const dom = await supplemental(true); qualify(dom, true);
+      if (stable(await detailRead()) !== stable(detail)) fail('listing_detail_changed');
+      if (raw.code !== 'observed' || raw.form_count !== 1 || raw.order_container_count !== 1 || raw.item_row_count !== 1 ||
+          raw.listing_matches_expected !== true || raw.canonical_listing_href !== '/sell/item/1366950910' ||
+          !dom.go || raw.quantity_control_count !== 0 || raw.missing_address !== false ||
+          raw.subtotal?.value !== '$0.10 USD' || raw.shipping?.value !== '$4.95 USD' || raw.total?.value !== '$5.05 USD' ||
+          raw.shipping_methods?.options?.filter(option => option.selected && !option.disabled && option.label === 'Economy - Media Mail').length !== 1) fail('cart_scope_unverified');
+      return dom;
+    };
+    await cartRead();
+    const cartObservedAt = Date.now() / 1000;
+    const go = await bounded(() => page.$(HOSTED_GO_SELECTOR));
+    if (!go) fail('checkout_control_unverified');
+    await cartRead();
+    if (await bounded(() => ledgerHead(directory, request)) !== head) fail('ledger_changed');
+    if (!await bounded(() => go.evaluate(element => element.isConnected && element.ownerDocument === document &&
+      document.querySelectorAll('button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]').length === 1 &&
+      document.querySelector('button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]') === element))) fail('checkout_control_changed');
+    await bounded(() => {
+      check(); navigationIssued = true;
+      return go.click({ timeout: Math.max(1, deadline - Date.now()), noWaitAfter: true });
+    });
+    const afterNavigation = await bounded(() => page.url());
+    if (![CART, GUEST_CARD_URL].includes(afterNavigation)) fail('checkout_redirected');
+    await bounded(() => page.waitForURL(GUEST_CARD_URL, { timeout: Math.max(1, deadline - Date.now()), waitUntil: 'domcontentloaded' }));
+    if (await bounded(() => page.url()) !== GUEST_CARD_URL) fail('checkout_redirected');
+    const checkoutDocument = await bounded(() => page.evaluateHandle(() => document));
+    if (await bounded(() => page.evaluate(expected => document === expected, cartDocument))) fail('fresh_checkout_required');
+    let frame, card, frameDocument, frameElement;
+    const checkoutRead = async () => {
+      const currentPages = await bounded(() => context.pages());
+      if (currentPages.length !== 2 || !currentPages.includes(page) || !currentPages.includes(detailPage)) fail('browser_page_set_changed');
+      if (await bounded(() => page.url()) !== GUEST_CARD_URL ||
+          !await bounded(() => page.evaluate(expected => document === expected, checkoutDocument))) fail('checkout_document_changed');
+      const summary = await bounded(() => inspectCurrentEnhancedCheckout(inspectorPage, { signal }));
+      const dom = await supplemental(false); qualify(dom, false);
+      if (stable(await detailRead()) !== stable(detail)) fail('listing_detail_changed');
+      if (summary.status !== 'observed' || summary.seller_handle !== scope.seller ||
+          summary.displayed.subtotal.amount !== '0.10' || summary.displayed.shipping.amount !== '4.95' ||
+          summary.displayed.total.amount !== '5.05' || summary.selected_shipping_label !== 'Economy - Media Mail') fail('checkout_scope_unverified');
+      return summary;
+    };
+    await checkoutRead();
+    const frames = (await bounded(() => page.frames())).filter(candidate => isObservedCardFrame(candidate.url()));
+    if (frames.length !== 1) fail('provider_frame_ambiguous');
+    frame = frames[0];
+    if (frame.parentFrame() !== page.mainFrame()) fail('provider_frame_unassociated');
+    frameElement = await bounded(() => frame.frameElement());
+    if (!await bounded(() => frameElement.isVisible()) ||
+        await bounded(() => frameElement.contentFrame()) !== frame ||
+        await bounded(() => frameElement.ownerFrame()) !== page.mainFrame()) fail('provider_frame_unassociated');
+    frameDocument = await bounded(() => frame.evaluateHandle(() => document));
+    card = await bounded(() => frame.$(GUEST_CARD_SELECTOR));
+    const cardRead = async () => {
+      const providerState = await bounded(() => frame.evaluate(collectHostedGuestDom, { stage: 'provider' }));
+      if (providerState.access !== 'normal') fail('access_restricted');
+      if (!providerState.ready) fail('provider_not_ready');
+      if (providerState.existing_form) fail('existing_guest_form_preserved');
+      if (providerState.agreements) fail('extra_agreement_required');
+      if (!isObservedCardFrame(frame.url()) || frame.parentFrame() !== page.mainFrame() ||
+          !await bounded(() => frame.evaluate(expected => document === expected, frameDocument)) ||
+          await bounded(() => frameElement.contentFrame()) !== frame || !await bounded(() => frameElement.isVisible())) fail('provider_frame_changed');
+      if (!card || await bounded(() => frame.locator(GUEST_CARD_SELECTOR).count()) !== 1 ||
+          !await bounded(() => card.isVisible()) || !await bounded(() => card.isEnabled()) ||
+          await bounded(() => card.getAttribute('aria-disabled')) !== 'false' ||
+          !await bounded(() => card.evaluate(element => element.isConnected && element.ownerDocument === document &&
+            document.querySelector('[role="link"][data-funding-source="card"][aria-label="Debit or Credit Card"]') === element))) fail('card_control_changed');
+    };
+    await cardRead();
+    const observedAt = Date.now() / 1000;
+    const evidence = { source: 'trusted_current_checkout', release_id: scope.release_id, listing_id: scope.listing_id,
+      seller: scope.seller, quantity: 1, item_count: 1, seller_count: 1, rules_revision: scope.rules_revision,
+      rules_current: true, criteria_satisfied: true, already_owned: false, existing_order: false,
+      uncertain_prior_action: false, duplicate_guard_verified: true, approval_ref: scope.approval_ref,
+      authorization_current: true, authorization_revoked: false, currency: 'USD', item: '0.10', shipping: '4.95',
+      tax: null, fees: null, tax_verified: false, fees_verified: false, total: '5.05',
+      amount_basis: 'explicit_merchant_checkout_total', preparation_quote_verified: true,
+      final_payment_quote_verified: false, deferred_total_notice: false, shipping_selection_verified: true,
+      quote_fingerprint: scope.quote_fingerprint, destination_ref: scope.destination_ref, destination_verified: true,
+      terms_fingerprint: scope.terms_fingerprint, terms_verified: true, observed_at: observedAt,
+      expires_at: Math.min(scope.expires_at, observedAt + 300) };
+    const inspection = { schema: 'discogs_guest_card_inspection_v1', url: GUEST_CARD_URL, access: 'normal',
+      control: { count: 1, visible: true, enabled: true, role: 'link', funding_source: 'card',
+        aria_label: 'Debit or Credit Card', aria_disabled: 'false', control_ref: refs.card }, evidence };
+    if (!validateGuestCardInspection(inspection, scope)) fail('inspection_unverified');
+    grant = await bounded(() => helperMessage('claim', directory, {
+      type: 'claim_current_checkout', ready_ref: request.ready_ref, scope, testAuthorization: request.testAuthorization,
+      priorFailure: request.priorFailure, expected_latest_hash: head, inspection,
+      ...(request.priorFormDisposition_sha256 ? { priorFormDisposition_sha256: request.priorFormDisposition_sha256 } : {}),
+      provenance: { source: 'fixed_server_dom_current_checkout', navigation: 'normal_cart_to_fresh_checkout',
+        scope_digest: guestCardScopeDigest(scope), cart_document_ref: refs.cart, checkout_document_ref: refs.checkout,
+        cart_observed_at: cartObservedAt, checkout_observed_at: observedAt, cart_scope_verified: true,
+        go_to_checkout_verified: true, history_restore: false, resubmission_prompt: false, extra_agreement_required: false } }));
+    if (grant.type !== 'checkout_claim_granted') fail(grant.stop_reason || 'claim_unverified');
+    await checkoutRead(); await cardRead();
+    if (Date.now() / 1000 - observedAt >= 20) fail('inspection_stale');
+    const binding = Object.freeze({ url: GUEST_CARD_URL, selector: GUEST_CARD_SELECTOR, control_ref: refs.card,
+      scope_digest: guestCardScopeDigest(scope), intent_id: scope.intent_id,
+      inspection_fingerprint: grant.permit.inspection_fingerprint, expected_scope: scope });
+    if (!revalidateGuestCardClick(binding, { ...inspection, evidence: { ...evidence, observed_at: Date.now() / 1000 } }) ||
+        Date.now() >= grant.permit.deadline) fail('execution_revalidation_failed');
+    await bounded(() => {
+      check(); cardIssued = true;
+      return card.click({ timeout: Math.max(1, Math.min(deadline, grant.permit.deadline) - Date.now()), noWaitAfter: true });
+    });
+    // No captured guest-field anatomy exists to qualify a successful form. A
+    // completed initialization click is therefore durably unknown, never ready
+    // for payment. Preserve the existing page for owner inspection.
+    const outcome = await helperMessage('outcome', directory, { type: 'record_claim_outcome', intent_id: scope.intent_id,
+      ready_ref: request.ready_ref, scope_digest: guestCardScopeDigest(scope), claim_sha256: grant.claim_sha256,
+      outcome: 'unknown', observed_at: Date.now() / 1000 });
+    if (outcome.type !== 'claim_outcome_recorded') fail('outcome_recording_uncertain');
+    return stopped('guest_form_observation_required', { initialization: 'outcome_requires_reconciliation',
+      checkout_navigation_issued: true, card_initialization_issued: true });
+  } catch (error) {
+    if (navigationIssued) uncertain.add(context);
+    if (grant?.type === 'checkout_claim_granted') {
+      await helperMessage('outcome', directory, { type: 'record_claim_outcome', intent_id: scope.intent_id,
+        ready_ref: request.ready_ref, scope_digest: guestCardScopeDigest(scope, { now: scope.issued_at }),
+        claim_sha256: grant.claim_sha256, outcome: 'unknown', observed_at: Date.now() / 1000 }).catch(() => {});
+    }
+    return stopped(error?.[STOP] || 'unknown_internal_stop', { ...extras,
+      initialization: cardIssued || grant?.type === 'checkout_claim_granted' ? 'outcome_requires_reconciliation' : 'not_dispatched',
+      checkout_navigation_issued: navigationIssued, card_initialization_issued: cardIssued });
+  } finally { finished = true; releaseIfSettled(); }
+}
+
+const fixtureDirectory = Symbol('isolated_fixture_ledger');
+/** Private owner-only service wiring supplies a local authorization issuer.
+ * Browser/request references cannot choose a URL, selector, directory or action.
+ */
+export function createHostedGuestPrepareOperation({ getContext, authorize, signal } = {}) {
+  return async request => {
+    try {
+      if (typeof getContext !== 'function' || typeof authorize !== 'function') return stopped('scoped_authorization_required');
+      const authorization = await authorize(request);
+      if (!authorizationValid(request, authorization)) return stopped('scoped_authorization_required');
+      return await prepareHostedGuestForm(await getContext(), request, { authorization, signal });
+    } catch { return stopped('operation_unavailable'); }
+  };
+}
+/** Offline fixtures only: no CLI/env override or production factory path. */
+export function createHostedGuestPrepareFixture({ context, directory, authorization, signal } = {}) {
+  if (process.env.NODE_TEST_CONTEXT === undefined || !directory?.startsWith('/')) throw new Error('test_context_required');
+  return request => prepareHostedGuestForm(context, request, { authorization, signal, [fixtureDirectory]: directory });
+}
+
+/** Read-only existing-page probe. Does not consume a claim, navigate, click,
+ * inspect field values, or return addresses, titles, hashes, or provider URLs.
+ * Matching booleans report only this fresh DOM; they do not authorize init.
+ */
+export async function probeCurrentGuestPreparationEvidence(context, request, { authorization, signal } = {}) {
+  if (!context || typeof context !== 'object' || !authorizationValid(request, authorization)) return stopped('scoped_authorization_required');
+  const deadline = Math.min(Date.now() + 1500, request.scope.expires_at * 1000);
+  const read = async operation => {
+    if (signal?.aborted) fail('cancelled');
+    if (Date.now() >= deadline) fail('probe_deadline_expired');
+    let timer;
+    try {
+      const task = retainContextTask(context, Promise.resolve().then(() => {
+        if (signal?.aborted) fail('cancelled');
+        if (Date.now() >= deadline) fail('probe_deadline_expired');
+        return operation();
+      }));
+      const value = await Promise.race([task, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(Object.assign(new Error('probe_deadline_expired'), { [STOP]: 'probe_deadline_expired' })), deadline - Date.now());
+      })]);
+      if (signal?.aborted) fail('cancelled');
+      if (Date.now() >= deadline) fail('probe_deadline_expired');
+      return value;
+    } finally { clearTimeout(timer); }
+  };
+  try {
+    const pages = await read(() => context.pages());
+    const checkoutPages = pages.filter(page => page.url() === GUEST_CARD_URL);
+    if (checkoutPages.length !== 1) fail('single_current_checkout_required');
+    const page = checkoutPages[0], documentRef = await read(() => page.evaluateHandle(() => document));
+    const inspectorPage = {
+      url: () => retainContextTask(context, Promise.resolve().then(() => {
+        if (signal?.aborted) fail('cancelled');
+        if (Date.now() >= deadline) fail('probe_deadline_expired');
+        return page.url();
+      })),
+      evaluate: (...args) => retainContextTask(context, Promise.resolve().then(() => {
+        if (signal?.aborted) fail('cancelled');
+        if (Date.now() >= deadline) fail('probe_deadline_expired');
+        return page.evaluate(...args);
+      })),
+    };
+    const summary = await read(() => inspectCurrentEnhancedCheckout(inspectorPage, { signal }));
+    const dom = await read(() => page.evaluate(collectHostedGuestDom, {
+      stage: 'checkout', approvedDestinationDigest: authorization.approved_destination_digest }));
+    if (dom.access !== 'normal' || summary.code === 'access_restricted') fail('access_restricted');
+    const detailPages = pages.filter(candidate => ['https://www.discogs.com/sell/item/1366950910',
+      'https://www.discogs.com/shop/item/1366950910'].includes(candidate.url()));
+    let detail = null, title = null;
+    if (detailPages.length === 1) {
+      detail = await read(() => detailPages[0].evaluate(collectListingDetailDom, { release_id: '3422100', listing_id: '1366950910' }));
+      title = await read(() => detailPages[0].evaluate(collectHostedGuestDom, { stage: 'detail' }));
+      if (title.access !== 'normal') fail('access_restricted');
+    }
+    const observed = {
+      summary_supported: summary.status === 'observed',
+      seller_matches: summary.status === 'observed' && summary.seller_handle === request.scope.seller,
+      exact_preparation_amounts: summary.status === 'observed' && summary.displayed.subtotal.amount === '0.10' &&
+        summary.displayed.shipping.amount === '4.95' && summary.displayed.total.amount === '5.05',
+      quantity_declaration: dom.quantity === true,
+      destination_match: dom.destination === true,
+      listing_detail_supported: detail?.status === 'observed' && detail?.release_id === request.scope.release_id &&
+        detail?.listing_id === request.scope.listing_id && detail?.seller_handle === request.scope.seller,
+      title_continuity: !!title?.title_digest && dom.title_digest === title.title_digest,
+      condition_continuity: detail?.status === 'observed' && dom.media === detail.media && dom.sleeve === detail.sleeve,
+      item_price_continuity: dom.item === '0.10',
+      provider_frame_associated: false, card_control_unique_visible_enabled: false,
+      existing_guest_form: dom.existing_form === true,
+    };
+    const frames = (await read(() => page.frames())).filter(frame => isObservedCardFrame(frame.url()));
+    if (frames.length === 1 && frames[0].parentFrame() === page.mainFrame()) {
+      const frame = frames[0], element = await read(() => frame.frameElement());
+      observed.provider_frame_associated = await read(() => element.isVisible()) &&
+        await read(() => element.contentFrame()) === frame && await read(() => element.ownerFrame()) === page.mainFrame();
+      const provider = await read(() => frame.evaluate(collectHostedGuestDom, { stage: 'provider' }));
+      if (provider.access !== 'normal') fail('access_restricted');
+      observed.existing_guest_form ||= provider.existing_form === true;
+      if (observed.provider_frame_associated && await read(() => frame.locator(GUEST_CARD_SELECTOR).count()) === 1) {
+        const card = await read(() => frame.$(GUEST_CARD_SELECTOR));
+        observed.card_control_unique_visible_enabled = !!card && await read(() => card.isVisible()) &&
+          await read(() => card.isEnabled()) && await read(() => card.getAttribute('aria-disabled')) === 'false';
+      }
+    }
+    if (page.url() !== GUEST_CARD_URL || !await read(() => page.evaluate(expected => document === expected, documentRef))) fail('checkout_document_changed');
+    return { status: 'observed', code: 'current_dom_evidence_only', observed,
+      missing_fields: Object.keys(observed).filter(key => key !== 'existing_guest_form' && !observed[key]),
+      normal_cart_transition_verified: false, initialization_allowed: false,
+      source: 'current_visible_dom', final_quote_verified: false,
+      card_entry_allowed: false, payment_allowed: false, final_submission_allowed: false };
+  } catch (error) { return stopped(error?.[STOP] || 'probe_unverified'); }
+}

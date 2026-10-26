@@ -802,3 +802,171 @@ test('intercepted integration rejects stale or changed quote; rebound runtime ca
     assert.equal(s.effects.some(effect => effect[0] === 'click'), false);
   }, { now: 1_800_000_000_000 });
 });
+
+async function visibleFormDispositionFixture(directory) {
+  const at = 1_800_000_000_000;
+  const claim = noSubmitAuthorization(await currentClaim(directory, { now: at / 1000 }), at / 1000);
+  const granted = await oneShot(directory, claim, { now: at });
+  assert.equal(granted.message.type, 'checkout_claim_granted');
+  const outcome = { ...outcomeFor(claim, granted.message, 'guest_form_visible'), observed_at: (at + 1000) / 1000 };
+  assert.equal((await oneShot(directory, outcome, { mode: 'outcome', now: at + 1000 })).code, 0);
+  const disposition = { type: 'record_form_disposition', source: 'operator_reviewed_normal_sdk_dismissal',
+    previous_claim_sha256: granted.message.claim_sha256,
+    previous_outcome_sha256: hash(await readFile(join(directory, 'guest-checkout-000004.json'))),
+    intent_id: claim.scope.intent_id, ready_ref: claim.ready_ref, scope_digest: claim.provenance.scope_digest,
+    release_id: 3422100, listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD', max_total: '5.05',
+    blank_form_verified: true, blank_form_observed_at: (at + 2000) / 1000, card_data_entered: false,
+    pay_invoked: false, approval_invoked: false, capture_invoked: false, dismissal_kind: 'visible_sdk_close',
+    sdk_close_verified: true, dismissal_observed_at: (at + 3000) / 1000, current_form_present: false,
+    current_url: helper.GUEST_CARD_URL, normal_route_verified: true, current_observed_at: (at + 4000) / 1000,
+    order_history_url: 'https://www.discogs.com/sell/purchases?archived=A&status=All&limit=50',
+    order_history_archived: 'All', order_history_status: 'All', order_history_count: 0, order_history_complete: true,
+    order_history_observed_at: (at + 5000) / 1000, reviewed_at: (at + 6000) / 1000, expires_at: (at + 306000) / 1000 };
+  return { at, claim, disposition };
+}
+
+test('reviewed visible SDK dismissal appends disposition, preserves history and requires explicit new no-submit reconciliation', async () => stateFixture(async directory => {
+  const { at, claim: originalClaim, disposition } = await visibleFormDispositionFixture(directory);
+  const names = (await readdir(directory)).sort(), before = await Promise.all(names.map(name => readFile(join(directory, name))));
+  const blocked = await operator.inspectGuestCheckoutLedger({ directory });
+  assert.equal(blocked.state, 'guest_form_visible'); assert.equal(blocked.init_allowed, false);
+  assert.equal(blocked.no_submit_init_allowed, false);
+  const browserEffects = [];
+  if (blocked.no_submit_init_allowed) browserEffects.push('navigate');
+  assert.deepEqual(browserEffects, []);
+  const record = await oneShot(directory, disposition, { mode: 'disposition', now: at + 6000 });
+  assert.equal(record.message.type, 'form_disposition_recorded'); assert.equal(record.message.duplicate, false);
+  assert.equal(record.message.merchant_order_status, 'unverified');
+  assert.equal((await audits(directory)).length, 5);
+  assert.equal((await oneShot(directory, disposition, { mode: 'disposition', now: at + 6000 })).message.duplicate, true);
+  for (let i = 0; i < names.length; i++) assert.deepEqual(await readFile(join(directory, names[i])), before[i]);
+  const gate = await operator.inspectGuestCheckoutLedger({ directory });
+  assert.equal(gate.current_head, record.message.disposition_sha256); assert.equal(gate.record_count, 5);
+  assert.equal(gate.state, 'reviewed_form_disposition'); assert.equal(gate.init_allowed, false);
+  assert.equal(gate.no_submit_init_allowed, true);
+  const human = await currentClaim(directory, { now: (at + 7000) / 1000 });
+  assert.equal((await oneShot(directory, human, { now: at + 7000 })).message.stop_reason, 'prior_attempt_unresolved');
+  human.priorFormDisposition_sha256 = record.message.disposition_sha256;
+  assert.equal((await oneShot(directory, human, { now: at + 7000 })).message.stop_reason, 'authorization_unverified');
+  const next = noSubmitAuthorization(await currentClaim(directory, { now: (at + 7000) / 1000 }), (at + 7000) / 1000);
+  next.priorFailure.failure_observed_at = originalClaim.priorFailure.failure_observed_at;
+  assert.equal((await oneShot(directory, next, { now: at + 7000 })).message.stop_reason, 'prior_attempt_unresolved');
+  next.priorFormDisposition_sha256 = record.message.disposition_sha256;
+  const granted = await oneShot(directory, next, { now: at + 7000 });
+  assert.equal(granted.message.type, 'checkout_claim_granted');
+  assert.equal((await audits(directory))[6].payload.priorFormDisposition_sha256, record.message.disposition_sha256);
+  assert.equal((await operator.inspectGuestCheckoutLedger({ directory })).state, 'pending_attempt');
+}, { now: 1_800_000_000_000 }));
+
+test('form disposition rejects timeout, missing form, unverified effects, wrong linkage, partial history or false source without writes', async () => stateFixture(async directory => {
+  const { at, disposition } = await visibleFormDispositionFixture(directory);
+  for (const patch of [{ source: 'verified_server_dom_normal_sdk_dismissal' }, { dismissal_kind: 'timeout' },
+    { dismissal_kind: 'session_missing' }, { sdk_close_verified: false }, { blank_form_verified: false },
+    { blank_form_observed_at: (at + 999) / 1000 }, { card_data_entered: true }, { pay_invoked: true },
+    { approval_invoked: true }, { capture_invoked: true }, { current_form_present: true },
+    { current_url: 'https://example.com/' }, { normal_route_verified: false },
+    { previous_claim_sha256: 'a'.repeat(64) }, { previous_outcome_sha256: 'b'.repeat(64) },
+    { intent_id: randomUUID() }, { listing_id: 'other' }, { order_history_archived: 'Not Archived' },
+    { order_history_complete: false }, { order_history_count: 1 },
+    { order_history_observed_at: (at + 2500) / 1000 }, { expires_at: (at + 6000) / 1000 },
+    { merchant_order_cancelled: true }]) {
+    const result = await oneShot(directory, { ...disposition, ...patch }, { mode: 'disposition', now: at + 6000 });
+    assert.equal(result.message.stop_reason, 'form_disposition_unverified');
+    assert.equal((await audits(directory)).length, 4);
+  }
+}, { now: 1_800_000_000_000 }));
+
+test('concurrent disposition and claim cannot race an unlock; replay is exact and newer reconciliation remains required', async () => stateFixture(async directory => {
+  const { at, disposition } = await visibleFormDispositionFixture(directory);
+  const claim = noSubmitAuthorization(await currentClaim(directory, { now: (at + 7000) / 1000 }), (at + 7000) / 1000);
+  claim.priorFormDisposition_sha256 = 'a'.repeat(64);
+  const [record, raced] = await Promise.all([
+    oneShot(directory, disposition, { mode: 'disposition', now: at + 6000 }),
+    oneShot(directory, claim, { now: at + 7000 }),
+  ]);
+  // flock is nonblocking: if the read-only claim won the lock, recording may be safely retried.
+  const accepted = record.message.type === 'form_disposition_recorded' ? record :
+    await oneShot(directory, disposition, { mode: 'disposition', now: at + 6000 });
+  assert.equal(accepted.message.type, 'form_disposition_recorded');
+  assert.equal(raced.message.type, 'claim_stopped'); assert.equal((await audits(directory)).length, 5);
+  const changed = { ...disposition, current_url: 'https://www.discogs.com/sell/cart/' };
+  assert.equal((await oneShot(directory, changed, { mode: 'disposition', now: at + 7000 })).message.type, 'claim_stopped');
+  const next = noSubmitAuthorization(await currentClaim(directory, { now: (at + 7000) / 1000 }), (at + 7000) / 1000);
+  next.priorFormDisposition_sha256 = accepted.message.disposition_sha256;
+  next.priorFailure.failure_observed_at = (at - 1) / 1000;
+  next.priorFailure.order_history_observed_at = (at + 6000) / 1000;
+  assert.equal((await oneShot(directory, next, { now: at + 7000 })).message.stop_reason, 'form_disposition_unverified');
+  assert.equal((await audits(directory)).length, 5);
+}, { now: 1_800_000_000_000 }));
+
+test('read-only ledger disposition gate validates full history and fails closed on tampered disposition', async () => stateFixture(async directory => {
+  const clear = await operator.inspectGuestCheckoutLedger({ directory });
+  assert.equal(clear.state, 'no_prior_attempt'); assert.equal(clear.init_allowed, true);
+  const { at, disposition } = await visibleFormDispositionFixture(directory);
+  const legacy = client(directory);
+  try {
+    const start = startFor(await legacy.next()); legacy.send(start);
+    assert.equal((await legacy.next()).type, 'stopped'); await legacy.exited;
+    assert.ok(!legacy.output.join('').includes('operator_action'));
+  } finally { await legacy.close(); }
+  assert.equal((await oneShot(directory, disposition, { mode: 'disposition', now: at + 6000 })).code, 0);
+  const name = join(directory, 'guest-checkout-000005.json');
+  const value = JSON.parse(await readFile(name, 'utf8')); value.payload.sdk_close_verified = false;
+  const bytes = encoded(value); await writeFile(name, bytes);
+  const state = await operator.inspectGuestCheckoutLedger({ directory });
+  assert.equal(state.state, 'unverified'); assert.equal(state.init_allowed, false); assert.equal(state.no_submit_init_allowed, false);
+  assert.equal(await readFile(name, 'utf8'), bytes); assert.equal((await audits(directory)).length, 5);
+}, { now: 1_800_000_000_000 }));
+
+test('ledger inspection blocks crash prefixes ending in ready or review before any attempt fence', async () => {
+  for (const previousDisposition of [false, true]) for (const tail of ['ready', 'review']) {
+    await stateFixture(async directory => {
+      const at = 1_800_000_000_000;
+      let baseCount = 0, dispositionHash;
+      if (previousDisposition) {
+        const visible = await visibleFormDispositionFixture(directory);
+        const recorded = await oneShot(directory, visible.disposition, { mode: 'disposition', now: at + 6000 });
+        dispositionHash = recorded.message.disposition_sha256; baseCount = 5;
+        assert.equal((await operator.inspectGuestCheckoutLedger({ directory })).no_submit_init_allowed, true);
+      }
+      const claim = noSubmitAuthorization(await currentClaim(directory, { now: (at + 7000) / 1000 }), (at + 7000) / 1000);
+      if (dispositionHash) claim.priorFormDisposition_sha256 = dispositionHash;
+      assert.equal((await oneShot(directory, claim, { now: at + 7000 })).message.type, 'checkout_claim_granted');
+      // Isolated fixture retains exactly the fsynced prefix a process crash could leave.
+      await rm(join(directory, `guest-checkout-${String(baseCount + 3).padStart(6, '0')}.json`));
+      if (tail === 'ready') await rm(join(directory, `guest-checkout-${String(baseCount + 2).padStart(6, '0')}.json`));
+      const before = await audits(directory), gate = await operator.inspectGuestCheckoutLedger({ directory });
+      assert.equal(before.at(-1).kind, tail);
+      assert.equal(gate.state, 'incomplete_claim'); assert.equal(gate.init_allowed, false); assert.equal(gate.no_submit_init_allowed, false);
+      assert.equal(gate.record_count, baseCount + (tail === 'ready' ? 1 : 2));
+      const direct = noSubmitAuthorization(await currentClaim(directory, { now: (at + 8000) / 1000 }), (at + 8000) / 1000);
+      if (dispositionHash) direct.priorFormDisposition_sha256 = dispositionHash;
+      const denied = await oneShot(directory, direct, { now: at + 8000 });
+      assert.equal(denied.message.stop_reason, 'incomplete_claim');
+      const legacy = client(directory);
+      try {
+        legacy.send(startFor(await legacy.next(), { now: (at + 8000) / 1000 }));
+        assert.equal((await legacy.next()).type, 'stopped'); await legacy.exited;
+        assert.ok(!legacy.output.join('').includes('operator_action'));
+      } finally { await legacy.close(); }
+      assert.deepEqual(await audits(directory), before);
+    }, { now: 1_800_000_000_000 });
+  }
+});
+
+test('fixed server DOM provenance is audit-visible and accepted only for typed no-submit claims', async () => {
+  for (const mode of ['no_submit', 'human', 'unsupported_source']) await stateFixture(async directory => {
+    const current = await currentClaim(directory);
+    const claim = mode === 'human' ? current : noSubmitAuthorization(current);
+    claim.provenance.source = mode === 'unsupported_source' ? 'automated_dom' : 'fixed_server_dom_current_checkout';
+    const result = await oneShot(directory, claim);
+    if (mode === 'no_submit') {
+      assert.equal(result.message.type, 'checkout_claim_granted');
+      assert.equal((await audits(directory))[1].payload.provenance.source, 'fixed_server_dom_current_checkout');
+      assert.equal(result.message.card_entry_allowed, false); assert.equal(result.message.payment_allowed, false);
+    } else {
+      assert.equal(result.message.stop_reason, 'provenance_unverified');
+      assert.equal((await audits(directory)).length, 0);
+    }
+  });
+});

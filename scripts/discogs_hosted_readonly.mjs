@@ -3,6 +3,9 @@
  * never logs a session, mutates a cart, accepts an agreement, or exposes Playwright.
  */
 import { createServer } from 'node:net';
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+const pendingBrowserReads = new AsyncLocalStorage();
 import { randomUUID } from 'node:crypto';
 import { chmod, lstat, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -175,9 +178,13 @@ function partialReleaseReport(observation) {
 
 async function beforeDeadline(operation) {
   let timer;
+  const pending = pendingBrowserReads.getStore();
+  const operationPromise = Promise.resolve().then(operation);
+  pending?.add(operationPromise);
+  operationPromise.then(() => pending?.delete(operationPromise), () => pending?.delete(operationPromise));
   try {
     return await Promise.race([
-      Promise.resolve().then(operation),
+      operationPromise,
       new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), READ_TIMEOUT_MS); }),
     ]);
   } finally { clearTimeout(timer); }
@@ -653,6 +660,7 @@ export async function listenHostedReadOnly(context, socketPath, {
   monitorTrialTimeoutMs = RELEASE_PAGINATION_BUDGET_MS,
   operatorListingTimeoutMs = READ_TIMEOUT_MS,
   leaseWriteHook = null,
+  acquireContextLease = () => () => {},
 } = {}) {
   if (!Number.isSafeInteger(monitorVerifyTimeoutMs) || monitorVerifyTimeoutMs < 1 ||
       monitorVerifyTimeoutMs > READ_TIMEOUT_MS ||
@@ -665,6 +673,7 @@ export async function listenHostedReadOnly(context, socketPath, {
   if (leaseWriteHook !== null && typeof leaseWriteHook !== 'function') {
     throw new TypeError('invalid_lease_write_hook');
   }
+  if (typeof acquireContextLease !== 'function') throw new TypeError('invalid_context_lease');
   const shared = socketPath === SHARED_SOCKET;
   if (typeof socketPath !== 'string' || (!shared && !/^\/tmp\/[a-z][a-z0-9-]{0,47}\.sock$/u.test(socketPath))) {
     throw new TypeError('unsupported_socket_path');
@@ -770,7 +779,7 @@ export async function listenHostedReadOnly(context, socketPath, {
   };
   const server = createServer(connection => {
     if (serverClosing) { connection.destroy(); return; }
-    let input = Buffer.alloc(0), done = false;
+    let input = Buffer.alloc(0), done = false, processing = false;
     let activeMonitorTrial = null;
     const controller = new AbortController();
     connections.set(connection, controller);
@@ -803,12 +812,18 @@ export async function listenHostedReadOnly(context, socketPath, {
       invalidateActiveTrial();
     });
     connection.on('data', async chunk => {
-      if (done) return;
+      if (done || processing) return;
       if (input.length + chunk.length > MAX_REQUEST_BYTES) return send(stopped('request_too_large'));
       input = Buffer.concat([input, chunk]);
       const newline = input.indexOf(10);
       if (newline < 0) return;
       if (newline !== input.length - 1 || busy) return send(stopped(busy ? 'read_in_progress' : 'unsupported_read_request'));
+      processing = true;
+      const releaseContext = acquireContextLease();
+      if (typeof releaseContext !== 'function') return send(stopped('read_in_progress'));
+      const pending = new Set();
+      await pendingBrowserReads.run(pending, async () => {
+      try {
       let request;
       try { request = JSON.parse(input.subarray(0, newline).toString('utf8')); }
       catch { return send(stopped('unsupported_read_request')); }
@@ -1170,6 +1185,13 @@ export async function listenHostedReadOnly(context, socketPath, {
         send(result);
       }
       finally { busy = false; }
+      } finally {
+        // A timed-out collector can still be resolving in the browser. Keep
+        // the shared lease until those actual reads settle, not just the race.
+        while (pending.size) await Promise.allSettled([...pending]);
+        releaseContext();
+      }
+      });
     });
   });
   const previousUmask = process.umask(0o077);

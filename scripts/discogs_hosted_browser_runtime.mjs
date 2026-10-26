@@ -2,6 +2,7 @@
  * logged-in profile until the owner approves programmatic read access to it.
  */
 import { listenHostedReadOnly } from './discogs_hosted_readonly.mjs';
+import { createHostedContextLease, listenHostedGuestPreparation, HOSTED_GUEST_SOCKET } from './discogs_hosted_guest_socket.mjs';
 
 export const HOSTED_BROWSER_SHUTDOWN_MS = 2000;
 
@@ -18,18 +19,25 @@ async function boundedShutdown(operations) {
   } finally { clearTimeout(timer); }
 }
 
-export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPath) {
+export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPath, { guestPreparation = null } = {}) {
   if (!firefox || typeof firefox.launchPersistentContext !== 'function' ||
       profilePath !== '/profile' || !['/tmp/sniper-read-only.sock', '/bridge/sniper-read-only.sock'].includes(socketPath)) {
     throw new TypeError('unsupported_hosted_browser_configuration');
   }
+  if (guestPreparation !== null && (socketPath !== '/bridge/sniper-read-only.sock' ||
+      typeof guestPreparation !== 'object' || Array.isArray(guestPreparation) ||
+      Object.keys(guestPreparation).sort().join('|') !== 'accessGuard|authorize' ||
+      typeof guestPreparation.authorize !== 'function' || typeof guestPreparation.accessGuard !== 'function')) {
+    throw new TypeError('scoped_guest_configuration_required');
+  }
+  const acquireContextLease = createHostedContextLease();
   const context = await firefox.launchPersistentContext(profilePath, {
     headless: false,
     acceptDownloads: false,
     noDefaultViewport: true,
     firefoxUserPrefs: { 'signon.rememberSignons': false },
   });
-  let browser, closeSocket, shutdown, closing = false, unavailable = false;
+  let browser, closeSocket, closeGuestSocket, shutdown, closing = false, unavailable = false;
   let reportUnavailable;
   const unavailablePromise = new Promise(resolve => { reportUnavailable = resolve; });
   const close = () => {
@@ -37,6 +45,7 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
     closing = true;
     shutdown = boundedShutdown([
       () => closeSocket?.(),
+      () => closeGuestSocket?.(),
       () => context.close(),
     ]).finally(() => {
       context.off?.('close', browserUnavailable);
@@ -80,7 +89,13 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
       operatorUsedPath: '/bridge/operator-rocky-used',
       operatorCartAckPath: '/bridge/operator-cart-ack',
       operatorCartUsedPath: '/bridge/operator-cart-used',
-    } : {});
+      acquireContextLease,
+    } : { acquireContextLease });
+    if (guestPreparation !== null) {
+      if (!isAvailable()) throw new Error('browser_unavailable');
+      closeGuestSocket = await listenHostedGuestPreparation(context, HOSTED_GUEST_SOCKET,
+        { ...guestPreparation, acquireContextLease });
+    }
     if (!isAvailable()) throw new Error('browser_unavailable');
     return close;
   } catch (error) {
