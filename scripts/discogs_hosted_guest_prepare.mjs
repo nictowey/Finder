@@ -4,7 +4,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { Readable, Writable } from 'node:stream';
-import { collectListingDetailDom } from './discogs_listing_detail_snapshot.mjs';
+import { collectListingDetailDom, collectListingReadinessDom } from './discogs_listing_detail_snapshot.mjs';
 import { collectCartDom } from './discogs_cart_inspector.mjs';
 import { inspectCurrentEnhancedCheckout } from './discogs_enhanced_checkout.mjs';
 import * as checkoutOperator from './discogs_guest_checkout_operator.mjs';
@@ -74,19 +74,24 @@ async function ledgerHead(directory, request) {
  */
 export async function collectHostedGuestDom({ stage, approvedDestinationDigest, privateDestinationSnapshot = false }) {
   const cart = stage === 'cart';
-  const visible = element => {
+  const rendered = element => {
     if (!element?.isConnected) return false;
     for (let node = element; node; node = node.parentElement) {
       const style = getComputedStyle(node);
       if (node.hidden || node.getAttribute('aria-hidden') === 'true' || style.display === 'none' ||
-          ['hidden', 'collapse'].includes(style.visibility) || style.opacity === '0') return false;
+          ['hidden', 'collapse'].includes(style.visibility) || style.contentVisibility === 'hidden' || style.opacity === '0') return false;
     }
-    return [...element.getClientRects()].some(rect => rect.width > 0 && rect.height > 0);
+    return true;
   };
+  const visible = element => rendered(element) &&
+    [...element.getClientRects()].some(rect => rect.width > 0 && rect.height > 0);
   const text = element => {
     if (!visible(element)) return '';
-    const walk = node => node.nodeType === 3 ? node.nodeValue : node.nodeType === 1 && visible(node) ?
-      node.tagName === 'BR' ? ' ' : [...node.childNodes].map(walk).join('') : '';
+    // A rendered BR supplies a line boundary even with a zero-width rectangle.
+    // Its own styles and every ancestor still have to be rendered.
+    const walk = node => node.nodeType === 3 ? node.nodeValue : node.nodeType !== 1 ? '' :
+      node.tagName === 'BR' ? rendered(node) ? ' ' : '' :
+      visible(node) ? [...node.childNodes].map(walk).join('') : '';
     return walk(element).replace(/\s+/gu, ' ').trim();
   };
   const named = (root, tag, prefix) => [...root.querySelectorAll(tag)].filter(node =>
@@ -124,7 +129,8 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
     const grade = value => (Object.hasOwn(grades, value) ? grades[value] : null) || Object.entries(grades).find(([label, token]) =>
       label !== 'Generic' && value === `${label} (${token})`)?.[1] ||
       (/^(?:P|F|G|G\+|VG|VG\+|NM|M)$/u.test(value) ? value : null);
-    const conditions = cart ? text(row) : text(named(row, 'div', '_checkout-sell-item__condition_')[0]);
+    const conditionNodes = cart ? [] : named(row, 'div', '_checkout-sell-item__condition_');
+    const conditions = cart ? text(row) : conditionNodes.length === 1 ? text(conditionNodes[0]) : '';
     const match = /(?:^| )Media(?: Condition)?\s*:\s*(.*?)\s+Sleeve(?: Condition)?\s*:\s*(.*?)(?= \$|$)/u.exec(conditions);
     if (match) { out.media = grade(match[1]); out.sleeve = grade(match[2]); }
     const prices = cart ? [] : named(row, 'div', '_checkout-sell-item__price_').filter(visible);
@@ -563,8 +569,9 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
     if (confirming && dom.private_destination_snapshot !== job.private_destination_snapshot) fail('saved_destination_snapshot_changed');
     const detailPages = pages.filter(candidate => ['https://www.discogs.com/sell/item/1366950910',
       'https://www.discogs.com/shop/item/1366950910'].includes(candidate.url()));
-    let detail = null, title = null;
+    let detail = null, title = null, readiness = null;
     if (detailPages.length === 1) {
+      readiness = await read(() => detailPages[0].evaluate(collectListingReadinessDom));
       detail = await read(() => detailPages[0].evaluate(collectListingDetailDom, { release_id: '3422100', listing_id: '1366950910' }));
       title = await read(() => detailPages[0].evaluate(collectHostedGuestDom, { stage: 'detail' }));
       if (title.access !== 'normal') fail('access_restricted');
@@ -576,13 +583,25 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
         summary?.status === 'observed' && summary.displayed.subtotal.amount === '0.10' && summary.displayed.shipping.amount === '4.95' && summary.displayed.total.amount === '5.05',
       quantity_declaration: dom.quantity === true,
       destination_match: confirming ? true : null,
-      listing_detail_supported: detail?.status === 'observed' && detail?.release_id === Number(authorization.release_id) &&
+      listing_detail_supported: title?.ready === true && detail?.status === 'observed' && detail?.release_id === Number(authorization.release_id) &&
         detail?.listing_id === authorization.listing_id && detail?.seller_handle === authorization.seller,
-      title_continuity: !!title?.title_digest && dom.title_digest === title.title_digest,
-      condition_continuity: detail?.status === 'observed' && dom.media === detail.media && dom.sleeve === detail.sleeve,
+      title_continuity: title?.ready === true && detail?.status === 'observed' && !!title.title_digest && dom.title_digest === title.title_digest,
+      condition_continuity: title?.ready === true && detail?.status === 'observed' && dom.media === detail.media && dom.sleeve === detail.sleeve,
       item_price_continuity: cart ? cartDom?.subtotal?.value === '$0.10 USD' : dom.item === '0.10',
       provider_frame_associated: false, card_control_unique_visible_enabled: false,
       existing_guest_form: dom.existing_form === true,
+    };
+    const detailErrors = new Set(['dom_unavailable', 'invalid_exact_identity', 'listing_changed_during_read',
+      'listing_dom_read_failed', 'listing_fields_unavailable', 'listing_grades_unavailable',
+      'listing_main_unavailable', 'listing_not_ready', 'listing_release_mismatch', 'listing_url_mismatch']);
+    const boundedCount = value => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, 2) : null;
+    const detailDiagnostic = {
+      status: detailPages.length === 0 ? 'missing' : detailPages.length > 1 ? 'ambiguous' : detail?.status === 'observed' ? 'observed' : 'incomplete',
+      error_code: detailPages.length === 0 ? 'listing_detail_required' : detail?.status === 'observed' ? null :
+        detailErrors.has(detail?.error_code) ? detail.error_code : 'listing_detail_unverified',
+      ready_state: ['loading', 'interactive', 'complete'].includes(readiness?.ready_state) ? readiness.ready_state : 'unknown',
+      main_count: boundedCount(readiness?.main_count), release_link_count: boundedCount(readiness?.release_link_count),
+      grade_count: boundedCount(readiness?.grade_count),
     };
     const frames = (await read(() => page.frames())).filter(frame => isObservedCardFrame(frame.url()));
     if (frames.length === 1 && frames[0].parentFrame() === page.mainFrame()) {
@@ -621,6 +640,7 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
       document_ref: job.document_ref, merchant_route: cart ? 'cart' : 'enhanced_checkout',
       address_present: dom.address_present === true, destination_binding_available: confirming,
       destination_match: confirming ? true : null,
+      detail_diagnostic: detailDiagnostic,
       structure: { item_row_count: dom.item_row_count, item_title_present: dom.item_title_present,
         media_grade: dom.media, sleeve_grade: dom.sleeve, address_container_count: dom.address_container_count,
         address_line_count: dom.address_line_count },

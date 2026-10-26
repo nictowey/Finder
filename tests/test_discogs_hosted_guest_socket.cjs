@@ -66,6 +66,8 @@ test('readonly qualification exposes only opaque reference and bounded public st
     destination_binding_available: false, destination_match: null, observed: { destination_match: null },
     structure: { item_row_count: 1, item_title_present: true, media_grade: 'P', sleeve_grade: 'Generic',
       address_container_count: 1, address_line_count: 4, address: 'never export', address_digest: 'never export' },
+    detail_diagnostic: { status: 'incomplete', error_code: 'listing_main_unavailable', ready_state: 'complete',
+      main_count: 0, release_link_count: 0, grade_count: 0, body: 'never export' },
     address: 'never export', address_digest: 'never export', initialization_allowed: true });
   const close = await listenHostedGuestPreparation({}, socket, config);
   try {
@@ -76,11 +78,15 @@ test('readonly qualification exposes only opaque reference and bounded public st
       item_title_present: true, media_grade: 'P', sleeve_grade: 'Generic', address_line_count: 4 });
     assert.equal(JSON.stringify(result).includes('never export'), false);
     assert.equal(result.final_submission_allowed, false); assert.equal(result.initialization_allowed, undefined);
+    assert.deepEqual(result.detail_diagnostic, { status: 'incomplete', error_code: 'listing_main_unavailable',
+      ready_state: 'complete', main_count: 0, release_link_count: 0, grade_count: 0 });
     config.fixtureOperations.probe_guest_evidence = async () => ({ status: 'observed', code: 'approved_saved_destination_bound',
-      document_ref: 'bad', merchant_route: 'other', structure: { item_row_count: 3, media_grade: 'secret', address_line_count: 99 } });
+      document_ref: 'bad', merchant_route: 'other', structure: { item_row_count: 3, media_grade: 'secret', address_line_count: 99 },
+      detail_diagnostic: { status: 'never export', error_code: 'never export', ready_state: 'never export', main_count: 99 } });
     const rejected = await exchange(socket, request('probe_guest_evidence'));
     assert.equal(rejected.status, 'observed'); assert.equal(rejected.document_ref, undefined);
     assert.equal(rejected.merchant_route, undefined); assert.deepEqual(rejected.structure, {});
+    assert.deepEqual(rejected.detail_diagnostic, { error_code: 'listing_detail_unverified' });
   } finally { await close(); }
 });
 

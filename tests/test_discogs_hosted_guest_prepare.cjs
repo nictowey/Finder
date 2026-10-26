@@ -55,7 +55,7 @@ const detailMarkup = `<!doctype html><title>Item</title><main>
 const providerMarkup = '<!doctype html><title>PayPal</title><a role="link" data-funding-source="card" aria-label="Debit or Credit Card" aria-disabled="false">Debit or Credit Card</a><div id="card-fields-container"></div><button>Pay</button>';
 function dom(html, url) {
   const d = new JSDOM(html, { url, runScripts: 'outside-only' });
-  Object.defineProperty(d.window.document, 'readyState', { value: 'complete' });
+  Object.defineProperty(d.window.document, 'readyState', { value: 'complete', configurable: true });
   Object.defineProperty(d.window.HTMLElement.prototype, 'innerText', { get() { return this.textContent; } });
   Object.defineProperty(d.window.crypto, 'subtle', { value: webcrypto.subtle });
   d.window.TextEncoder = TextEncoder;
@@ -705,5 +705,91 @@ test('confirmation pending DOM read crossing either reference or visual-ack expi
       assert.equal((await probe(b, confirmation(grant, first))).status, 'blocked');
       assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
     } finally { Date.now = actualNow; b.close(); }
+  }
+});
+
+// Source-derived condition children from retained merchant bundle SHA256
+// 1933d4028b07f0194e350adc6d4608ac1a9364344ab5b52c0a3d26532f7fb27a:
+// DIV -> 'Media: ', mediaCondition, BR, 'Sleeve: ', sleeveCondition.
+// Zero-width BR rectangles below are an offline model, not measured live DOM.
+const sourceCondition = '<div class="_checkout-sell-item__condition_brkft_34">Media: Poor (P)<br>Sleeve: Generic</div>';
+function withCondition(html) {
+  return summary.replace(/<div class="_checkout-sell-item__condition_fixture">.*?<\/div>/u, html);
+}
+function modelZeroWidthBreaks(b) {
+  const element = b.state.merchant.window.Element.prototype, original = element.getClientRects;
+  element.getClientRects = function () { return this.tagName === 'BR' ? [{ width: 0, height: 18 }] : original.call(this); };
+}
+
+test('source-derived Media BR Sleeve structure reads Poor/Generic with modeled zero-width BR and no actions', async () => {
+  const b = browser(); b.state.merchant = dom(withCondition(sourceCondition), CHECKOUT); modelZeroWidthBreaks(b);
+  try {
+    const result = await probe(b, readonlyGrant());
+    assert.equal(result.status, 'observed');
+    assert.equal(result.structure.media_grade, 'P'); assert.equal(result.structure.sleeve_grade, 'Generic');
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  } finally { b.state.merchant.window.close(); b.close(); }
+});
+
+test('hidden line breaks and hidden ancestors cannot create a visible condition separator', async () => {
+  for (const condition of [sourceCondition.replace('<br>', '<br hidden>'), sourceCondition.replace('<br>', '<br aria-hidden="true">'),
+    sourceCondition.replace('<br>', '<br style="display:none">'), sourceCondition.replace('<br>', '<span hidden><br></span>'),
+    sourceCondition.replace('<div ', '<div hidden ')]) {
+    const b = browser(); b.state.merchant = dom(withCondition(condition), CHECKOUT); modelZeroWidthBreaks(b);
+    try {
+      const result = await probe(b, readonlyGrant());
+      assert.equal(result.structure.media_grade, null); assert.equal(result.structure.sleeve_grade, null);
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    } finally { b.state.merchant.window.close(); b.close(); }
+  }
+});
+
+test('duplicate source-prefix condition nodes remain unverified even when one is hidden', async () => {
+  for (const duplicate of [sourceCondition, sourceCondition.replace('<div ', '<div hidden ')]) {
+    const b = browser(); b.state.merchant = dom(withCondition(sourceCondition + duplicate), CHECKOUT);
+    try {
+      const result = await probe(b, readonlyGrant());
+      assert.equal(result.structure.media_grade, null); assert.equal(result.structure.sleeve_grade, null);
+      assert.ok(result.missing_fields.includes('condition_continuity'));
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    } finally { b.state.merchant.window.close(); b.close(); }
+  }
+});
+
+test('blank already-open detail page reports bounded readiness diagnostics and unknown identity/title', async () => {
+  const b = browser({ detail: '<!doctype html><title>Discogs</title><nav>Navigation only</nav>' });
+  b.state.merchant = dom(withCondition(sourceCondition), CHECKOUT);
+  try {
+    const result = await probe(b, readonlyGrant());
+    assert.equal(result.status, 'observed');
+    assert.deepEqual(result.detail_diagnostic, { status: 'incomplete', error_code: 'listing_main_unavailable',
+      ready_state: 'complete', main_count: 0, release_link_count: 0, grade_count: 0 });
+    assert.equal(result.observed.listing_detail_supported, false); assert.equal(result.observed.title_continuity, false);
+    assert.equal(result.structure.media_grade, 'P'); assert.equal(result.structure.sleeve_grade, 'Generic');
+    for (const secret of ['Navigation only', 'testids', 'hifi-', '/sell/item/', '/release/']) assert.ok(!json(result).includes(secret));
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  } finally { b.state.merchant.window.close(); b.close(); }
+});
+
+test('unready detail and missing exact header remain unverified; readiness counts are capped without alternate selectors', async () => {
+  for (const mode of ['loading', 'unknown_header', 'ambiguous_counts']) {
+    const b = browser({ detail: mode === 'unknown_header' ? detailMarkup.replace('/release/3422100', '/release/3422100-unverified-slug') :
+      mode === 'ambiguous_counts' ? detailMarkup.replace('</main>',
+        '<a href="/release/3422100">Extra</a><a href="/release/3422100">Extra</a>' +
+        '<span class="hifi-grade-chip-display">Extra</span><span class="hifi-grade-chip-display">Extra</span></main><main></main><main></main>') : detailMarkup });
+    b.state.merchant = dom(withCondition(sourceCondition), CHECKOUT);
+    if (mode === 'loading') Object.defineProperty(b.state.detail.window.document, 'readyState', { value: 'loading' });
+    try {
+      const result = await probe(b, readonlyGrant());
+      assert.equal(result.status, 'observed'); assert.equal(result.observed.listing_detail_supported, false);
+      assert.equal(result.observed.title_continuity, false);
+      assert.equal(result.detail_diagnostic.error_code, mode === 'loading' ? 'listing_not_ready' : mode === 'unknown_header' ? 'listing_release_mismatch' : 'listing_main_unavailable');
+      assert.equal(result.detail_diagnostic.ready_state, mode === 'loading' ? 'loading' : 'complete');
+      if (mode === 'ambiguous_counts') {
+        assert.equal(result.detail_diagnostic.main_count, 2);
+        assert.equal(result.detail_diagnostic.release_link_count, 2); assert.equal(result.detail_diagnostic.grade_count, 2);
+      }
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    } finally { b.state.merchant.window.close(); b.close(); }
   }
 });

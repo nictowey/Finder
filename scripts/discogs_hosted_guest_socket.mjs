@@ -29,6 +29,10 @@ const OBSERVED = new Set(['summary_supported', 'seller_matches', 'exact_preparat
   'card_control_unique_visible_enabled', 'existing_guest_form']);
 const MISSING = new Set(['quantity', 'destination', 'listing', 'title_continuity',
   'condition_continuity', 'item_price_continuity', ...OBSERVED]);
+const DETAIL_CODES = new Set(['invalid_exact_identity', 'dom_unavailable', 'listing_url_mismatch',
+  'listing_not_ready', 'listing_main_unavailable', 'listing_release_mismatch', 'listing_grades_unavailable',
+  'listing_changed_during_read', 'listing_fields_unavailable', 'listing_dom_read_failed',
+  'listing_detail_required', 'listing_detail_unverified']);
 const CODES = new Set(['scoped_authorization_required', 'prior_attempt_unresolved', 'form_disposition_required',
   'form_disposition_unverified', 'ledger_inspection_unavailable', 'operation_busy', 'navigation_requires_reconciliation',
   'fixed_ledger_required', 'cancelled', 'deadline_expired', 'existing_cart_required', 'single_existing_cart_required',
@@ -73,6 +77,17 @@ function safeResult(value) {
       if ([...grades, 'Generic'].includes(value.structure.sleeve_grade)) result.structure.sleeve_grade = value.structure.sleeve_grade;
       const lines = value.structure.address_line_count;
       if (lines === null || Number.isInteger(lines) && lines >= 0 && lines <= 6) result.structure.address_line_count = lines;
+    }
+    if (value.detail_diagnostic && typeof value.detail_diagnostic === 'object') {
+      const detail = value.detail_diagnostic;
+      result.detail_diagnostic = {
+        error_code: detail.error_code === null ? null : DETAIL_CODES.has(detail.error_code) ? detail.error_code : 'listing_detail_unverified',
+      };
+      if (['missing', 'ambiguous', 'observed', 'incomplete'].includes(detail.status)) result.detail_diagnostic.status = detail.status;
+      if (['loading', 'interactive', 'complete', 'unknown'].includes(detail.ready_state)) result.detail_diagnostic.ready_state = detail.ready_state;
+      for (const key of ['main_count', 'release_link_count', 'grade_count']) {
+        if ([0, 1, 2, null].includes(detail[key])) result.detail_diagnostic[key] = detail[key];
+      }
     }
   }
   return result;

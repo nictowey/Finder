@@ -654,3 +654,54 @@ does not invent an expired-session event, order-history result, quote, readiness
 attestation or destination hash merely to inspect a page. Observed public
 canonical grade labels such as `Poor (P)` normalize only when the label and grade
 token agree; an ambiguous or mismatched grade stays unknown.
+
+
+### Actual hosted qualification and retained parser diagnosis
+
+Revision `6742a2783aa4d811bcec28009adcdd010340227e` passed exact CI and was
+built on the existing VPS without build networking. Image
+`sniper-browser-view:qualification-6742a27` started at
+`2026-10-26T19:13:02.587717345Z`; profile, loopback ports, isolation, durable
+stop and audit hashes were preserved. Its private qualification socket and
+policy were mode 0600 under the existing browser UID. No new credential,
+process identity, public listener or payment capability was added.
+
+Normal UI navigation reached the existing one-copy cart and enhanced checkout.
+Viewer text entry initially truncated a URL into an unintended search; that
+unrelated challenge was left untouched. The normal saved cart entry then reached
+Discogs without a challenge. No cart content or shipping option was changed.
+The separate exact item tab remained navigation-only with a blank body.
+
+Both authorized read-only slots executed in the real Firefox service. They
+verified the enhanced summary, seller, item $0.10, selected shipping $4.95,
+aggregate $5.05 USD, explicit one-item declaration, item-price continuity,
+provider-frame association and the unique enabled card control. A fresh visual
+check of the already-approved saved address permitted confirmation of the same
+unchanged document/address snapshot. No address or digest was exported. The
+reader still reported listing-detail, title-continuity and condition-continuity
+as unsupported; media and sleeve diagnostic values were null. The job and both
+spent slot receipts remain retained. No new card-form, Pay, approval or capture
+action occurred, and merchant/payment status remains unverified.
+
+The retained public bundle with SHA256
+`1933d4028b07f0194e350adc6d4608ac1a9364344ab5b52c0a3d26532f7fb27a`
+renders the condition DIV as `Media: ` + media value + BR + `Sleeve: ` + sleeve
+value. The old text walker tested positive rectangle width before treating BR
+as a separator. A source-derived fixture with a zero-width BR reproduced null
+grades; the corrected walker preserves a rendered BR separator while retaining
+hidden/style/ancestor checks. Hidden breaks and duplicate condition containers
+remain unverified. This proves a deterministic parser bug in that structure;
+it does not establish that the live BR geometry was measured or that this is
+the only cause of the earlier null result.
+
+No alternate detail or release selector is justified by the blank item body.
+The next reader reports only fixed detail error/readiness enums and capped
+main/release-link/grade counts. It cannot invent an identity, title, grade or
+access denial from missing content. The accepted test copy's Poor/Generic
+condition remains distinct from the disabled 56 Nights VG+ rule.
+
+A subsequent live check requires a new reviewed, bounded read-only job, preserving
+all old receipts; it must not reuse either spent phase. The proposed first read
+would verify the corrected condition output and classify the detail failure.
+It must stop on a restriction and cannot navigate, initialize a form or submit
+payment. No such additional job has been created or executed by this parser fix.
