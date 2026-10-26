@@ -985,3 +985,41 @@ accepted the repair and the bounded three-phase preflight plan. Four older
 synthetic legacy snapshots now explicitly declare their control kind; their
 quote/claim expectations were not relaxed. These checks establish offline
 compatibility, not live navigation or purchase readiness.
+
+
+### Predicate diagnosis after a16c29a live inspection
+
+The CI-passed `a16c29a` deployment matched both module hashes. Its fresh exact-item
+inspection still passed seller, release/detail, quantity and title continuity,
+but failed summary/money support and reported zero supplemental address containers.
+No destination acknowledgement or Go action followed. The historical ledger and
+all 41 preservation hashes remained unchanged; the distinct preflight job spent
+only its inspect slot. This was an application validation failure, not an
+observed challenge or access denial.
+
+The retained structural capture cannot identify the exact rejecting predicate.
+In particular, address discovery is deliberately suppressed when the shared cart
+binding is invalid: zero reported containers need not mean a missing wrapper.
+An offline two-variant reproduction matched every captured gate fact while
+changing only the uncaptured Go-button value. The exact-value variant completed
+the collectors; the absent-value variant reproduced the failed money/summary and
+zero supplemental address count. Both variants are synthetic; this does not
+establish that the real button value is absent.
+
+The diagnostic-only patch preserves the existing qualification checks. It adds
+fixed first-failed gate enums, capped structural counts and explicit booleans
+for each Go/form/row/shipping association and visibility predicate. The visible
+address-wrapper count is reported independently of whether discovery was
+attempted. The socket admits only the exact diagnostic schemas and rejects
+unknown fields, enums and out-of-range counts. No raw button value, form action,
+address line, destination digest, session field or arbitrary DOM text is exported.
+A separately reviewed bounded read is needed to identify the live predicate
+before changing eligibility logic; no consumed job may be reused for that read.
+
+Diagnostic-only validation passed 507 exact-CI-list Node tests, 3,885 Python
+tests plus 41 subtests, 110 app tests, lint, format and type checking. Independent
+review accepted the output bounds and unchanged eligibility predicates. A new
+ordinary qualification policy can leave its acknowledgement null and use only
+its inspect phase; its required max_calls2 schema must not be relabelled as a
+max-one policy, and confirmation stays denied without a later explicit update.
+The spent preflight job and its receipts remain separate and unchanged.

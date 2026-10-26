@@ -421,6 +421,10 @@ test('captured layout motivates class-independent same-form V2 observation', () 
   try {
     const snapshot = fixture.collect();
     assert.equal(snapshot.form_count, 1); // Unique owner form, independent of class.
+    assert.equal(snapshot.binding_gate, 'complete');
+    assert.deepEqual(snapshot.binding_counts,
+      { legacy_count: 0, go_count: 1, select_count: 1, container_count: 1,
+        global_row_count: 1, global_summary_count: 1 });
     assert.equal(snapshot.checkout_control_kind, 'v2_go_to_checkout');
     assert.equal(snapshot.item_row_count, 1);
     assert.equal(snapshot.missing_address, null);
@@ -440,6 +444,45 @@ test('captured layout motivates class-independent same-form V2 observation', () 
     assert.equal(JSON.stringify(snapshot).includes('PRIVATE_SYNTHETIC_ADDRESS'), false);
     assert.equal(JSON.stringify(result).includes('PRIVATE_SYNTHETIC_ADDRESS'), false);
   } finally { fixture.close(); }
+});
+
+test('fixed binding diagnostics reproduce an uncaptured Go value and reveal no page values', () => {
+  const exact = cartDom(V2_CART_DOM);
+  const absent = cartDom(V2_CART_DOM.replace('value="Go to Checkout"', ''));
+  try {
+    const good = exact.collect(), stopped = absent.collect();
+    assert.deepEqual(stopped.binding_counts, good.binding_counts);
+    assert.equal(good.binding_gate, 'complete');
+    assert.equal(stopped.binding_gate, 'control_binding_mismatch');
+    assert.equal(stopped.form_count, 1);
+    assert.equal(stopped.summary_count, undefined);
+    assert.equal(stopped.subtotal, undefined);
+    assert.equal(stopped.address_container_count, undefined);
+    for (const value of ['PRIVATE_SYNTHETIC_ADDRESS', 'Synthetic title', '$0.10 USD']) {
+      assert.equal(JSON.stringify(stopped).includes(value), false);
+    }
+  } finally { exact.close(); absent.close(); }
+});
+
+test('diagnostic gate names first structural stop without broadening eligibility', () => {
+  for (const [html, gate] of [
+    [V2_CART_DOM.replace('<form id="owner-form" class="current">', ''), 'owner_form_missing'],
+    [V2_CART_DOM.replace('class="order_container"', 'class="order_container" hidden'), 'owner_form_mismatch'],
+    [V2_CART_DOM.replace('name="shipping_method"', 'name="shipping_method" form="other-form"')
+      .replace('</body>', '<form id="other-form"></form></body>'), 'shipping_form_mismatch'],
+    [V2_CART_DOM.replace('</body>', '<table><tr class="order_row"><td>Second</td></tr></table></body>'), 'row_binding_mismatch'],
+    [V2_CART_DOM.replace('</body>', '<div class="order_summary"></div></body>'), 'summary_binding_mismatch'],
+  ]) {
+    const fixture = cartDom(html);
+    try {
+      const raw = fixture.collect();
+      assert.equal(raw.binding_gate, gate);
+      for (const value of Object.values(raw.binding_counts)) {
+        assert.ok(Number.isInteger(value) && value >= 0 && value <= 2);
+      }
+      assert.equal(inspectCartDomSnapshot(URL, raw, OPTIONS).purchase_allowed, false);
+    } finally { fixture.close(); }
+  }
 });
 
 test('V2 rejects split, wrong-form, duplicate and detached merchant controls without money reads', () => {

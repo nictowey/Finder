@@ -360,3 +360,46 @@ test('cart layout sanitizer rejects the entire capture on unknown text, raw clas
     }
   } finally { await close(); }
 });
+
+test('cart gate diagnostics export only fixed predicate booleans and capped counts', async () => {
+  const socket = path(), config = options();
+  const countKeys = ['go_count','container_count','row_count','select_count','scoped_summary_count','legacy_count','visible_address_wrapper_count'];
+  const booleanKeys = ['discovery_attempted','go_type_submit','go_value_matches','go_text_matches','go_visible','go_enabled',
+    'go_not_disabled_property','go_not_disabled_selector','go_not_aria_disabled','form_present','form_current_document','form_connected',
+    'container_closest_form_matches','select_form_matches','form_contains_container','form_contains_row','form_contains_go',
+    'form_contains_select','form_contains_summary','container_contains_row','container_contains_go','container_contains_select',
+    'container_visible','row_visible','select_visible','summary_count_one'];
+  const binding = { schema:'cart_binding_predicates_v1',first_failed:'go_value_matches',
+    ...Object.fromEntries(countKeys.map(key=>[key,key==='legacy_count'?0:1])),
+    ...Object.fromEntries(booleanKeys.map(key=>[key,key!=='go_value_matches' && key!=='discovery_attempted'])) };
+  const reader = { schema:'cart_reader_predicates_v1',code:'observed',first_failed:'control_binding_mismatch',
+    counts:{legacy_count:0,go_count:1,select_count:1,container_count:1,global_row_count:1,global_summary_count:1} };
+  const observed = () => ({status:'observed',code:'current_dom_evidence_only',merchant_route:'cart',
+    cart_binding_diagnostic:structuredClone(binding),cart_reader_diagnostic:structuredClone(reader)});
+  config.fixtureOperations.probe_guest_evidence = async () => observed();
+  const close = await listenHostedGuestPreparation({},socket,config);
+  try {
+    const result = await exchange(socket,request('probe_guest_evidence'));
+    assert.equal(result.status,'observed');
+    assert.deepEqual(result.cart_binding_diagnostic,binding); assert.deepEqual(result.cart_reader_diagnostic,reader);
+    assert.equal(result.final_submission_allowed,false);
+    for (const mutate of [
+      value=>{value.cart_binding_diagnostic.private_address='MUST_NOT_EXPORT';},
+      value=>{value.cart_binding_diagnostic.go_count=3;},
+      value=>{value.cart_binding_diagnostic.go_value_matches='MUST_NOT_EXPORT';},
+      value=>{value.cart_binding_diagnostic.first_failed='MUST_NOT_EXPORT';},
+      value=>{delete value.cart_binding_diagnostic.form_present;},
+      value=>{value.cart_reader_diagnostic.counts.global_row_count=-1;},
+      value=>{value.cart_reader_diagnostic.counts.form_action='MUST_NOT_EXPORT';},
+      value=>{value.cart_reader_diagnostic.first_failed='MUST_NOT_EXPORT';},
+      value=>{value.cart_reader_diagnostic.code='MUST_NOT_EXPORT';},
+      value=>{value.merchant_route='enhanced_checkout';},
+    ]) {
+      config.fixtureOperations.probe_guest_evidence = async () => {const value=observed();mutate(value);return value;};
+      const blocked = await exchange(socket,request('probe_guest_evidence'));
+      assert.equal(blocked.status,'blocked'); assert.equal(blocked.code,'probe_unverified');
+      assert.ok(!JSON.stringify(blocked).includes('MUST_NOT_EXPORT'));
+      assert.equal(blocked.cart_binding_diagnostic,undefined); assert.equal(blocked.cart_reader_diagnostic,undefined);
+    }
+  } finally { await close(); }
+});

@@ -192,24 +192,31 @@ export function collectCartDom(expectedListingId) {
     const result = {
       schema: 'discogs_cart_dom_v1', code: 'observed', purchase_allowed: false,
       form_count: orderForm ? 1 : 0, order_container_count: count(containers),
+      binding_counts: { legacy_count: count(legacyButtons), go_count: count(goButtons),
+        select_count: count(methods), container_count: count(containers),
+        global_row_count: count(document.querySelectorAll('tr.order_row')),
+        global_summary_count: count(document.querySelectorAll('.order_summary')) },
     };
-    if (!orderForm || !container || !orderForm.contains(container) || !visible(container)) return result;
+    const halt = code => { result.binding_gate = code; return result; };
+    if (!orderForm || !container) return halt('owner_form_missing');
+    if (!orderForm.contains(container) || !visible(container)) return halt('owner_form_mismatch');
     // Retain legacy read-only diagnostics even when its final control is
     // missing or malformed; the classifier below will block that control.
     const legacy = goButtons.length === 0 && [...legacyButtons].every(button =>
       container.contains(button) && button.form === orderForm);
-    const v2 = goButtons.length === 1 && legacyButtons.length === 0 && methods.length === 1 &&
+    const goBound = goButtons.length === 1 && legacyButtons.length === 0 &&
       container.contains(goButtons[0]) && goButtons[0].form === orderForm &&
-      container.contains(methods[0]) && methods[0].form === orderForm &&
       visible(goButtons[0]) && goButtons[0].type === 'submit' &&
       goButtons[0].value === 'Go to Checkout' && text(goButtons[0]) === 'Go to Checkout';
-    if (!legacy && !v2) return result;
+    const v2 = goBound && methods.length === 1 &&
+      container.contains(methods[0]) && methods[0].form === orderForm;
+    if (!legacy && !v2) return halt(goBound ? 'shipping_form_mismatch' : 'control_binding_mismatch');
     if (v2 && methods.length !== 1 || methods.length === 1 &&
-        (!container.contains(methods[0]) || methods[0].form !== orderForm)) return result;
+        (!container.contains(methods[0]) || methods[0].form !== orderForm)) return halt('shipping_form_mismatch');
     result.checkout_control_kind = v2 ? 'v2_go_to_checkout' : 'legacy_place_order';
     const rows = container.querySelectorAll('tr.order_row');
     if (rows.length !== 1 || document.querySelectorAll('tr.order_row').length !== 1 ||
-        !orderForm.contains(rows[0]) || !visible(rows[0])) return result;
+        !orderForm.contains(rows[0]) || !visible(rows[0])) return halt('row_binding_mismatch');
     const links = rows.length === 1 ? rows[0].querySelectorAll("a.item_link[href^='/sell/item/']") : [];
     const href = links.length === 1 && visible(links[0]) ? links[0].getAttribute('href') : null;
     const canonical = typeof href === 'string' && /^\/sell\/item\/[1-9][0-9]{0,15}$/u.test(href) &&
@@ -232,7 +239,7 @@ export function collectCartDom(expectedListingId) {
     result.summary_count = count(summaries);
     const summary = summaries.length === 1 ? summaries[0] : null;
     if (!summary || document.querySelectorAll('.order_summary').length !== 1 ||
-        !orderForm.contains(summary) || !visible(summary)) return result;
+        !orderForm.contains(summary) || !visible(summary)) return halt('summary_binding_mismatch');
     const quote = nodes => {
       const row = nodes.length === 1 ? nodes[0].closest('tr') : null;
       const values = row?.querySelectorAll('td.order_summary_value') ?? [];
@@ -281,6 +288,7 @@ export function collectCartDom(expectedListingId) {
           selected: option.selected === true, disabled: option.disabled === true };
       }) : [],
     };
+    result.binding_gate = 'complete';
     return result;
   } catch {
     return fail('dom_read_failed');

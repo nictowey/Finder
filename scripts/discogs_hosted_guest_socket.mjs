@@ -153,6 +153,42 @@ function sanitizedCartLayout(value) {
   return { schema: 'discogs_cart_layout_v1', collector_gate: collectorGate, ancestry, tables,
     address_shapes: addressShapes, truncated: value.truncated };
 }
+const CART_BINDING_COUNTS = ['go_count', 'container_count', 'row_count', 'select_count',
+  'scoped_summary_count', 'legacy_count', 'visible_address_wrapper_count'];
+const CART_BINDING_BOOLEANS = ['discovery_attempted', 'go_type_submit', 'go_value_matches',
+  'go_text_matches', 'go_visible', 'go_enabled', 'go_not_disabled_property',
+  'go_not_disabled_selector', 'go_not_aria_disabled', 'form_present', 'form_current_document',
+  'form_connected', 'container_closest_form_matches', 'select_form_matches',
+  'form_contains_container', 'form_contains_row', 'form_contains_go', 'form_contains_select',
+  'form_contains_summary', 'container_contains_row', 'container_contains_go',
+  'container_contains_select', 'container_visible', 'row_visible', 'select_visible', 'summary_count_one'];
+const CART_READER_COUNTS = ['legacy_count', 'go_count', 'select_count', 'container_count',
+  'global_row_count', 'global_summary_count'];
+const CART_READER_GATES = new Set(['owner_form_missing', 'owner_form_mismatch',
+  'control_binding_mismatch', 'shipping_form_mismatch', 'row_binding_mismatch',
+  'summary_binding_mismatch', 'complete']);
+function fixedKeys(value, keys) {
+  return value && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).sort().join('|') === [...keys].sort().join('|');
+}
+const diagnosticCount = value => Number.isInteger(value) && value >= 0 && value <= 2;
+function sanitizedCartBinding(value) {
+  const keys = ['schema', 'first_failed', ...CART_BINDING_COUNTS, ...CART_BINDING_BOOLEANS];
+  if (!fixedKeys(value, keys) || value.schema !== 'cart_binding_predicates_v1' ||
+      !new Set(['none', 'go_count_one', 'container_count_one', 'select_count_one', 'row_count_one',
+        ...CART_BINDING_BOOLEANS]).has(value.first_failed) ||
+      CART_BINDING_COUNTS.some(key => !diagnosticCount(value[key])) ||
+      CART_BINDING_BOOLEANS.some(key => typeof value[key] !== 'boolean')) return null;
+  return Object.fromEntries(keys.map(key => [key, value[key]]));
+}
+function sanitizedCartReader(value) {
+  if (!fixedKeys(value, ['schema', 'code', 'first_failed', 'counts']) ||
+      value.schema !== 'cart_reader_predicates_v1' || value.code !== 'observed' ||
+      !CART_READER_GATES.has(value.first_failed) || !fixedKeys(value.counts, CART_READER_COUNTS) ||
+      CART_READER_COUNTS.some(key => !diagnosticCount(value.counts[key]))) return null;
+  return { schema: value.schema, code: value.code, first_failed: value.first_failed,
+    counts: Object.fromEntries(CART_READER_COUNTS.map(key => [key, value.counts[key]])) };
+}
 function safeResult(value, { captureAllowed = false, preflightAllowed = false } = {}) {
   // Observed effects are facts, not capabilities: never rewrite a reported
   // initialization into false merely because this action forbids it.
@@ -193,6 +229,16 @@ function safeResult(value, { captureAllowed = false, preflightAllowed = false } 
     if (value.observed.destination_match === null) result.observed.destination_match = null;
   }
   if (result.status === 'observed') {
+    // Fixed booleans/counts only. No arbitrary text, attributes, address lines,
+    // destination digest, form action or caller-defined diagnostic fields.
+    for (const [key, sanitizer] of [['cart_binding_diagnostic', sanitizedCartBinding],
+      ['cart_reader_diagnostic', sanitizedCartReader]]) {
+      if (Object.hasOwn(value, key)) {
+        const diagnostic = value.merchant_route === 'cart' ? sanitizer(value[key]) : null;
+        if (!diagnostic) return stop('probe_unverified');
+        result[key] = diagnostic;
+      }
+    }
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value.document_ref || '')) result.document_ref = value.document_ref;
     if (['cart', 'enhanced_checkout'].includes(value.merchant_route)) result.merchant_route = value.merchant_route;
     for (const key of ['address_present', 'destination_binding_available', 'destination_match']) {

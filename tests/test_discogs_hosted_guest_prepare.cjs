@@ -1475,3 +1475,120 @@ test('observed plain Change your address label is excluded from synthetic nested
     } finally { b.close(); }
   }
 });
+
+test('cart predicate diagnostics preserve retained layout facts and distinguish a synthetic absent Go value without claiming a live cause', async () => {
+  const retained = JSON.parse(await readFile(join(__dirname, 'fixtures/discogs_cart_layout_1ea2be8.json'), 'utf8'));
+  assert.equal(retained.provenance.private_text_and_values, 'not_captured');
+  assert.equal(retained.cart_layout.collector_gate.form_count, 0);
+  assert.equal(retained.cart_layout.collector_gate.go_form_contains_row, true);
+  const isolated = await import('../scripts/discogs_hosted_guest_prepare.mjs?predicate-probe=' + randomUUID());
+  for (const absentValue of [false, true]) {
+    const b = browser({ cart: nestedPrivateCart });
+    if (absentValue) b.state.merchant.window.document.querySelector('button').removeAttribute('value');
+    try {
+      const grant = readonlyGrant(), result = await isolated.probeCurrentGuestPreparationEvidence(b.context, grant.request, { authorization: grant.authorization });
+      assert.equal(result.status, 'observed');
+      const diagnostic = result.cart_binding_diagnostic;
+      assert.equal(diagnostic.schema, 'cart_binding_predicates_v1');
+      for (const key of ['go_count', 'container_count', 'row_count', 'select_count', 'scoped_summary_count', 'visible_address_wrapper_count']) assert.equal(diagnostic[key], 1, key);
+      assert.equal(diagnostic.legacy_count, 0);
+      assert.equal(diagnostic.go_value_matches, !absentValue); assert.equal(diagnostic.discovery_attempted, !absentValue);
+      assert.equal(diagnostic.first_failed, absentValue ? 'go_value_matches' : 'none');
+      assert.equal(result.address_present, !absentValue); assert.equal(result.structure.address_container_count, absentValue ? 0 : 1);
+      assert.equal(result.observed.summary_supported, !absentValue);
+      assert.equal(result.cart_reader_diagnostic.schema, 'cart_reader_predicates_v1');
+      assert.equal(result.cart_reader_diagnostic.first_failed, absentValue ? 'control_binding_mismatch' : 'complete');
+      for (const secret of [...ADDRESS.filter(value => value !== 'US'), sha(ADDRESS.join('\n')), 'Go to Checkout', 'Fixture Artist']) assert.ok(!json(result).includes(secret));
+      assert.equal(result.initialization_allowed, false); assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    } finally { b.close(); }
+  }
+});
+
+test('every cart binding boolean has a precise negative diagnostic without changing the existing gate', async () => {
+  const failures = {
+    go_type_submit: ({ button }) => { button.type = 'button'; },
+    go_value_matches: ({ button }) => { button.value = 'PRIVATE_CONTROL_VALUE'; },
+    go_text_matches: ({ button }) => { button.textContent = 'PRIVATE_CONTROL_LABEL'; },
+    go_visible: ({ button }) => { button.hidden = true; },
+    go_not_disabled_property: ({ button }) => { button.disabled = true; },
+    go_not_disabled_selector: ({ button }) => {
+      const matches = button.matches.bind(button); button.matches = selector => selector === ':disabled' || matches(selector);
+    },
+    go_not_aria_disabled: ({ button }) => { button.setAttribute('aria-disabled', 'true'); },
+    form_present: ({ button }) => { Object.defineProperty(button, 'form', { get: () => null }); },
+    form_connected: ({ form }) => { Object.defineProperty(form, 'isConnected', { get: () => false }); },
+    form_current_document: ({ form }) => { Object.defineProperty(form, 'ownerDocument', { get: () => ({}) }); },
+    container_closest_form_matches: ({ container }) => {
+      const closest = container.closest.bind(container); container.closest = selector => selector === 'form' ? null : closest(selector);
+    },
+    select_form_matches: ({ select }) => { Object.defineProperty(select, 'form', { get: () => null }); },
+    container_visible: ({ container }) => { container.hidden = true; },
+    row_visible: ({ row }) => { row.hidden = true; },
+    select_visible: ({ select }) => { select.hidden = true; },
+    summary_count_one: ({ summary }) => { summary.remove(); },
+  };
+  for (const [key, nodeKey] of [['form_contains_container', 'container'], ['form_contains_row', 'row'], ['form_contains_go', 'button'],
+    ['form_contains_select', 'select'], ['form_contains_summary', 'summary']]) failures[key] = nodes => {
+      const contains = nodes.form.contains.bind(nodes.form); nodes.form.contains = node => node !== nodes[nodeKey] && contains(node);
+    };
+  for (const [key, nodeKey] of [['container_contains_row', 'row'], ['container_contains_go', 'button'], ['container_contains_select', 'select']]) failures[key] = nodes => {
+    const contains = nodes.container.contains.bind(nodes.container); nodes.container.contains = node => node !== nodes[nodeKey] && contains(node);
+  };
+  const baseline = browser({ cart: nestedPrivateCart });
+  try {
+    const snapshot = await baseline.page.evaluate(port.collectHostedGuestDom, { stage: 'cart' });
+    const booleans = Object.keys(snapshot.cart_binding_diagnostic).filter(key => typeof snapshot.cart_binding_diagnostic[key] === 'boolean' && !['go_enabled', 'discovery_attempted'].includes(key));
+    assert.deepEqual(booleans.sort(), Object.keys(failures).sort());
+    assert.ok(booleans.every(key => snapshot.cart_binding_diagnostic[key] === true)); assert.equal(snapshot.go, true);
+  } finally { baseline.close(); }
+  for (const [key, mutate] of Object.entries(failures)) {
+    const b = browser({ cart: nestedPrivateCart }), document = b.state.merchant.window.document;
+    const nodes = { button: document.querySelector('button'), container: document.querySelector('.order_container'),
+      row: document.querySelector('tr.order_row'), select: document.querySelector('select'), form: document.querySelector('form'), summary: document.querySelector('.order_summary') };
+    mutate(nodes);
+    try {
+      const snapshot = await b.page.evaluate(port.collectHostedGuestDom, { stage: 'cart' }), diagnostic = snapshot.cart_binding_diagnostic;
+      assert.equal(diagnostic[key], false, key); assert.equal(diagnostic.first_failed, key, key);
+      assert.equal(diagnostic.discovery_attempted, false, key); assert.equal(snapshot.go, false, key);
+      if (key.startsWith('go_not_')) assert.equal(diagnostic.go_enabled, false);
+      assert.ok(!json(diagnostic).includes('PRIVATE_CONTROL'));
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    } finally { b.close(); }
+  }
+});
+
+test('cart diagnostic counts are capped, legacy presence stays observational, and reader diagnostics require actual complete shape', async () => {
+  for (const [selector, field, first] of [['button.order_button.checkout_v2', 'go_count', 'go_count_one'],
+    ['.order_container', 'container_count', 'container_count_one'], ['select', 'select_count', 'select_count_one'],
+    ['tr.order_row', 'row_count', 'row_count_one'], ['.order_summary', 'scoped_summary_count', 'summary_count_one']]) {
+    const b = browser({ cart: nestedPrivateCart }), document = b.state.merchant.window.document, node = document.querySelector(selector), parent = node.parentElement;
+    try {
+      if (field === 'container_count') node.classList.remove('order_container'); else node.remove();
+      let snapshot = await b.page.evaluate(port.collectHostedGuestDom, { stage: 'cart' });
+      assert.equal(snapshot.cart_binding_diagnostic[field], 0); assert.equal(snapshot.cart_binding_diagnostic.first_failed, first);
+      if (field === 'container_count') node.classList.add('order_container'); else parent.append(node);
+      for (let i = 0; i < 2; i++) parent.append(node.cloneNode(false));
+      snapshot = await b.page.evaluate(port.collectHostedGuestDom, { stage: 'cart' });
+      assert.equal(snapshot.cart_binding_diagnostic[field], 2); assert.equal(snapshot.cart_binding_diagnostic.first_failed, first);
+    } finally { b.close(); }
+  }
+  const b = browser({ cart: nestedPrivateCart });
+  try {
+    const document = b.state.merchant.window.document;
+    for (let i = 0; i < 3; i++) { const button = document.createElement('button'); button.className = 'order_button checkout_v1'; button.hidden = true; document.body.append(button); }
+    const snapshot = await b.page.evaluate(port.collectHostedGuestDom, { stage: 'cart' });
+    assert.equal(snapshot.cart_binding_diagnostic.legacy_count, 2); assert.equal(snapshot.cart_binding_diagnostic.first_failed, 'none'); assert.equal(snapshot.go, true);
+    const address = document.querySelector('[id^="shipping_address_"]');
+    address.remove(); let addressSnapshot = await b.page.evaluate(port.collectHostedGuestDom, { stage: 'cart' });
+    assert.equal(addressSnapshot.cart_binding_diagnostic.visible_address_wrapper_count, 0);
+    for (let i = 0; i < 3; i++) document.querySelector('.order_container').append(address.cloneNode(false));
+    addressSnapshot = await b.page.evaluate(port.collectHostedGuestDom, { stage: 'cart' });
+    assert.equal(addressSnapshot.cart_binding_diagnostic.visible_address_wrapper_count, 2);
+    assert.equal(addressSnapshot.cart_binding_diagnostic.first_failed, 'none'); assert.equal(addressSnapshot.go, true);
+    const isolated = await import('../scripts/discogs_hosted_guest_prepare.mjs?reader-shape=' + randomUUID()), evaluate = b.page.evaluate;
+    b.page.evaluate = async (fn, arg) => { const value = await evaluate(fn, arg); if (fn.name === 'collectCartDom') delete value.binding_counts; return value; };
+    const grant = readonlyGrant(), result = await isolated.probeCurrentGuestPreparationEvidence(b.context, grant.request, { authorization: grant.authorization });
+    assert.equal(result.status, 'observed'); assert.ok(!Object.hasOwn(result, 'cart_reader_diagnostic'));
+    assert.equal(result.initialization_allowed, false); assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  } finally { b.close(); }
+});

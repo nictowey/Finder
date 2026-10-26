@@ -188,10 +188,60 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
   const fields = document.querySelectorAll('#card-fields-container');
   out.existing_form = [...fields].some(node => node.childElementCount > 0 && visible(node));
   const rows = cart ? document.querySelectorAll('tr.order_row') : named(document, 'li', '_checkout-sell-item__list-item_');
+  let discoveryAttempted = false;
   const cartBinding = () => {
     const controls = document.querySelectorAll('button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]');
     const containers = document.querySelectorAll('[id^="cart-order-"].order_container');
     const selects = document.querySelectorAll('.order_shipping_fields select.shipping_method[name="shipping_method"]');
+    // Diagnostic-only mirrors of every existing predicate below. These never
+    // substitute for or relax the original short-circuit qualification gate.
+    const candidateGo = controls.length === 1 ? controls[0] : null;
+    const candidateContainer = containers.length === 1 ? containers[0] : null;
+    const candidateRow = rows.length === 1 ? rows[0] : null;
+    const candidateSelect = selects.length === 1 ? selects[0] : null;
+    const candidateForm = candidateGo?.form || null;
+    const candidateSummaries = candidateContainer?.querySelectorAll('.order_summary') || [];
+    const count = nodes => Math.min(nodes.length, 2);
+    const diagnostic = {
+      schema: 'cart_binding_predicates_v1', go_count: count(controls), container_count: count(containers),
+      row_count: count(rows), select_count: count(selects), scoped_summary_count: count(candidateSummaries),
+      legacy_count: count(document.querySelectorAll('button.order_button.checkout_v1')),
+      visible_address_wrapper_count: count([...document.querySelectorAll('[id^="shipping_address_"]')].filter(visible)),
+      discovery_attempted: discoveryAttempted,
+      go_type_submit: !!candidateGo && candidateGo.type === 'submit',
+      go_value_matches: !!candidateGo && candidateGo.value === 'Go to Checkout',
+      go_text_matches: !!candidateGo && text(candidateGo) === 'Go to Checkout',
+      go_visible: !!candidateGo && visible(candidateGo),
+      go_not_disabled_property: !!candidateGo && !candidateGo.disabled,
+      go_not_disabled_selector: !!candidateGo && !candidateGo.matches(':disabled'),
+      go_not_aria_disabled: !!candidateGo && candidateGo.getAttribute('aria-disabled') !== 'true',
+      form_present: !!candidateForm, form_current_document: !!candidateForm && candidateForm.ownerDocument === document,
+      form_connected: !!candidateForm && candidateForm.isConnected,
+      container_closest_form_matches: !!candidateForm && !!candidateContainer && candidateContainer.closest('form') === candidateForm,
+      select_form_matches: !!candidateForm && !!candidateSelect && candidateSelect.form === candidateForm,
+      form_contains_container: !!candidateForm && !!candidateContainer && candidateForm.contains(candidateContainer),
+      form_contains_row: !!candidateForm && !!candidateRow && candidateForm.contains(candidateRow),
+      form_contains_go: !!candidateForm && !!candidateGo && candidateForm.contains(candidateGo),
+      form_contains_select: !!candidateForm && !!candidateSelect && candidateForm.contains(candidateSelect),
+      form_contains_summary: !!candidateForm && candidateSummaries.length === 1 && candidateForm.contains(candidateSummaries[0]),
+      container_contains_row: !!candidateContainer && !!candidateRow && candidateContainer.contains(candidateRow),
+      container_contains_go: !!candidateContainer && !!candidateGo && candidateContainer.contains(candidateGo),
+      container_contains_select: !!candidateContainer && !!candidateSelect && candidateContainer.contains(candidateSelect),
+      container_visible: !!candidateContainer && visible(candidateContainer), row_visible: !!candidateRow && visible(candidateRow),
+      select_visible: !!candidateSelect && visible(candidateSelect), summary_count_one: candidateSummaries.length === 1,
+    };
+    diagnostic.go_enabled = diagnostic.go_not_disabled_property && diagnostic.go_not_disabled_selector && diagnostic.go_not_aria_disabled;
+    const predicates = [
+      ['go_count_one', controls.length === 1], ['container_count_one', containers.length === 1],
+      ['select_count_one', selects.length === 1], ['row_count_one', rows.length === 1],
+      ...['form_present', 'form_connected', 'form_current_document', 'container_closest_form_matches', 'select_form_matches',
+        'form_contains_container', 'form_contains_row', 'form_contains_go', 'form_contains_select',
+        'container_contains_row', 'container_contains_go', 'container_contains_select', 'summary_count_one', 'form_contains_summary',
+        'container_visible', 'row_visible', 'select_visible', 'go_visible', 'go_not_disabled_property', 'go_not_disabled_selector',
+        'go_not_aria_disabled', 'go_type_submit', 'go_value_matches', 'go_text_matches'].map(key => [key, diagnostic[key]]),
+    ];
+    diagnostic.first_failed = predicates.find(([, matches]) => !matches)?.[0] || 'none';
+    out.cart_binding_diagnostic = diagnostic;
     if (controls.length !== 1 || containers.length !== 1 || selects.length !== 1 || rows.length !== 1) return null;
     const button = controls[0], container = containers[0], select = selects[0], form = button.form;
     const summaries = container.querySelectorAll('.order_summary');
@@ -204,6 +254,7 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
     return { button, container, select, form };
   };
   const initialCartBinding = cart ? cartBinding() : null;
+  if (cart) { discoveryAttempted = !!initialCartBinding; out.cart_binding_diagnostic.discovery_attempted = discoveryAttempted; }
   out.item_row_count = Math.min(rows.length, 2);
   if (rows.length === 1 && visible(rows[0])) {
     const row = rows[0];
@@ -1015,6 +1066,15 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
       main_count: boundedCount(readiness?.main_count), release_link_count: boundedCount(readiness?.release_link_count),
       grade_count: boundedCount(readiness?.grade_count),
     };
+    const readerCounts = cartDom?.binding_counts;
+    const readerCountKeys = ['legacy_count', 'go_count', 'select_count', 'container_count', 'global_row_count', 'global_summary_count'];
+    const readerGates = ['owner_form_missing', 'owner_form_mismatch', 'control_binding_mismatch', 'shipping_form_mismatch',
+      'row_binding_mismatch', 'summary_binding_mismatch', 'complete'];
+    const cartReaderDiagnostic = cart && readerCounts && Object.keys(readerCounts).sort().join('|') === readerCountKeys.sort().join('|') &&
+      readerCountKeys.every(key => Number.isInteger(readerCounts[key]) && readerCounts[key] >= 0 && readerCounts[key] <= 2) &&
+      readerGates.includes(cartDom.binding_gate) && cartDom.code === 'observed' ? {
+        schema: 'cart_reader_predicates_v1', code: cartDom.code, first_failed: cartDom.binding_gate, counts: readerCounts,
+      } : null;
     const frames = (await read(() => page.frames())).filter(frame => isObservedCardFrame(frame.url()));
     if (frames.length === 1 && frames[0].parentFrame() === page.mainFrame()) {
       const frame = frames[0], element = await read(() => frame.frameElement());
@@ -1053,6 +1113,8 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
       address_present: dom.address_present === true, destination_binding_available: confirming,
       destination_match: confirming ? true : null,
       detail_diagnostic: detailDiagnostic,
+      ...(cart ? { cart_binding_diagnostic: dom.cart_binding_diagnostic } : {}),
+      ...(cartReaderDiagnostic ? { cart_reader_diagnostic: cartReaderDiagnostic } : {}),
       structure: { item_row_count: dom.item_row_count, item_title_present: dom.item_title_present,
         media_grade: dom.media, sleeve_grade: dom.sleeve, address_container_count: dom.address_container_count,
         address_line_count: dom.address_line_count },
