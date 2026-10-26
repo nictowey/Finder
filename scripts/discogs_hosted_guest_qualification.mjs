@@ -1,6 +1,7 @@
 /** Thin, local read-only qualification issuer. No credentials, browser calls or
- * transaction grants. Two durable slots admit inspect then an operator-reviewed
- * same-document destination confirmation. Policy absence keeps the socket off.
+ * transaction grants. A qualification job admits inspect and same-document
+ * destination confirmation; a distinct capture job admits one public cart read.
+ * Policy absence keeps the socket off.
  */
 import { constants } from 'node:fs';
 import { open, lstat } from 'node:fs/promises';
@@ -27,15 +28,17 @@ async function privateJson(path, { optional = false } = {}) {
   } catch (error) { if (optional && error.code === 'ENOENT') return null; invalid(); }
   finally { await file?.close(); }
 }
+const capturePolicy = policy => policy?.schema === 'discogs_guest_cart_capture_policy_v1';
 function validatePolicy(policy, now, { allowExpired = false } = {}) {
   if (!exact(policy, ['schema', 'job_id', 'approval_ref', 'issued_at', 'expires_at', 'max_calls', 'action', 'scope', 'destination_ack']) ||
-      policy.schema !== 'discogs_guest_qualification_policy_v1' || !UUID.test(policy.job_id) || !UUID.test(policy.approval_ref) ||
-      policy.action !== 'probe_guest_evidence' || policy.max_calls !== 2 ||
+      !['discogs_guest_qualification_policy_v1', 'discogs_guest_cart_capture_policy_v1'].includes(policy.schema) || !UUID.test(policy.job_id) || !UUID.test(policy.approval_ref) ||
+      policy.action !== 'probe_guest_evidence' || policy.max_calls !== (capturePolicy(policy) ? 1 : 2) ||
       !Number.isFinite(policy.issued_at) || !Number.isFinite(policy.expires_at) || policy.issued_at < 0 ||
       policy.issued_at > now || !allowExpired && now >= policy.expires_at || policy.expires_at <= policy.issued_at ||
       policy.expires_at - policy.issued_at > 1800 || !exact(policy.scope, Object.keys(SCOPE)) ||
       Object.entries(SCOPE).some(([key, value]) => policy.scope[key] !== value)) invalid();
   const ack = policy.destination_ack;
+  if (capturePolicy(policy) && ack !== null) invalid();
   if (ack !== null && (!exact(ack, ['document_ref', 'source', 'approved_destination_ref', 'observed_at']) ||
       !UUID.test(ack.document_ref) || ack.source !== 'operator_visual_saved_destination_match' ||
       ack.approved_destination_ref !== SCOPE.approved_destination_ref || !Number.isFinite(ack.observed_at) ||
@@ -51,6 +54,7 @@ function requestAllowed(request, policy) {
   if (!exact(request, request?.phase === 'confirm_saved_destination' ?
     ['schema', 'job_id', 'phase', 'document_ref'] : ['schema', 'job_id', 'phase']) ||
       request.schema !== 'discogs_guest_readonly_probe_v1' || request.job_id !== policy.job_id) return false;
+  if (capturePolicy(policy)) return request.phase === 'capture_cart_structure';
   return request.phase === 'inspect' ? policy.destination_ack === null :
     request.phase === 'confirm_saved_destination' && policy.destination_ack !== null &&
       request.document_ref === policy.destination_ack.document_ref;
@@ -87,10 +91,10 @@ async function createIssuer(policyPath, now, fixture) {
     if (hash(identity(policy)) !== identityDigest) invalid();
     return policy;
   };
-  const slot = phase => `${prefix}-${phase === 'inspect' ? '1-inspect' : '2-confirm'}.json`;
+  const slot = phase => `${prefix}-${phase === 'capture_cart_structure' ? '3-cart-capture' : phase === 'inspect' ? '1-inspect' : '2-confirm'}.json`;
   const validReceipt = receipt => exact(receipt, ['schema', 'job_id', 'identity_sha256', 'phase', 'consumed_at']) &&
     receipt.schema === 'discogs_guest_qualification_use_v1' && receipt.job_id === first.job_id &&
-    receipt.identity_sha256 === identityDigest && ['inspect', 'confirm_saved_destination'].includes(receipt.phase) &&
+    receipt.identity_sha256 === identityDigest && ['inspect', 'confirm_saved_destination', 'capture_cart_structure'].includes(receipt.phase) &&
     Number.isFinite(receipt.consumed_at) && receipt.consumed_at >= first.issued_at && receipt.consumed_at < first.expires_at;
   const allowed = async request => {
     const policy = await load();
@@ -120,6 +124,7 @@ async function createIssuer(policyPath, now, fixture) {
         if (!requestAllowed(request, await load()) || signal?.aborted) return null; // Spent safely; never rearm after uncertainty.
         return Object.freeze({ schema: 'discogs_guest_readonly_authorization_v1', job_id: policy.job_id,
           issued_at: policy.issued_at, expires_at: policy.expires_at, ...SCOPE,
+          ...(capturePolicy(policy) ? { mode: 'capture_cart_structure' } : {}),
           ...(policy.destination_ack ? { destination_ack: Object.freeze({ ...policy.destination_ack }) } : {}) });
       } catch { return null; }
     },

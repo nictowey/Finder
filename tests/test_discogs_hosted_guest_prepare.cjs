@@ -886,3 +886,94 @@ test('composite cart item-link title remains fail-closed without source-proven c
     assert.equal((await records(f.directory)).length, 0);
   } finally { b.close(); }
 }));
+
+function cartCaptureGrant() {
+  const grant = readonlyGrant(); grant.request.phase = 'capture_cart_structure';
+  grant.authorization.mode = 'capture_cart_structure'; return grant;
+}
+
+test('separate capture mode returns only bounded exact-KC public title subtree and narrow grade tokens without address or values', async () => {
+  const grade = '<span><b>Media:</b><span>Poor (P)</span><br><b>Sleeve:</b><span>Generic</span></span>';
+  const cart = cartMarkup.replace('>Synthetic KC Single</a>', '><span>KC - </span><strong>Get Down Tonight</strong><small> (7&quot;, 45 RPM)</small></a>')
+    .replace('<span>Media: Mint Sleeve: Generic</span>', grade);
+  const b = browser({ cart }), grant = cartCaptureGrant();
+  const address = b.state.merchant.window.document.querySelector('address');
+  Object.defineProperty(address, 'textContent', { get() { throw new Error('ADDRESS_MUST_NOT_BE_READ'); } });
+  const input = b.state.merchant.window.document.createElement('input'); input.value = 'PRIVATE_FIELD_VALUE';
+  Object.defineProperty(input, 'value', { get() { throw new Error('VALUE_MUST_NOT_BE_READ'); } });
+  b.state.merchant.window.document.body.append(input);
+  try {
+    const result = await probe(b, grant);
+    assert.equal(result.code, 'cart_structure_captured', JSON.stringify(result));
+    const captured = result.cart_structure;
+    assert.equal(captured.row_count, 1); assert.equal(captured.listing_href, '/sell/item/1366950910');
+    assert.equal(captured.title_link.tag, 'A'); assert.equal(captured.title_link.text, 'KC - Get Down Tonight (7", 45 RPM)');
+    assert.deepEqual(Array.from(captured.title_link.nodes, node => node.tag), ['SPAN', '#text', 'STRONG', '#text', 'SMALL', '#text']);
+    assert.ok(captured.grade_nodes.some(node => node.label === 'Media')); assert.ok(captured.grade_nodes.some(node => node.grade === 'P'));
+    assert.ok(captured.grade_nodes.some(node => node.label === 'Sleeve')); assert.ok(captured.grade_nodes.some(node => node.grade === 'Generic'));
+    for (const secret of ['Fixture Street', 'PRIVATE_FIELD_VALUE', '$0.10', '$4.95', '$5.05', 'PRIVATE=']) assert.ok(!json(result).includes(secret));
+    for (const node of [...captured.title_link.nodes, ...captured.grade_nodes]) {
+      assert.ok(node.path.length <= 4 && node.path.every(index => Number.isInteger(index) && index >= 0 && index <= 31));
+      assert.ok(node.text.length <= 160); assert.ok(!Object.hasOwn(node, 'attributes'));
+    }
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    const calls = b.effects.evaluate; assert.equal((await probe(b, grant)).code, 'probe_job_replayed'); assert.equal(b.effects.evaluate, calls);
+  } finally { b.close(); }
+});
+
+test('unsupported grade parent is omitted without dropping useful public title or leaking sibling messages', async () => {
+  const cart = cartMarkup.replace('<span>Media: Mint Sleeve: Generic</span>',
+    '<div><span>Media:</span><span>Poor (P)</span><span>Sleeve:</span><span>Generic</span><span>PRIVATE_SELLER_MESSAGE</span></div>');
+  const b = browser({ cart });
+  try {
+    const result = await probe(b, cartCaptureGrant());
+    assert.equal(result.code, 'cart_structure_captured'); assert.equal(result.cart_structure.title_link.text, 'Synthetic KC Single');
+    assert.equal(result.cart_structure.grade_nodes.length, 0); assert.ok(!json(result).includes('PRIVATE_SELLER_MESSAGE'));
+  } finally { b.close(); }
+});
+
+test('capture authority cannot cross-use ordinary inspect or confirmation grants and admits no caller selectors', async () => {
+  for (const mode of ['missing_mode', 'inspect_mode', 'caller_selector', 'caller_url', 'destination_ack']) {
+    const b = browser(), grant = cartCaptureGrant();
+    if (mode === 'missing_mode') delete grant.authorization.mode;
+    if (mode === 'inspect_mode') grant.request.phase = 'inspect';
+    if (mode === 'caller_selector') grant.request.selector = 'body';
+    if (mode === 'caller_url') grant.request.url = CART;
+    if (mode === 'destination_ack') grant.authorization.destination_ack = { document_ref: randomUUID() };
+    try { assert.equal((await probe(b, grant)).code, 'readonly_authorization_required'); assert.equal(b.effects.pages, 0); }
+    finally { b.close(); }
+  }
+});
+
+test('ambiguous off-target hidden unsafe oversized or deeply nested title structure fails without partial capture', async () => {
+  for (const cart of [
+    cartMarkup.replace('/sell/item/1366950910', '/sell/item/1366950910?secret=PRIVATE'),
+    cartMarkup.replace('>Synthetic KC Single</a>', ' hidden>Synthetic KC Single</a>'),
+    cartMarkup.replace('>Synthetic KC Single</a>', '><span hidden>PRIVATE_HIDDEN</span>Public</a>'),
+    cartMarkup.replace('>Synthetic KC Single</a>', '><input value="PRIVATE_INPUT"></a>'),
+    cartMarkup.replace('>Synthetic KC Single</a>', '><script>PRIVATE_SCRIPT</script>Public</a>'),
+    cartMarkup.replace('>Synthetic KC Single</a>', '><span><span><span><span><span>Too deep</span></span></span></span></span></a>'),
+    cartMarkup.replace('>Synthetic KC Single</a>', '>' + 'X'.repeat(301) + '</a>'),
+    cartMarkup.replace('</td></tr>', '</td></tr><tr class="order_row" hidden><td>Other</td></tr>'),
+  ]) {
+    const b = browser({ cart });
+    try {
+      const result = await probe(b, cartCaptureGrant()); assert.equal(result.code, 'cart_capture_unverified');
+      assert.ok(!Object.hasOwn(result, 'cart_structure')); assert.ok(!json(result).includes('PRIVATE'));
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    } finally { b.close(); }
+  }
+});
+
+test('capture rejects a changed cart document and access restrictions without navigation or fields', async () => {
+  let captured = false;
+  const b = browser({ beforeEvaluate: ({ fn, state }) => {
+    if (fn.name === 'collectHostedCartStructureDom') captured = true;
+    else if (captured && fn.toString().includes('document === expected')) state.merchant = dom(cartMarkup, CART);
+  } });
+  try { assert.equal((await probe(b, cartCaptureGrant())).code, 'probe_document_changed'); assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]); }
+  finally { b.state.merchant.window.close(); b.close(); }
+  const blocked = browser({ cart: cartMarkup.replace('<title>Cart</title>', '<title>Security check</title>') });
+  try { assert.equal((await probe(blocked, cartCaptureGrant())).code, 'access_restricted'); assert.deepEqual([blocked.effects.go, blocked.effects.card], [0, 0]); }
+  finally { blocked.close(); }
+});

@@ -495,6 +495,113 @@ export function createHostedGuestPrepareFixture({ context, directory, authorizat
   return request => prepareHostedGuestForm(context, request, { authorization, signal, [fixtureDirectory]: directory });
 }
 
+/** Single fixed public-cart structure capture. No row text, HTML, address,
+ * account, arbitrary attributes, field values or alternative selectors leave it.
+ * These nodes ground a later parser; this collector never qualifies the title.
+ */
+export function collectHostedCartStructureDom() {
+  const stop = code => ({ status: 'blocked', code });
+  try {
+    if (location.href !== 'https://www.discogs.com/sell/cart/') return stop('cart_capture_unverified');
+    if (document.readyState !== 'complete') return stop('page_not_ready');
+    if (/just a moment|attention required|security check|captcha|cloudflare|sign in|log in/iu.test(document.title) ||
+        document.querySelector('input[type="password"],form[action*="/cdn-cgi/"],iframe[src*="challenges.cloudflare.com"],[id*="captcha" i],[class*="captcha" i]')) return stop('access_restricted');
+    const tags = new Set(['A', 'SPAN', 'STRONG', 'B', 'EM', 'I', 'SMALL', 'BR']);
+    const normalize = value => value.normalize('NFC').replace(/\s+/gu, ' ').trim();
+    const visible = element => {
+      if (!element?.isConnected) return false;
+      for (let node = element; node; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (node.hidden || node.getAttribute('aria-hidden') === 'true' || style.display === 'none' ||
+            ['hidden', 'collapse'].includes(style.visibility) || style.contentVisibility === 'hidden' || style.opacity === '0') return false;
+      }
+      return element.tagName === 'BR' || [...element.getClientRects()].some(rect => rect.width > 0 && rect.height > 0);
+    };
+    const rows = document.querySelectorAll('tr.order_row');
+    if (rows.length !== 1 || !visible(rows[0])) return stop('cart_capture_unverified');
+    const row = rows[0], links = row.querySelectorAll('a.item_link');
+    if (links.length !== 1 || !visible(links[0]) || links[0].getAttribute('href') !== '/sell/item/1366950910') return stop('cart_capture_unverified');
+    const link = links[0], nodes = [], caption = [];
+    let titleLength = 0;
+    const titleNode = (node, path) => {
+      if (path.length > 4 || path.some(index => index > 31) || nodes.length >= 24) throw new Error('unsupported');
+      if (node.nodeType === 3) {
+        const raw = node.nodeValue || '', text = normalize(raw); caption.push(raw);
+        if (!text) return;
+        titleLength += text.length;
+        if (text.length > 160 || titleLength > 300) throw new Error('unsupported');
+        nodes.push({ path, tag: '#text', text }); return;
+      }
+      if (node.nodeType !== 1 || !tags.has(node.tagName) || !visible(node)) throw new Error('unsupported');
+      if (node.tagName === 'A' && !['/sell/item/1366950910', '/release/3422100'].includes(node.getAttribute('href'))) throw new Error('unsupported');
+      nodes.push({ path, tag: node.tagName, text: '' });
+      if (node.tagName === 'BR') caption.push(' ');
+      [...node.childNodes].forEach((child, index) => titleNode(child, path.concat(index)));
+    };
+    [...link.childNodes].forEach((node, index) => titleNode(node, [index]));
+    const title = normalize(caption.join(''));
+    if (!title || title.length > 300) return stop('cart_capture_unverified');
+    const grades = { Poor: 'P', Fair: 'F', Good: 'G', 'Good Plus': 'G+', 'Very Good': 'VG',
+      'Very Good Plus': 'VG+', 'Near Mint': 'NM', Mint: 'M', Generic: 'Generic' };
+    const gradeText = new Map(Object.entries(grades).flatMap(([label, grade]) =>
+      grade === 'Generic' ? [[label, grade]] : [[label, grade], [grade, grade], [`${label} (${grade})`, grade]]));
+    const labels = new Map(['Media', 'Sleeve'].flatMap(label =>
+      [[label, label], [`${label}:`, label], [`${label} Condition`, label], [`${label} Condition:`, label]]));
+    const token = raw => {
+      const text = normalize(raw);
+      if (labels.has(text)) return { text, label: labels.get(text), grade: null };
+      if (gradeText.has(text)) return { text, label: null, grade: gradeText.get(text) };
+      for (const [labelText, label] of labels) for (const [value, grade] of gradeText) {
+        if (text === `${labelText} ${value}`) return { text, label, grade };
+      }
+      return null;
+    };
+    const rowPath = node => {
+      const path = [];
+      while (node !== row) {
+        const parent = node.parentNode;
+        if (!parent) throw new Error('unsupported');
+        const index = [...parent.childNodes].indexOf(node); path.unshift(index); node = parent;
+        if (path.length > 4 || index > 31) throw new Error('unsupported');
+      }
+      return path;
+    };
+    let gradeNodes = [];
+    const cell = link.closest('td');
+    // Discover only explicit plain-text label nodes in this product cell.
+    // A candidate parent is accepted only if its entire small subtree contains
+    // allowlisted labels/grades. Any price, comment or unknown content omits it.
+    if (cell && cell.closest('tr.order_row') === row) {
+      const candidates = [...cell.querySelectorAll('span,strong,b,em,i,small')].filter(node =>
+        !link.contains(node) && visible(node) && [...node.childNodes].every(child => child.nodeType === 3) && token(node.textContent)?.label);
+      for (const parent of new Set(candidates.map(node => node.parentElement))) {
+        try {
+          const captured = [], foundLabels = new Set(); let length = 0;
+          const captureGrade = node => {
+            if (captured.length >= 12) throw new Error('unsupported');
+            if (node.nodeType === 3) {
+              if (!normalize(node.nodeValue || '')) return;
+              const parsed = token(node.nodeValue || '');
+              if (!parsed || parsed.text.length > 160 || (length += parsed.text.length) > 300) throw new Error('unsupported');
+              if (parsed.label) foundLabels.add(parsed.label);
+              captured.push({ path: rowPath(node), tag: '#text', ...parsed }); return;
+            }
+            if (node.nodeType !== 1 || !tags.has(node.tagName) || !visible(node) || node.tagName === 'A') throw new Error('unsupported');
+            captured.push({ path: rowPath(node), tag: node.tagName, text: '', label: null, grade: null });
+            [...node.childNodes].forEach(captureGrade);
+          };
+          [...parent.childNodes].forEach(captureGrade);
+          if (foundLabels.has('Media') && foundLabels.has('Sleeve')) { gradeNodes = captured; break; }
+        } catch { /* Unsupported grade structure remains unknown; title capture is still useful. */ }
+      }
+    }
+    if (!row.isConnected || !link.isConnected || link.getAttribute('href') !== '/sell/item/1366950910' ||
+        location.href !== 'https://www.discogs.com/sell/cart/') return stop('cart_capture_unverified');
+    return { status: 'observed', code: 'cart_structure_captured', cart_structure: { row_count: 1,
+      listing_href: '/sell/item/1366950910', title_link: { tag: 'A', text: title, nodes }, grade_nodes: gradeNodes } };
+  } catch { return stop('cart_capture_unverified'); }
+}
+
 /** Distinct read-only authority. No prior failure, quote fingerprint, transaction
  * intent or payment-ready claim is required or accepted on this surface.
  */
@@ -502,12 +609,12 @@ function readonlyAuthorizationValid(request, authorization) {
   const keys = (value, expected) => value && typeof value === 'object' && !Array.isArray(value) &&
     Object.keys(value).sort().join('|') === expected.sort().join('|');
   const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value);
-  const now = Date.now() / 1000, confirm = request?.phase === 'confirm_saved_destination';
+  const now = Date.now() / 1000, confirm = request?.phase === 'confirm_saved_destination', capture = request?.phase === 'capture_cart_structure';
   if (!keys(request, confirm ? ['schema', 'job_id', 'phase', 'document_ref'] : ['schema', 'job_id', 'phase']) ||
       request.schema !== 'discogs_guest_readonly_probe_v1' || !uuid(request.job_id) ||
-      !['inspect', 'confirm_saved_destination'].includes(request.phase) || confirm && !uuid(request.document_ref) ||
+      !['inspect', 'confirm_saved_destination', 'capture_cart_structure'].includes(request.phase) || confirm && !uuid(request.document_ref) ||
       !keys(authorization, ['schema', 'job_id', 'issued_at', 'expires_at', 'release_id', 'listing_id', 'seller',
-        'quantity', 'currency', 'max_total', 'approved_destination_ref', ...(authorization?.destination_ack ? ['destination_ack'] : [])]) ||
+        'quantity', 'currency', 'max_total', 'approved_destination_ref', ...(capture ? ['mode'] : []), ...(authorization?.destination_ack ? ['destination_ack'] : [])]) ||
       authorization.schema !== 'discogs_guest_readonly_authorization_v1' || authorization.job_id !== request.job_id ||
       authorization.release_id !== '3422100' || authorization.listing_id !== '1366950910' ||
       authorization.seller !== 'Mailman21842' || authorization.quantity !== 1 ||
@@ -516,6 +623,7 @@ function readonlyAuthorizationValid(request, authorization) {
       !Number.isFinite(authorization.issued_at) || !Number.isFinite(authorization.expires_at) ||
       !(0 <= authorization.issued_at && authorization.issued_at <= now && now < authorization.expires_at &&
         authorization.expires_at - authorization.issued_at <= 1800)) return false;
+  if (capture) return authorization.mode === 'capture_cart_structure' && !Object.hasOwn(authorization, 'destination_ack');
   if (!confirm) return true;
   const ack = authorization.destination_ack;
   return keys(ack, ['document_ref', 'source', 'approved_destination_ref', 'observed_at']) &&
@@ -534,7 +642,7 @@ function readonlyAuthorizationValid(request, authorization) {
 export async function probeCurrentGuestPreparationEvidence(context, request, { authorization, signal } = {}) {
   if (!context || typeof context !== 'object' || !readonlyAuthorizationValid(request, authorization)) return stopped('readonly_authorization_required');
   request = JSON.parse(stable(request)); authorization = JSON.parse(stable(authorization));
-  const now = Date.now() / 1000, confirming = request.phase === 'confirm_saved_destination';
+  const now = Date.now() / 1000, confirming = request.phase === 'confirm_saved_destination', capturing = request.phase === 'capture_cart_structure';
   let job = readonlyProbeJobs.get(request.job_id);
   if (confirming) {
     if (!job || job.context !== context || job.document_ref !== request.document_ref) return stopped('probe_reference_unverified');
@@ -571,12 +679,20 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
   };
   try {
     const pages = await read(() => context.pages());
-    const merchantPages = pages.filter(page => [CART, GUEST_CARD_URL].includes(page.url()));
+    const merchantPages = pages.filter(page => capturing ? page.url() === CART : [CART, GUEST_CARD_URL].includes(page.url()));
     if (merchantPages.length !== 1) fail('single_current_merchant_page_required');
     const page = merchantPages[0], url = page.url(), cart = url === CART;
     if (confirming && (job.page !== page || job.url !== url ||
         !await read(() => page.evaluate(expected => document === expected, job.document_handle)))) fail('probe_document_changed');
     const documentHandle = confirming ? job.document_handle : await read(() => page.evaluateHandle(() => document));
+    if (capturing) {
+      const snapshot = await read(() => page.evaluate(collectHostedCartStructureDom));
+      if (snapshot?.status !== 'observed' || snapshot.code !== 'cart_structure_captured') {
+        fail(['access_restricted', 'page_not_ready'].includes(snapshot?.code) ? snapshot.code : 'cart_capture_unverified');
+      }
+      if (page.url() !== CART || !await read(() => page.evaluate(expected => document === expected, documentHandle))) fail('probe_document_changed');
+      return { ...snapshot, initialization_allowed: false, card_entry_allowed: false, payment_allowed: false, final_submission_allowed: false };
+    }
     const inspectorPage = {
       url: () => retainContextTask(context, Promise.resolve().then(() => {
         if (signal?.aborted) fail('cancelled');

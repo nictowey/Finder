@@ -221,3 +221,28 @@ test('operation returning on cancellation still retains lease until module settl
     assert.equal((await exchange(socket, request('probe_guest_evidence'))).code, 'current_dom_evidence_only');
   } finally { finish.resolve(); await close(); }
 });
+
+test('cart capture output admits only bounded exact-listing public title/grade nodes in authorized capture mode', async () => {
+  const socket = path(), config = options();
+  config.authorize = async () => ({ mode: 'capture_cart_structure' });
+  const structure = { row_count: 1, listing_href: '/sell/item/1366950910',
+    title_link: { tag: 'A', text: 'KC & The Sunshine Band - Get Down Tonight', nodes: [
+      { path: [0], tag: 'SPAN', text: 'KC & The Sunshine Band', token: 'not exported' }] },
+    grade_nodes: [{ path: [0], tag: 'SPAN', label: 'Media', grade: 'P', text: 'Media Condition: Poor (P)', address: 'not exported' },
+      { path: [1], tag: 'SPAN', label: 'Sleeve', grade: 'Generic', text: 'Generic' }], address: 'not exported' };
+  config.fixtureOperations.probe_guest_evidence = async () => ({ status: 'observed', code: 'cart_structure_captured',
+    cart_structure: structure, raw_html: 'not exported', card_entry_allowed: true });
+  const close = await listenHostedGuestPreparation({}, socket, config);
+  const capture = JSON.stringify({ action: 'probe_guest_evidence', request: { phase: 'capture_cart_structure' } }) + '\n';
+  try {
+    const result = await exchange(socket, capture); assert.equal(result.status, 'observed');
+    assert.equal(result.cart_structure.listing_href, '/sell/item/1366950910');
+    assert.equal(result.cart_structure.grade_nodes[0].text, 'Media Condition: Poor (P)');
+    assert.equal(JSON.stringify(result).includes('not exported'), false); assert.equal(result.card_entry_allowed, false);
+    assert.equal((await exchange(socket, request('probe_guest_evidence'))).code, 'cart_capture_unverified');
+    for (const mutate of [() => { structure.listing_href += '?secret=1'; }, () => { structure.listing_href = '/sell/item/1366950910'; structure.grade_nodes[0].text = 'private address'; },
+      () => { structure.grade_nodes[0].text = 'Poor (P)'; structure.title_link.nodes[0].tag = 'SCRIPT'; }]) {
+      mutate(); assert.equal((await exchange(socket, capture)).code, 'cart_capture_unverified');
+    }
+  } finally { await close(); }
+});

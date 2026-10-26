@@ -125,3 +125,27 @@ test('valid expired policy disables qualification without rearming or preventing
   const prior = await readdir(f.directory); f.setTime(2800);
   assert.equal(await f.load(), null); assert.deepEqual(await readdir(f.directory), prior);
 });
+
+test('separate cart capture policy admits only one exact read and survives restart/races without old job reuse', async t => {
+  const f = await fixture(t); await f.write(); const first = await f.load(); assert.ok(await first.authorize(f.inspect));
+  const priorFiles = await readdir(f.directory);
+  f.policy.schema = 'discogs_guest_cart_capture_policy_v1'; f.policy.max_calls = 1; await f.write();
+  await assert.rejects(f.load(), /invalid_guest_qualification_policy/);
+  f.policy.job_id = randomUUID(); await f.write(); const issuer = await f.load();
+  const capture = { schema: f.inspect.schema, job_id: f.policy.job_id, phase: 'capture_cart_structure' };
+  assert.equal(await issuer.authorize({ ...capture, phase: 'inspect' }), null);
+  assert.equal(await issuer.authorize({ ...capture, phase: 'confirm_saved_destination', document_ref: randomUUID() }), null);
+  assert.equal(await issuer.accessGuard('prepare_guest_form', capture), false);
+  const controller = new AbortController(); controller.abort();
+  assert.equal(await issuer.authorize(capture, { signal: controller.signal }), null);
+  const attempts = await Promise.all([issuer.authorize(capture), issuer.authorize(capture)]);
+  const grant = attempts.find(Boolean); assert.equal(attempts.filter(Boolean).length, 1);
+  assert.equal(grant.mode, 'capture_cart_structure'); assert.equal(grant.listing_id, '1366950910');
+  assert.equal(Object.hasOwn(grant, 'destination_ack'), false);
+  assert.equal(await (await f.load()).authorize(capture), null);
+  const after = await readdir(f.directory); assert.ok(priorFiles.every(file => after.includes(file)));
+  f.policy.max_calls = 2; await f.write(); await assert.rejects(f.load(), /invalid_guest_qualification_policy/);
+  f.policy.max_calls = 1; f.policy.destination_ack = { source: 'operator_visual_saved_destination_match', document_ref: randomUUID(),
+    approved_destination_ref: 'saved_shipping_address', observed_at: 1000 };
+  await f.write(); await assert.rejects(f.load(), /invalid_guest_qualification_policy/);
+});

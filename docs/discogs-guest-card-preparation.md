@@ -815,3 +815,28 @@ The historical access stop and successful outcome/disposition hashes are unchang
 image `title-454cce0` remains healthy without an OOM or additional restart. No
 initializer was invoked, and merchant order/payment status and final tax/payment
 quote remain unverified. No extra site read or new job was created after this run.
+
+### Separate bounded cart structure observation
+
+The next evidence step is an independently scoped, one-call cart structure job.
+It does not reuse a qualification inspect/confirmation slot. Its pinned policy
+identity and exclusive durable receipt retain the prior six spent receipts and
+the historical access stop. It authorizes only the already-open exact KC cart
+row, with no navigation, refresh, cart change or provider initialization.
+
+The output contract admits only the visible public item-link subtree and narrow
+Media/Sleeve grade nodes, with fixed tags, canonical item/release link paths and
+bounded node/text counts. It excludes raw HTML, arbitrary attributes, row-wide
+text, address/account/payment data, hidden values and tokens. Unknown or ambiguous
+structure fails closed. Captured display structure is evidence for a parser
+repair; it is not purchase qualification or permission to initialize payment.
+
+Implementation tests and any actual capture/deployment results are recorded
+separately below; this description alone does not establish a live observation.
+
+The integrated capture, issuer and socket suites passed 68 focused tests. They
+cover one-use/racing/restarted jobs, cross-mode rejection, fixed item identity,
+hidden/ambiguous/oversized title nodes, document changes and cancellation. Tests
+also make address text and input-value accessors throw, proving this collector
+does not read those fields. Independent review accepted the combined scope.
+These are offline results; the cart semantic title parser is still unchanged.

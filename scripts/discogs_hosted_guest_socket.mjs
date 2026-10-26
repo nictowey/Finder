@@ -47,10 +47,54 @@ const CODES = new Set(['scoped_authorization_required', 'prior_attempt_unresolve
   'current_dom_evidence_only', 'probe_unverified', 'approved_saved_destination_bound',
   'readonly_authorization_required', 'probe_job_replayed', 'probe_reference_unverified',
   'probe_reference_expired', 'probe_document_changed', 'saved_destination_snapshot_changed',
-  'saved_destination_unverified', 'probe_capacity_exceeded', 'single_current_merchant_page_required']);
-function safeResult(value) {
+  'saved_destination_unverified', 'probe_capacity_exceeded', 'single_current_merchant_page_required',
+  'cart_structure_captured', 'cart_capture_unverified']);
+const PUBLIC_TAGS = new Set(['A', 'SPAN', 'STRONG', 'B', 'EM', 'I', 'SMALL', 'BR', '#text']);
+const GRADE_TEXT = new Set(['Media', 'Media:', 'Sleeve', 'Sleeve:', 'P', 'Poor', 'Poor (P)',
+  'F', 'Fair', 'Fair (F)', 'G', 'Good', 'Good (G)', 'G+', 'Good Plus', 'Good Plus (G+)',
+  'VG', 'Very Good', 'Very Good (VG)', 'VG+', 'Very Good Plus', 'Very Good Plus (VG+)',
+  'NM', 'Near Mint', 'Near Mint (NM)', 'Near Mint (NM or M-)', 'M', 'Mint', 'Mint (M)', 'Generic']);
+const GRADE_LABELS = ['Media', 'Media:', 'Media Condition', 'Media Condition:', 'Sleeve', 'Sleeve:', 'Sleeve Condition', 'Sleeve Condition:'];
+const GRADE_VALUES = [...GRADE_TEXT].filter(value => !GRADE_LABELS.includes(value));
+for (const label of GRADE_LABELS) GRADE_TEXT.add(label);
+for (const label of GRADE_LABELS.filter(value => value.endsWith(':'))) {
+  for (const grade of GRADE_VALUES) GRADE_TEXT.add(`${label} ${grade}`);
+}
+const boundedPublicText = (text, max) => typeof text === 'string' && text.length <= max &&
+  !/[\u0000-\u001f\u007f]/u.test(text) ? text : null;
+function publicNode(node, grade = false) {
+  if (!node || !PUBLIC_TAGS.has(node.tag) || !Array.isArray(node.path) || node.path.length > 4 ||
+      node.path.some(index => !Number.isInteger(index) || index < 0 || index > 31)) return null;
+  const text = boundedPublicText(node.text, 160);
+  if (text === null || grade && !GRADE_TEXT.has(text) &&
+      !(text === '' && node.label === null && node.grade === null)) return null;
+  const out = { path: [...node.path], tag: node.tag, text };
+  if (grade) {
+    if (!['Media', 'Sleeve', null].includes(node.label) ||
+        !['P', 'F', 'G', 'G+', 'VG', 'VG+', 'NM', 'M', 'Generic', null].includes(node.grade)) return null;
+    out.label = node.label; out.grade = node.grade;
+  }
+  return out;
+}
+function sanitizedCartStructure(value) {
+  if (value?.row_count !== 1 || value.listing_href !== '/sell/item/1366950910' ||
+      value.title_link?.tag !== 'A' || boundedPublicText(value.title_link.text, 300) === null ||
+      !Array.isArray(value.title_link.nodes) || value.title_link.nodes.length > 24 ||
+      !Array.isArray(value.grade_nodes) || value.grade_nodes.length > 12) return null;
+  const title = value.title_link.nodes.map(node => publicNode(node));
+  const grades = value.grade_nodes.map(node => publicNode(node, true));
+  if (title.some(node => node === null) || grades.some(node => node === null)) return null;
+  return { row_count: 1, listing_href: '/sell/item/1366950910',
+    title_link: { tag: 'A', text: value.title_link.text, nodes: title }, grade_nodes: grades };
+}
+function safeResult(value, { captureAllowed = false } = {}) {
   const result = stop(CODES.has(value?.code) ? value.code : 'operation_unavailable');
   if (value?.status === 'observed' && ['current_dom_evidence_only', 'approved_saved_destination_bound'].includes(value.code)) result.status = 'observed';
+  if (value?.status === 'observed' && value.code === 'cart_structure_captured') {
+    const structure = captureAllowed ? sanitizedCartStructure(value.cart_structure) : null;
+    if (!structure) return stop('cart_capture_unverified');
+    result.status = 'observed'; result.cart_structure = structure;
+  }
   for (const key of ['checkout_navigation_issued', 'card_initialization_issued']) {
     if (typeof value?.[key] === 'boolean') result[key] = value[key];
   }
@@ -149,7 +193,8 @@ export async function listenHostedGuestPreparation(context, socketPath, {
         const authorization = await authorize(message.request, { signal: controller.signal });
         if (controller.signal.aborted || closing) return;
         const result = await operations[message.action](context, message.request, { authorization, signal: controller.signal });
-        if (!controller.signal.aborted && !closing) send(safeResult(result));
+        if (!controller.signal.aborted && !closing) send(safeResult(result, { captureAllowed: message.action === 'probe_guest_evidence' &&
+          message.request.phase === 'capture_cart_structure' && authorization?.mode === 'capture_cart_structure' }));
       } catch { if (!controller.signal.aborted) send(stop('operation_unavailable')); }
       finally {
         // Cancellation can return before a dispatched Playwright call settles.
