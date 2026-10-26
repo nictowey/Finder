@@ -228,7 +228,22 @@ The installed helper reported `waiting_for_user_ready`; no ready UUID, operator
 attempt or UI instruction was consumed during installation. Its anchor hash
 matched the independently computed manifest of all five preserved records.
 The command runner must keep stdin open (the verified invocation uses its
-interactive terminal mode); a closed input stops without producing an action.
+interactive terminal mode with `scripts/operator_stdio_transport.sh` to disable
+canonical buffering and echo); a closed input stops without producing an action.
+Canonical input held the earlier 1,544-byte start line before the server parsed
+it, with no ready record or UI request. The regression uses a real PTY and
+checks exact 1,544-byte and 8,192-byte start frames plus a 4,096-byte ACK.
+`--transport-check` is a separate no-action parser: it never opens the state
+directory, consumes readiness or calls the operator runner; it prints only
+frame sizes/types and can run with no state or browser mount.
+The staged diagnostic was also exercised through the actual SSH/PTY path with
+no state or browser mount: it measured 1,544 and 8,192 bytes for two complete
+START frames and 4,096 bytes for an ACK, then returned `transport_complete`,
+three frames and exit zero. Send tool input in chunks of at most 2,048 ASCII
+bytes, appending the newline only to the last chunk; a combined large tool
+write was rejected before execution. Chunked newline framing passed. The
+waiting operator uses the same noncanonical/no-echo launcher; the old readiness
+signals were not replayed and no real ready/attempt record was consumed.
 
 The operator sequence is:
 

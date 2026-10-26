@@ -270,7 +270,40 @@ export async function runGuestCheckoutOperator({ directory = '/state', input = p
   } finally { abort.abort('finished'); lines.close(); if (lock) await lock.close(); }
 }
 
+/** Diagnostic parser only: no state directory, lock, readiness or UI dispatch.
+ * Reports sizes/types, never payload values. This branch cannot call the runner.
+ */
+export async function checkOperatorTransport(input = process.stdin, output = process.stdout) {
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  let frames = 0;
+  try {
+    for await (const line of lines) {
+      const bytes = Buffer.byteLength(line);
+      if (bytes > 16_384) throw new Error('oversized_frame');
+      const value = JSON.parse(line);
+      if (shape(value, ['type']) && value.type === 'transport_finish') {
+        output.write(encoded({ type: 'transport_complete', frames, no_action: true }));
+        return 0;
+      }
+      const start = shape(value, ['type', 'ready_ref', 'scope', 'userReady', 'priorFailure', 'expected_latest_hash']) && value.type === 'start';
+      const ack = value.type === 'operator_ack' && ['intent_id', 'ready_ref', 'scope_digest', 'request_id', 'stage', 'deadline', 'from_document_ref']
+        .every(key => Object.hasOwn(value, key));
+      if (!start && !ack) throw new Error('invalid_frame');
+      frames++;
+      output.write(encoded({ type: 'transport_frame', frame: frames, received_bytes: bytes,
+        parsed_type: value.type, no_action: true }));
+    }
+    return 2;
+  } catch {
+    output.write(encoded({ type: 'transport_rejected', frames, no_action: true }));
+    return 2;
+  } finally { lines.close(); }
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  if (process.argv.length === 3 && process.argv[2] === '--transport-check') {
+    process.exit(await checkOperatorTransport());
+  }
   if (process.argv.slice(2).some(value => value !== '--waiting-ready') || process.argv.length > 3) process.exit(2);
   process.exit(await runGuestCheckoutOperator());
 }
