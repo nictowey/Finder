@@ -1,0 +1,218 @@
+/** Fixed read-only payment-evidence producer for the already-open enhanced
+ * checkout. The merchant summary DOM is observed; guest-payment form anatomy is
+ * not qualified. Never reads payment inputs, addresses, account data or values.
+ */
+import { randomUUID } from 'node:crypto';
+import { collectEnhancedCheckoutDom } from './discogs_enhanced_checkout.mjs';
+
+export { collectEnhancedCheckoutDom as collectEnhancedPaymentQuoteDom };
+export const ENHANCED_PAYMENT_QUOTE_URL = 'https://www.discogs.com/marketplace/checkout';
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const MONEY = /^(?:0|[1-9][0-9]{0,6})\.[0-9]{2}$/u;
+const HASH = /^[0-9a-f]{64}$/u;
+const STOP = Symbol('payment_quote_stop');
+// No provider form/quote layout has yet been qualified from observed DOM.
+// Add a fixed collector/profile here only after actual selector, currency,
+// finality, frame and delivery qualification; never from a caller's boolean.
+const VERIFIED_PROVIDER_LAYOUTS = Object.freeze([]);
+const pending = new WeakMap();
+const active = new WeakSet();
+const finished = new WeakSet();
+const fail = code => { throw Object.assign(new Error(code), { [STOP]: code }); };
+const base = code => ({ schema: 'discogs_enhanced_payment_quote_v1', status: 'unverified', code,
+  payment_allowed: false, purchase_allowed: false, final_submission_allowed: false,
+  final_quote_verified: false, destination_verified: false, provider_terms_verified: false });
+const record = (value, keys) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const fields = Object.getOwnPropertyDescriptors(value);
+  return Reflect.ownKeys(fields).length === keys.length && keys.every(key =>
+    fields[key]?.enumerable === true && Object.hasOwn(fields[key], 'value'));
+};
+const number = value => typeof value === 'number' && Number.isFinite(value);
+const money = value => record(value, ['amount', 'currency']) && value.currency === 'USD' &&
+  typeof value.amount === 'string' && MONEY.test(value.amount);
+const cents = value => { const [whole, fraction] = value.split('.'); return BigInt(whole) * 100n + BigInt(fraction); };
+function merchantEvidence(value) {
+  if (!record(value, ['schema', 'status', 'source', 'purchase_allowed', 'seller_handle', 'visible_row_count', 'displayed', 'selected_shipping_label']) ||
+      value.schema !== 'discogs_enhanced_checkout_dom_v1' || value.status !== 'observed' ||
+      value.source !== 'visible_enhanced_checkout_dom' || value.purchase_allowed !== false || value.visible_row_count !== 1 ||
+      typeof value.seller_handle !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/u.test(value.seller_handle) ||
+      typeof value.selected_shipping_label !== 'string' || value.selected_shipping_label.length < 1 || value.selected_shipping_label.length > 100 ||
+      /[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/u.test(value.selected_shipping_label) ||
+      !record(value.displayed, ['subtotal', 'shipping', 'total']) ||
+      !['subtotal', 'shipping', 'total'].every(key => money(value.displayed[key])) ||
+      cents(value.displayed.subtotal.amount) + cents(value.displayed.shipping.amount) !== cents(value.displayed.total.amount)) return null;
+  return { subtotal: { ...value.displayed.subtotal }, shipping: { ...value.displayed.shipping },
+    total: { ...value.displayed.total }, tax: null, fees: null,
+    selected_shipping_label: value.selected_shipping_label };
+}
+function provenanceValid(p, now) {
+  return record(p, ['schema', 'source', 'document_ref', 'observed_at', 'expires_at', 'same_document_verified', 'frame_association']) &&
+    p.schema === 'discogs_payment_quote_provenance_v1' && p.source === 'current_enhanced_checkout' && UUID.test(p.document_ref) &&
+    p.same_document_verified === true && number(p.observed_at) && number(p.expires_at) && p.observed_at <= now &&
+    now - p.observed_at < 20 && now < p.expires_at && p.expires_at <= p.observed_at + 20 &&
+    record(p.frame_association, ['known_buttons_count', 'known_buttons_associated', 'payment_quote_frame_qualified']) &&
+    [0, 1, 2].includes(p.frame_association.known_buttons_count) &&
+    typeof p.frame_association.known_buttons_associated === 'boolean' && typeof p.frame_association.payment_quote_frame_qualified === 'boolean';
+}
+function destinationEvidence(value, documentRef) {
+  if (!record(value, ['source', 'document_ref', 'destination_ref', 'match']) ||
+      value.source !== 'trusted_same_document_destination_binding' || value.document_ref !== documentRef ||
+      !(value.destination_ref === 'saved_shipping_address' || UUID.test(value.destination_ref)) ||
+      ![true, false, null].includes(value.match)) return null;
+  return { destination_ref: value.destination_ref, match: value.match };
+}
+
+/** Typed future-provider input contract. It is not DOM qualification or payment
+ * authorization. Current production never supplies it: known Pay $5.05 screen
+ * text has no verified selector/ISO currency/finality/delivery binding.
+ * @typedef {object} ProviderDisplayEvidence
+ * @property {'discogs_provider_display_evidence_v1'} schema
+ * @property {string} layout_id Fixed, reviewed collector profile (none yet).
+ * @property {string|null} amount Decimal displayed amount, not a card value.
+ * @property {string|null} currency Explicit displayed ISO currency.
+ * @property {boolean} final_total_verified Explicit all-in finality evidence.
+ * @property {'included_in_total'|'not_applicable_verified'|'unverified'} tax_finality
+ * @property {'included_in_total'|'none_applicable_verified'|'unverified'} mandatory_charges_finality
+ * @property {boolean} shipping_selection_verified
+ * @property {'approved_saved_destination'|'billing_address'|'unverified'} destination_mode
+ * @property {boolean|null} destination_match Opaque actual provider destination match.
+ * @property {boolean} terms_verified
+ * @property {string|null} terms_fingerprint Non-sensitive terms fingerprint.
+ * @property {object} provenance Actual provider/merchant document binding.
+ */
+export function parseEnhancedPaymentQuoteEvidence(input, { now = Date.now() / 1000 } = {}) {
+  if (!number(now) || !record(input, ['merchant', 'provider', 'destination', 'provenance']) || !provenanceValid(input.provenance, now)) {
+    return base('same_document_freshness_unverified');
+  }
+  const merchant = merchantEvidence(input.merchant);
+  if (!merchant) return base('merchant_summary_unverified');
+  const destination = destinationEvidence(input.destination, input.provenance.document_ref);
+  const provider = input.provider;
+  const providerShape = record(provider, ['schema', 'layout_id', 'amount', 'currency', 'final_total_verified', 'tax_finality',
+    'mandatory_charges_finality', 'shipping_selection_verified', 'destination_mode', 'destination_match', 'terms_verified', 'terms_fingerprint', 'provenance']) &&
+    provider.schema === 'discogs_provider_display_evidence_v1' && typeof provider.layout_id === 'string' && provider.layout_id.length <= 80;
+  const pp = providerShape ? provider.provenance : null;
+  const frameBound = record(pp, ['source', 'merchant_document_ref', 'provider_document_ref', 'observed_at', 'expires_at', 'same_document_verified', 'frame_associated']) &&
+    pp.source === 'qualified_visible_provider_dom' && pp.merchant_document_ref === input.provenance.document_ref &&
+    UUID.test(pp.provider_document_ref) && pp.frame_associated === true && pp.same_document_verified === true &&
+    number(pp.observed_at) && number(pp.expires_at) && pp.observed_at >= input.provenance.observed_at && pp.observed_at <= now &&
+    now - pp.observed_at < 20 && now < pp.expires_at && pp.expires_at <= pp.observed_at + 20;
+  const amount = providerShape && typeof provider.amount === 'string' && MONEY.test(provider.amount) ? provider.amount : null;
+  const currency = providerShape && typeof provider.currency === 'string' && /^[A-Z]{3}$/u.test(provider.currency) ? provider.currency : null;
+  const gates = {
+    provider_dom_qualification: providerShape && VERIFIED_PROVIDER_LAYOUTS.includes(provider.layout_id),
+    provider_frame_and_document: !!frameBound && input.provenance.frame_association.payment_quote_frame_qualified === true,
+    provider_explicit_currency: currency === 'USD',
+    provider_amount_matches_merchant: amount !== null && currency === 'USD' && amount === merchant.total.amount,
+    provider_final_all_in_total: providerShape && provider.final_total_verified === true,
+    final_tax_treatment: providerShape && ['included_in_total', 'not_applicable_verified'].includes(provider.tax_finality),
+    mandatory_charges_finality: providerShape && ['included_in_total', 'none_applicable_verified'].includes(provider.mandatory_charges_finality),
+    provider_shipping_selection: providerShape && provider.shipping_selection_verified === true,
+    provider_delivery_binding: providerShape && provider.destination_mode === 'approved_saved_destination' &&
+      provider.destination_match === true && destination?.match === true,
+    provider_terms: providerShape && provider.terms_verified === true && typeof provider.terms_fingerprint === 'string' && HASH.test(provider.terms_fingerprint),
+  };
+  const final = Object.values(gates).every(value => value === true);
+  return { ...base(final ? 'final_quote_evidence_verified' : 'provider_final_quote_unverified'), status: final ? 'observed' : 'unverified',
+    amount_basis: final ? 'qualified_provider_final_total' : 'merchant_aggregate_preparation_only', merchant_displayed: merchant,
+    provider_displayed: { amount, currency }, final_quote_verified: final,
+    final_quote: { amount: final ? amount : null, currency: final ? currency : null, tax: null, fees: null },
+    merchant_destination_match: destination?.match ?? null,
+    destination_verified: final && gates.provider_delivery_binding, provider_terms_verified: final && gates.provider_terms,
+    gates, missing_evidence: Object.keys(gates).filter(key => gates[key] !== true),
+    provenance: { ...input.provenance, frame_association: { ...input.provenance.frame_association } } };
+}
+function releaseReadIfSettled(page) {
+  if (finished.has(page) && !pending.get(page)?.size) {
+    active.delete(page); finished.delete(page); pending.delete(page);
+  }
+}
+function track(page, task) {
+  let tasks = pending.get(page);
+  if (!tasks) { tasks = new Set(); pending.set(page, tasks); }
+  tasks.add(task);
+  const settle = () => { tasks.delete(task); releaseReadIfSettled(page); };
+  task.then(settle, settle);
+  return task;
+}
+/** Shared browser owner must await this before releasing its context lease after
+ * a cancelled/timed-out read; no late read is allowed to authorize a payment.
+ */
+export async function waitForEnhancedPaymentQuoteSettlement(page) {
+  const tasks = pending.get(page);
+  while (tasks?.size) await Promise.allSettled([...tasks]);
+}
+
+/** Existing-page production path. Only the fixed observed merchant collector is
+ * evaluated. Unknown provider payment documents are never inspected. Optional
+ * destinationMatcher is a trusted same-process opaque binding port, not input
+ * data: it receives the actual Page/Document handle and must never return PII.
+ */
+export async function inspectCurrentEnhancedPaymentQuote(page, { signal = null, timeoutMs = 1500, destinationMatcher = null } = {}) {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 1500 || !page || typeof page !== 'object' ||
+      !['url', 'evaluate', 'evaluateHandle', 'frames', 'mainFrame'].every(key => typeof page[key] === 'function') ||
+      destinationMatcher !== null && typeof destinationMatcher !== 'function') return base('read_unavailable');
+  if (signal?.aborted) return base('read_cancelled');
+  if (active.has(page) || pending.get(page)?.size) return base('quote_read_in_progress');
+  active.add(page); finished.delete(page);
+  const deadline = Date.now() + timeoutMs, documentRef = randomUUID();
+  let documentHandle = null;
+  const handles = new Set();
+  const disposed = new WeakSet();
+  const dispose = handle => {
+    if (!handle || typeof handle !== 'object' || typeof handle.dispose !== 'function' || disposed.has(handle)) return;
+    disposed.add(handle); void track(page, Promise.resolve().then(() => handle.dispose())).catch(() => {});
+  };
+  const read = async operation => {
+    if (signal?.aborted) fail('read_cancelled');
+    if (Date.now() >= deadline) fail('read_timeout');
+    let timer, onAbort;
+    const task = track(page, Promise.resolve().then(() => {
+      if (signal?.aborted) fail('read_cancelled'); if (Date.now() >= deadline) fail('read_timeout'); return operation();
+    }));
+    try {
+      const value = await Promise.race([task, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(Object.assign(new Error('read_timeout'), { [STOP]: 'read_timeout' })), deadline - Date.now());
+        if (signal) { onAbort = () => reject(Object.assign(new Error('read_cancelled'), { [STOP]: 'read_cancelled' })); signal.addEventListener('abort', onAbort, { once: true }); }
+      })]);
+      if (signal?.aborted) fail('read_cancelled'); if (Date.now() >= deadline) fail('read_timeout'); return value;
+    } finally { clearTimeout(timer); if (onAbort) signal.removeEventListener('abort', onAbort); }
+  };
+  const readHandle = operation => read(async () => {
+    const handle = await operation(); handles.add(handle);
+    if (signal?.aborted || Date.now() >= deadline) { dispose(handle); fail(signal?.aborted ? 'read_cancelled' : 'read_timeout'); }
+    return handle;
+  });
+  try {
+    if (await read(() => page.url()) !== ENHANCED_PAYMENT_QUOTE_URL) return base('url_unverified');
+    documentHandle = await readHandle(() => page.evaluateHandle(() => document));
+    const observedAt = Date.now() / 1000;
+    const merchant = await read(() => page.evaluate(collectEnhancedCheckoutDom));
+    if (!merchantEvidence(merchant)) return base(merchant?.code === 'access_restricted' ? 'access_restricted' : 'merchant_summary_unverified');
+    const frames = await read(() => page.frames());
+    if (!Array.isArray(frames) || frames.length > 32) return base('frame_metadata_unverified');
+    const buttons = frames.filter(frame => {
+      try { const url = new URL(frame.url()); return url.origin === 'https://www.paypal.com' && url.pathname === '/smart/buttons' && !url.username && !url.password && !url.hash; }
+      catch { return false; }
+    });
+    let associated = false;
+    if (buttons.length === 1 && buttons[0].parentFrame() === page.mainFrame()) {
+      const element = await readHandle(() => buttons[0].frameElement());
+      associated = await read(() => element.isVisible()) === true && await read(() => element.contentFrame()) === buttons[0] &&
+        await read(() => element.ownerFrame()) === page.mainFrame();
+    }
+    const destination = destinationMatcher === null ? null : await read(() => destinationMatcher({
+      page, documentHandle, document_ref: documentRef, observed_at: observedAt, expires_at: observedAt + 20 }));
+    if (await read(() => page.url()) !== ENHANCED_PAYMENT_QUOTE_URL ||
+        await read(() => page.evaluate(expected => document === expected, documentHandle)) !== true) return base('document_changed');
+    return parseEnhancedPaymentQuoteEvidence({ merchant, provider: null, destination, provenance: {
+      schema: 'discogs_payment_quote_provenance_v1', source: 'current_enhanced_checkout', document_ref: documentRef,
+      observed_at: observedAt, expires_at: observedAt + 20, same_document_verified: true,
+      frame_association: { known_buttons_count: Math.min(buttons.length, 2), known_buttons_associated: associated, payment_quote_frame_qualified: false } } });
+  } catch (error) { return base(error?.[STOP] || 'read_failed'); }
+  finally {
+    for (const handle of handles) dispose(handle);
+    finished.add(page); releaseReadIfSettled(page);
+  }
+}

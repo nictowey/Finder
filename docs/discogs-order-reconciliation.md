@@ -1,9 +1,11 @@
 # Discogs order evidence: offline contract
 
 `DiscogsOrderLedger` is a separate owner-only SQLite ledger for a possible
-future website checkout. It has no browser adapter, network call, submit
-method, payment action, or grant issuer. Nothing in the deployed Sniper service
-constructs it. `ExpectedOrder.approval_ref` is an opaque binding supplied by a
+future website checkout. It has no network call, submit method, payment action,
+or grant issuer.
+The deployed Sniper service does not construct it. The dormant enhanced-checkout
+composition below now connects its fixed metadata-only CLI in offline tests.
+`ExpectedOrder.approval_ref` is an opaque binding supplied by a
 future, separately reviewed authorization path; this type does **not** verify
 owner approval by itself. All tests use synthetic values.
 
@@ -33,10 +35,10 @@ therefore maps Invoice Sent to created/unpaid; Payment Pending to uncleared;
 Payment Received, In Progress, and Shipped to paid. Other statuses require
 review. Order creation is never reported as completed payment.
 
-The current observed cart defers tax. Its displayed total is not a verified
-final payable quote, destination/payment bindings are not established, and no
-normal order-page reader or receipt lookup has been live tested on the VPS.
-The adapter is intentionally absent: the committing control cannot be used as
+Earlier DS2 cart evidence deferred tax. Its displayed total was not a verified
+final payable quote. No normal positive order-page reader or receipt lookup has
+been live tested on the VPS. A live payment dispatcher remains absent: the
+committing control cannot be used as
 a quote preview. A future live checkout needs an exact authorized item and
 ceiling, complete final quote, matching destination/payment references,
 ordinary website control evidence, and separately verified post-action order
@@ -59,3 +61,61 @@ URL was established by the retained evidence, so the contract reports the link
 as unavailable rather than guessing one. It makes no current-status or
 availability claim. Its tests use synthetic order-page evidence and do not
 establish a live order or payment handoff.
+## Enhanced checkout integration, October 27
+
+The current enhanced checkout is distinct from the legacy order control described
+above. Two real server runs reached a blank guest-card form displaying Pay $5.05.
+Neither submitted payment nor established a merchant order. Those observations do
+not qualify a final provider quote, selected payment method, delivery destination,
+full terms, or positive merchant receipt layout.
+
+`discogs_enhanced_checkout_coordinator.mjs` composes the current read-only quote
+producer, merchant evidence reader, payment boundary and existing real-order ledger.
+Its production `attemptPayment` always passes `enablePay: false`; callers cannot
+supply a dispatcher or enable switch. The exported adapter also rejects enabled
+execution outside the isolated Node test context. The provider DOM qualification
+registry is empty. Missing tax, fee treatment, currency, delivery and terms remain unqualified;
+an observed merchant aggregate is preparation evidence only. No card values are
+read or stored.
+
+The fixed `discogs_order_ledger_port.py` opens `/bridge/discogs-real-orders.sqlite3`
+without creating it. Production JavaScript exposes no initialization method.
+The immutable intent binds exact item/release/seller, current quote fingerprint,
+rules revision, amount/currency, destination/payment references and quote expiry.
+The CLI uses server time and the existing SQLite transaction to persist
+`submission_unknown` before any intercepted dispatch can run. Lost acknowledgments,
+process crashes or cancellation after fencing cannot authorize a retry. A zero or
+unqualified receipt lookup leaves that permanent slot unknown.
+
+The current merchant reader deliberately produces no positive order evidence:
+actual positive receipt DOM and Purchases selectors have not been qualified.
+Order IDs, paid status and receipt fields in the executable rehearsal below are
+synthetic and available only through the isolated test factory. They demonstrate
+real ledger transitions, not live merchant or payment compatibility.
+
+### Executable offline rehearsal
+
+```sh
+node --test tests/test_discogs_enhanced_checkout_coordinator.cjs
+```
+
+This uses synthetic quote/destination/terms/payment-control metadata, intercepted
+no-network dispatch, and the actual Python CLI with a private temporary SQLite
+ledger. It verifies validation, durable pre-dispatch fencing, unknown outcome,
+unpaid/pending/paid receipt reconciliation, restart persistence and duplicate
+suppression. It cannot submit a payment or reach a provider. The CI checkout gate
+runs this and the separate quote, adapter, ledger and merchant-reader regressions.
+
+### Remaining live evidence
+
+Before any payment implementation can be enabled, normal supported UI inspection
+must establish the provider's explicit currency and final all-in amount, tax and
+mandatory-charge treatment, actual delivery selection, full applicable terms,
+selected secure payment method and exact Pay-control association. Read-only
+inspection must exclude payment input values and session identifiers. Existing
+blank-form labels alone do not establish those fields. A previously existing
+authorized merchant order could qualify a positive receipt layout read-only;
+otherwise that positive layout remains unverified until a separately authorized
+real transaction. No order should be placed merely to manufacture a fixture.
+The absence of a supported Wallet/browserAuth route currently prevents secure
+automatic card entry; no persistent card credential setup is authorized.
