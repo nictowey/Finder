@@ -160,10 +160,10 @@ function factory({ context, acquireContextLease, entryGate = false, liveGate = f
   let page = null, fixed = null, documentHandle = null, entryRef = null, entryAt = null,
     entryReady = false, beginStarted = false, entryCompleting = false, resuming = false, attemptStarted = false,
     preheldRelease = null, entryRelease = null, entryMode = null, entryCompleted = false,
-    entryScope = null, entryCompletedAt = null, closed = false;
-  const enabled = () => liveGate && !closed;
-  const entryEnabled = () => entryGate && !closed;
-  const browserActive = () => (liveGate || entryGate) && !closed;
+    entryScope = null, entryCompletedAt = null, entryCancelled = false, entryCancelledAt = null, closed = false;
+  const enabled = () => liveGate && !closed && !entryCancelled;
+  const entryEnabled = () => entryGate && !closed && !entryCancelled;
+  const browserActive = () => (liveGate || entryGate) && !closed && !entryCancelled;
   const ownerPolicy = async scope => {
     if (!enabled()) throw new Error('payment_runtime_disabled');
     if (!validScope(scope, Date.now() / 1000)) throw new Error('exact_kc_scope_required');
@@ -425,6 +425,23 @@ function factory({ context, acquireContextLease, entryGate = false, liveGate = f
           documentHandle = null;
         }
       }
+    },
+    cancelSecureEntry: async (cancellation, { signal = null } = {}) => {
+      if (!exact(cancellation, ['entry_ref', 'reason'])) return stop('secure_entry_cancellation_unverified');
+      const ref = Object.getOwnPropertyDescriptor(cancellation, 'entry_ref')?.value;
+      const reason = Object.getOwnPropertyDescriptor(cancellation, 'reason')?.value;
+      if (!entryGate || closed || signal?.aborted || entryMode !== 'entry_only' ||
+          !entryRelease || entryCompleted || attemptStarted || ref !== entryRef || reason !== 'provider_session_expired')
+        return stop('secure_entry_cancellation_unverified');
+      // Quarantine synchronously, including a completion waiting on metadata.
+      // Keep the privacy lease: cancellation cannot resume page reads, renew
+      // authority, initialize another form or authorize Pay. Normal context
+      // shutdown/restart is the separately reviewed retirement boundary.
+      if (!entryCancelled) { entryCancelled = true; entryCancelledAt = Date.now() / 1000; }
+      return Object.freeze({ status: 'observed', code: 'secure_entry_cancelled',
+        entry_ref: entryRef, cancelled_at: entryCancelledAt, reason,
+        reads_suspended: true, privacy_lock_held: true, runtime_pay_invoked: false,
+        restart_required: true, payment_allowed: false, purchase_allowed: false });
     },
     completeSecureEntry: async (completion, { signal = null } = {}) => {
       if (!exact(completion, ['entry_ref', 'completed_at'])) return stop('secure_entry_completion_unverified');

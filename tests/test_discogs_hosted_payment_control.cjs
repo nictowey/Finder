@@ -27,6 +27,7 @@ function runtime(overrides = {}) {
       reads_suspended: true, payment_allowed: false }),
     completeSecureEntry: async value => ({ status: 'observed', code: 'secure_entry_completed', entry_ref: value.entry_ref,
       entry_started_at: value.completed_at - 1, entry_completed_at: value.completed_at }),
+    cancelSecureEntry: async () => ({ status: 'blocked', code: 'secure_entry_cancellation_unverified' }),
     resumeAfterEntry: async () => ({ status: 'blocked', code: 'hosted_payment_disabled' }),
     attemptPayment: async () => ({ status: 'blocked', code: 'hosted_payment_disabled' }), ...overrides };
 }
@@ -276,4 +277,55 @@ test('completion projection permits delayed human entry but binds the truthful f
     const stale = await exchange(path, wire('complete_secure_entry', { entry_ref: ref, completed_at: now - 3600 }));
     assert.equal(stale.code, 'unsupported_payment_request'); assert.equal(invocations, 1);
   } finally { await close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+for (const uncertain of [false, true]) {
+  test(`fixed cancellation quarantines an ${uncertain ? 'uncertain' : 'active'} completion without clearing its latch`, async () => {
+    const dir = await directory(), path = join(dir, 'payment-control.sock');
+    const ref = randomUUID(), entered = deferred(), finish = deferred();
+    let cancelled = false;
+    const close = await listenHostedPaymentControlFixture(runtime({
+      completeSecureEntry: async () => { entered.resolve(); await finish.promise;
+        return { status: 'blocked', code: 'secure_entry_completion_unverified' }; },
+      cancelSecureEntry: async request => {
+        assert.equal(request.entry_ref, ref); assert.equal(request.reason, 'provider_session_expired'); cancelled = true;
+        return { status: 'observed', code: 'secure_entry_cancelled', entry_ref: ref,
+          cancelled_at: Date.now() / 1000, reason: request.reason, reads_suspended: true,
+          privacy_lock_held: true, runtime_pay_invoked: false, restart_required: true,
+          payment_allowed: false, purchase_allowed: false };
+      },
+    }), path, { enabled: true, ...(uncertain ? { timeoutMs: 30 } : {}) });
+    let completion;
+    try {
+      completion = exchange(path, wire('complete_secure_entry', { entry_ref: ref, completed_at: Date.now() / 1000 }));
+      await entered.promise;
+      if (uncertain) assert.equal((await completion).code, 'payment_control_request_timed_out');
+      const reply = await exchange(path, wire('cancel_secure_entry', { entry_ref: ref, reason: 'provider_session_expired' }));
+      assert.equal(reply.code, 'secure_entry_cancelled'); assert.equal(reply.reads_suspended, true);
+      assert.equal(reply.privacy_lock_held, true); assert.equal(reply.payment_allowed, false); assert.equal(cancelled, true);
+      const other = await exchange(path, wire());
+      assert.equal(other.code, uncertain ? 'payment_control_reconciliation_required' : 'payment_control_busy');
+      finish.resolve(); await completion;
+      await new Promise(resolve => setImmediate(resolve));
+      if (uncertain) assert.equal((await exchange(path, wire())).code, 'payment_control_reconciliation_required');
+    } finally { finish.resolve(); await completion; await close(); await rm(dir, { recursive: true, force: true }); }
+  });
+}
+
+test('cancellation schema and projection cannot release reads, change reason or smuggle values', () => {
+  const now = Date.now() / 1000, ref = randomUUID();
+  const request = { entry_ref: ref, reason: 'provider_session_expired' };
+  assert.ok(sanitizeHostedPaymentControlRequest(message('cancel_secure_entry', request), { now }));
+  for (const changed of [{ ...request, reason: 'renew_entry' }, { ...request, entry_ref: 'wrong' },
+    { ...request, cardNumber: 'SECRET' }, { ...request, release_lease: true }]) {
+    assert.equal(sanitizeHostedPaymentControlRequest(message('cancel_secure_entry', changed), { now }), null);
+  }
+  const report = { status: 'observed', code: 'secure_entry_cancelled', entry_ref: ref,
+    reason: request.reason, cancelled_at: now, reads_suspended: true, privacy_lock_held: true,
+    runtime_pay_invoked: false, restart_required: true, payment_allowed: false, purchase_allowed: false };
+  for (const changed of [{ ...report, reads_suspended: false }, { ...report, privacy_lock_held: false },
+    { ...report, runtime_pay_invoked: true }, { ...report, restart_required: false },
+    { ...report, cancelled_at: now + 1 }, { ...report, entry_ref: randomUUID() }]) {
+    assert.equal(sanitizeHostedPaymentControlResult(changed, 'cancel_secure_entry', { now, request }).requires_reconciliation, true);
+  }
 });

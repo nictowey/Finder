@@ -11,9 +11,10 @@ const OFF = Object.freeze({ entryGate: false, liveGate: false, controlEnabled: f
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const HASH = /^[0-9a-f]{64}$/u;
 const COMMANDS = Object.freeze({ inspect_readiness: 'inspectReadiness', begin_secure_entry: 'beginSecureEntry',
-  complete_secure_entry: 'completeSecureEntry', resume_after_entry: 'resumeAfterEntry', attempt_payment: 'attemptPayment' });
+  complete_secure_entry: 'completeSecureEntry', cancel_secure_entry: 'cancelSecureEntry',
+  resume_after_entry: 'resumeAfterEntry', attempt_payment: 'attemptPayment' });
 const DEADLINES = Object.freeze({ inspect_readiness: 10_000, begin_secure_entry: 15_000,
-  complete_secure_entry: 5000, resume_after_entry: 15_000, attempt_payment: 35_000 });
+  complete_secure_entry: 5000, cancel_secure_entry: 5000, resume_after_entry: 15_000, attempt_payment: 35_000 });
 const ENTRY_KEYS = ['schema', 'release_id', 'listing_id', 'seller', 'quantity', 'currency', 'max_total',
   'expected_guest_head', 'expected_claim_sha256', 'expires_at'];
 const PAY_KEYS = ['intent_id', 'approval_ref', 'release_id', 'listing_id', 'seller', 'one_copy_limit', 'currency',
@@ -22,6 +23,7 @@ const CODES = new Set(['hosted_payment_disabled', 'hosted_payment_authority_obse
   'hosted_secure_entry_disabled', 'hosted_secure_entry_already_started', 'hosted_secure_entry_not_resumable',
   'hosted_secure_entry_unavailable', 'hosted_browser_busy', 'hosted_prior_submit_uncertain', 'entry_document_unverified',
   'public_entry_evidence_unverified', 'anchored_guest_claim_observed', 'secure_entry_completed', 'secure_entry_completion_unverified',
+  'secure_entry_cancelled', 'secure_entry_cancellation_unverified',
   'hosted_post_entry_confirmation_unavailable', 'hosted_post_entry_handoff_unavailable', 'hosted_payment_outcome_uncertain',
   'secure_entry_unavailable', 'secure_entry_not_active', 'fresh_post_entry_context_verified', 'fresh_post_entry_evidence_required',
   'fixed_pay_disabled_or_busy', 'fixed_pay_disabled_or_entry_incomplete', 'fixed_pay_dispatch_unavailable',
@@ -91,6 +93,11 @@ function payScope(value, now) {
 export function sanitizeHostedPaymentControlRequest(value, { now = Date.now() / 1000 } = {}) {
   if (!number(now) || !exact(value, ['schema', 'command', 'request']) || value.schema !== 'discogs_hosted_payment_control_request_v1' ||
       !Object.hasOwn(COMMANDS, value.command)) return null;
+  if (value.command === 'cancel_secure_entry') {
+    if (!exact(value.request, ['entry_ref', 'reason']) || typeof value.request.entry_ref !== 'string' ||
+        !UUID.test(value.request.entry_ref) || value.request.reason !== 'provider_session_expired') return null;
+    return { schema: value.schema, command: value.command, request: { ...value.request } };
+  }
   if (value.command === 'complete_secure_entry') {
     if (!exact(value.request, ['entry_ref', 'completed_at']) || typeof value.request.entry_ref !== 'string' || !UUID.test(value.request.entry_ref) ||
         !number(value.request.completed_at) || value.request.completed_at > now || now - value.request.completed_at >= 60) return null;
@@ -117,6 +124,18 @@ export function sanitizeHostedPaymentControlResult(value, command, { now = Date.
   }
   if (!['observed', 'blocked'].includes(status) || !CODES.has(code)) return stop('payment_control_response_unverified', true);
   const result = { ...stop(code, UNCERTAIN_CODES.has(code)), status };
+  if (status === 'observed' && code === 'secure_entry_cancelled') {
+    const ref = field('entry_ref'), cancelled = field('cancelled_at');
+    if (command !== 'cancel_secure_entry' || request?.entry_ref !== ref ||
+        request?.reason !== 'provider_session_expired' || field('reason') !== request.reason ||
+        typeof ref !== 'string' || !UUID.test(ref) || !number(cancelled) || cancelled > now ||
+        field('reads_suspended') !== true || field('privacy_lock_held') !== true ||
+        field('runtime_pay_invoked') !== false || field('restart_required') !== true ||
+        field('payment_allowed') !== false || field('purchase_allowed') !== false)
+      return stop('payment_control_response_unverified', true);
+    Object.assign(result, { entry_ref: ref, cancelled_at: cancelled, reason: request.reason,
+      reads_suspended: true, privacy_lock_held: true, runtime_pay_invoked: false, restart_required: true });
+  }
   if (status === 'observed' && code === 'secure_entry_completed') {
     const ref = field('entry_ref'), start = field('entry_started_at'), completed = field('entry_completed_at');
     if (command !== 'complete_secure_entry' || request !== null &&
@@ -165,13 +184,17 @@ async function listen(runtime, socketPath, options, fixture) {
       try { message = sanitizeHostedPaymentControlRequest(JSON.parse(input.subarray(0, newline).toString('utf8'))); }
       catch { message = null; }
       if (!message) { send(stop('unsupported_payment_request')); return; }
-      if (uncertain) { send(stop('payment_control_reconciliation_required', true)); return; }
-      if (active) { send(stop('payment_control_busy')); return; }
-      started = true; active = true; deadline(options.timeoutMs ?? DEADLINES[message.command]);
+      // Only cancellation may overtake a pending/uncertain operation. It is a
+      // fixed metadata-only quarantine that retains the privacy lease. Keep
+      // the original busy/uncertain latches until that operation settles.
+      const cancelling = message.command === 'cancel_secure_entry';
+      if (uncertain && !cancelling) { send(stop('payment_control_reconciliation_required', true)); return; }
+      if (active && !cancelling) { send(stop('payment_control_busy')); return; }
+      started = true; if (!cancelling) active = true; deadline(options.timeoutMs ?? DEADLINES[message.command]);
       const task = (async () => {
         try {
           if (controller.signal.aborted || closing) return;
-          const argument = message.command === 'complete_secure_entry' ? message.request : message.request.scope;
+          const argument = ['complete_secure_entry', 'cancel_secure_entry'].includes(message.command) ? message.request : message.request.scope;
           const method = message.command === 'inspect_readiness' && argument.schema === 'discogs_secure_entry_scope_v1' ? 'inspectEntryReadiness' : COMMANDS[message.command];
           const value = await runtime[method](argument, { signal: controller.signal });
           if (controller.signal.aborted || closing) return;
@@ -179,7 +202,7 @@ async function listen(runtime, socketPath, options, fixture) {
           if (result.requires_reconciliation) uncertain = true;
           send(result);
         } catch { if (!controller.signal.aborted && !closing) { uncertain = true; send(stop('payment_control_operation_uncertain', true)); } }
-        finally { active = false; }
+        finally { if (!cancelling) active = false; }
       })();
       pending.add(task); void task.then(() => pending.delete(task), () => pending.delete(task));
     });

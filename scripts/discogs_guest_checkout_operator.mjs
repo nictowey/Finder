@@ -131,8 +131,20 @@ const FORM_DISPOSITION_KEYS = ['type', 'source', 'previous_claim_sha256', 'previ
   'order_history_count', 'order_history_complete', 'order_history_observed_at', 'reviewed_at', 'expires_at'];
 const OBSERVED_FORM_DISPOSITION_KEYS = FORM_DISPOSITION_KEYS.concat('previous_observation_sha256',
   'merchant_order_status', 'payment_status', 'provider_draft_status');
-const dispositionKeys = value => value && typeof value === 'object' && Object.hasOwn(value, 'previous_observation_sha256') ?
-  OBSERVED_FORM_DISPOSITION_KEYS : FORM_DISPOSITION_KEYS;
+const ENTERED_EXPIRED_DISPOSITION_KEYS = ['type', 'source', 'previous_claim_sha256', 'previous_outcome_sha256',
+  'previous_observation_sha256', 'intent_id', 'ready_ref', 'scope_digest', 'release_id', 'listing_id', 'seller',
+  'quantity', 'currency', 'max_total', 'card_data_entered', 'pay_invoked', 'approval_invoked', 'capture_invoked',
+  'user_reported_provider_error_code', 'user_reported_form_disappearance_at', 'runtime_retirement',
+  'current_form_present', 'current_url', 'normal_route_verified', 'current_observed_at',
+  'order_history_url', 'order_history_archived', 'order_history_status', 'order_history_count',
+  'order_history_complete', 'order_history_observed_at', 'reviewed_at', 'expires_at',
+  'merchant_order_status', 'payment_status', 'provider_draft_status'];
+const RUNTIME_RETIREMENT_KEYS = ['source', 'entry_ref', 'entry_handoff_receipt_sha256',
+  'prior_runtime_boot_sha256', 'retirement_kind', 'retired_at', 'payment_authorization_absent',
+  'payment_confirmation_absent', 'runtime_pay_invoked', 'real_order_state'];
+const dispositionKeys = value => value?.source === 'operator_reviewed_user_reported_session_expired' ?
+  ENTERED_EXPIRED_DISPOSITION_KEYS : value && typeof value === 'object' &&
+  Object.hasOwn(value, 'previous_observation_sha256') ? OBSERVED_FORM_DISPOSITION_KEYS : FORM_DISPOSITION_KEYS;
 const FORM_OBSERVATION_KEYS = ['type', 'source', 'previous_claim_sha256', 'previous_outcome_sha256',
   'intent_id', 'ready_ref', 'scope_digest', 'release_id', 'listing_id', 'seller', 'quantity', 'max_total',
   'checkout_document_ref', 'current_document_ref',
@@ -177,6 +189,10 @@ function requireResolvedPreviousAttempt(state, definitiveNoDispatch = false, rev
 }
 
 function validateFormDisposition(value, state, now = Date.now() / 1000) {
+  if (value?.source === 'operator_reviewed_user_reported_session_expired') {
+    validateEnteredSessionExpiredDisposition(value, state, now);
+    return;
+  }
   // expires_at bounds the recording/review freshness. The retained disposition
   // is a historical fact, never authority for a later job without new auth and reconciliation.
   const index = state.records.findLastIndex(item => item.value.kind === 'attempt');
@@ -209,6 +225,51 @@ function validateFormDisposition(value, state, now = Date.now() / 1000) {
         value.current_observed_at <= value.order_history_observed_at && value.dismissal_observed_at < value.order_history_observed_at &&
         outcome.value.recorded_at < value.order_history_observed_at && value.order_history_observed_at <= value.reviewed_at &&
         value.reviewed_at <= now && now - value.order_history_observed_at < 300 && now < value.expires_at &&
+        value.expires_at - value.reviewed_at <= 300)) throw new Error('form_disposition_unverified');
+}
+
+function validateEnteredSessionExpiredDisposition(value, state, now) {
+  const index = state.records.findLastIndex(item => item.value.kind === 'attempt');
+  const attempt = state.records[index], outcome = state.records[index + 1], observation = state.records[index + 2];
+  const retirement = value?.runtime_retirement;
+  if (!metadataOnly(value) || !shape(value, ENTERED_EXPIRED_DISPOSITION_KEYS) ||
+      value.type !== 'record_form_disposition' ||
+      attempt?.value.payload.mode !== 'current_checkout_claim' ||
+      outcome?.value.kind !== 'outcome' || outcome.value.payload.outcome !== 'unknown' ||
+      observation?.value.kind !== 'form_observation' || state.head !== observation.hash ||
+      value.previous_claim_sha256 !== attempt.hash || value.previous_outcome_sha256 !== outcome.hash ||
+      value.previous_observation_sha256 !== observation.hash ||
+      ['intent_id', 'ready_ref', 'scope_digest'].some(key => value[key] !== attempt.value.payload[key] ||
+        value[key] !== observation.value.payload[key]) ||
+      value.release_id !== 3422100 || value.listing_id !== '1366950910' ||
+      value.seller !== 'Mailman21842' || value.quantity !== 1 || value.currency !== 'USD' ||
+      value.max_total !== '5.05' || value.card_data_entered !== true ||
+      ['pay_invoked', 'approval_invoked', 'capture_invoked', 'current_form_present'].some(key => value[key] !== false) ||
+      value.user_reported_provider_error_code !== 'SESSION_EXPIRED' ||
+      !shape(retirement, RUNTIME_RETIREMENT_KEYS) ||
+      retirement.source !== 'operator_verified_private_runtime_retirement' ||
+      !uuid(retirement.entry_ref) || !hash(retirement.entry_handoff_receipt_sha256) ||
+      !hash(retirement.prior_runtime_boot_sha256) ||
+      retirement.retirement_kind !== 'private_browser_context_closed' ||
+      retirement.payment_authorization_absent !== true ||
+      retirement.payment_confirmation_absent !== true || retirement.runtime_pay_invoked !== false ||
+      retirement.real_order_state !== 'no_order_intent' ||
+      ![GUEST_CARD_URL, 'https://www.discogs.com/sell/cart/'].includes(value.current_url) ||
+      value.normal_route_verified !== true ||
+      value.order_history_url !== 'https://www.discogs.com/sell/purchases?archived=A&status=All&limit=50' ||
+      value.order_history_archived !== 'All' || value.order_history_status !== 'All' ||
+      value.order_history_count !== 0 || value.order_history_complete !== true ||
+      ['merchant_order_status', 'payment_status', 'provider_draft_status'].some(key => value[key] !== 'unverified') ||
+      !['user_reported_form_disappearance_at', 'current_observed_at', 'order_history_observed_at',
+        'reviewed_at', 'expires_at'].every(key => num(value[key])) || !num(retirement.retired_at) ||
+      !(Math.max(outcome.value.recorded_at, outcome.value.payload.observed_at,
+          observation.value.recorded_at, observation.value.payload.observed_at) <=
+        value.user_reported_form_disappearance_at &&
+        value.user_reported_form_disappearance_at <= retirement.retired_at &&
+        retirement.retired_at <= value.current_observed_at &&
+        value.current_observed_at <= value.order_history_observed_at &&
+        value.order_history_observed_at <= value.reviewed_at && value.reviewed_at <= now &&
+        now - value.order_history_observed_at < 300 && now < value.expires_at &&
         value.expires_at - value.reviewed_at <= 300)) throw new Error('form_disposition_unverified');
 }
 
@@ -374,7 +435,8 @@ export async function runCurrentCheckoutClaim({ mode = 'claim', directory = '/st
       const last = state.records.at(-1);
       if (last?.value.kind === 'disposition' && shape(value, dispositionKeys(value)) &&
           shape(last.value.payload, dispositionKeys(value)) &&
-          dispositionKeys(value).every(key => Object.is(last.value.payload[key], value[key]))) {
+          dispositionKeys(value).every(key => key === 'runtime_retirement' ?
+            encoded(last.value.payload[key]) === encoded(value[key]) : Object.is(last.value.payload[key], value[key]))) {
         await emit({ type: 'form_disposition_recorded', disposition_sha256: last.hash, duplicate: true,
           merchant_order_status: 'unverified', payment_status: 'unverified', provider_draft_status: 'unverified' }); return 0;
       }

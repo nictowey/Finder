@@ -67,6 +67,36 @@ memory. Keep its privacy lock and browser untouched during implementation.
   unknown outcome. A user report that the form disappeared does not establish
   whether hidden or restored input values remain, or whether an order exists.
 
+## Recovering an entered, expired session
+
+This path does not use the earlier blank-form/normal-Close disposition.
+
+1. Keep native inspection paused. Where the corrected runtime is installed,
+   send only `cancel_secure_entry` with the original entry reference and fixed
+   reason `provider_session_expired`. It invalidates completion and Pay while
+   retaining the privacy lease; it does not resume sensitive reads. Priority
+   cancellation can quarantine a completion waiting on metadata without clearing
+   that operation's busy or uncertain latch.
+2. Verify the actual original handoff receipt, issued scope, claim/head and boot,
+   absence of Pay authorization/confirmation, and absence of a durable runtime
+   Pay intent. The fixed retirement producer must establish these facts; hash
+   shapes and a typed operator attestation alone are insufficient.
+3. Retire the old browser context through the reviewed service stop. Verify
+   termination using unit/container/PID metadata, without screenshots, DOM or
+   field reads. The old `60992b2` runtime has no cancellation RPC: do not invent a
+   successful cancellation or completion for it. Preserve the profile and all
+   ledger records, and do not claim hidden values were erased.
+4. On the corrected startup path, discard restored Page objects without reading
+   their contents and establish a controlled blank page before exposing browser
+   readers. A persistent-profile restart by itself is not blank-page evidence.
+   Obtain fresh complete All/All Purchases reconciliation through the ordinary
+   UI. Stop for any actual challenge or denial.
+5. Append the distinct user-reported entered-session-expired disposition, with
+   `card_data_entered:true`, the genuine provider-expiry/form-disappearance report
+   times, and verified retirement metadata. Keep payment/order/provider-draft
+   outcomes unverified. This disposition permits only a separately reviewed,
+   fresh bounded no-submit preparation; it is not purchase authority.
+
 ## Before any payment
 
 Require separate current authorization issued after entry completion, genuine post-completion amount,

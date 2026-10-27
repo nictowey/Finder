@@ -7,6 +7,58 @@ import { createHostedPaymentRuntime, createHostedPaymentRuntimeFixture } from '.
 import { listenHostedPaymentControl, listenHostedPaymentControlFixture, HOSTED_PAYMENT_CONTROL_SOCKET } from './discogs_hosted_payment_control.mjs';
 
 export const HOSTED_BROWSER_SHUTDOWN_MS = 2000;
+export const HOSTED_BROWSER_BLANK_STARTUP_MS = 5000;
+
+/** Retire restored pages without inspecting their contents. A fresh Playwright
+ * newPage starts at about:blank; identity/inventory proofs need no URL read. */
+export async function establishHostedBlankStartup(context) {
+  const fail = () => { throw new Error('browser_blank_startup_unverified'); };
+  if (!context || ['pages', 'newPage', 'on', 'off'].some(key => typeof context[key] !== 'function')) fail();
+  let timer, active = true, unexpected = false, blank = null;
+  const created = [];
+  const pageCreated = page => {
+    if (created.length >= 17) unexpected = true;
+    else created.push(page);
+  };
+  const inventory = () => {
+    const pages = context.pages();
+    if (!Array.isArray(pages) || pages.length > 16 || new Set(pages).size !== pages.length) fail();
+    return [...pages];
+  };
+  const dispose = () => {
+    if (!active) return;
+    active = false;
+    context.off('page', pageCreated);
+  };
+  const verify = () => {
+    const pages = inventory();
+    if (!active || unexpected || !blank || pages.length !== 1 || pages[0] !== blank ||
+        created.some(page => page !== blank)) fail();
+  };
+  context.on('page', pageCreated);
+  try {
+    await Promise.race([
+      (async () => {
+        const restored = inventory();
+        for (const page of restored) {
+          if (!active || !page || typeof page.close !== 'function') fail();
+          await page.close({ runBeforeUnload: false });
+        }
+        if (!active || unexpected || created.length || inventory().length) fail();
+        blank = await context.newPage();
+        verify();
+      })(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('browser_blank_startup_unverified')),
+          HOSTED_BROWSER_BLANK_STARTUP_MS);
+      }),
+    ]);
+    return Object.freeze({ verify, dispose });
+  } catch {
+    dispose();
+    fail();
+  } finally { clearTimeout(timer); }
+}
 
 async function boundedShutdown(operations) {
   let timer;
@@ -22,8 +74,9 @@ async function boundedShutdown(operations) {
 }
 
 const paymentFixture = Symbol('isolated_payment_runtime_fixture');
+const blankStartupFixture = Symbol('isolated_blank_startup_fixture');
 export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPath, { guestPreparation = null,
-  paymentRuntime = null, [paymentFixture]: fixture = null } = {}) {
+  paymentRuntime = null, [paymentFixture]: fixture = null, [blankStartupFixture]: blankFixture = false } = {}) {
   if (!firefox || typeof firefox.launchPersistentContext !== 'function' ||
       profilePath !== '/profile' || !['/tmp/sniper-read-only.sock', '/bridge/sniper-read-only.sock'].includes(socketPath)) {
     throw new TypeError('unsupported_hosted_browser_configuration');
@@ -47,21 +100,30 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
     headless: false,
     acceptDownloads: false,
     noDefaultViewport: true,
-    firefoxUserPrefs: { 'signon.rememberSignons': false },
+    firefoxUserPrefs: {
+      'signon.rememberSignons': false,
+      'browser.startup.page': 0,
+      'browser.sessionstore.resume_session_once': false,
+      'browser.sessionstore.resume_from_crash': false,
+      'browser.sessionstore.max_resumed_crashes': 0,
+    },
   });
-  let browser, closeSocket, closeGuestSocket, closePaymentSocket, payment, shutdown, closing = false, unavailable = false;
+  let browser, blankStartup, releaseStartupLease, closeSocket, closeGuestSocket, closePaymentSocket, payment, shutdown, closing = false, unavailable = false;
   let reportUnavailable;
   const unavailablePromise = new Promise(resolve => { reportUnavailable = resolve; });
   const close = () => {
     if (shutdown) return shutdown;
     closing = true;
     shutdown = boundedShutdown([
+      () => blankStartup?.dispose(),
       () => closeSocket?.(),
       () => closeGuestSocket?.(),
       () => closePaymentSocket?.(),
       () => payment?.close(),
       () => context.close(),
     ]).finally(() => {
+      // A failed startup never releases its lease: browser retirement may still
+      // be pending after the bounded shutdown deadline. Only success releases.
       context.off?.('close', browserUnavailable);
       browser?.off?.('disconnected', browserUnavailable);
     });
@@ -96,6 +158,14 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
         typeof browser.isConnected !== 'function') throw new Error('browser_unavailable');
     browser.on('disconnected', browserUnavailable);
     if (!isAvailable()) throw new Error('browser_unavailable');
+    // Production listeners cannot expose a restored checkout containing private
+    // entry. Synthetic payment fixtures deliberately retain their selected Page.
+    if (socketPath === '/bridge/sniper-read-only.sock' && fixture === null || blankFixture) {
+      releaseStartupLease = acquireContextLease();
+      if (typeof releaseStartupLease !== 'function') throw new Error('browser_blank_startup_unverified');
+      blankStartup = await establishHostedBlankStartup(context);
+      if (!isAvailable()) throw new Error('browser_unavailable');
+    }
     // Same resident context and same lease as both read-only sockets. The
     // ordinary runner supplies no live gate; no payment RPC is exposed here.
     const paymentOptions = { context, acquireContextLease, liveGate: paymentRuntime?.liveGate === true,
@@ -123,11 +193,23 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
         { ...guestPreparation, acquireContextLease });
     }
     if (!isAvailable()) throw new Error('browser_unavailable');
+    blankStartup?.verify();
+    blankStartup?.dispose();
+    releaseStartupLease?.();
+    releaseStartupLease = null;
     return close;
   } catch (error) {
     await close().catch(() => {});
     throw error;
   }
+}
+
+/** Explicit isolated lifecycle fixture: exercise the production privacy/lease
+ * boundary on the fixed disposable test socket without changing a profile. */
+export function launchHostedBlankStartupFixtureBrowser(firefox) {
+  if (process.env.NODE_TEST_CONTEXT === undefined) throw new TypeError('fixture_context_required');
+  return launchHostedReadOnlyBrowser(firefox, '/profile', '/tmp/sniper-read-only.sock',
+    { [blankStartupFixture]: true });
 }
 
 /** Only isolated metadata paths and an intercepted browser may be supplied by

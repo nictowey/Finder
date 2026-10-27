@@ -918,3 +918,46 @@ test('changed amount, destination, method, terms, notice, expiry, or revoked pol
     assert.equal(browser.clicks, 0); assert.equal((await f.ledger.status()).ledger, null);
   }
 });
+
+for (const pendingCompletion of [false, true]) {
+  test(`cancelled entry retains privacy and disables Pay${pendingCompletion ? ' while completion is pending' : ' after begin scope expires'}`, async t => {
+    const f = await fixture(t), browser = interceptedCheckout(f.context, t);
+    f.setPages([browser.page]);
+    const acquireContextLease = leaseApi.createHostedContextLease();
+    const runtime = runtimeApi.createHostedPaymentRuntimeFixture({ context: f.context,
+      acquireContextLease, entryGate: true, liveGate: true, policyPath: f.policyPath,
+      confirmationPath: join(f.directory, 'enhanced-payment-confirmation.json'),
+      guestLedgerDirectory: f.directory, accessStopPath: join(f.directory, 'access-stopped'),
+      orderLedgerPort: f.ledger });
+    t.after(() => runtime.close());
+    const scope = { schema: 'discogs_secure_entry_scope_v1', release_id: 3422100,
+      listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD', max_total: '5.05',
+      expected_guest_head: f.policy.expected_guest_head, expected_claim_sha256: f.policy.expected_claim_sha256,
+      expires_at: Date.now() / 1000 + 180 };
+    const begun = await runtime.beginSecureEntry(scope);
+    assert.equal(begun.status, 'entry_ready', begun.code);
+    const reads = browser.reads, inventories = f.browserCalls;
+    if (!pendingCompletion) { t.mock.timers.enable({ apis: ['Date'] }); t.mock.timers.tick(301_000); }
+    const cancellation = { entry_ref: begun.entry_ref, reason: 'provider_session_expired' };
+    assert.equal((await runtime.cancelSecureEntry({ ...cancellation, entry_ref: randomUUID() })).status, 'blocked');
+    assert.equal((await runtime.cancelSecureEntry({ ...cancellation, reason: 'renew_entry' })).status, 'blocked');
+    const completion = pendingCompletion ? runtime.completeSecureEntry({ entry_ref: begun.entry_ref,
+      completed_at: Date.now() / 1000 }) : null;
+    const cancelled = await runtime.cancelSecureEntry(cancellation);
+    assert.equal(cancelled.code, 'secure_entry_cancelled');
+    assert.equal(cancelled.privacy_lock_held, true); assert.equal(cancelled.reads_suspended, true);
+    assert.equal(cancelled.runtime_pay_invoked, false); assert.equal(cancelled.payment_allowed, false);
+    if (completion) assert.equal((await completion).status, 'blocked');
+    assert.equal((await runtime.completeSecureEntry({ entry_ref: begun.entry_ref,
+      completed_at: Date.now() / 1000 })).status, 'blocked');
+    assert.equal((await runtime.resumeAfterEntry(f.scope)).status, 'blocked');
+    assert.equal((await runtime.attemptPayment(f.scope)).status, 'blocked');
+    assert.equal((await runtime.beginSecureEntry(scope)).status, 'blocked');
+    assert.equal((await runtime.cancelSecureEntry(cancellation)).cancelled_at, cancelled.cancelled_at);
+    assert.equal(acquireContextLease(), null, 'cancellation never releases the privacy lease');
+    assert.equal(browser.reads, reads); assert.equal(f.browserCalls, inventories); assert.equal(browser.clicks, 0);
+    await runtime.close();
+    const release = acquireContextLease(); assert.equal(typeof release, 'function'); release();
+    if (!pendingCompletion) t.mock.timers.reset();
+  });
+}
