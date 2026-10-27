@@ -17,7 +17,7 @@ const socketPath = '/tmp/sniper-read-only.sock';
 
 function blankFixture(count = 2, options = {}) {
   const calls = [], context = new EventEmitter();
-  let pages = [];
+  let pages = [], closed = false;
   const privatePage = close => {
     const page = { close };
     for (const key of ['url', 'title', 'evaluate', 'screenshot', 'locator']) {
@@ -33,6 +33,9 @@ function blankFixture(count = 2, options = {}) {
       if (options.closeFails) throw new Error('private provider error');
       if (options.closeHangs) await new Promise(() => {});
       pages = pages.filter(item => item !== page);
+      if (options.closeLastClosesContext && pages.length === 0) {
+        closed = true; calls.push('last_window_closed'); context.emit('close');
+      }
       if (options.restoreDuringClose) {
         const restored = privatePage(async () => {});
         pages.push(restored); context.emit('page', restored);
@@ -43,6 +46,7 @@ function blankFixture(count = 2, options = {}) {
   const blank = privatePage(async () => {});
   context.pages = () => [...pages];
   context.newPage = async () => {
+    if (closed) throw new Error('persistent_context_closed');
     calls.push('new_blank'); pages.push(blank); context.emit('page', blank);
     if (options.extraPage) pages.push(privatePage(async () => {}));
     return blank;
@@ -58,8 +62,8 @@ test('blank startup retires restored pages without contents and retains exactly 
   for (const count of [0, 2, 16]) {
     const item = blankFixture(count);
     const guard = await establishHostedBlankStartup(item.context);
-    assert.deepEqual(item.calls, [...Array.from({ length: count }, () =>
-      ['retire', { runBeforeUnload: false }]), 'new_blank']);
+    assert.deepEqual(item.calls, ['new_blank', ...Array.from({ length: count }, () =>
+      ['retire', { runBeforeUnload: false }])]);
     assert.deepEqual(item.context.pages(), [item.blank]);
     guard.verify();
     assert.equal(item.context.listenerCount('page'), 1);
@@ -76,7 +80,7 @@ test('blank startup rejects close failure, excess pages and restoration without 
     await assert.rejects(establishHostedBlankStartup(item.context),
       { message: 'browser_blank_startup_unverified' });
     assert.equal(item.context.listenerCount('page'), 0);
-    if (count === 17 || options.closeFails || options.restoreDuringClose) {
+    if (count === 17) {
       assert.ok(!item.calls.includes('new_blank'));
     }
   }
@@ -90,25 +94,28 @@ test('blank startup keeps its restoration guard active until listeners are ready
   guard.dispose();
 });
 
-test('blank startup bounds a stalled retirement and cannot continue to newPage after timeout', async () => {
+test('blank startup bounds a stalled retirement while keeping the controlled blank Page', async () => {
   const item = blankFixture(1, { closeHangs: true });
   const started = Date.now();
   await assert.rejects(establishHostedBlankStartup(item.context),
     { message: 'browser_blank_startup_unverified' });
   assert.ok(Date.now() - started >= HOSTED_BROWSER_BLANK_STARTUP_MS - 50);
   assert.ok(Date.now() - started < HOSTED_BROWSER_BLANK_STARTUP_MS + 1500);
-  assert.deepEqual(item.calls, [['retire', { runBeforeUnload: false }]]);
+  assert.deepEqual(item.calls, ['new_blank', ['retire', { runBeforeUnload: false }]]);
   assert.equal(item.context.listenerCount('page'), 0);
 });
 
 test('production launcher fails before any listener when restored page retirement cannot be proved', async () => {
   const item = fixture();
   let retired = 0;
-  item.context.pages = () => [{ close: async settings => {
+  const restored = { close: async settings => {
     assert.deepEqual(settings, { runBeforeUnload: false }); retired++;
     throw new Error('private checkout contents must not escape');
-  } }];
-  item.context.newPage = async () => { throw new Error('must not create'); };
+  } }, pages = [restored];
+  item.context.pages = () => [...pages];
+  item.context.newPage = async () => {
+    const blank = {}; pages.push(blank); item.context.emit('page', blank); return blank;
+  };
   await assert.rejects(launchHostedReadOnlyBrowser(item.firefox, '/profile', '/bridge/sniper-read-only.sock'),
     { message: 'browser_blank_startup_unverified' });
   assert.equal(retired, 1);
@@ -118,6 +125,28 @@ test('production launcher fails before any listener when restored page retiremen
     'browser.startup.page': 0, 'browser.sessionstore.resume_session_once': false,
     'browser.sessionstore.resume_from_crash': false, 'browser.sessionstore.max_resumed_crashes': 0 });
   assert.equal(item.context.listenerCount('page'), 0);
+});
+
+test('create-first retirement preserves a persistent context that closes on its last window', async () => {
+  // Synthetic reproduction of the browser lifecycle, not live Firefox proof:
+  // the prior close-all-first ordering emits close before newPage can succeed.
+  const old = blankFixture(1, { closeLastClosesContext: true });
+  let oldClosed = 0;
+  old.context.on('close', () => oldClosed++);
+  await old.context.pages()[0].close({ runBeforeUnload: false });
+  await assert.rejects(old.context.newPage(), { message: 'persistent_context_closed' });
+  assert.equal(oldClosed, 1);
+
+  const item = blankFixture(1, { closeLastClosesContext: true });
+  let closed = 0;
+  item.context.on('close', () => closed++);
+  const guard = await establishHostedBlankStartup(item.context);
+  guard.verify();
+  assert.equal(closed, 0);
+  assert.ok(!item.calls.includes('last_window_closed'));
+  assert.ok(!item.calls.includes('forbidden_read'));
+  assert.deepEqual(item.context.pages(), [item.blank]);
+  guard.dispose();
 });
 
 test('actual read IPC stays excluded while a restored page appears during listener startup', async () => {
@@ -282,6 +311,7 @@ function runnerFixture({ holdLaunch = false, closeFails = false } = {}) {
     calls.push('close'); if (closeFails) throw new Error('private driver details');
   }, { unavailable, isAvailable: () => true });
   const options = { signals, report: value => output.push(value),
+    loadQualification: async () => null,
     loadPaymentMode: async () => ({ entryGate: false, liveGate: false, controlEnabled: false }),
     startMemoryLogging: ({ report }) => {
       assert.equal(typeof report, 'function'); calls.push('memory_start');
@@ -300,9 +330,11 @@ test('runner wires explicit owner entry-only mode without enabling payment', asy
   await item.launched;
   item.signals.emit('SIGTERM');
   assert.equal(await running, 0);
-  assert.deepEqual(item.calls[0], ['firefox-port', '/profile', '/bridge/sniper-read-only.sock', {
-    paymentRuntime: { entryGate: true, liveGate: false, controlEnabled: true },
-  }]);
+  assert.deepEqual(item.calls[0].slice(0, 3), ['firefox-port', '/profile', '/bridge/sniper-read-only.sock']);
+  assert.deepEqual(item.calls[0][3].paymentRuntime,
+    { entryGate: true, liveGate: false, controlEnabled: true });
+  assert.equal(typeof item.calls[0][3].guestPreparation.accessGuard, 'function');
+  assert.equal(typeof item.calls[0][3].guestPreparation.authorize, 'function');
   assert.deepEqual(item.errors, []);
 });
 
@@ -324,7 +356,8 @@ test('runner returns nonzero on browser loss with only a fixed diagnostic', asyn
   assert.equal(await running, 1);
   assert.deepEqual(item.output, ['private_browser_read_only_ready']);
   assert.deepEqual(item.errors, ['browser_unavailable']);
-  assert.deepEqual(item.calls[0], ['firefox-port', '/profile', '/bridge/sniper-read-only.sock']);
+  assert.deepEqual(item.calls[0].slice(0, 3), ['firefox-port', '/profile', '/bridge/sniper-read-only.sock']);
+  assert.deepEqual(Object.keys(item.calls[0][3]), ['guestPreparation']);
   assert.equal(item.calls.filter(value => value === 'close').length, 1);
   assert.ok(item.calls.indexOf('memory_stop') < item.calls.indexOf('close'));
   assert.equal(item.signals.listenerCount('SIGTERM'), 0);

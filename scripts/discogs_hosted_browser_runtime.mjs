@@ -20,9 +20,9 @@ export async function establishHostedBlankStartup(context) {
     if (created.length >= 17) unexpected = true;
     else created.push(page);
   };
-  const inventory = () => {
+  const inventory = (limit = 16) => {
     const pages = context.pages();
-    if (!Array.isArray(pages) || pages.length > 16 || new Set(pages).size !== pages.length) fail();
+    if (!Array.isArray(pages) || pages.length > limit || new Set(pages).size !== pages.length) fail();
     return [...pages];
   };
   const dispose = () => {
@@ -40,12 +40,21 @@ export async function establishHostedBlankStartup(context) {
     await Promise.race([
       (async () => {
         const restored = inventory();
-        for (const page of restored) {
+        // Keep one controlled window alive: retiring Firefox's last existing
+        // window can also terminate its persistent context before newPage.
+        blank = await context.newPage();
+        const afterCreate = inventory(17);
+        if (!active || unexpected || !blank || restored.includes(blank) ||
+            created.some(page => page !== blank) || afterCreate.length !== restored.length + 1 ||
+            !afterCreate.includes(blank) || restored.some(page => !afterCreate.includes(page))) fail();
+        for (const [index, page] of restored.entries()) {
           if (!active || !page || typeof page.close !== 'function') fail();
           await page.close({ runBeforeUnload: false });
+          const remaining = inventory(17);
+          if (!active || unexpected || created.some(item => item !== blank) ||
+              remaining.length !== restored.length - index || !remaining.includes(blank) ||
+              restored.slice(index + 1).some(item => !remaining.includes(item))) fail();
         }
-        if (!active || unexpected || created.length || inventory().length) fail();
-        blank = await context.newPage();
         verify();
       })(),
       new Promise((_, reject) => {

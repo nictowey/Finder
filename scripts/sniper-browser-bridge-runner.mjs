@@ -45,7 +45,7 @@ export async function runHostedBrowser(firefox, {
     // jobs while a guest form is open; each request must reload that policy.
     // Missing, expired, revoked or invalid policy fails closed. Grants keep
     // their own issuer's immutable identity/revalidation after authorization.
-    const guestPreparation = initialQualification === null ? null : Object.freeze({
+    const guestPreparation = Object.freeze({
       accessGuard: async (...args) => {
         try {
           const current = await loadQualification();
@@ -62,7 +62,7 @@ export async function runHostedBrowser(firefox, {
       },
     });
     const runtimeOptions = {};
-    if (guestPreparation !== null) runtimeOptions.guestPreparation = guestPreparation;
+    runtimeOptions.guestPreparation = guestPreparation;
     if (paymentMode.controlEnabled) runtimeOptions.paymentRuntime = paymentMode;
     close = Object.keys(runtimeOptions).length === 0 ?
       await launch(firefox, '/profile', '/bridge/sniper-read-only.sock') :

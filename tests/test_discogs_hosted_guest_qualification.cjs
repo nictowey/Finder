@@ -108,14 +108,52 @@ test('truncated durable use marker or changed job identity never rearms a spent 
   await writeFile(identity, '{', { mode: 0o600 }); await assert.rejects(f.load(), /invalid_guest_qualification_policy/);
 });
 
-test('runner keeps absent startup policy disabled without a later listener or browser relaunch', async () => {
+test('runner keeps a denied guest listener when startup policy is absent, then reloads a new policy without relaunch', async t => {
+  const f = await fixture(t);
   const signals = new EventEmitter(); let launchArgs, launches = 0;
   const close = Object.assign(async () => {}, { isAvailable: () => true, unavailable: new Promise(() => {}) });
   const result = await runHostedBrowser({}, { signals, report: () => {}, reportError: () => {},
-    loadQualification: async () => null, startMemoryLogging: () => () => {},
-    launch: async (...args) => { launches++; launchArgs = args; queueMicrotask(() => signals.emit('SIGTERM')); return close; } });
+    loadQualification: f.load, startMemoryLogging: () => () => {},
+    launch: async (...args) => {
+      launches++; launchArgs = args;
+      const guard = args[3].guestPreparation;
+      assert.equal(await guard.accessGuard('probe_guest_evidence', f.inspect), false);
+      assert.equal(await guard.authorize(f.inspect), null);
+      await f.write();
+      assert.equal(await guard.accessGuard('probe_guest_evidence', f.inspect), true);
+      assert.ok(await guard.authorize(f.inspect));
+      assert.equal(await guard.authorize(f.inspect), null);
+      queueMicrotask(() => signals.emit('SIGTERM'));
+      return close;
+    } });
   assert.equal(result, 0); assert.equal(launches, 1);
-  assert.equal(launchArgs.length, 3);
+  assert.equal(launchArgs.length, 4);
+  assert.deepEqual(Object.keys(launchArgs[3]), ['guestPreparation']);
+});
+
+test('runner starts with expired policy denied and accepts only a fresh reviewed job later', async t => {
+  const f = await fixture(t); await f.write();
+  assert.ok(await (await f.load()).authorize(f.inspect));
+  f.setTime(2800); assert.equal(await f.load(), null);
+  const signals = new EventEmitter(); let launches = 0;
+  const close = Object.assign(async () => {}, { isAvailable: () => true, unavailable: new Promise(() => {}) });
+  const result = await runHostedBrowser({}, { signals, report: () => {}, reportError: () => {},
+    loadQualification: f.load, startMemoryLogging: () => () => {},
+    launch: async (_firefox, _profile, _socket, { guestPreparation }) => {
+      launches++;
+      assert.equal(await guestPreparation.accessGuard('probe_guest_evidence', f.inspect), false);
+      assert.equal(await guestPreparation.authorize(f.inspect), null);
+      f.policy.job_id = randomUUID(); f.policy.issued_at = 2800; f.policy.expires_at = 3000;
+      await f.write();
+      const next = { ...f.inspect, job_id: f.policy.job_id };
+      assert.equal(await guestPreparation.accessGuard('probe_guest_evidence', f.inspect), false);
+      assert.equal(await guestPreparation.accessGuard('probe_guest_evidence', next), true);
+      assert.ok(await guestPreparation.authorize(next));
+      assert.equal(await guestPreparation.authorize(next), null);
+      queueMicrotask(() => signals.emit('SIGTERM'));
+      return close;
+    } });
+  assert.equal(result, 0); assert.equal(launches, 1);
 });
 
 test('malformed nonnull startup issuer never launches a browser or socket', async () => {
