@@ -1147,3 +1147,67 @@ The minimal readiness batch passed 91 preparation tests, 17 IPC tests, the exact
 lint/format and type checking. Independent review accepted the unchanged
 readiness threshold, absolute deadlines and same-document/effect guards. These
 are offline results; a fresh bounded live transition remains a separate gate.
+
+### Verified server transition and dormant preparation issuer (October 27)
+
+Deployed `1ce0598` passed a fresh reviewed three-phase live preflight. The actual
+server followed one normal Go to Checkout and returned
+`cart_checkout_preflight_observed`, with normal transition, fresh checkout
+conditions and approved destination all verified. The selected merchant
+aggregate remained $5.05 USD; the client round trip was 5.404 seconds. No card
+initialization, transaction claim, payment or order submission occurred. The job
+is spent. The 70-file preservation baseline, 11-record ledger and original access
+stop were unchanged; monitoring remained inactive. This is real server
+preflight evidence, not final payment-total or purchase verification.
+
+The existing production issuer now implements a distinct, default-off
+`discogs_guest_prepare_policy_v1`. It permits exactly one inspect, one
+same-document destination confirmation and one `prepare_guest_form` operation.
+Ordinary qualification, capture and preflight policies cannot grant preparation.
+The fixed request contains only schema, job, phase and the opaque document
+reference. It cannot choose a URL, selector, directory, scope, address hash,
+quote fingerprint, callback or payment permission.
+
+The owner-only policy pins the exact KC scope, immutable attempt/reference IDs,
+ledger head, genuine prior SESSION_EXPIRED history and disposition reference,
+plus fresh complete All/All zero-order reconciliation. A historical user
+no-submit authorization can precede that new reconciliation; its timestamp is
+not rewritten as a new approval. Reconciliation, policy and scope remain bounded
+by five minutes, while visual acknowledgement remains bounded by 60 seconds.
+The issuer exclusively creates and fsyncs its prepare receipt before returning
+any grant. It cannot rearm a spent phase across races or process restart.
+
+The preparation operation resolves its destination only from the actual
+in-process confirmed cart document. Its quote fingerprint derives from that
+process's validated item/shipping/total, selected label, caption and exact detail
+identity/grades. Changed private snapshot/document, quote, title/grades or
+shipping selection stops the operation. The separate preparation-terms hash
+represents no visible extra agreements and an explicit merchant aggregate; it is
+not provider terms acceptance or a verified final payable quote.
+
+Preparation reuses the verified same-document readiness and fresh-navigation
+response checks. Trusted policy revocation is checked after startup, before Go,
+and in the final card callback. Current cart facts are re-read after issuer I/O;
+current checkout/frame facts are re-read inside that last callback. Cancellation,
+original observation age, permit expiry and reconciliation expiry are checked
+before setting the dispatch flag or calling the control. An expired permit is
+never converted to a positive one-millisecond timeout, and an old observation
+is never made fresh by copying a new timestamp onto it.
+
+After a card-control initialization, the server still records a durable
+`unknown` outcome and returns `guest_form_observation_required`. No new guest
+field anatomy has been verified by this implementation. A separate normal
+observation must establish blank fields and the displayed Pay amount; no card
+entry, Pay, approval, capture, order submission or automatic retry is exposed.
+The issuer/socket/engine regression test uses real private IPC and authoritative
+isolated claim/disposition records with intercepted browser controls. Every
+simulated effect and the synthetic ledger seed remain separate from live proof.
+No live initialization was performed to implement or test this mode.
+
+The integrated preparation batch passed 132 focused issuer/engine/IPC tests, the
+exact 536-test CI Node list, 3,885 Python tests plus 41 subtests, 110 app tests,
+lint/format and type checks. Independent review accepted the final pre-Go
+revocation fix and last-callback expiry/cancellation guards. These results do
+not authorize a live job or establish provider form/payment success. The code
+remains default off pending a separately reviewed fresh reconciliation/binding
+policy for the one exact no-submit initialization.

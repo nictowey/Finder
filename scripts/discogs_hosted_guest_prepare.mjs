@@ -493,11 +493,62 @@ function authorizationValid(request, authorization) {
     t.expires_at - t.issued_at <= 300;
 }
 
+/** Resolve the narrow production request against this process's genuine
+ * confirmed cart observation. No request or policy may supply an address hash,
+ * fabricated quote fingerprint, selector, URL or executable callback.
+ */
+function resolveScopedPreparation(context, request, authorization) {
+  const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).sort().join('|') === [...keys].sort().join('|');
+  if (!exact(request, ['schema', 'job_id', 'phase', 'document_ref']) ||
+      request.schema !== 'discogs_guest_prepare_request_v1' || request.phase !== 'prepare_guest_form' ||
+      authorization.schema !== 'discogs_guest_prepare_authorization_v1' ||
+      authorization.mode !== 'prepare_guest_form' ||
+      authorization.job_id !== request.job_id || authorization.destination_ack?.document_ref !== request.document_ref ||
+      authorization.release_id !== '3422100' || authorization.listing_id !== '1366950910' ||
+      authorization.seller !== 'Mailman21842' || authorization.quantity !== 1 || authorization.currency !== 'USD' ||
+      authorization.max_total !== '5.05' || authorization.approved_destination_ref !== 'saved_shipping_address' ||
+      typeof authorization.revalidate !== 'function') fail('scoped_authorization_required');
+  const job = readonlyProbeJobs.get(request.job_id), now = Date.now() / 1000;
+  if (!job || job.context !== context || job.url !== CART || job.document_ref !== request.document_ref ||
+      !job.confirmation_consumed || !job.approved_destination_digest || !job.preparation_snapshot ||
+      job.reference_expires_at <= now || authorization.destination_ack.observed_at < job.reference_created_at ||
+      now >= authorization.destination_ack.observed_at + 60 || job.navigation_consumed || job.preparation_consumed) fail('prepare_confirmation_required');
+  job.preparation_consumed = true;
+  const snapshot = job.preparation_snapshot;
+  const expiresAt = Math.min(authorization.expires_at, job.reference_expires_at,
+    authorization.destination_ack.observed_at + 60, authorization.prior_failure?.expires_at || 0,
+    (authorization.prior_failure?.order_history_observed_at || 0) + 300);
+  const hash = value => createHash('sha256').update(stable(value)).digest('hex');
+  const scope = { intent_id: authorization.intent_id, approval_ref: authorization.approval_ref,
+    release_id: 3422100, listing_id: '1366950910', seller: 'Mailman21842', quantity: 1,
+    currency: 'USD', max_total: '5.05', rules_revision: 0,
+    quote_fingerprint: hash(snapshot.quote), destination_ref: authorization.destination_ref,
+    terms_fingerprint: hash(snapshot.preparation_terms), issued_at: authorization.issued_at, expires_at: expiresAt };
+  const resolvedRequest = { job_id: request.job_id, ready_ref: authorization.ready_ref, scope,
+    testAuthorization: { source: 'explicit_user_authorized_no_submit_test', approval_ref: scope.approval_ref,
+      scope_digest: guestCardScopeDigest(scope), attempt_id: scope.intent_id, authorized_at: authorization.authorized_at,
+      issued_at: scope.issued_at, expires_at: expiresAt, card_entry_allowed: false, payment_allowed: false, final_submission_allowed: false },
+    priorFailure: authorization.prior_failure,
+    priorFormDisposition_sha256: authorization.prior_form_disposition_sha256 };
+  return { request: resolvedRequest, authorization: {
+    job_id: request.job_id, scope_digest: guestCardScopeDigest(scope), approved_destination_ref: scope.destination_ref,
+    approved_destination_digest: job.approved_destination_digest, expected_ledger_head: authorization.expected_ledger_head,
+    confirmed_quote: Object.freeze({ ...snapshot.quote }),
+    approved_page: job.page, approved_document_handle: job.document_handle, revalidate: authorization.revalidate } };
+}
+
 /** SAME-process browser port. options.authorization must come from the fixed
  * operation's local owner/scoped authorization issuer, never a request boolean.
  * ledgerDirectory is fixed in production; isolated fixtures use the test factory.
  */
 export async function prepareHostedGuestForm(context, request, options = {}) {
+  if (options.authorization?.schema === 'discogs_guest_prepare_authorization_v1') {
+    try {
+      const resolved = resolveScopedPreparation(context, request, options.authorization);
+      request = resolved.request; options = { ...options, authorization: resolved.authorization };
+    } catch (error) { return stopped(error?.[STOP] || 'scoped_authorization_required'); }
+  }
   if (!context || typeof context !== 'object' || !authorizationValid(request, options.authorization)) return stopped('scoped_authorization_required');
   if (active.has(context) || ledgerActive) return stopped('operation_busy');
   if (uncertain.has(context)) return stopped('navigation_requires_reconciliation');
@@ -506,7 +557,8 @@ export async function prepareHostedGuestForm(context, request, options = {}) {
   const authorization = Object.freeze({ ...options.authorization });
   request = JSON.parse(stable(request)); // Snapshot authorization/scope across every await.
   const scope = Object.freeze(request.scope), signal = options.signal;
-  const deadline = Math.min(Date.now() + 90000, scope.expires_at * 1000, request.testAuthorization.expires_at * 1000);
+  const deadline = Math.min(Date.now() + 90000, scope.expires_at * 1000, request.testAuthorization.expires_at * 1000,
+    request.priorFailure.expires_at * 1000, (request.priorFailure.order_history_observed_at + 300) * 1000);
   let grant = null, navigationIssued = false, cardIssued = false;
   const refs = { cart: randomUUID(), checkout: randomUUID(), card: randomUUID() };
   active.add(context); ledgerActive = true;
@@ -540,6 +592,8 @@ export async function prepareHostedGuestForm(context, request, options = {}) {
   const extras = { initialization: 'not_dispatched' };
   try {
     const head = await bounded(() => ledgerHead(directory, request));
+    if (authorization.expected_ledger_head && head !== authorization.expected_ledger_head) fail('ledger_changed');
+    if (authorization.revalidate && await bounded(() => authorization.revalidate({ signal })) !== true) fail('scoped_authorization_required');
     const pages = await bounded(() => context.pages());
     if (!Array.isArray(pages)) fail('existing_cart_required');
     const cartPages = pages.filter(page => page.url() === CART);
@@ -548,6 +602,8 @@ export async function prepareHostedGuestForm(context, request, options = {}) {
     if (detailPages.length !== 1) fail('listing_detail_required');
     if (pages.length !== 2) fail('unrelated_browser_page_present');
     const page = cartPages[0], detailPage = detailPages[0];
+    if (authorization.approved_page && (page !== authorization.approved_page ||
+        !await bounded(() => page.evaluate(expected => document === expected, authorization.approved_document_handle)))) fail('cart_document_changed');
     // The inspector has its own read timeout. Retain its raw promises too, so
     // an inner timeout cannot release the runtime lease over a pending DOM read.
     const inspectorPage = {
@@ -567,6 +623,8 @@ export async function prepareHostedGuestForm(context, request, options = {}) {
       return { title_digest: title.title_digest, core_title: title.title_core, media: detail.media, sleeve: detail.sleeve };
     };
     const detail = await detailRead();
+    if (authorization.confirmed_quote && (detail.title_digest !== authorization.confirmed_quote.detail_title_digest ||
+        detail.media !== authorization.confirmed_quote.media || detail.sleeve !== authorization.confirmed_quote.sleeve)) fail('listing_detail_changed');
     let cartTitle = null, cartShippingLabel = null;
     if (await bounded(() => page.url()) !== CART) fail('existing_cart_required');
     const cartDocument = await bounded(() => page.evaluateHandle(() => document));
@@ -600,6 +658,8 @@ export async function prepareHostedGuestForm(context, request, options = {}) {
       const raw = await bounded(() => page.evaluate(collectCartDom, scope.listing_id));
       const dom = await supplemental(true); qualify(dom, true);
       const selectedLabel = selectedCartShippingLabel(raw);
+      if (authorization.confirmed_quote && (dom.cart_caption_digest !== authorization.confirmed_quote.caption_digest ||
+          selectedLabel !== authorization.confirmed_quote.selected_shipping_label)) fail('cart_document_changed');
       if (cartShippingLabel && selectedLabel !== cartShippingLabel) fail('cart_document_changed');
       if (stable(await detailRead()) !== stable(detail)) fail('listing_detail_changed');
       // V2 leaves the raw private-address warning unknown. Only this current
@@ -613,23 +673,40 @@ export async function prepareHostedGuestForm(context, request, options = {}) {
       cartShippingLabel = selectedLabel;
       return dom;
     };
+    try {
+      await bounded(() => page.waitForFunction(hostedDocumentReadyDom, CART,
+        { timeout: Math.max(1, deadline - Date.now()), polling: 'raf' }));
+    } catch (error) { if (error?.name === 'TimeoutError') fail('page_not_ready'); throw error; }
     await cartRead();
     const cartObservedAt = Date.now() / 1000;
     const go = await bounded(() => page.$(HOSTED_GO_SELECTOR));
     if (!go) fail('checkout_control_unverified');
     await cartRead();
     if (await bounded(() => ledgerHead(directory, request)) !== head) fail('ledger_changed');
+    if (authorization.revalidate) {
+      if (await bounded(() => authorization.revalidate({ signal })) !== true) fail('scoped_authorization_required');
+      await cartRead(); // Reobserve current facts after the issuer's awaited I/O.
+    }
     if (!await bounded(() => go.evaluate(revalidateHostedGoFormDom))) fail('checkout_control_changed');
+    const navigation = bounded(() => page.waitForNavigation({ url: GUEST_CARD_URL, waitUntil: 'load',
+      timeout: Math.max(1, deadline - Date.now()) }));
+    // Register the observer before dispatch; its rejection is always observed.
+    navigation.catch(() => {});
     await bounded(() => {
       check(); navigationIssued = true;
       return go.click({ timeout: Math.max(1, deadline - Date.now()), noWaitAfter: true });
     });
     const afterNavigation = await bounded(() => page.url());
     if (![CART, GUEST_CARD_URL].includes(afterNavigation)) fail('checkout_redirected');
-    await bounded(() => page.waitForURL(GUEST_CARD_URL, { timeout: Math.max(1, deadline - Date.now()), waitUntil: 'domcontentloaded' }));
+    const response = await navigation;
+    if (!response || response.url() !== GUEST_CARD_URL) fail('fresh_checkout_required');
     if (await bounded(() => page.url()) !== GUEST_CARD_URL) fail('checkout_redirected');
     const checkoutDocument = await bounded(() => page.evaluateHandle(() => document));
     if (await bounded(() => page.evaluate(expected => document === expected, cartDocument))) fail('fresh_checkout_required');
+    try {
+      await bounded(() => page.waitForFunction(hostedCheckoutDataSettledDom, null,
+        { timeout: Math.max(1, deadline - Date.now()), polling: 'raf' }));
+    } catch (error) { if (error?.name === 'TimeoutError') fail('checkout_data_unavailable'); throw error; }
     let frame, card, frameDocument, frameElement;
     const checkoutRead = async () => {
       const currentPages = await bounded(() => context.pages());
@@ -701,11 +778,21 @@ export async function prepareHostedGuestForm(context, request, options = {}) {
     const binding = Object.freeze({ url: GUEST_CARD_URL, selector: GUEST_CARD_SELECTOR, control_ref: refs.card,
       scope_digest: guestCardScopeDigest(scope), intent_id: scope.intent_id,
       inspection_fingerprint: grant.permit.inspection_fingerprint, expected_scope: scope });
-    if (!revalidateGuestCardClick(binding, { ...inspection, evidence: { ...evidence, observed_at: Date.now() / 1000 } }) ||
+    if (!revalidateGuestCardClick(binding, inspection) ||
         Date.now() >= grant.permit.deadline) fail('execution_revalidation_failed');
-    await bounded(() => {
-      check(); cardIssued = true;
-      return card.click({ timeout: Math.max(1, Math.min(deadline, grant.permit.deadline) - Date.now()), noWaitAfter: true });
+    await bounded(async () => {
+      if (authorization.revalidate && await authorization.revalidate({ signal }) !== true) fail('scoped_authorization_required');
+      // The trusted issuer read can itself await I/O. Reobserve the actual
+      // merchant/frame bindings after it, not just a copied earlier timestamp.
+      await checkoutRead(); await cardRead();
+      check();
+      // The last callback must own these checks, after every awaited operation.
+      // Never turn an expired permit into a one-millisecond dispatch timeout.
+      const remaining = Math.min(deadline, grant.permit.deadline) - Date.now();
+      if (remaining <= 0 || Date.now() / 1000 - observedAt >= 20 ||
+          !revalidateGuestCardClick(binding, inspection)) fail('execution_revalidation_failed');
+      cardIssued = true;
+      return card.click({ timeout: remaining, noWaitAfter: true });
     });
     // No captured guest-field anatomy exists to qualify a successful form. A
     // completed initialization click is therefore durably unknown, never ready
@@ -1172,6 +1259,20 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
       if (bindingAt >= job.reference_expires_at) fail('probe_reference_expired');
       if (bindingAt >= authorization.destination_ack.observed_at + 60 || bindingAt >= authorization.expires_at) fail('readonly_authorization_required');
       job.approved_destination_digest = dom.private_destination_snapshot;
+      const preparationFields = ['page_ready', 'summary_supported', 'seller_matches', 'exact_preparation_amounts',
+        'quantity_declaration', 'listing_detail_supported', 'title_continuity', 'item_price_continuity'];
+      // Preparation authority comes only from this process's actual current
+      // cart/detail reads. No policy/request can supply a destination or quote.
+      job.preparation_snapshot = cart && detail?.complete === true && dom.go === true &&
+        !dom.agreements && !dom.existing_form && preparationFields.every(key => observed[key] === true) ? {
+          quote: { source: 'confirmed_current_cart_detail', release_id: 3422100, listing_id: '1366950910',
+            seller: 'Mailman21842', quantity: 1, currency: 'USD', subtotal: cartDom.subtotal.value,
+            shipping: cartDom.shipping.value, total: cartDom.total.value,
+            selected_shipping_label: selectedCartShippingLabel(cartDom), caption_digest: dom.cart_caption_digest,
+            detail_title_digest: title.title_digest, media: detail.media, sleeve: detail.sleeve },
+          preparation_terms: { mode: 'no_submit_preparation', visible_extra_agreements: false,
+            existing_guest_form: false, amount_basis: 'explicit_merchant_checkout_total', final_payment_verified: false },
+        } : null;
     }
     return { status: 'observed', code: confirming ? 'approved_saved_destination_bound' : 'current_dom_evidence_only', observed,
       document_ref: job.document_ref, merchant_route: cart ? 'cart' : 'enhanced_checkout',

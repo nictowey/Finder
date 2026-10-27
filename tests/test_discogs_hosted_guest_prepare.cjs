@@ -106,7 +106,7 @@ function browser({ cart = cartMarkup, checkout = summary, detail = detailMarkup,
     $: async selector => { assert.equal(selector, port.HOSTED_GO_SELECTOR); const e = state.merchant.window.document.querySelector(selector); return e ? handle('merchant', e) : null; },
     waitForNavigation: () => new Promise(resolve => { navigationResolve = resolve; }),
     waitForFunction: async (fn, arg, options) => {
-      assert.ok(options.timeout > 0 && options.timeout <= 30_000); assert.equal(options.polling, 'raf');
+      assert.ok(options.timeout > 0 && options.timeout <= 90_000); assert.equal(options.polling, 'raf');
       for (let poll = 0; poll < 2; poll++) {
         if (await evaluate('merchant', fn, arg)) return {};
         if (onWaitPoll) await onWaitPoll({ state, poll, effects, fn, arg });
@@ -177,14 +177,14 @@ test('concrete positive SYNTHETIC EXTENSION navigates once, initializes once, re
   } finally { b.close(); }
 }));
 
-test('observed summary lacks continuity fields: exact missing fields fail closed before card', async () => ledgerFixture(async f => {
+test('observed summary lacks checkout data declaration and cannot settle or initialize card', async () => ledgerFixture(async f => {
   const captured = summary.replace(/<h2 class="_checkout-summary__header_fixture">Items \(1\)<\/h2>/u, '').replace(/<h3 class="_checkout-sell-item__title_fixture">.*?<\/h3>/u, '')
     .replace(/<div class="_checkout-sell-item__condition_fixture">.*?<\/div>/u, '').replace(/<div class="_checkout-sell-item__price_fixture">.*?<\/div>/u, '');
   const b = browser({ checkout: captured });
   try {
     const result = await execute(f, b);
-    assert.equal(result.code, 'visible_scope_evidence_missing');
-    assert.deepEqual(result.missing_fields, ['quantity', 'title_continuity', 'condition_continuity', 'item_price_continuity']);
+    assert.equal(result.code, 'checkout_data_unavailable');
+    assert.equal(result.final_submission_allowed, false);
     assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]);
     assert.equal((await records(f.directory)).length, 0);
   } finally { b.close(); }
@@ -1866,4 +1866,174 @@ test('cart settlement cannot renew the original deadline or permit incomplete st
     assert.equal((await execute()).code, 'checkout_control_changed');
     assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
   });
+});
+
+// Isolated synthetic modern ledger, using the same authoritative disposition
+// command as production. Editing the fixture's outcome models an earlier
+// operator observation only; no live record or browser is read or changed.
+async function disposedPreparationFixture(run) {
+  await ledgerFixture(async f => {
+    const initial = browser();
+    try { assert.equal((await execute(f, initial)).code, 'guest_form_observation_required'); }
+    finally { initial.close(); }
+    const attemptBytes = await readFile(join(f.directory, 'guest-checkout-000003.json'));
+    const outcomeFile = join(f.directory, 'guest-checkout-000004.json');
+    const outcome = JSON.parse(await readFile(outcomeFile)); outcome.payload.outcome = 'guest_form_visible';
+    const outcomeBytes = json(outcome); await writeFile(outcomeFile, outcomeBytes, { mode: 0o600 });
+    const realNow = Date.now; let clock = Math.ceil(realNow() / 1000) * 1000 + 5000; Date.now = () => clock;
+    try {
+      const at = clock / 1000, s = f.request.scope;
+      const disposition = await operatorRecord(f.directory, 'disposition', {
+        type: 'record_form_disposition', source: 'operator_reviewed_normal_sdk_dismissal',
+        intent_id: s.intent_id, ready_ref: f.request.ready_ref, scope_digest: helper.guestCardScopeDigest(s),
+        previous_claim_sha256: sha(attemptBytes), previous_outcome_sha256: sha(outcomeBytes),
+        release_id: 3422100, listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD', max_total: '5.05',
+        blank_form_verified: true, blank_form_observed_at: at - 4, sdk_close_verified: true,
+        dismissal_kind: 'visible_sdk_close', dismissal_observed_at: at - 3, card_data_entered: false,
+        pay_invoked: false, approval_invoked: false, capture_invoked: false, current_form_present: false,
+        current_url: CART, normal_route_verified: true, current_observed_at: at - 2,
+        order_history_url: f.request.priorFailure.order_history_url, order_history_archived: 'All', order_history_status: 'All',
+        order_history_count: 0, order_history_complete: true, order_history_observed_at: at - 1, reviewed_at: at, expires_at: at + 300 });
+      assert.equal(disposition.type, 'form_disposition_recorded', json(disposition)); clock += 1000;
+      await run({ ...f, disposition: disposition.disposition_sha256,
+        priorFailure: { ...f.request.priorFailure, order_history_observed_at: clock / 1000, reviewed_at: clock / 1000, expires_at: clock / 1000 + 300 },
+        advance: milliseconds => { clock += milliseconds; } });
+    } finally { Date.now = realNow; }
+  });
+}
+
+async function scopedPreparationFixture(run, config = {}) {
+  await disposedPreparationFixture(async f => {
+    const isolated = await import('../scripts/discogs_hosted_guest_prepare.mjs?scoped-prepare=' + randomUUID());
+    const { createHostedGuestQualificationFixture } = await import('../scripts/discogs_hosted_guest_qualification.mjs');
+    const policyDirectory = await mkdtemp(join(tmpdir(), 'scoped-prepare-policy-'));
+    const policyPath = join(policyDirectory, 'guest-qualification.json'), now = Date.now() / 1000;
+    const policy = { schema: 'discogs_guest_prepare_policy_v1', job_id: randomUUID(), approval_ref: randomUUID(),
+      issued_at: now, expires_at: now + 120, max_calls: 3, action: 'prepare_guest_form',
+      scope: { release_id: '3422100', listing_id: '1366950910', seller: 'Mailman21842', quantity: 1,
+        currency: 'USD', max_total: '5.05', approved_destination_ref: 'saved_shipping_address' }, destination_ack: null,
+      expected_ledger_head: f.disposition, intent_id: randomUUID(), ready_ref: randomUUID(), destination_ref: randomUUID(),
+      authorized_at: now - 3600, prior_form_disposition_sha256: f.disposition, prior_failure: f.priorFailure };
+    const write = () => writeFile(policyPath, json(policy), { mode: 0o600 });
+    const b = browser(config);
+    try {
+      await write(); const issuer = await createHostedGuestQualificationFixture({ policyPath });
+      const inspect = { schema: 'discogs_guest_readonly_probe_v1', job_id: policy.job_id, phase: 'inspect' };
+      const first = await isolated.probeCurrentGuestPreparationEvidence(b.context, inspect, { authorization: await issuer.authorize(inspect) });
+      assert.equal(first.status, 'observed', json(first));
+      policy.destination_ack = { document_ref: first.document_ref, source: 'operator_visual_saved_destination_match',
+        approved_destination_ref: 'saved_shipping_address', observed_at: Date.now() / 1000 };
+      await write();
+      const confirm = { ...inspect, phase: 'confirm_saved_destination', document_ref: first.document_ref };
+      const confirmed = await isolated.probeCurrentGuestPreparationEvidence(b.context, confirm, { authorization: await issuer.authorize(confirm) });
+      assert.equal(confirmed.code, 'approved_saved_destination_bound', json(confirmed));
+      const request = { schema: 'discogs_guest_prepare_request_v1', job_id: policy.job_id, phase: 'prepare_guest_form', document_ref: first.document_ref };
+      await run({ f, b, isolated, policy, policyPath, write, issuer, request,
+        execute: async (authorization = null, signal) => isolated.createHostedGuestPrepareFixture({
+          context: b.context, directory: f.directory, authorization: authorization || await issuer.authorize(request), signal })(request) });
+    } finally { b.close(); await rm(policyDirectory, { recursive: true, force: true }); }
+  });
+}
+
+test('real scoped issuer resolves only private in-process cart binding and claims once, then records unknown without Pay', async () => scopedPreparationFixture(async ({ f, b, execute, issuer, request }) => {
+  assert.equal(await issuer.accessGuard('prepare_guest_form', request), true);
+  const result = await execute(); assert.equal(result.code, 'guest_form_observation_required', json(result));
+  assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 1, 0]);
+  assert.equal((await records(f.directory)).at(-1).payload.outcome, 'unknown');
+  assert.equal(await issuer.authorize(request), null);
+  for (const secret of ['Fixture Street', sha(ADDRESS.join('\n')), 'PRIVATE']) assert.ok(!json(result).includes(secret));
+}));
+
+test('scoped preparation rejects replaced cart, revoked policy and malformed grant before card', async () => {
+  for (const mode of ['document', 'revoked', 'scope', 'digest', 'extra']) await scopedPreparationFixture(async ({ b, execute, issuer, request, policyPath }) => {
+    const authorization = await issuer.authorize(request); assert.ok(authorization);
+    if (mode === 'document') b.state.merchant = dom(cartMarkup, CART);
+    if (mode === 'revoked') await rm(policyPath);
+    const supplied = mode === 'scope' ? { ...authorization, seller: 'DifferentSeller' } : authorization;
+    if (mode === 'digest') request.approved_destination_digest = sha(ADDRESS.join('\n'));
+    if (mode === 'extra') request.scope = { final_submission_allowed: true };
+    const result = await execute(supplied); assert.equal(result.status, 'blocked');
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  });
+});
+
+test('late final authorization await cannot dispatch after observation freshness expires', async () => scopedPreparationFixture(async ({ f, b, issuer, request, execute }) => {
+  const original = await issuer.authorize(request);
+  const authorization = { ...original, revalidate: async options => {
+    const valid = await original.revalidate(options);
+    if (b.page.url() === CHECKOUT) f.advance(21_000);
+    return valid;
+  } };
+  const result = await execute(authorization); assert.equal(result.code, 'execution_revalidation_failed', json(result));
+  assert.deepEqual([b.effects.go, b.effects.cardIssued, b.effects.card, b.effects.pay], [1, 0, 0, 0]);
+  assert.equal((await records(f.directory)).at(-1).payload.outcome, 'unknown');
+}));
+
+test('production IPC contract runs real scoped issuer and preparation engine with intercepted browser effects only', async () => scopedPreparationFixture(async ({ f, b, isolated, issuer, request }) => {
+  const { listenHostedGuestPreparation, createHostedContextLease } = await import('../scripts/discogs_hosted_guest_socket.mjs');
+  const { connect } = await import('node:net');
+  const socketPath = `/tmp/sniper-guest-test-${randomUUID()}.sock`;
+  const close = await listenHostedGuestPreparation(b.context, socketPath, { ...issuer,
+    acquireContextLease: createHostedContextLease(), fixtureOperations: {
+      prepare_guest_form: (context, current, options) => isolated.createHostedGuestPrepareFixture({
+        context, directory: f.directory, authorization: options.authorization, signal: options.signal })(current),
+    } });
+  const send = request => new Promise((resolve, reject) => {
+    const client = connect(socketPath); let output = '';
+    client.on('connect', () => client.write(json({ action: 'prepare_guest_form', request })));
+    client.on('error', reject); client.on('data', chunk => { output += chunk; });
+    client.on('end', () => resolve(JSON.parse(output)));
+  });
+  try {
+    assert.equal((await send({ ...request, final_submission_allowed: true })).code, 'scoped_access_required');
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    const results = await Promise.all([send(request), send(request)]);
+    const effect = results.find(value => value.card_initialization_issued === true);
+    assert.equal(effect?.code, 'guest_form_observation_required', json(results));
+    assert.equal(effect.initialization, 'outcome_requires_reconciliation'); assert.equal(effect.payment_allowed, false);
+    assert.equal(effect.final_submission_allowed, false);
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 1, 0]);
+    assert.equal((await send(request)).code, 'scoped_access_required');
+    assert.equal((await records(f.directory)).at(-1).payload.outcome, 'unknown');
+  } finally { await close(); }
+}));
+
+test('issuer revocation or changed quote during final awaited revalidation cannot dispatch card', async () => {
+  for (const mode of ['quote', 'revoked', 'cancelled', 'reconciliation_expiry']) await scopedPreparationFixture(async ({ f, b, issuer, request, execute, policyPath }) => {
+    const controller = new AbortController(), original = await issuer.authorize(request);
+    const authorization = { ...original, revalidate: async options => {
+      if (b.page.url() === CHECKOUT) {
+        if (mode === 'quote') b.state.merchant.window.document.querySelector('._checkout-summary__total--color-red_fixture dd').textContent = '$5.06 USD';
+        if (mode === 'revoked') await rm(policyPath);
+        if (mode === 'cancelled') controller.abort();
+        if (mode === 'reconciliation_expiry') f.advance(301_000);
+      }
+      return original.revalidate(options);
+    } };
+    const result = await execute(authorization, controller.signal); assert.equal(result.status, 'blocked');
+    assert.deepEqual([b.effects.go, b.effects.cardIssued, b.effects.card, b.effects.pay], [1, 0, 0, 0]);
+    assert.equal((await records(f.directory)).at(-1).payload.outcome, 'unknown');
+  });
+});
+
+test('confirmed in-process quote cannot be replaced by changed caption grades or shipping label before preparation', async () => {
+  for (const mode of ['caption', 'grades', 'shipping_label']) await scopedPreparationFixture(async ({ b, execute }) => {
+    const d = b.state.merchant.window.document;
+    if (mode === 'caption') d.querySelector('a.item_link').textContent = 'Other Artist - Synthetic KC Single (7", Single)';
+    if (mode === 'grades') b.state.detail.window.document.querySelector('span.hifi-grade-chip-display').innerHTML = '<span>Media</span><span>Poor</span><span>|</span><span>Sleeve</span><span>Generic</span>';
+    if (mode === 'shipping_label') d.querySelector('select option').textContent = 'Economy - Media Mail - $4.95';
+    assert.equal((await execute()).status, 'blocked');
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  });
+});
+
+test('revocation during preparation cart reads prevents even Go navigation', async () => {
+  let armed = false, revoke;
+  await scopedPreparationFixture(async ({ b, execute, policyPath }) => {
+    revoke = () => rm(policyPath); armed = true;
+    const result = await execute(); assert.equal(result.code, 'scoped_authorization_required');
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  }, { beforeEvaluate: async ({ fn }) => {
+    if (armed && fn.name === 'collectCartDom') { armed = false; await revoke(); }
+  } });
 });

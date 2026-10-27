@@ -50,7 +50,7 @@ const CODES = new Set(['scoped_authorization_required', 'prior_attempt_unresolve
   'saved_destination_unverified', 'probe_capacity_exceeded', 'single_current_merchant_page_required',
   'cart_structure_captured', 'cart_capture_unverified', 'cart_checkout_preflight_observed',
   'preflight_authorization_required', 'preflight_confirmation_required', 'preflight_ledger_unverified',
-  'checkout_data_unavailable']);
+  'checkout_data_unavailable', 'prepare_confirmation_required']);
 const PUBLIC_TAGS = new Set(['A', 'SPAN', 'STRONG', 'B', 'EM', 'I', 'SMALL', 'BR', '#text']);
 const GRADE_TEXT = new Set(['Media', 'Media:', 'Sleeve', 'Sleeve:', 'P', 'Poor', 'Poor (P)',
   'F', 'Fair', 'Fair (F)', 'G', 'Good', 'Good (G)', 'G+', 'Good Plus', 'Good Plus (G+)',

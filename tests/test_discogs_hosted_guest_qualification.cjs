@@ -212,3 +212,117 @@ test('preflight ledger head and mode are immutable, and older read-only/capture 
   old.policy.schema = 'discogs_guest_cart_capture_policy_v1'; old.policy.job_id = randomUUID(); old.policy.max_calls = 1; await old.write();
   assert.equal(await (await old.load()).authorize({ ...f.nav, job_id: old.policy.job_id }), null);
 });
+
+async function prepareFixture(t) {
+  const f = await fixture(t);
+  f.policy.schema = 'discogs_guest_prepare_policy_v1'; f.policy.action = 'prepare_guest_form';
+  f.policy.max_calls = 3; f.policy.expires_at = 1200;
+  Object.assign(f.policy, {
+    expected_ledger_head: 'a'.repeat(64), intent_id: randomUUID(), ready_ref: randomUUID(),
+    destination_ref: randomUUID(), authorized_at: 850, prior_form_disposition_sha256: 'b'.repeat(64),
+    prior_failure: { source: 'operator_reviewed_normal_discogs_ui', last_error_code: 'SESSION_EXPIRED',
+      release_id: Number(f.policy.scope.release_id), listing_id: f.policy.scope.listing_id,
+      seller: f.policy.scope.seller, quantity: f.policy.scope.quantity,
+      currency: f.policy.scope.currency, max_total: f.policy.scope.max_total,
+      card_data_entered: false, pay_invoked: false, approval_invoked: false, capture_invoked: false,
+      failure_observed_at: 900, order_history_url: 'https://www.discogs.com/sell/purchases?archived=A&status=All&limit=50',
+      order_history_archived: 'All', order_history_status: 'All', order_history_count: 0,
+      order_history_complete: true, order_history_observed_at: 950, reviewed_at: 980, expires_at: 1220 },
+  });
+  await f.write(); const issuer = await f.load(); const documentRef = randomUUID();
+  const prepare = { schema: 'discogs_guest_prepare_request_v1', job_id: f.policy.job_id,
+    phase: 'prepare_guest_form', document_ref: documentRef };
+  const confirm = { schema: f.inspect.schema, job_id: f.policy.job_id,
+    phase: 'confirm_saved_destination', document_ref: documentRef };
+  const acknowledge = async () => {
+    f.setTime(1020); f.policy.destination_ack = { source: 'operator_visual_saved_destination_match',
+      document_ref: documentRef, approved_destination_ref: 'saved_shipping_address', observed_at: 1020 };
+    await f.write();
+  };
+  return { ...f, issuer, prepare, confirm, acknowledge };
+}
+
+test('preparation is default off and requires the ordered same-document inspect and confirmation before one durable receipt', async t => {
+  const f = await prepareFixture(t);
+  assert.ok(f.policy.authorized_at < f.policy.prior_failure.reviewed_at);
+  assert.equal(typeof f.policy.prior_failure.release_id, 'number');
+  assert.equal(await f.issuer.accessGuard('prepare_guest_form', f.prepare), false);
+  assert.equal(await f.issuer.authorize(f.prepare), null);
+  assert.equal(await f.issuer.authorize({ ...f.prepare, quote_hash: 'c'.repeat(64) }), null);
+  assert.ok(await f.issuer.authorize(f.inspect)); await f.acknowledge();
+  assert.equal(await f.issuer.authorize(f.prepare), null);
+  assert.ok(await f.issuer.authorize(f.confirm));
+  assert.equal(await f.issuer.authorize({ ...f.prepare, document_ref: randomUUID() }), null);
+  assert.equal(await f.issuer.accessGuard('prepare_guest_form', f.prepare), true);
+  const results = await Promise.all([f.issuer.authorize(f.prepare), f.issuer.authorize(f.prepare)]);
+  assert.equal(results.filter(Boolean).length, 1);
+  const grant = results.find(Boolean);
+  assert.equal(grant.schema, 'discogs_guest_prepare_authorization_v1');
+  assert.equal(grant.mode, 'prepare_guest_form'); assert.equal(grant.intent_id, f.policy.intent_id);
+  assert.equal(grant.approval_ref, f.policy.approval_ref);
+  assert.equal(grant.destination_ack.document_ref, f.prepare.document_ref);
+  for (const key of ['approved_destination_digest', 'destination_digest', 'quote_hash', 'raw_address', 'card_data']) {
+    assert.equal(Object.hasOwn(grant, key), false);
+  }
+  assert.equal(typeof grant.revalidate, 'function'); assert.equal(await grant.revalidate(), true);
+  assert.equal(await (await f.load()).authorize(f.prepare), null);
+  const receipt = JSON.parse(await readFile(join(f.directory, `guest-qualification-${f.policy.job_id}-5-prepare.json`), 'utf8'));
+  assert.equal(receipt.document_ref, f.prepare.document_ref);
+  assert.equal(receipt.destination_ack_observed_at, 1020);
+});
+
+test('prepare grant revalidation rejects cancellation, expiry, revocation and changed acknowledgement after consumption', async t => {
+  const f = await prepareFixture(t); assert.ok(await f.issuer.authorize(f.inspect)); await f.acknowledge();
+  assert.ok(await f.issuer.authorize(f.confirm)); const grant = await f.issuer.authorize(f.prepare);
+  assert.ok(grant); assert.equal(await grant.revalidate(), true);
+  const cancelled = new AbortController(); cancelled.abort();
+  assert.equal(await grant.revalidate({ signal: cancelled.signal }), false);
+  f.policy.destination_ack.observed_at = 1021; await f.write();
+  assert.equal(await grant.revalidate(), false);
+  f.policy.destination_ack.observed_at = 1020; await f.write();
+  assert.equal(await grant.revalidate(), true);
+  await rm(f.policyPath); assert.equal(await grant.revalidate(), false);
+  await f.write(); f.setTime(1200); assert.equal(await grant.revalidate(), false);
+});
+
+test('prepare policy pins every reconciliation field and rejects stale or invented failure evidence', async t => {
+  const f = await prepareFixture(t);
+  const original = structuredClone(f.policy);
+  const changes = [
+    ['expected_ledger_head', 'c'.repeat(64)], ['intent_id', randomUUID()], ['ready_ref', randomUUID()],
+    ['destination_ref', randomUUID()], ['authorized_at', 849], ['prior_form_disposition_sha256', 'd'.repeat(64)],
+    ['prior_failure', { ...original.prior_failure, order_history_count: 1 }],
+  ];
+  for (const [key, value] of changes) {
+    f.policy[key] = value; await f.write();
+    if (key === 'prior_failure') await assert.rejects(f.load(), /invalid_guest_qualification_policy/);
+    else {
+      // New identity cannot replace an existing same-job identity, even when structurally valid.
+      await assert.rejects(f.load(), /invalid_guest_qualification_policy/);
+    }
+    f.policy[key] = original[key];
+  }
+  f.policy.prior_failure.pay_invoked = true; await f.write(); await assert.rejects(f.load(), /invalid_guest_qualification_policy/);
+  f.policy.prior_failure = structuredClone(original.prior_failure);
+  f.policy.prior_failure.release_id = String(original.prior_failure.release_id);
+  await f.write(); await assert.rejects(f.load(), /invalid_guest_qualification_policy/);
+  f.policy.prior_failure = structuredClone(original.prior_failure);
+  f.policy.expires_at = 1250; await f.write(); await assert.rejects(f.load(), /invalid_guest_qualification_policy/);
+  f.policy.expires_at = 1200; f.policy.prior_failure.order_history_observed_at = 899;
+  await f.write(); await assert.rejects(f.load(), /invalid_guest_qualification_policy/);
+});
+
+test('ordinary and preflight policies cannot authorize preparation, and a consumed or cancelled attempt never rearms', async t => {
+  const old = await fixture(t); await old.write(); const ordinary = await old.load();
+  const wrong = { schema: 'discogs_guest_prepare_request_v1', job_id: old.policy.job_id,
+    phase: 'prepare_guest_form', document_ref: randomUUID() };
+  assert.equal(await ordinary.accessGuard('prepare_guest_form', wrong), false);
+  assert.equal(await ordinary.authorize(wrong), null);
+  const f = await prepareFixture(t); assert.ok(await f.issuer.authorize(f.inspect)); await f.acknowledge();
+  assert.ok(await f.issuer.authorize(f.confirm));
+  const cancelled = new AbortController(); cancelled.abort();
+  assert.equal(await f.issuer.authorize(f.prepare, { signal: cancelled.signal }), null);
+  assert.ok(await f.issuer.authorize(f.prepare));
+  assert.equal(await f.issuer.authorize(f.prepare), null);
+  assert.equal(await (await f.load()).authorize(f.prepare), null);
+});

@@ -1,7 +1,7 @@
-/** Thin, local read-only qualification issuer. No credentials, browser calls or
- * transaction grants. A qualification job admits inspect and same-document
- * destination confirmation; a distinct capture job admits one public cart read.
- * Policy absence keeps the socket off.
+/** Fixed local qualification issuer. No credentials or browser calls. Ordinary
+ * jobs remain read-only; the distinct owner-only prepare policy admits one
+ * no-submit initialization after genuine inspect/confirmation/reconciliation.
+ * Policy absence keeps the socket off; no mode permits card entry or payment.
  */
 import { constants } from 'node:fs';
 import { open, lstat } from 'node:fs/promises';
@@ -30,17 +30,46 @@ async function privateJson(path, { optional = false } = {}) {
 }
 const capturePolicy = policy => policy?.schema === 'discogs_guest_cart_capture_policy_v1';
 const preflightPolicy = policy => policy?.schema === 'discogs_guest_cart_preflight_policy_v1';
+const preparePolicy = policy => policy?.schema === 'discogs_guest_prepare_policy_v1';
+const HASH = /^[0-9a-f]{64}$/u;
+const PRIOR_FAILURE_KEYS = ['source', 'last_error_code', 'release_id', 'listing_id', 'seller', 'quantity', 'currency', 'max_total',
+  'card_data_entered', 'pay_invoked', 'approval_invoked', 'capture_invoked', 'failure_observed_at', 'order_history_url',
+  'order_history_archived', 'order_history_status', 'order_history_count', 'order_history_complete', 'order_history_observed_at', 'reviewed_at', 'expires_at'];
+const PREPARE_KEYS = ['expected_ledger_head', 'intent_id', 'ready_ref', 'destination_ref', 'authorized_at',
+  'prior_form_disposition_sha256', 'prior_failure'];
+function validPriorFailure(prior, policy, now, allowExpired) {
+  return exact(prior, PRIOR_FAILURE_KEYS) && prior.source === 'operator_reviewed_normal_discogs_ui' &&
+    prior.last_error_code === 'SESSION_EXPIRED' &&
+    prior.release_id === Number(policy.scope.release_id) &&
+    ['listing_id', 'seller', 'quantity', 'currency', 'max_total'].every(key => prior[key] === policy.scope[key]) &&
+    ['card_data_entered', 'pay_invoked', 'approval_invoked', 'capture_invoked'].every(key => prior[key] === false) &&
+    prior.order_history_url === 'https://www.discogs.com/sell/purchases?archived=A&status=All&limit=50' &&
+    prior.order_history_archived === 'All' && prior.order_history_status === 'All' && prior.order_history_count === 0 &&
+    prior.order_history_complete === true &&
+    ['failure_observed_at', 'order_history_observed_at', 'reviewed_at', 'expires_at'].every(key => Number.isFinite(prior[key])) &&
+    prior.failure_observed_at <= prior.order_history_observed_at && prior.order_history_observed_at <= prior.reviewed_at &&
+    prior.reviewed_at <= policy.issued_at && prior.reviewed_at <= now &&
+    prior.expires_at > prior.reviewed_at && prior.expires_at - prior.reviewed_at <= 300 &&
+    (allowExpired || now - prior.order_history_observed_at < 300 && now < prior.expires_at);
+}
 function validatePolicy(policy, now, { allowExpired = false } = {}) {
   if (!exact(policy, ['schema', 'job_id', 'approval_ref', 'issued_at', 'expires_at', 'max_calls', 'action', 'scope', 'destination_ack',
-    ...(preflightPolicy(policy) ? ['expected_ledger_head'] : [])]) ||
-      !['discogs_guest_qualification_policy_v1', 'discogs_guest_cart_capture_policy_v1', 'discogs_guest_cart_preflight_policy_v1'].includes(policy.schema) || !UUID.test(policy.job_id) || !UUID.test(policy.approval_ref) ||
-      policy.action !== (preflightPolicy(policy) ? 'cart_checkout_preflight' : 'probe_guest_evidence') ||
-      policy.max_calls !== (preflightPolicy(policy) ? 3 : capturePolicy(policy) ? 1 : 2) ||
+    ...(preflightPolicy(policy) ? ['expected_ledger_head'] : preparePolicy(policy) ? PREPARE_KEYS : [])]) ||
+      !['discogs_guest_qualification_policy_v1', 'discogs_guest_cart_capture_policy_v1', 'discogs_guest_cart_preflight_policy_v1', 'discogs_guest_prepare_policy_v1'].includes(policy.schema) || !UUID.test(policy.job_id) || !UUID.test(policy.approval_ref) ||
+      policy.action !== (preparePolicy(policy) ? 'prepare_guest_form' : preflightPolicy(policy) ? 'cart_checkout_preflight' : 'probe_guest_evidence') ||
+      policy.max_calls !== (preparePolicy(policy) || preflightPolicy(policy) ? 3 : capturePolicy(policy) ? 1 : 2) ||
       !Number.isFinite(policy.issued_at) || !Number.isFinite(policy.expires_at) || policy.issued_at < 0 ||
       policy.issued_at > now || !allowExpired && now >= policy.expires_at || policy.expires_at <= policy.issued_at ||
-      policy.expires_at - policy.issued_at > 1800 || !exact(policy.scope, Object.keys(SCOPE)) ||
+      policy.expires_at - policy.issued_at > (preparePolicy(policy) ? 300 : 1800) || !exact(policy.scope, Object.keys(SCOPE)) ||
       Object.entries(SCOPE).some(([key, value]) => policy.scope[key] !== value)) invalid();
-  if (preflightPolicy(policy) && !/^[0-9a-f]{64}$/u.test(policy.expected_ledger_head || '')) invalid();
+  if (preflightPolicy(policy) && !HASH.test(policy.expected_ledger_head || '')) invalid();
+  if (preparePolicy(policy) && (!HASH.test(policy.expected_ledger_head || '') ||
+      !HASH.test(policy.prior_form_disposition_sha256 || '') ||
+      ![policy.intent_id, policy.ready_ref, policy.destination_ref].every(value => UUID.test(value || '')) ||
+      !Number.isFinite(policy.authorized_at) || policy.authorized_at < 0 || policy.authorized_at > policy.issued_at ||
+      !validPriorFailure(policy.prior_failure, policy, now, allowExpired) ||
+      policy.expires_at > policy.prior_failure.expires_at ||
+      policy.expires_at > policy.prior_failure.order_history_observed_at + 300)) invalid();
   const ack = policy.destination_ack;
   if (capturePolicy(policy) && ack !== null) invalid();
   if (ack !== null && (!exact(ack, ['document_ref', 'source', 'approved_destination_ref', 'observed_at']) ||
@@ -53,14 +82,18 @@ function identity(policy) {
   return { schema: policy.schema, job_id: policy.job_id, approval_ref: policy.approval_ref,
     issued_at: policy.issued_at, expires_at: policy.expires_at, max_calls: policy.max_calls,
     action: policy.action, scope: SCOPE,
-    ...(preflightPolicy(policy) ? { expected_ledger_head: policy.expected_ledger_head } : {}) };
+    ...(preflightPolicy(policy) ? { expected_ledger_head: policy.expected_ledger_head } : {}),
+    ...(preparePolicy(policy) ? Object.fromEntries(PREPARE_KEYS.map(key => [key, policy[key]])) : {}) };
 }
 function requestAllowed(request, policy) {
   const navigating = request?.phase === 'navigate_checkout_preflight';
-  if (!exact(request, ['confirm_saved_destination', 'navigate_checkout_preflight'].includes(request?.phase) ?
+  const preparing = request?.phase === 'prepare_guest_form';
+  if (!exact(request, ['confirm_saved_destination', 'navigate_checkout_preflight', 'prepare_guest_form'].includes(request?.phase) ?
     ['schema', 'job_id', 'phase', 'document_ref'] : ['schema', 'job_id', 'phase']) ||
-      request.schema !== (navigating ? 'discogs_guest_checkout_preflight_v1' : 'discogs_guest_readonly_probe_v1') || request.job_id !== policy.job_id) return false;
+      request.schema !== (preparing ? 'discogs_guest_prepare_request_v1' : navigating ? 'discogs_guest_checkout_preflight_v1' : 'discogs_guest_readonly_probe_v1') || request.job_id !== policy.job_id) return false;
   if (capturePolicy(policy)) return request.phase === 'capture_cart_structure';
+  if (preparing) return preparePolicy(policy) && policy.destination_ack !== null &&
+    request.document_ref === policy.destination_ack.document_ref;
   if (navigating) return preflightPolicy(policy) && policy.destination_ack !== null &&
     request.document_ref === policy.destination_ack.document_ref;
   return request.phase === 'inspect' ? policy.destination_ack === null :
@@ -99,13 +132,14 @@ async function createIssuer(policyPath, now, fixture) {
     if (hash(identity(policy)) !== identityDigest) invalid();
     return policy;
   };
-  const slot = phase => `${prefix}-${phase === 'navigate_checkout_preflight' ? '4-checkout-preflight' : phase === 'capture_cart_structure' ? '3-cart-capture' : phase === 'inspect' ? '1-inspect' : '2-confirm'}.json`;
+  const slot = phase => `${prefix}-${phase === 'prepare_guest_form' ? '5-prepare' : phase === 'navigate_checkout_preflight' ? '4-checkout-preflight' : phase === 'capture_cart_structure' ? '3-cart-capture' : phase === 'inspect' ? '1-inspect' : '2-confirm'}.json`;
   const validReceipt = receipt => {
-    const bound = preflightPolicy(first) && ['confirm_saved_destination', 'navigate_checkout_preflight'].includes(receipt?.phase);
+    const bound = (preflightPolicy(first) || preparePolicy(first)) &&
+      ['confirm_saved_destination', 'navigate_checkout_preflight', 'prepare_guest_form'].includes(receipt?.phase);
     return exact(receipt, ['schema', 'job_id', 'identity_sha256', 'phase', 'consumed_at',
       ...(bound ? ['document_ref', 'destination_ack_observed_at'] : [])]) &&
       receipt.schema === 'discogs_guest_qualification_use_v1' && receipt.job_id === first.job_id &&
-      receipt.identity_sha256 === identityDigest && ['inspect', 'confirm_saved_destination', 'capture_cart_structure', 'navigate_checkout_preflight'].includes(receipt.phase) &&
+      receipt.identity_sha256 === identityDigest && ['inspect', 'confirm_saved_destination', 'capture_cart_structure', 'navigate_checkout_preflight', 'prepare_guest_form'].includes(receipt.phase) &&
       Number.isFinite(receipt.consumed_at) && receipt.consumed_at >= first.issued_at && receipt.consumed_at < first.expires_at &&
       (!bound || UUID.test(receipt.document_ref) && Number.isFinite(receipt.destination_ack_observed_at) &&
         receipt.destination_ack_observed_at >= first.issued_at && receipt.destination_ack_observed_at <= receipt.consumed_at);
@@ -117,7 +151,7 @@ async function createIssuer(policyPath, now, fixture) {
       const previous = await privateJson(slot('inspect'), { optional: true });
       if (!validReceipt(previous) || previous.phase !== 'inspect' || policy.destination_ack.observed_at < previous.consumed_at) return null;
     }
-    if (request.phase === 'navigate_checkout_preflight') {
+    if (['navigate_checkout_preflight', 'prepare_guest_form'].includes(request.phase)) {
       const inspected = await privateJson(slot('inspect'), { optional: true });
       const confirmed = await privateJson(slot('confirm_saved_destination'), { optional: true });
       if (!validReceipt(inspected) || inspected.phase !== 'inspect' || !validReceipt(confirmed) ||
@@ -129,7 +163,8 @@ async function createIssuer(policyPath, now, fixture) {
   };
   return Object.freeze({
     accessGuard: async (action, request, { signal } = {}) => {
-      const expectedAction = request?.phase === 'navigate_checkout_preflight' ? 'cart_checkout_preflight' : 'probe_guest_evidence';
+      const expectedAction = request?.phase === 'prepare_guest_form' ? 'prepare_guest_form' :
+        request?.phase === 'navigate_checkout_preflight' ? 'cart_checkout_preflight' : 'probe_guest_evidence';
       if (action !== expectedAction || signal?.aborted) return false;
       try { return !!await allowed(request) && !signal?.aborted; } catch { return false; }
     },
@@ -142,17 +177,43 @@ async function createIssuer(policyPath, now, fixture) {
         validatePolicy(policy, consumedAt);
         await exclusiveJson(slot(request.phase), { schema: 'discogs_guest_qualification_use_v1', job_id: policy.job_id,
           identity_sha256: identityDigest, phase: request.phase, consumed_at: consumedAt,
-          ...(preflightPolicy(policy) && request.phase !== 'inspect' ? { document_ref: request.document_ref,
+          ...((preflightPolicy(policy) || preparePolicy(policy)) && request.phase !== 'inspect' ? { document_ref: request.document_ref,
             destination_ack_observed_at: policy.destination_ack.observed_at } : {}) });
         // Recheck revocation and an operator's same-job policy update after the
         // durable write, before returning any browser authorization.
-        if (!requestAllowed(request, await load()) || signal?.aborted) return null; // Spent safely; never rearm after uncertainty.
-        return Object.freeze({ schema: request.phase === 'navigate_checkout_preflight' ?
-          'discogs_guest_preflight_authorization_v1' : 'discogs_guest_readonly_authorization_v1', job_id: policy.job_id,
+        const current = await load();
+        if (!requestAllowed(request, current) || signal?.aborted ||
+            policy.destination_ack?.observed_at !== current.destination_ack?.observed_at) return null; // Spent safely; never rearm after uncertainty.
+        const prepareRevalidate = async ({ signal: laterSignal } = {}) => {
+          if (laterSignal?.aborted) return false;
+          try {
+            const fresh = await load();
+            if (!requestAllowed(request, fresh) || laterSignal?.aborted ||
+                fresh.destination_ack?.observed_at !== policy.destination_ack?.observed_at) return false;
+            const inspected = await privateJson(slot('inspect'), { optional: true });
+            const confirmed = await privateJson(slot('confirm_saved_destination'), { optional: true });
+            const prepared = await privateJson(slot('prepare_guest_form'), { optional: true });
+            return !laterSignal?.aborted && validReceipt(inspected) && inspected.phase === 'inspect' &&
+              validReceipt(confirmed) && confirmed.phase === 'confirm_saved_destination' &&
+              validReceipt(prepared) && prepared.phase === 'prepare_guest_form' &&
+              confirmed.consumed_at >= inspected.consumed_at && prepared.consumed_at >= confirmed.consumed_at &&
+              fresh.destination_ack.observed_at >= inspected.consumed_at &&
+              confirmed.consumed_at >= fresh.destination_ack.observed_at &&
+              [confirmed, prepared].every(receipt => receipt.document_ref === request.document_ref &&
+                receipt.destination_ack_observed_at === fresh.destination_ack.observed_at);
+          } catch { return false; }
+        };
+        return Object.freeze({ schema: request.phase === 'prepare_guest_form' ? 'discogs_guest_prepare_authorization_v1' :
+          request.phase === 'navigate_checkout_preflight' ? 'discogs_guest_preflight_authorization_v1' : 'discogs_guest_readonly_authorization_v1', job_id: policy.job_id,
           issued_at: policy.issued_at, expires_at: policy.expires_at, ...SCOPE,
           ...(capturePolicy(policy) ? { mode: 'capture_cart_structure' } : {}),
           ...(request.phase === 'navigate_checkout_preflight' ? { mode: 'cart_checkout_preflight',
             expected_ledger_head: policy.expected_ledger_head } : {}),
+          ...(request.phase === 'prepare_guest_form' ? {
+            mode: 'prepare_guest_form', approval_ref: policy.approval_ref,
+            ...Object.fromEntries(PREPARE_KEYS.map(key => [key, key === 'prior_failure' ?
+              Object.freeze({ ...policy[key] }) : policy[key]])), revalidate: prepareRevalidate,
+          } : {}),
           ...(policy.destination_ack ? { destination_ack: Object.freeze({ ...policy.destination_ack }) } : {}) });
       } catch { return null; }
     },
