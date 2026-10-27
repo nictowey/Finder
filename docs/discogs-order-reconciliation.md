@@ -543,3 +543,61 @@ no payment network is available. Passing it is offline integration evidence,
 not evidence of live payment, payment-method availability or a merchant receipt.
 Live gates remain off and the existing blank form/audit are preserved pending a
 separate consolidated activation plan and genuine user entry/confirmation.
+
+### Secure entry and payment are separate stages
+
+Post-entry confirmation is a prerequisite for **Pay**, not for secure card
+entry. The runtime now supports an entry-only scope containing the exact KC
+item, seller, quantity, USD5.05 cap, anchored guest claim/head and expiry. It
+contains no payment-method reference, final destination assertion or acceptance
+of terms. Entry-only startup does not require a payment authorization file,
+post-entry confirmation file or initialized real-order ledger.
+
+Before returning `entry_ready`, the runtime validates the anchored guest claim,
+the current merchant amounts and the uniquely bound public guest Pay control,
+drains current quote reads and holds the same browser lease used by the other
+bridge operations. The public control establishes that the guest form is
+present; no payment input values are inspected. During entry, all browser
+inspection, screenshots, traces and operator input must stop. The user enters
+details directly through the private viewer and must not press Pay.
+
+`complete_secure_entry` requires the returned entry reference and the genuine
+time of the user's explicit completion report. It releases the entry-only
+lease without declaring payment readiness. A later payment continuation must
+retain that original document, entry reference/time and guest claim/head. The
+separate payment authorization and confirmation must bind the final amount,
+delivery, selected method and visible terms/notices after completion. Fresh
+same-document revalidation and the durable unknown-before-submit fence remain
+mandatory; absent or uncertain receipt evidence never permits another submit.
+
+The actual invocation route is an owner-only Unix socket,
+`/bridge/sniper-payment-control.sock`, in the resident browser process. Its
+fixed request envelope is `discogs_hosted_payment_control_request_v1` with
+`command` and `request`. Commands are `inspect_readiness`, `begin_secure_entry`,
+`complete_secure_entry`, `resume_after_entry` and `attempt_payment`. Requests
+contain only the fixed scope, or the completion reference/time; card data,
+selectors, URLs, callbacks and gate overrides are rejected. An ordinary local
+Unix-socket client writes one JSON line and waits for the server's single
+response before closing. A disconnected or timed-out started operation cannot
+be blindly replayed.
+
+The runner loads only the fixed owner-private configuration
+`/bridge/guest-card-actions/enhanced-runtime-mode.json`, with exact contents
+`{"schema":"discogs_hosted_payment_mode_v1","mode":"secure_entry"}`
+for entry-only operation. `off` is the default for a missing or invalid file;
+`payment` is a distinct mode and does not replace payment authorization,
+confirmation or the order ledger. The file is read at startup. This development
+batch creates no mode or payment metadata file and activates no listener.
+`secure_entry` is an entry-only test mode: completing entry cannot turn its Pay
+gate on. Do not restart a browser containing entered card data to change modes.
+For a separately authorized same-session payment continuation, capability mode
+must be chosen before handoff; the actual payment authorization and genuine
+post-entry confirmation can remain absent until their respective prerequisites
+are satisfied. The intercepted tests cover that original-token continuation.
+
+Readiness must therefore be reported twice: **secure entry ready** means the
+installed entry-only route has returned `entry_ready` and reads are suspended;
+**payment ready** additionally requires genuine post-entry confirmations and
+all payment gates. Offline intercepted socket/runtime rehearsals establish
+wiring, not a live payment or receipt. Do not ask the user to enter a card until
+the installed entry-only route is verified and the user is available.

@@ -8,6 +8,7 @@ COPY scripts/discogs_release_snapshot.mjs /app/scripts/discogs_release_snapshot.
 COPY scripts/discogs_browser_memory.mjs /app/scripts/discogs_browser_memory.mjs
 COPY scripts/discogs_hosted_browser_runtime.mjs /app/scripts/discogs_hosted_browser_runtime.mjs
 COPY scripts/discogs_hosted_payment_runtime.mjs /app/scripts/discogs_hosted_payment_runtime.mjs
+COPY scripts/discogs_hosted_payment_control.mjs /app/scripts/discogs_hosted_payment_control.mjs
 COPY scripts/discogs_hosted_guest_prepare.mjs /app/scripts/discogs_hosted_guest_prepare.mjs
 COPY scripts/discogs_hosted_guest_socket.mjs /app/scripts/discogs_hosted_guest_socket.mjs
 COPY scripts/discogs_hosted_guest_qualification.mjs /app/scripts/discogs_hosted_guest_qualification.mjs

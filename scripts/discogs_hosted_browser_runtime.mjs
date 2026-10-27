@@ -4,6 +4,7 @@
 import { listenHostedReadOnly } from './discogs_hosted_readonly.mjs';
 import { createHostedContextLease, listenHostedGuestPreparation, HOSTED_GUEST_SOCKET } from './discogs_hosted_guest_socket.mjs';
 import { createHostedPaymentRuntime, createHostedPaymentRuntimeFixture } from './discogs_hosted_payment_runtime.mjs';
+import { listenHostedPaymentControl, listenHostedPaymentControlFixture, HOSTED_PAYMENT_CONTROL_SOCKET } from './discogs_hosted_payment_control.mjs';
 
 export const HOSTED_BROWSER_SHUTDOWN_MS = 2000;
 
@@ -34,8 +35,11 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
     throw new TypeError('scoped_guest_configuration_required');
   }
   if (paymentRuntime !== null && (!paymentRuntime || typeof paymentRuntime !== 'object' || Array.isArray(paymentRuntime) ||
-      Object.keys(paymentRuntime).join('|') !== 'liveGate' || typeof paymentRuntime.liveGate !== 'boolean' ||
-      paymentRuntime.liveGate && fixture === null && socketPath !== '/bridge/sniper-read-only.sock')) {
+      !['liveGate', 'controlEnabled|entryGate|liveGate'].includes(Object.keys(paymentRuntime).sort().join('|')) ||
+      typeof paymentRuntime.liveGate !== 'boolean' ||
+      ['entryGate', 'controlEnabled'].some(key => Object.hasOwn(paymentRuntime, key) && typeof paymentRuntime[key] !== 'boolean') ||
+      (paymentRuntime.liveGate || paymentRuntime.entryGate || paymentRuntime.controlEnabled) &&
+        fixture === null && socketPath !== '/bridge/sniper-read-only.sock')) {
     throw new TypeError('fixed_payment_runtime_configuration_required');
   }
   const acquireContextLease = createHostedContextLease();
@@ -45,7 +49,7 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
     noDefaultViewport: true,
     firefoxUserPrefs: { 'signon.rememberSignons': false },
   });
-  let browser, closeSocket, closeGuestSocket, payment, shutdown, closing = false, unavailable = false;
+  let browser, closeSocket, closeGuestSocket, closePaymentSocket, payment, shutdown, closing = false, unavailable = false;
   let reportUnavailable;
   const unavailablePromise = new Promise(resolve => { reportUnavailable = resolve; });
   const close = () => {
@@ -54,6 +58,7 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
     shutdown = boundedShutdown([
       () => closeSocket?.(),
       () => closeGuestSocket?.(),
+      () => closePaymentSocket?.(),
       () => payment?.close(),
       () => context.close(),
     ]).finally(() => {
@@ -93,9 +98,15 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
     if (!isAvailable()) throw new Error('browser_unavailable');
     // Same resident context and same lease as both read-only sockets. The
     // ordinary runner supplies no live gate; no payment RPC is exposed here.
-    const paymentOptions = { context, acquireContextLease, liveGate: paymentRuntime?.liveGate === true };
+    const paymentOptions = { context, acquireContextLease, liveGate: paymentRuntime?.liveGate === true,
+      entryGate: paymentRuntime?.entryGate === true };
     payment = fixture === null ? createHostedPaymentRuntime(paymentOptions) :
       createHostedPaymentRuntimeFixture({ ...fixture, ...paymentOptions });
+    if (paymentRuntime?.controlEnabled === true) {
+      closePaymentSocket = fixture === null ?
+        await listenHostedPaymentControl(payment, HOSTED_PAYMENT_CONTROL_SOCKET, { enabled: true }) :
+        await listenHostedPaymentControlFixture(payment, `${fixture.guestLedgerDirectory}/payment-control.sock`, { enabled: true });
+    }
     closeSocket = await listenHostedReadOnly(context, socketPath,
     socketPath === '/bridge/sniper-read-only.sock' ? {
       durableStopPath: '/bridge/access-stopped',
@@ -123,9 +134,12 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
  * Node's test runner. The production launcher has no factory/callback override. */
 export function launchHostedPaymentRuntimeFixtureBrowser(firefox, profilePath, socketPath, options = {}) {
   if (process.env.NODE_TEST_CONTEXT === undefined || !options || typeof options !== 'object' || Array.isArray(options) ||
-      Object.keys(options).sort().join('|') !== 'fixture|liveGate' || typeof options.liveGate !== 'boolean') {
+      !['fixture|liveGate', 'controlEnabled|entryGate|fixture|liveGate'].includes(Object.keys(options).sort().join('|')) ||
+      typeof options.liveGate !== 'boolean' ||
+      ['entryGate', 'controlEnabled'].some(key => Object.hasOwn(options, key) && typeof options[key] !== 'boolean')) {
     throw new TypeError('fixture_context_required');
   }
   return launchHostedReadOnlyBrowser(firefox, profilePath, socketPath,
-    { paymentRuntime: { liveGate: options.liveGate }, [paymentFixture]: options.fixture });
+    { paymentRuntime: { liveGate: options.liveGate, entryGate: options.entryGate === true,
+      controlEnabled: options.controlEnabled === true }, [paymentFixture]: options.fixture });
 }

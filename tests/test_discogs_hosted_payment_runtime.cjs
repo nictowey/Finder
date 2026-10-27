@@ -2,11 +2,12 @@
 // No live site or payment. Files and SQLite are isolated in a private temp dir.
 const assert = require('node:assert/strict');
 const { test, before } = require('node:test');
-const { mkdtemp, writeFile, readFile, rm } = require('node:fs/promises');
+const { mkdtemp, writeFile, readFile, copyFile, rm } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
 const { EventEmitter } = require('node:events');
+const { connect } = require('node:net');
 const { JSDOM } = require('jsdom');
 let runtimeApi, fixedApi, orderApi, guestApi, guestCard, launcherApi;
 let leaseApi;
@@ -24,6 +25,15 @@ const enc = value => JSON.stringify(value) + '\n';
 const put = async (directory, name, value) => {
   const bytes = enc(value); await writeFile(join(directory, name), bytes, { flag: 'wx', mode: 0o600 }); return sha(bytes);
 };
+function socketExchange(path, value) {
+  return new Promise((resolve, reject) => {
+    let output = ''; const client = connect(path);
+    client.on('connect', () => client.write(JSON.stringify(value) + '\n'));
+    client.on('data', bytes => { output += bytes; });
+    client.on('error', reject);
+    client.on('end', () => { try { resolve(JSON.parse(output)); } catch (error) { reject(error); } });
+  });
+}
 
 async function syntheticGuestHistory(directory) {
   const now = Date.now() / 1000, intent = randomUUID(), ready = randomUUID(), scope = 'a'.repeat(64);
@@ -194,6 +204,298 @@ test('disabled production runtime performs no browser, policy, guest-ledger or o
   assert.equal((await runtime.resumeAfterEntry(null)).code, 'hosted_payment_disabled');
   assert.equal((await runtime.attemptPayment(null)).code, 'hosted_payment_disabled');
   assert.equal(calls, 0); await runtime.close();
+});
+
+test('entry-only gate uses the anchored guest claim and visible public controls without payment authority', async t => {
+  const f = await fixture(t), browser = interceptedCheckout(f.context, t);
+  f.setPages([browser.page]);
+  await rm(f.policyPath);
+  const entry = runtimeApi.createHostedPaymentRuntimeFixture({
+    context: f.context, acquireContextLease: leaseApi.createHostedContextLease(),
+    entryGate: true, liveGate: false, policyPath: f.policyPath,
+    confirmationPath: join(f.directory, 'enhanced-payment-confirmation.json'),
+    guestLedgerDirectory: f.directory, accessStopPath: join(f.directory, 'access-stopped'),
+    orderLedgerPort: { status: () => { throw new Error('real_order_ledger_must_not_be_read_for_entry'); } },
+  });
+  t.after(() => entry.close());
+  const scope = { schema: 'discogs_secure_entry_scope_v1', release_id: 3422100,
+    listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD',
+    max_total: '5.05', expected_guest_head: f.policy.expected_guest_head,
+    expected_claim_sha256: f.policy.expected_claim_sha256, expires_at: Date.now() / 1000 + 180 };
+  assert.equal((await entry.inspectEntryReadiness(scope)).code, 'anchored_guest_claim_observed');
+  const beforeBeginReads = browser.reads, beforeBeginInventory = f.browserCalls;
+  assert.equal((await entry.inspectEntryReadiness({ ...scope, max_total: '5.06' })).status, 'blocked');
+  assert.equal((await entry.inspectEntryReadiness({ ...scope, expected_claim_sha256: 'f'.repeat(64) })).status, 'blocked');
+  assert.equal(browser.reads, beforeBeginReads); assert.equal(f.browserCalls, beforeBeginInventory);
+  const begun = await entry.beginSecureEntry(scope);
+  assert.equal(begun.status, 'entry_ready', begun.code);
+  assert.equal(begun.payment_allowed, false);
+  const suspendedReads = browser.reads, suspendedInventory = f.browserCalls;
+  assert.equal((await entry.attemptPayment(null)).code, 'hosted_payment_disabled');
+  assert.equal((await entry.resumeAfterEntry(null)).code, 'hosted_payment_disabled');
+  assert.equal((await entry.beginSecureEntry(scope)).code, 'hosted_secure_entry_already_started');
+  assert.equal(browser.reads, suspendedReads); assert.equal(f.browserCalls, suspendedInventory);
+  assert.equal((await entry.completeSecureEntry({ entry_ref: randomUUID(), completed_at: Date.now() / 1000 })).status, 'blocked');
+  assert.equal((await entry.completeSecureEntry({ entry_ref: begun.entry_ref, completed_at: begun.entry_started_at - 1 })).status, 'blocked');
+  assert.equal((await entry.completeSecureEntry({ entry_ref: begun.entry_ref, completed_at: Date.now() / 1000 + 60 })).status, 'blocked');
+  assert.equal(browser.reads, suspendedReads); assert.equal(f.browserCalls, suspendedInventory);
+  const done = await entry.completeSecureEntry({ entry_ref: begun.entry_ref, completed_at: Date.now() / 1000 });
+  assert.equal(done.code, 'secure_entry_completed');
+  assert.equal(done.entry_started_at, begun.entry_started_at);
+  assert.equal(done.payment_allowed, false);
+  assert.equal((await entry.completeSecureEntry({ entry_ref: begun.entry_ref, completed_at: Date.now() / 1000 })).status, 'blocked');
+  assert.equal(browser.reads, suspendedReads); assert.equal(f.browserCalls, suspendedInventory);
+  const restarted = runtimeApi.createHostedPaymentRuntimeFixture({
+    context: f.context, acquireContextLease: leaseApi.createHostedContextLease(),
+    entryGate: true, liveGate: false, policyPath: f.policyPath,
+    confirmationPath: join(f.directory, 'enhanced-payment-confirmation.json'),
+    guestLedgerDirectory: f.directory, accessStopPath: join(f.directory, 'access-stopped'),
+    orderLedgerPort: f.ledger,
+  });
+  t.after(() => restarted.close());
+  assert.equal((await restarted.completeSecureEntry({ entry_ref: begun.entry_ref,
+    completed_at: Date.now() / 1000 })).status, 'blocked');
+  assert.equal((await restarted.resumeAfterEntry(f.scope)).status, 'blocked');
+  assert.equal(browser.reads, suspendedReads); assert.equal(f.browserCalls, suspendedInventory);
+});
+
+test('isolated launcher and fixed payment IPC hand off one public guest form without Pay authority', async t => {
+  const f = await fixture(t), browser = interceptedCheckout(f.context, t);
+  f.setPages([browser.page]); await rm(f.policyPath);
+  const close = await launcherApi.launchHostedPaymentRuntimeFixtureBrowser(
+    { launchPersistentContext: async () => f.context }, '/profile', '/tmp/sniper-read-only.sock',
+    { entryGate: true, liveGate: false, controlEnabled: true,
+      fixture: { policyPath: f.policyPath,
+        confirmationPath: join(f.directory, 'enhanced-payment-confirmation.json'),
+        guestLedgerDirectory: f.directory, accessStopPath: join(f.directory, 'access-stopped'),
+        orderLedgerPort: { status: () => { throw new Error('entry_must_not_touch_order_ledger'); } } } });
+  t.after(() => close());
+  const paymentPath = join(f.directory, 'payment-control.sock');
+  const request = (command, body) => ({ schema: 'discogs_hosted_payment_control_request_v1',
+    command, request: body });
+  const entryScope = { schema: 'discogs_secure_entry_scope_v1', release_id: 3422100,
+    listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD', max_total: '5.05',
+    expected_guest_head: f.policy.expected_guest_head,
+    expected_claim_sha256: f.policy.expected_claim_sha256, expires_at: Date.now() / 1000 + 180 };
+  const readiness = await socketExchange(paymentPath, request('inspect_readiness', { scope: entryScope }));
+  assert.equal(readiness.code, 'anchored_guest_claim_observed');
+  assert.equal(readiness.browser_evidence_pending, true);
+  const begun = await socketExchange(paymentPath, request('begin_secure_entry', { scope: entryScope }));
+  assert.equal(begun.status, 'entry_ready', begun.code);
+  assert.equal(begun.reads_suspended, true); assert.equal(begun.payment_allowed, false);
+  const readsAtEntry = browser.reads, inventoryAtEntry = f.browserCalls;
+  const ordinary = await socketExchange('/tmp/sniper-read-only.sock',
+    { action: 'current_cart', listing_id: '1366950910' });
+  assert.equal(ordinary.code, 'read_in_progress');
+  assert.equal(browser.reads, readsAtEntry); assert.equal(f.browserCalls, inventoryAtEntry);
+  const complete = await socketExchange(paymentPath, request('complete_secure_entry',
+    { entry_ref: begun.entry_ref, completed_at: Date.now() / 1000 }));
+  assert.equal(complete.code, 'secure_entry_completed');
+  const attempt = await socketExchange(paymentPath, request('attempt_payment', { scope: f.scope }));
+  assert.equal(attempt.code, 'hosted_payment_disabled');
+  assert.equal(browser.clicks, 0);
+  assert.equal(browser.reads, readsAtEntry); assert.equal(f.browserCalls, inventoryAtEntry);
+  await assert.rejects(readFile(f.policyPath), { code: 'ENOENT' });
+  await assert.rejects(readFile(join(f.directory, 'enhanced-payment-confirmation.json')), { code: 'ENOENT' });
+});
+
+test('entry-only completion later binds the original token and document to independently authorized Pay', async t => {
+  const f = await fixture(t), browser = interceptedCheckout(f.context, t);
+  f.setPages([browser.page]);
+  const policyBytes = enc(f.policy);
+  await rm(f.policyPath);
+  const runtime = runtimeApi.createHostedPaymentRuntimeFixture({
+    context: f.context, acquireContextLease: leaseApi.createHostedContextLease(),
+    entryGate: true, liveGate: true, policyPath: f.policyPath,
+    confirmationPath: join(f.directory, 'enhanced-payment-confirmation.json'),
+    guestLedgerDirectory: f.directory, accessStopPath: join(f.directory, 'access-stopped'),
+    orderLedgerPort: f.ledger,
+  });
+  t.after(() => runtime.close());
+  const entryScope = { schema: 'discogs_secure_entry_scope_v1', release_id: 3422100,
+    listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD',
+    max_total: '5.05', expected_guest_head: f.policy.expected_guest_head,
+    expected_claim_sha256: f.policy.expected_claim_sha256, expires_at: Date.now() / 1000 + 180 };
+  const begun = await runtime.beginSecureEntry(entryScope);
+  assert.equal(begun.status, 'entry_ready', begun.code);
+  const noPolicyReads = browser.reads, noPolicyInventory = f.browserCalls;
+  assert.equal((await runtime.attemptPayment(f.scope)).code, 'hosted_payment_disabled');
+  assert.equal((await runtime.resumeAfterEntry(f.scope)).code, 'hosted_secure_entry_not_resumable');
+  assert.equal(browser.reads, noPolicyReads); assert.equal(f.browserCalls, noPolicyInventory);
+  const completed = await runtime.completeSecureEntry({ entry_ref: begun.entry_ref, completed_at: Date.now() / 1000 });
+  assert.equal(completed.code, 'secure_entry_completed');
+  await writeFile(f.policyPath, policyBytes, { flag: 'wx', mode: 0o600 });
+  await writeFile(join(f.directory, 'enhanced-payment-confirmation.json'), enc(confirmedMetadata(f, begun.entry_ref)),
+    { flag: 'wx', mode: 0o600 });
+  const resumed = await runtime.resumeAfterEntry(f.scope);
+  assert.equal(resumed.code, 'fresh_post_entry_context_verified', resumed.code);
+  const attempted = await runtime.attemptPayment(f.scope);
+  assert.equal(attempted.code, 'submission_unknown', attempted.code);
+  assert.equal(browser.clicks, 1);
+  assert.equal((await f.ledger.status()).ledger.state, 'submission_unknown');
+});
+
+test('entry-only Pay confirmation must be newer than the actual secure-entry completion', async t => {
+  const f = await fixture(t), browser = interceptedCheckout(f.context, t);
+  f.setPages([browser.page]); await rm(f.policyPath);
+  const runtime = runtimeApi.createHostedPaymentRuntimeFixture({ context: f.context,
+    acquireContextLease: leaseApi.createHostedContextLease(), entryGate: true, liveGate: true,
+    policyPath: f.policyPath, confirmationPath: join(f.directory, 'enhanced-payment-confirmation.json'),
+    guestLedgerDirectory: f.directory, accessStopPath: join(f.directory, 'access-stopped'),
+    orderLedgerPort: f.ledger });
+  t.after(() => runtime.close());
+  const entryScope = { schema: 'discogs_secure_entry_scope_v1', release_id: 3422100,
+    listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD', max_total: '5.05',
+    expected_guest_head: f.policy.expected_guest_head,
+    expected_claim_sha256: f.policy.expected_claim_sha256, expires_at: Date.now() / 1000 + 180 };
+  const begun = await runtime.beginSecureEntry(entryScope);
+  assert.equal(begun.status, 'entry_ready', begun.code);
+  const premature = confirmedMetadata(f, begun.entry_ref);
+  assert.ok(premature.confirmed_at >= begun.entry_started_at);
+  await new Promise(resolve => setTimeout(resolve, 25));
+  const completed = await runtime.completeSecureEntry({ entry_ref: begun.entry_ref,
+    completed_at: Date.now() / 1000 });
+  assert.equal(completed.code, 'secure_entry_completed');
+  assert.ok(premature.confirmed_at < completed.entry_completed_at);
+  await writeFile(f.policyPath, enc(f.policy), { flag: 'wx', mode: 0o600 });
+  await writeFile(join(f.directory, 'enhanced-payment-confirmation.json'), enc(premature),
+    { flag: 'wx', mode: 0o600 });
+  assert.equal((await runtime.resumeAfterEntry(f.scope)).status, 'blocked');
+  assert.equal(browser.clicks, 0);
+  assert.equal((await f.ledger.status()).ledger, null);
+});
+
+test('entry-only Pay policy cannot switch to another valid same-item guest claim', async t => {
+  const f = await fixture(t), browser = interceptedCheckout(f.context, t);
+  f.setPages([browser.page]); await rm(f.policyPath);
+  const runtime = runtimeApi.createHostedPaymentRuntimeFixture({ context: f.context,
+    acquireContextLease: leaseApi.createHostedContextLease(), entryGate: true, liveGate: true,
+    policyPath: f.policyPath, confirmationPath: join(f.directory, 'enhanced-payment-confirmation.json'),
+    guestLedgerDirectory: f.directory, accessStopPath: join(f.directory, 'access-stopped'),
+    orderLedgerPort: f.ledger });
+  t.after(() => runtime.close());
+  const entryScope = { schema: 'discogs_secure_entry_scope_v1', release_id: 3422100,
+    listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD', max_total: '5.05',
+    expected_guest_head: f.policy.expected_guest_head,
+    expected_claim_sha256: f.policy.expected_claim_sha256, expires_at: Date.now() / 1000 + 180 };
+  const begun = await runtime.beginSecureEntry(entryScope);
+  assert.equal(begun.status, 'entry_ready', begun.code);
+  assert.equal((await runtime.completeSecureEntry({ entry_ref: begun.entry_ref,
+    completed_at: Date.now() / 1000 })).code, 'secure_entry_completed');
+  // Replace only isolated synthetic fixture bytes to model a second independently
+  // valid same-item chain; a live ledger is append-only and never rewritten.
+  const alternate = await mkdtemp(join(tmpdir(), 'sniper-alternate-guest-fixture-'));
+  t.after(() => rm(alternate, { recursive: true, force: true }));
+  const next = await syntheticGuestHistory(alternate);
+  const names = [guestCard.GUEST_CARD_FENCE, guestCard.GUEST_CARD_RECOVERY_REVIEW,
+    guestCard.GUEST_CARD_RECOVERY_FENCE, guestCard.GUEST_CARD_NAVIGATION_REOPEN_REVIEW,
+    guestCard.GUEST_CARD_NAVIGATION_REOPEN_FENCE,
+    ...Array.from({ length: 5 }, (_, i) => `guest-checkout-${String(i + 1).padStart(6, '0')}.json`)];
+  for (const name of names) await copyFile(join(alternate, name), join(f.directory, name));
+  assert.equal((await guestApi.inspectGuestCheckoutLedger({ directory: f.directory,
+    expectedClaim: next.claim })).claim_verified, true);
+  assert.notEqual(next.claim, entryScope.expected_claim_sha256);
+  const nextPolicy = { ...f.policy, expected_guest_head: next.head,
+    expected_claim_sha256: next.claim };
+  await writeFile(f.policyPath, enc(nextPolicy), { flag: 'wx', mode: 0o600 });
+  await writeFile(join(f.directory, 'enhanced-payment-confirmation.json'),
+    enc(confirmedMetadata(f, begun.entry_ref)), { flag: 'wx', mode: 0o600 });
+  const reads = browser.reads;
+  assert.equal((await runtime.resumeAfterEntry(f.scope)).status, 'blocked');
+  assert.equal(browser.reads, reads);
+  assert.equal(browser.clicks, 0);
+});
+
+test('entry-only cancellation and close during a pending document read cannot hand off or release its lease early', async t => {
+  const f = await fixture(t), browser = interceptedCheckout(f.context, t);
+  f.setPages([browser.page]);
+  const entryScope = { schema: 'discogs_secure_entry_scope_v1', release_id: 3422100,
+    listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD',
+    max_total: '5.05', expected_guest_head: f.policy.expected_guest_head,
+    expected_claim_sha256: f.policy.expected_claim_sha256, expires_at: Date.now() / 1000 + 180 };
+  const acquireContextLease = leaseApi.createHostedContextLease();
+  const cancelled = runtimeApi.createHostedPaymentRuntimeFixture({ context: f.context,
+    acquireContextLease, entryGate: true, liveGate: false, policyPath: f.policyPath,
+    confirmationPath: join(f.directory, 'enhanced-payment-confirmation.json'),
+    guestLedgerDirectory: f.directory, accessStopPath: join(f.directory, 'access-stopped'),
+    orderLedgerPort: f.ledger });
+  const controller = new AbortController(); controller.abort();
+  assert.equal((await cancelled.beginSecureEntry(entryScope, { signal: controller.signal })).status, 'blocked');
+  assert.equal(browser.reads, 0); assert.equal(f.browserCalls, 0);
+  await cancelled.close();
+
+  let witnessStarted, releaseWitness, disposed = 0;
+  const started = new Promise(resolve => { witnessStarted = resolve; });
+  const pending = new Promise(resolve => { releaseWitness = resolve; });
+  browser.page.evaluateHandle = async () => {
+    witnessStarted(); await pending;
+    return { dispose: async () => { disposed++; } };
+  };
+  const entry = runtimeApi.createHostedPaymentRuntimeFixture({ context: f.context,
+    acquireContextLease, entryGate: true, liveGate: false, policyPath: f.policyPath,
+    confirmationPath: join(f.directory, 'enhanced-payment-confirmation.json'),
+    guestLedgerDirectory: f.directory, accessStopPath: join(f.directory, 'access-stopped'),
+    orderLedgerPort: f.ledger });
+  t.after(() => entry.close());
+  const beginning = entry.beginSecureEntry(entryScope);
+  await started;
+  await entry.close();
+  assert.equal(acquireContextLease(), null, 'pending page read must retain shared lease');
+  const readsAtClose = browser.reads, inventoryAtClose = f.browserCalls;
+  releaseWitness();
+  assert.equal((await beginning).status, 'blocked');
+  assert.equal(browser.reads, readsAtClose); assert.equal(f.browserCalls, inventoryAtClose);
+  assert.equal(disposed, 1);
+  const released = acquireContextLease(); assert.equal(typeof released, 'function'); released();
+
+  let abortStarted, releaseAbortWitness, abortedDisposed = 0;
+  const abortReadStarted = new Promise(resolve => { abortStarted = resolve; });
+  const pendingAbortRead = new Promise(resolve => { releaseAbortWitness = resolve; });
+  browser.page.evaluateHandle = async () => {
+    abortStarted(); await pendingAbortRead;
+    return { dispose: async () => { abortedDisposed++; } };
+  };
+  const controllerDuringRead = new AbortController();
+  const entryAfterAbort = runtimeApi.createHostedPaymentRuntimeFixture({ context: f.context,
+    acquireContextLease, entryGate: true, liveGate: false, policyPath: f.policyPath,
+    confirmationPath: join(f.directory, 'enhanced-payment-confirmation.json'),
+    guestLedgerDirectory: f.directory, accessStopPath: join(f.directory, 'access-stopped'),
+    orderLedgerPort: f.ledger });
+  t.after(() => entryAfterAbort.close());
+  const abortedBeginning = entryAfterAbort.beginSecureEntry(entryScope,
+    { signal: controllerDuringRead.signal });
+  await abortReadStarted;
+  controllerDuringRead.abort();
+  const readsAtAbort = browser.reads, inventoryAtAbort = f.browserCalls;
+  releaseAbortWitness();
+  assert.equal((await abortedBeginning).status, 'blocked');
+  assert.equal(browser.reads, readsAtAbort); assert.equal(f.browserCalls, inventoryAtAbort);
+  assert.equal(abortedDisposed, 1);
+});
+
+test('entry-only public amount or bound Pay control drift blocks before card handoff', async t => {
+  for (const change of ['merchant_total', 'public_pay_label']) {
+    const f = await fixture(t), browser = interceptedCheckout(f.context, t);
+    f.setPages([browser.page]);
+    if (change === 'merchant_total') {
+      await browser.page.evaluate(() => { document.querySelector('._checkout-summary__total--color-red_fixture dd').textContent = '$5.06 USD'; });
+    } else {
+      await browser.page.frames()[2].evaluate(() => { document.querySelector('#submit-button').textContent = 'Pay $5.06'; });
+    }
+    const scope = { schema: 'discogs_secure_entry_scope_v1', release_id: 3422100,
+      listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD',
+      max_total: '5.05', expected_guest_head: f.policy.expected_guest_head,
+      expected_claim_sha256: f.policy.expected_claim_sha256, expires_at: Date.now() / 1000 + 180 };
+    const entry = runtimeApi.createHostedPaymentRuntimeFixture({ context: f.context,
+      acquireContextLease: leaseApi.createHostedContextLease(), entryGate: true, liveGate: false,
+      policyPath: f.policyPath, confirmationPath: join(f.directory, 'enhanced-payment-confirmation.json'),
+      guestLedgerDirectory: f.directory, accessStopPath: join(f.directory, 'access-stopped'),
+      orderLedgerPort: f.ledger });
+    t.after(() => entry.close());
+    assert.equal((await entry.beginSecureEntry(scope)).status, 'blocked', change);
+    assert.equal((await entry.completeSecureEntry({ entry_ref: randomUUID(),
+      completed_at: Date.now() / 1000 })).status, 'blocked');
+  }
 });
 
 test('exact private policy is checked against the real guest chain and real SQLite status without browser use', async t => {

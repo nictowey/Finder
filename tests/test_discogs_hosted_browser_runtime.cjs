@@ -101,7 +101,9 @@ test('actual launcher attaches a disabled payment caller without reading the res
 
 test('launcher rejects payment callback/path overrides or live gate on the development socket before browser launch', async () => {
   for (const paymentRuntime of [{ liveGate: true }, { liveGate: false, policyPath: '/tmp/foreign' },
-    { liveGate: false, readAuthorization() {} }, { liveGate: 'true' }]) {
+    { liveGate: false, readAuthorization() {} }, { liveGate: 'true' },
+    { liveGate: false, entryGate: true, controlEnabled: true },
+    { liveGate: false, entryGate: 'true', controlEnabled: false }]) {
     const item = fixture();
     await assert.rejects(launchHostedReadOnlyBrowser(item.firefox, '/profile', socketPath, { paymentRuntime }),
       { message: 'fixed_payment_runtime_configuration_required' });
@@ -129,6 +131,7 @@ function runnerFixture({ holdLaunch = false, closeFails = false } = {}) {
     calls.push('close'); if (closeFails) throw new Error('private driver details');
   }, { unavailable, isAvailable: () => true });
   const options = { signals, report: value => output.push(value),
+    loadPaymentMode: async () => ({ entryGate: false, liveGate: false, controlEnabled: false }),
     startMemoryLogging: ({ report }) => {
       assert.equal(typeof report, 'function'); calls.push('memory_start');
       return () => { calls.push('memory_stop'); };
@@ -138,6 +141,29 @@ function runnerFixture({ holdLaunch = false, closeFails = false } = {}) {
     } };
   return { options, signals, output, errors, calls, fail, launched, ready };
 }
+
+test('runner wires explicit owner entry-only mode without enabling payment', async () => {
+  const item = runnerFixture();
+  item.options.loadPaymentMode = async () => ({ entryGate: true, liveGate: false, controlEnabled: true });
+  const running = runHostedBrowser('firefox-port', item.options);
+  await item.launched;
+  item.signals.emit('SIGTERM');
+  assert.equal(await running, 0);
+  assert.deepEqual(item.calls[0], ['firefox-port', '/profile', '/bridge/sniper-read-only.sock', {
+    paymentRuntime: { entryGate: true, liveGate: false, controlEnabled: true },
+  }]);
+  assert.deepEqual(item.errors, []);
+});
+
+test('runner rejects invalid payment mode before opening a browser', async () => {
+  for (const mode of [null, { entryGate: true, liveGate: false, controlEnabled: false },
+    { entryGate: false, liveGate: false, controlEnabled: true, dispatch() {} }]) {
+    const item = runnerFixture(); item.options.loadPaymentMode = async () => mode;
+    assert.equal(await runHostedBrowser('firefox-port', item.options), 1);
+    assert.equal(item.calls.length, 0);
+    assert.deepEqual(item.errors, ['browser_unavailable']);
+  }
+});
 
 test('runner returns nonzero on browser loss with only a fixed diagnostic', async () => {
   const item = runnerFixture();

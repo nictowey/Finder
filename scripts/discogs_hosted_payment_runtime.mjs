@@ -9,7 +9,7 @@ import { dirname, isAbsolute } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { inspectGuestCheckoutLedger } from './discogs_guest_checkout_operator.mjs';
 import { createEnhancedOrderLedgerPort } from './discogs_enhanced_order_ledger_port.mjs';
-import { inspectCurrentEnhancedPaymentQuote } from './discogs_enhanced_payment_quote.mjs';
+import { inspectCurrentEnhancedPaymentQuote, waitForEnhancedPaymentQuoteSettlement } from './discogs_enhanced_payment_quote.mjs';
 import { createEnhancedFixedPayPort, createEnhancedFixedPayFixturePort,
   fixedEnhancedPayQuoteFingerprint, beginFixedEnhancedPaySecureEntry,
   resumeFixedEnhancedPayAfterEntry, closeFixedEnhancedPayPort,
@@ -25,6 +25,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const HASH = /^[0-9a-f]{64}$/u;
 const SCOPE = ['intent_id', 'approval_ref', 'release_id', 'listing_id', 'seller', 'one_copy_limit', 'currency',
   'max_total', 'rules_revision', 'quote_fingerprint', 'destination_ref', 'payment_ref', 'terms_fingerprint', 'expires_at'];
+const ENTRY_SCOPE = ['schema', 'release_id', 'listing_id', 'seller', 'quantity', 'currency', 'max_total',
+  'expected_guest_head', 'expected_claim_sha256', 'expires_at'];
 const POLICY = ['schema', 'source', 'action', 'mode', 'scope', 'expected_guest_head', 'expected_claim_sha256',
   'selected_shipping_ref', 'selected_shipping_label', 'authorized_at', 'expires_at', 'revoked',
   'test_active', 'kill_switch', 'already_owned'];
@@ -86,6 +88,36 @@ function validScope(scope, now) {
     scope.quote_fingerprint === fixedEnhancedPayQuoteFingerprint(scope) &&
     Number.isFinite(scope.expires_at) && now < scope.expires_at && scope.expires_at - now <= 300;
 }
+function validEntryScope(scope, now) {
+  return exact(scope, ENTRY_SCOPE) && scope.schema === 'discogs_secure_entry_scope_v1' &&
+    scope.release_id === 3422100 && scope.listing_id === '1366950910' &&
+    scope.seller === 'Mailman21842' && scope.quantity === 1 && scope.currency === 'USD' &&
+    scope.max_total === '5.05' && HASH.test(scope.expected_guest_head || '') &&
+    HASH.test(scope.expected_claim_sha256 || '') && Number.isFinite(scope.expires_at) &&
+    now < scope.expires_at && scope.expires_at - now <= 300;
+}
+function publicEntryEvidence(report, scope) {
+  const merchant = report?.merchant_displayed;
+  return report?.final_quote_verified === false && report?.purchase_allowed !== true &&
+    merchant?.seller_handle === scope.seller && merchant.subtotal?.amount === '0.10' &&
+    merchant.shipping?.amount === '4.95' && merchant.total?.amount === '5.05' &&
+    [merchant.subtotal, merchant.shipping, merchant.total].every(value => value?.currency === 'USD') &&
+    merchant.selected_shipping_label === 'Economy - Media Mail' &&
+    report.gates?.provider_dom_qualification === true &&
+    report.gates?.provider_frame_and_document === true &&
+    report.gates?.provider_explicit_currency === true &&
+    report.gates?.provider_amount_matches_merchant === true &&
+    report.current_layout_qualifications?.public_pay_control_verified === true &&
+    report.guest_pay_metadata?.status === 'observed' &&
+    report.guest_pay_metadata?.eligible_count === 1 &&
+    report.guest_pay_metadata?.submit_count === 1 &&
+    report.guest_pay_metadata?.submit_visible === true &&
+    report.guest_pay_metadata?.submit_enabled === true &&
+    report.guest_pay_metadata?.button_type_matches === true &&
+    report.guest_pay_metadata?.same_document_verified === true &&
+    report.guest_pay_metadata?.frame_associated === true &&
+    /^Pay \$5\.05(?: USD)?$/u.test(report.guest_pay_metadata?.label || '');
+}
 function validPolicy(policy, scope, now) {
   return exact(policy, POLICY) && policy.schema === 'discogs_enhanced_payment_authorization_v1' &&
     policy.source === 'owner_approved_exact_order' && policy.action === 'pay_one_exact_kc' &&
@@ -97,12 +129,13 @@ function validPolicy(policy, scope, now) {
     policy.expires_at - policy.authorized_at <= 300 && policy.revoked === false &&
     policy.test_active === true && policy.kill_switch === false && policy.already_owned === false;
 }
-function validConfirmation(value, scope, policy, entryRef, entryAt, now) {
+function validConfirmation(value, scope, policy, entryRef, entryAt, entryCompletedAt, now) {
   return UUID.test(entryRef || '') && Number.isFinite(entryAt) && exact(value, CONFIRM) &&
     value.schema === 'discogs_enhanced_payment_confirmation_v1' &&
     value.source === 'owner_confirmed_current_checkout' && value.intent_id === scope.intent_id &&
     value.entry_ref === entryRef && UUID.test(value.entry_ref || '') &&
-    Number.isFinite(value.confirmed_at) && entryAt <= value.confirmed_at && value.confirmed_at <= now &&
+    Number.isFinite(value.confirmed_at) && Math.max(entryAt, entryCompletedAt ?? entryAt) <= value.confirmed_at &&
+    value.confirmed_at <= now &&
     now - value.confirmed_at < 60 && Number.isFinite(value.expires_at) && now < value.expires_at &&
     value.expires_at <= Math.min(policy.expires_at, value.confirmed_at + 60) &&
     value.amount === '5.05' && value.currency === 'USD' && value.destination_ref === scope.destination_ref &&
@@ -115,18 +148,22 @@ function validConfirmation(value, scope, policy, entryRef, entryAt, now) {
     value.fees_treatment === 'included_in_final_total';
 }
 
-function factory({ context, acquireContextLease, liveGate = false, policyPath = HOSTED_PAYMENT_POLICY,
+function factory({ context, acquireContextLease, entryGate = false, liveGate = false, policyPath = HOSTED_PAYMENT_POLICY,
   confirmationPath = HOSTED_PAYMENT_CONFIRMATION, guestLedgerDirectory = GUEST_LEDGER,
   accessStopPath = ACCESS_STOP, orderLedgerPort = createEnhancedOrderLedgerPort(), fixture = false } = {}) {
-  if (typeof liveGate !== 'boolean' || typeof acquireContextLease !== 'function' ||
-      !context || liveGate && typeof context.pages !== 'function') throw new TypeError('resident_payment_context_required');
+  if (typeof liveGate !== 'boolean' || typeof entryGate !== 'boolean' || typeof acquireContextLease !== 'function' ||
+      !context || (liveGate || entryGate) && typeof context.pages !== 'function')
+    throw new TypeError('resident_payment_context_required');
   if (!fixture && (policyPath !== HOSTED_PAYMENT_POLICY || confirmationPath !== HOSTED_PAYMENT_CONFIRMATION ||
       guestLedgerDirectory !== GUEST_LEDGER || accessStopPath !== ACCESS_STOP)) throw new TypeError('fixed_payment_paths_required');
   if (![policyPath, confirmationPath, guestLedgerDirectory, accessStopPath].every(isAbsolute)) throw new TypeError('fixed_payment_paths_required');
   let page = null, fixed = null, documentHandle = null, entryRef = null, entryAt = null,
-    entryReady = false, beginStarted = false, resuming = false, attemptStarted = false,
-    preheldRelease = null, closed = false;
+    entryReady = false, beginStarted = false, entryCompleting = false, resuming = false, attemptStarted = false,
+    preheldRelease = null, entryRelease = null, entryMode = null, entryCompleted = false,
+    entryScope = null, entryCompletedAt = null, closed = false;
   const enabled = () => liveGate && !closed;
+  const entryEnabled = () => entryGate && !closed;
+  const browserActive = () => (liveGate || entryGate) && !closed;
   const ownerPolicy = async scope => {
     if (!enabled()) throw new Error('payment_runtime_disabled');
     if (!validScope(scope, Date.now() / 1000)) throw new Error('exact_kc_scope_required');
@@ -135,13 +172,16 @@ function factory({ context, acquireContextLease, liveGate = false, policyPath = 
     const now = Date.now() / 1000;
     if (!enabled() || !validScope(scope, now) || !validPolicy(policy, scope, now))
       throw new Error('current_owner_authorization_required');
+    if (entryMode === 'entry_only' && entryCompleted &&
+        (policy.expected_guest_head !== entryScope.expected_guest_head ||
+         policy.expected_claim_sha256 !== entryScope.expected_claim_sha256))
+      throw new Error('entry_guest_claim_changed');
     return policy;
   };
-  const policyFor = async scope => {
-    const policy = await ownerPolicy(scope);
+  const guestFor = async (scope, expectedClaim, expectedHead) => {
     const guest = await inspectGuestCheckoutLedger({ directory: guestLedgerDirectory,
-      expectedClaim: policy.expected_claim_sha256 });
-    if (guest?.current_head !== policy.expected_guest_head || guest.claim_verified !== true ||
+      expectedClaim });
+    if (guest?.current_head !== expectedHead || guest.claim_verified !== true ||
         guest.state !== 'guest_form_observed_repeat_blocked') throw new Error('current_guest_claim_required');
     const count = guest.record_count;
     if (!Number.isSafeInteger(count) || count < 3) throw new Error('current_guest_claim_required');
@@ -149,18 +189,32 @@ function factory({ context, acquireContextLease, liveGate = false, policyPath = 
     const outcome = await pinnedRecord(guestLedgerDirectory, count - 1);
     const observation = await pinnedRecord(guestLedgerDirectory, count);
     const a = claim.value?.payload, b = observation.value?.payload;
-    if (claim.hash !== policy.expected_claim_sha256 || observation.hash !== policy.expected_guest_head ||
+    if (claim.hash !== expectedClaim || observation.hash !== expectedHead ||
         claim.value?.kind !== 'attempt' || a?.mode !== 'current_checkout_claim' ||
         outcome.value?.kind !== 'outcome' || observation.value?.kind !== 'form_observation' ||
         b?.previous_claim_sha256 !== claim.hash || b?.previous_outcome_sha256 !== outcome.hash ||
         a?.intent_id !== b?.intent_id || a?.ready_ref !== b?.ready_ref || a?.scope_digest !== b?.scope_digest ||
         b?.release_id !== scope.release_id || b?.listing_id !== scope.listing_id ||
-        b?.seller !== scope.seller || b?.quantity !== scope.one_copy_limit ||
+        b?.seller !== scope.seller || b?.quantity !== (scope.one_copy_limit ?? scope.quantity) ||
         b?.currency !== scope.currency || b?.max_total !== scope.max_total) throw new Error('guest_claim_scope_unverified');
     const still = await inspectGuestCheckoutLedger({ directory: guestLedgerDirectory,
-      expectedClaim: policy.expected_claim_sha256 });
+      expectedClaim });
     if (still?.current_head !== guest.current_head || still.claim_verified !== true ||
         still.state !== guest.state) throw new Error('guest_claim_changed');
+    return guest;
+  };
+  const entryGuestFor = async (scope, signal = null) => {
+    if (!entryEnabled() || signal?.aborted || !validEntryScope(scope, Date.now() / 1000))
+      throw new Error('secure_entry_scope_unavailable');
+    if (!await preservedAccessStop(accessStopPath)) throw new Error('access_history_unverified');
+    const guest = await guestFor(scope, scope.expected_claim_sha256, scope.expected_guest_head);
+    if (!entryEnabled() || signal?.aborted || !validEntryScope(scope, Date.now() / 1000))
+      throw new Error('secure_entry_scope_changed');
+    return guest;
+  };
+  const policyFor = async scope => {
+    const policy = await ownerPolicy(scope);
+    const guest = await guestFor(scope, policy.expected_claim_sha256, policy.expected_guest_head);
     const order = await orderLedgerPort.status();
     if (order?.status !== 'observed' || order.durable !== true || order.ledger &&
         (order.ledger.intent_id !== scope.intent_id || !['prepared', 'submission_unknown'].includes(order.ledger.state))) {
@@ -171,21 +225,21 @@ function factory({ context, acquireContextLease, liveGate = false, policyPath = 
     return { policy, guest, order };
   };
   const sameDocument = async () => {
-    if (!enabled() || !page || !documentHandle || page.url() !== CHECKOUT) return false;
-    if (!enabled()) return false;
+    if (!browserActive() || !page || !documentHandle || page.url() !== CHECKOUT) return false;
+    if (!browserActive()) return false;
     const pages = await context.pages();
-    if (!enabled() || !pages.includes(page)) return false;
+    if (!browserActive() || !pages.includes(page)) return false;
     const same = await page.evaluate(expected => document === expected, documentHandle);
-    return enabled() && same === true;
+    return browserActive() && same === true;
   };
   const confirmationFor = async scope => {
     const policy = await ownerPolicy(scope);
     const confirmation = await ownerJson(confirmationPath);
-    if (!validConfirmation(confirmation, scope, policy, entryRef, entryAt, Date.now() / 1000) ||
+    if (!validConfirmation(confirmation, scope, policy, entryRef, entryAt, entryCompletedAt, Date.now() / 1000) ||
         !await sameDocument()) throw new Error('current_post_entry_confirmation_required');
     const currentPolicy = await ownerPolicy(scope);
     if (!enabled() || canonical(currentPolicy) !== canonical(policy) ||
-        !validConfirmation(confirmation, scope, currentPolicy, entryRef, entryAt, Date.now() / 1000))
+        !validConfirmation(confirmation, scope, currentPolicy, entryRef, entryAt, entryCompletedAt, Date.now() / 1000))
       throw new Error('current_post_entry_confirmation_required');
     return { policy, confirmation };
   };
@@ -255,7 +309,7 @@ function factory({ context, acquireContextLease, liveGate = false, policyPath = 
   const ensurePage = async () => {
     if (page) return page;
     const pages = await context.pages();
-    if (!enabled()) throw new Error('payment_runtime_disabled');
+    if (!browserActive()) throw new Error('payment_runtime_disabled');
     const matches = pages.filter(candidate => candidate.url() === CHECKOUT);
     if (matches.length !== 1) throw new Error('unique_resident_checkout_required');
     page = matches[0]; return page;
@@ -275,6 +329,15 @@ function factory({ context, acquireContextLease, liveGate = false, policyPath = 
   };
   return Object.freeze({
     paymentEnabled: false,
+    inspectEntryReadiness: async (scope, { signal = null } = {}) => {
+      if (!entryEnabled()) return stop('hosted_secure_entry_disabled');
+      try {
+        await entryGuestFor(scope, signal);
+        return Object.freeze({ status: 'observed', code: 'anchored_guest_claim_observed',
+          card_entry_allowed: false, payment_allowed: false, purchase_allowed: false,
+          browser_evidence_pending: true });
+      } catch { return stop('hosted_secure_entry_unavailable'); }
+    },
     inspectReadiness: async scope => {
       if (!enabled()) return stop('hosted_payment_disabled');
       try { const { guest, order } = await policyFor(scope);
@@ -284,13 +347,37 @@ function factory({ context, acquireContextLease, liveGate = false, policyPath = 
       } catch { return stop('hosted_payment_authority_unavailable'); }
     },
     beginSecureEntry: async (scope, { signal = null } = {}) => {
-      if (!enabled()) return stop('hosted_payment_disabled');
+      if (!entryEnabled() && !enabled()) return stop('hosted_payment_disabled');
       if (beginStarted) return stop('hosted_secure_entry_already_started');
       // Reserve before the first metadata await. A concurrent call cannot read
       // the page after this call hands the browser to secure card entry.
       beginStarted = true;
       let handoffReady = false;
       try {
+        if (entryGate) {
+          await entryGuestFor(scope, signal);
+          preheldRelease = acquireContextLease();
+          if (typeof preheldRelease !== 'function') return stop('hosted_browser_busy');
+          await ensurePage();
+          if (!entryEnabled() || signal?.aborted) return stop('hosted_secure_entry_unavailable');
+          documentHandle = await page.evaluateHandle(() => document);
+          if (!entryEnabled() || signal?.aborted) return stop('hosted_secure_entry_unavailable');
+          if (!await sameDocument()) return stop('entry_document_unverified');
+          const publicReport = await inspectCurrentEnhancedPaymentQuote(page, { signal });
+          await waitForEnhancedPaymentQuoteSettlement(page);
+          if (!entryEnabled() || signal?.aborted || !await sameDocument() ||
+              !publicEntryEvidence(publicReport, scope)) return stop('public_entry_evidence_unverified');
+          await entryGuestFor(scope, signal);
+          if (!entryEnabled() || signal?.aborted) return stop('hosted_secure_entry_unavailable');
+          entryRef = randomUUID(); entryAt = Date.now() / 1000;
+          entryScope = Object.freeze({ ...scope }); entryMode = 'entry_only';
+          entryRelease = preheldRelease; preheldRelease = null;
+          handoffReady = true;
+          return Object.freeze({ status: 'entry_ready', entry_ref: entryRef,
+            entry_started_at: entryAt, entry_evidence: 'bound_public_guest_form_verified',
+            reads_suspended: true, payment_allowed: false,
+            purchase_allowed: false });
+        }
         const initial = await policyFor(scope);
         if (!enabled()) return stop('hosted_payment_disabled');
         if (initial.order.ledger?.state === 'submission_unknown') return stop('hosted_prior_submit_uncertain');
@@ -316,6 +403,7 @@ function factory({ context, acquireContextLease, liveGate = false, policyPath = 
         return Object.freeze({ ...result, entry_ref: entryRef });
       } catch { return stop('hosted_secure_entry_unavailable'); }
       finally {
+        if (entryGate && !handoffReady && page) await waitForEnhancedPaymentQuoteSettlement(page);
         if (preheldRelease) { preheldRelease(); preheldRelease = null; }
         if (!handoffReady && fixed) closeFixedEnhancedPayPort(fixed);
         if (!handoffReady) {
@@ -324,13 +412,59 @@ function factory({ context, acquireContextLease, liveGate = false, policyPath = 
         }
       }
     },
+    completeSecureEntry: async (completion, { signal = null } = {}) => {
+      if (!entryEnabled() || entryMode !== 'entry_only' || !entryRelease ||
+          entryCompleted || entryCompleting || !exact(completion, ['entry_ref', 'completed_at']) ||
+          completion.entry_ref !== entryRef || signal?.aborted ||
+          !Number.isFinite(completion.completed_at) || completion.completed_at < entryAt ||
+          completion.completed_at > Date.now() / 1000 || completion.completed_at - entryAt > 300)
+        return stop('secure_entry_completion_unverified');
+      entryCompleting = true;
+      try {
+        await entryGuestFor(entryScope, signal);
+        if (!entryEnabled() || signal?.aborted || Date.now() / 1000 >= entryScope.expires_at)
+          return stop('secure_entry_completion_unverified');
+        entryCompleted = true; entryCompletedAt = completion.completed_at;
+        entryRelease(); entryRelease = null;
+        return Object.freeze({ status: 'observed', code: 'secure_entry_completed',
+          entry_ref: entryRef, entry_started_at: entryAt,
+          entry_completed_at: completion.completed_at, payment_allowed: false,
+          purchase_allowed: false });
+      } catch { return stop('secure_entry_completion_unverified'); }
+      finally { entryCompleting = false; }
+    },
     resumeAfterEntry: async (scope, { signal = null } = {}) => {
       if (!enabled()) return stop('hosted_payment_disabled');
-      if (!entryRef || !fixed || entryReady || resuming || attemptStarted)
+      if (!entryRef || entryReady || resuming || attemptStarted ||
+          entryMode === 'entry_only' && !entryCompleted || entryMode !== 'entry_only' && !fixed)
         return stop('hosted_secure_entry_not_resumable');
       resuming = true;
+      if (entryMode === 'entry_only') {
+        try {
+          const initial = await policyFor(scope);
+          if (initial.order.ledger?.state === 'submission_unknown') return stop('hosted_prior_submit_uncertain');
+          preheldRelease = acquireContextLease();
+          if (typeof preheldRelease !== 'function') return stop('hosted_browser_busy');
+          if (!await sameDocument()) return stop('entry_document_unverified');
+          await confirmationFor(scope);
+          const port = await ensurePort();
+          if (!enabled() || signal?.aborted) return stop('hosted_payment_disabled');
+          const begun = await beginFixedEnhancedPaySecureEntry(port, scope, { signal });
+          if (begun?.status !== 'entry_ready' || !enabled()) return stop('hosted_post_entry_handoff_unavailable');
+          const result = await resumeFixedEnhancedPayAfterEntry(port, scope, { signal });
+          if (!enabled() || signal?.aborted) return stop('hosted_post_entry_handoff_unavailable');
+          if (result?.code === 'fresh_post_entry_context_verified') entryReady = true;
+          return result;
+        } catch { return stop('hosted_post_entry_confirmation_unavailable'); }
+        finally {
+          if (preheldRelease) { preheldRelease(); preheldRelease = null; }
+          if (!entryReady && fixed) closeFixedEnhancedPayPort(fixed);
+          resuming = false;
+        }
+      }
       try { await confirmationFor(scope);
         const result = await resumeFixedEnhancedPayAfterEntry(fixed, scope, { signal });
+        if (!enabled() || signal?.aborted) return stop('hosted_post_entry_confirmation_unavailable');
         if (result?.code === 'fresh_post_entry_context_verified') entryReady = true;
         return result;
       }
@@ -350,6 +484,11 @@ function factory({ context, acquireContextLease, liveGate = false, policyPath = 
     close: async () => {
       closed = true;
       if (fixed) { closeFixedEnhancedPayPort(fixed); await waitForFixedEnhancedPayPortSettlement(fixed); }
+      if (page) await waitForEnhancedPaymentQuoteSettlement(page);
+      entryRelease?.(); entryRelease = null;
+      // A pending begin owns this lease until its own in-flight page read has
+      // settled and its finally block releases it. Closing cannot release it
+      // early while a driver call is still in progress.
       try { await documentHandle?.dispose?.(); } catch {}
       documentHandle = null;
     },
@@ -357,7 +496,7 @@ function factory({ context, acquireContextLease, liveGate = false, policyPath = 
 }
 
 export function createHostedPaymentRuntime(options = {}) {
-  if (Object.keys(options).some(key => !['context', 'acquireContextLease', 'liveGate'].includes(key)))
+  if (Object.keys(options).some(key => !['context', 'acquireContextLease', 'entryGate', 'liveGate'].includes(key)))
     throw new TypeError('fixed_runtime_configuration_required');
   return factory(options);
 }

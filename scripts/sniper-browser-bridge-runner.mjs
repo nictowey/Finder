@@ -5,11 +5,13 @@ import { pathToFileURL } from 'node:url';
 import { launchHostedReadOnlyBrowser } from './discogs_hosted_browser_runtime.mjs';
 import { startBrowserMemoryLogging } from './discogs_browser_memory.mjs';
 import { loadHostedGuestQualification } from './discogs_hosted_guest_qualification.mjs';
+import { loadHostedPaymentMode } from './discogs_hosted_payment_control.mjs';
 
 export async function runHostedBrowser(firefox, {
   launch = launchHostedReadOnlyBrowser,
   startMemoryLogging = startBrowserMemoryLogging,
   loadQualification = loadHostedGuestQualification,
+  loadPaymentMode = loadHostedPaymentMode,
   signals = process,
   report = message => console.log(message),
   reportError = message => console.error(message),
@@ -26,6 +28,13 @@ export async function runHostedBrowser(firefox, {
   };
   try {
     const initialQualification = await loadQualification();
+    const paymentMode = await loadPaymentMode();
+    if (!paymentMode || typeof paymentMode !== 'object' || Array.isArray(paymentMode) ||
+        Object.keys(paymentMode).sort().join('|') !== 'controlEnabled|entryGate|liveGate' ||
+        Object.values(paymentMode).some(value => typeof value !== 'boolean') ||
+        (paymentMode.entryGate || paymentMode.liveGate) && !paymentMode.controlEnabled) {
+      throw new Error('invalid_payment_runtime_mode');
+    }
     if (initialQualification !== null &&
         (!initialQualification || typeof initialQualification !== 'object' ||
           typeof initialQualification.accessGuard !== 'function' ||
@@ -52,9 +61,12 @@ export async function runHostedBrowser(firefox, {
         } catch { return null; }
       },
     });
-    close = guestPreparation === null ?
+    const runtimeOptions = {};
+    if (guestPreparation !== null) runtimeOptions.guestPreparation = guestPreparation;
+    if (paymentMode.controlEnabled) runtimeOptions.paymentRuntime = paymentMode;
+    close = Object.keys(runtimeOptions).length === 0 ?
       await launch(firefox, '/profile', '/bridge/sniper-read-only.sock') :
-      await launch(firefox, '/profile', '/bridge/sniper-read-only.sock', { guestPreparation });
+      await launch(firefox, '/profile', '/bridge/sniper-read-only.sock', runtimeOptions);
     if (stopping) { await cleanup(); return 0; }
     if (!close.isAvailable()) throw new Error('browser_unavailable');
     stopMemoryLogging = startMemoryLogging({ report });
