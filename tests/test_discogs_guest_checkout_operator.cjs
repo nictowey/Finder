@@ -836,7 +836,8 @@ async function unknownFormObservationFixture(directory, outcomeDelayMs = 1000) {
     previous_claim_sha256: granted.message.claim_sha256,
     previous_outcome_sha256: hash(await readFile(join(directory, 'guest-checkout-000004.json'))),
     intent_id: claim.scope.intent_id, ready_ref: claim.ready_ref, scope_digest: claim.provenance.scope_digest,
-    scope: { ...claim.scope }, checkout_document_ref: claim.provenance.checkout_document_ref,
+    release_id: 3422100, listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, max_total: '5.05',
+    checkout_document_ref: claim.provenance.checkout_document_ref,
     current_document_ref: claim.provenance.checkout_document_ref, document_continuity_verified: true,
     current_url: helper.GUEST_CARD_URL, access: 'normal', blank_form_visible: true, card_fields_blank: true,
     payment_controls_untouched: true, displayed_pay_amount: '5.05', displayed_merchant_total: '5.05', currency: 'USD',
@@ -862,6 +863,8 @@ test('a visible-form observation blocks even an otherwise matching prior-no-disp
 test('blank form observation preserves unknown outcome, blocks every retry path and survives fresh process inspection', async () => stateFixture(async directory => {
   const { at, observation } = await unknownFormObservationFixture(directory);
   const before = await audits(directory);
+  assert.ok(before.every(record => !Object.hasOwn(record.payload, 'scope')));
+  assert.equal(Object.hasOwn(observation, 'scope'), false);
   const recorded = await oneShot(directory, observation, { mode: 'observation', now: at + 3000 });
   assert.equal(recorded.message.type, 'form_observation_recorded');
   assert.equal(recorded.message.duplicate, false); assert.equal(recorded.message.init_allowed, false);
@@ -891,7 +894,8 @@ test('form observation rejects wrong claim, stale/replaced document, scope/amoun
   const { at, observation } = await unknownFormObservationFixture(directory);
   for (const patch of [{ previous_claim_sha256: 'a'.repeat(64) }, { previous_outcome_sha256: 'b'.repeat(64) },
     { current_document_ref: randomUUID() }, { checkout_document_ref: randomUUID() }, { document_continuity_verified: false },
-    { scope: { ...observation.scope, listing_id: '1366950911' } }, { displayed_pay_amount: '5.06' },
+    { scope_digest: 'a'.repeat(64) }, { release_id: 3422101 }, { listing_id: '1366950911' },
+    { seller: 'different' }, { quantity: 2 }, { max_total: '5.06' }, { displayed_pay_amount: '5.06' },
     { displayed_merchant_total: '5.06' }, { currency: 'CAD' }, { card_fields_blank: false },
     { payment_controls_untouched: false }, { access: 'challenge' }, { blank_form_visible: false },
     { merchant_order_status: 'none' }, { payment_status: 'unpaid' }, { provider_draft_status: 'none' },

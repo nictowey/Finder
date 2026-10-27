@@ -130,7 +130,8 @@ const FORM_DISPOSITION_KEYS = ['type', 'source', 'previous_claim_sha256', 'previ
   'normal_route_verified', 'current_observed_at', 'order_history_url', 'order_history_archived', 'order_history_status',
   'order_history_count', 'order_history_complete', 'order_history_observed_at', 'reviewed_at', 'expires_at'];
 const FORM_OBSERVATION_KEYS = ['type', 'source', 'previous_claim_sha256', 'previous_outcome_sha256',
-  'intent_id', 'ready_ref', 'scope_digest', 'scope', 'checkout_document_ref', 'current_document_ref',
+  'intent_id', 'ready_ref', 'scope_digest', 'release_id', 'listing_id', 'seller', 'quantity', 'max_total',
+  'checkout_document_ref', 'current_document_ref',
   'document_continuity_verified', 'current_url', 'access', 'blank_form_visible', 'card_fields_blank',
   'payment_controls_untouched', 'displayed_pay_amount', 'displayed_merchant_total', 'currency',
   'observed_at', 'expires_at', 'merchant_order_status', 'payment_status', 'provider_draft_status'];
@@ -202,16 +203,14 @@ function validateFormDisposition(value, state, now = Date.now() / 1000) {
 function validateFormObservation(value, state, now = Date.now() / 1000) {
   const index = state.records.findLastIndex(item => item.value.kind === 'attempt');
   const attempt = state.records[index], outcome = state.records[index + 1], review = state.records[index - 1];
-  const scope = value?.scope;
   if (!metadataOnly(value) || !shape(value, FORM_OBSERVATION_KEYS) ||
       value.type !== 'record_form_observation' || value.source !== 'operator_verified_current_blank_form' ||
       attempt?.value.payload.mode !== 'current_checkout_claim' || review?.value.kind !== 'review' ||
       outcome?.value.kind !== 'outcome' || outcome.value.payload.outcome !== 'unknown' || state.head !== outcome.hash ||
       value.previous_claim_sha256 !== attempt.hash || value.previous_outcome_sha256 !== outcome.hash ||
       ['intent_id', 'ready_ref', 'scope_digest'].some(key => value[key] !== attempt.value.payload[key]) ||
-      guestCardScopeDigest(scope, { now: scope?.issued_at }) !== value.scope_digest ||
-      scope?.intent_id !== value.intent_id || scope?.release_id !== 3422100 || scope?.listing_id !== '1366950910' ||
-      scope?.seller !== 'Mailman21842' || scope?.quantity !== 1 || scope?.currency !== 'USD' || scope?.max_total !== '5.05' ||
+      value.release_id !== 3422100 || value.listing_id !== '1366950910' || value.seller !== 'Mailman21842' ||
+      value.quantity !== 1 || value.max_total !== '5.05' ||
       !uuid(value.checkout_document_ref) || value.checkout_document_ref !== review.value.payload.provenance?.checkout_document_ref ||
       value.current_document_ref !== value.checkout_document_ref || value.document_continuity_verified !== true ||
       value.current_url !== GUEST_CARD_URL || value.access !== 'normal' || value.blank_form_visible !== true ||

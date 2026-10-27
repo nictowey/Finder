@@ -1320,7 +1320,10 @@ has been separately observed. `--record-form-observation` adds a metadata-only
 `form_observation` record after that exact unknown outcome; neither earlier
 record is replaced. It binds original claim/outcome hashes, the original scope
 digest, and the checkout document reference retained in claim provenance. A
-trusted operator must freshly attest same-document continuity without navigation
+new observation records the exact item's scalar identity and capped amount;
+it does not reconstruct historical quote/terms fingerprints absent from the
+ledger. The original claim validator permits only this exact bounded test item.
+A trusted operator must freshly attest same-document continuity without navigation
 or reload, a normal visible blank form, untouched payment controls and matching
 merchant/pay aggregates. A URL match alone cannot establish document continuity.
 The USD binding comes from the merchant aggregate; the bare Pay label does not
