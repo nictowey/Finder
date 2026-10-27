@@ -8,6 +8,7 @@ import argparse
 import json
 import signal
 import threading
+import uuid
 from pathlib import Path
 
 from finder.discogs_hosted_scheduler import (
@@ -28,41 +29,56 @@ def run(
     """Run until signaled or a fail-closed scheduler pause; never resume it."""
     if not allowed_releases:
         raise ValueError("A live worker needs an explicit exact-release scope.")
+    if type(wait_seconds) is not int or not 1 <= wait_seconds <= 60:
+        raise ValueError("A bounded worker heartbeat interval is required.")
     reader = HostedSocketReader(socket_path, lease_read=True)
     scheduler = HostedReleaseScheduler(database, reader, allowed_releases=allowed_releases)
+    run_id = uuid.uuid4().hex
+
+    def stopped(reason):
+        try:
+            scheduler.worker_stopped(run_id, reason)
+        except (OSError, RuntimeError, ValueError):
+            reason = "worker_status_unavailable"
+        return {"status": "stopped", "reason": reason, "purchase_allowed": False}
+
     try:
-        scheduler.reconcile_outbox()
+        scheduler.worker_started(run_id, allowed_releases)
     except (OSError, RuntimeError, ValueError):
         return {
             "status": "stopped",
-            "reason": "outbox_reconciliation_failed",
+            "reason": "worker_status_unavailable",
             "purchase_allowed": False,
         }
+    try:
+        scheduler.reconcile_outbox()
+    except (OSError, RuntimeError, ValueError):
+        return stopped("outbox_reconciliation_failed")
     while not stop.is_set():
+        try:
+            scheduler.worker_heartbeat(run_id)
+        except (OSError, RuntimeError, ValueError):
+            return stopped("worker_status_unavailable")
         state = scheduler.health()
         if state["paused"] or state["kill_switch"] or not state["reader_ready"]:
-            return {
-                "status": "stopped",
-                "reason": (
-                    "schedule_paused"
-                    if state["paused"]
-                    else "kill_switch"
-                    if state["kill_switch"]
-                    else "reader_unavailable"
-                ),
-                "purchase_allowed": False,
-            }
-        result = scheduler.tick()
+            return stopped(
+                "schedule_paused"
+                if state["paused"]
+                else "kill_switch"
+                if state["kill_switch"]
+                else "reader_unavailable"
+            )
+        result = scheduler.tick(expected_worker_run_id=run_id)
+        try:
+            scheduler.worker_heartbeat(run_id, tick_status=result["status"])
+        except (OSError, RuntimeError, ValueError):
+            return stopped("worker_status_unavailable")
         if result["status"] == "blocked":
             state = scheduler.health()
             if state["paused"]:
-                return {
-                    "status": "stopped",
-                    "reason": state["last_error"],
-                    "purchase_allowed": False,
-                }
+                return stopped(state["last_error"] or "read_stopped")
         stop.wait(wait_seconds)
-    return {"status": "stopped", "reason": "signal", "purchase_allowed": False}
+    return stopped("signal")
 
 
 def main(argv=None):

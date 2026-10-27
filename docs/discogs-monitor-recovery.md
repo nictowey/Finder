@@ -1,12 +1,11 @@
-# Read-only monitor recovery: bounded trial complete
+# Read-only monitor recovery: bounded worker trial complete
 
-The fixed bridge code from `49428f4918fdf0a260c0b72ffe2500b60087686a` is
-deployed on the existing private OVH browser. Nic confirmed the normal 56 Nights
-offers page in noVNC, and one fresh, boot-bound operator grant was consumed.
-The existing hosted `/bridge/access-stopped` file stays in place. Ordinary
-reads, the recurring worker, cart writes and order submission remain
-unavailable. The historical
-`access_restricted` response did not retain whether it came from HTTP 401/403,
+The separate hosted worker was installed and completed six of six scheduled
+read-only checks under a bounded browser lease on October 26, 2026 UTC. It was
+then paused and stopped. The three exact-release monitoring targets remain
+saved; continuous monitoring is not active. The existing hosted
+`/bridge/access-stopped` file stays in place, and buying remains disabled. The
+historical `access_restricted` response did not retain whether it came from HTTP 401/403,
 a redirect, or a challenge. The old marker is history, not proof of a current
 challenge. This procedure does not rewrite that history.
 
@@ -22,10 +21,12 @@ The fixed reader returned distinct listing IDs and complete first-page ranges
 matching each displayed total. The owner-only audit contains three
 `trial_observed` events, one `trials_complete_review_required` event and no
 `trial_stopped` event. No challenge or denial appeared during these reads.
-The original stop marker retained its prior modification time; the private
-web service still reports zero saved targets, a paused schedule, no live listing
-reader and order submission disabled. A complete single snapshot for each ID
-proves only bounded acquisition at that time. It does not prove change detection,
+The original stop marker retained its prior modification time. At that early
+checkpoint, the private web service reported zero saved targets, a paused
+schedule, no live listing reader and order submission disabled. Targets were
+saved and a separate bounded worker trial ran later, as described below. A
+complete single snapshot for each ID proves only bounded acquisition at that
+time. It does not prove change detection,
 restart recovery, future access or permission for recurring collection.
 The one-time bridge responses were summarized as counts, ranges and listing IDs
 for this review; their full row bodies were not saved as a replay bundle or
@@ -33,7 +34,11 @@ ingested into the user's rules database. Audit files hold only safe status
 metadata. Reconstructing missing fields would be synthetic, not a replay of
 live observations.
 
-## State transition
+## Original one-time recovery procedure
+
+The original recovery used bridge revision
+`49428f4918fdf0a260c0b72ffe2500b60087686a`. Its one-use grant and three-read
+trial were distinct from the later six-check worker lease.
 
 1. **Stopped.** An operator with access to the private noVNC view asks the owner
    to open one of releases `28720177`, `5520534`, or `13053315` normally and to
@@ -69,9 +74,39 @@ redirects and challenge titles have distinct codes; no URL, cookie, profile,
 page text or account data is logged. A new actual restriction stops the trial.
 Missing diagnostics stay unknown rather than being called Cloudflare.
 
-## Criteria before any later monitoring transition
+## Bounded hosted worker result, October 26, 2026 UTC
 
-The three trial observations and the private socket boundary passed their
+A later reviewed browser update and fresh owner verification enabled an explicit
+read-only lease for the same three release IDs. The lease allowed six attempts
+over two hours, with at least 15 minutes between global request slots and no
+overlapping reads. The separately installed worker completed all six scheduled
+checks. Successive observations of the same releases exercised change detection;
+changed listings were observed and unchanged observations suppressed duplicate
+change events. These were live worker results, separate from the earlier
+one-time counts of 19, 23 and 21 offers.
+
+The scheduler was explicitly paused and the worker stopped after the bounded
+trial. No lease was automatically renewed, and the historical access-stop record
+and audit history were preserved. This document does not reconstruct later offer
+counts, event counts, precise read times or old/new price amounts that are not
+retained here.
+
+Monitoring targets for `28720177`, `5520534` and `13053315` were saved. The
+per-release editor also persisted a **disabled** 56 Nights rule: maximum USD
+10.00 all-in, including shipping, tax and mandatory fees; minimum media VG+ and
+sleeve VG+; no seller-rating or feedback-count minimum. Unknown delivered totals
+cannot qualify. Saving this rule did not authorize or enable a purchase.
+
+The completed lease demonstrates bounded scheduling and successive-snapshot
+handling. It does not establish continuously fresh inventory or unattended
+checkout. The global request spacing also differs from snapshot freshness: three
+targets may be revisited roughly every 45 minutes, while the separate freshness
+flag expires after five minutes. A retained snapshot is an observation, not a
+guarantee of current availability.
+
+## Access basis and remaining monitoring validation
+
+The one-time observations, later worker trial and private socket boundary passed their
 bounded checks. Discogs' current
 [Terms of Service](https://support.discogs.com/hc/en-us/articles/360009334333-Terms-of-Service)
 license excludes collection and use of product listings, descriptions and
@@ -84,18 +119,19 @@ restriction or prove the site permits the collection. The separate
 also limit inconsistent automated access, but the site Terms apply directly to
 the proposed hosted browser route.
 
-The next technical transition uses an **explicit bounded read-only lease**:
-only the three supplied exact releases, expiration and request caps, a
-15-minute global request slot, no overlapping reads, durable stop on a fresh
-challenge or denial, and revocation without erasing the historical stop record.
-The lease has been implemented and tested offline, but is not deployed or
-activated. Saving targets alone cannot clear the old stop or start the worker.
+The bounded lease was deployed and exercised. Its request budget is spent and
+cannot authorize another bridge read. Any later monitoring activation must retain exact-release
+scope, expiration and request caps, the global request spacing, single-flight
+access, durable stop on a fresh challenge or denial, and revocation without
+erasing historical records. Saving targets alone cannot clear the old stop or
+start the worker.
 
-Technical validation after an allowed lease would still need at least two
-successive live snapshots of the same release to prove new, changed,
-disappeared and reappeared listing handling; an incomplete/failed pass must
-preserve the prior baseline. Restart the actual hosted worker to prove durable
-cadence, deduplication and recovery. Exercise a legitimately accessible
+The live worker trial supplied successive snapshots, observed changes and
+duplicate suppression. Live disappearance/reappearance handling and preservation
+of the prior baseline after incomplete or failed reads remain unverified.
+Restart the actual hosted worker to prove durable cadence, deduplication and
+recovery; later browser restarts while monitoring is stopped do not establish
+that behavior. Exercise a legitimately accessible
 multi-page release to verify hosted next-page traversal and drift handling:
 the three live test releases each fit on one page, while multi-page traversal
 has only offline fixture coverage. These checks must retain read-only and
@@ -108,9 +144,10 @@ observations: `test_restart_cadence_baseline_new_reappeared_and_duplicate_suppre
 `test_socket_to_durable_baseline_is_an_integrated_offline_dry_run` in
 `tests/test_discogs_hosted_scheduler.py`, plus initial/unchanged, reappearance
 and partial-baseline cases in `tests/test_discogs_release_snapshots.py`.
-Those tests passed in the project's earlier full local suite and the deployed
-revision's GitHub CI. They do not supply successive live observations, a
-running hosted worker, or live multi-page coverage.
+Those tests passed in the project's earlier full local suite and GitHub CI.
+Their synthetic restart and failure coverage does not replace the remaining
+hosted validation or live multi-page coverage.
 
-No action here places a record order or payment. There are no saved production
-monitoring targets, and the hosted schedule remains paused.
+No monitoring action here placed a record order or payment. Three monitoring
+targets and the disabled 56 Nights rule are saved. The hosted schedule remains
+paused and its worker stopped.

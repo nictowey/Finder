@@ -10,6 +10,7 @@ import { collectCartDom } from './discogs_cart_inspector.mjs';
 import { inspectCurrentEnhancedCheckout } from './discogs_enhanced_checkout.mjs';
 import * as checkoutOperator from './discogs_guest_checkout_operator.mjs';
 import { createEnhancedCheckoutCoordinator, waitForEnhancedCheckoutCoordinatorSettlement } from './discogs_enhanced_checkout_coordinator.mjs';
+import { sanitizeGuestPayMetadata } from './discogs_enhanced_payment_quote.mjs';
 import { guestCardScopeDigest, validateGuestCardInspection, revalidateGuestCardClick,
   GUEST_CARD_URL, GUEST_CARD_SELECTOR } from './discogs_guest_card_prepare.mjs';
 
@@ -1733,6 +1734,7 @@ export async function inspectHostedEnhancedPaymentReadiness(context, request, op
     const profileNames = ['provider_final_quote_dom', 'provider_quote_frame_association', 'provider_delivery_destination',
       'provider_terms', 'verified_pay_control', 'verified_selected_payment_method', 'merchant_positive_order_dom'];
     const frames = quote.provenance?.frame_association;
+    const guestPayMetadata = sanitizeGuestPayMetadata(quote.guest_pay_metadata);
     const allGates = gateNames.every(key => quote.gates?.[key] === true);
     const expectedMissing = gateNames.filter(key => quote.gates?.[key] !== true);
     const expectedProfiles = [...(!quote.gates?.provider_dom_qualification ? ['provider_final_quote_dom'] : []),
@@ -1746,7 +1748,7 @@ export async function inspectHostedEnhancedPaymentReadiness(context, request, op
         quote.destination_verified !== (allGates && quote.gates.provider_delivery_binding) ||
         quote.provider_terms_verified !== (allGates && quote.gates.provider_terms) ||
         !sameSet(quote.missing_evidence, expectedMissing) || !sameSet(report.missing_profiles, expectedProfiles) ||
-        !frames || ![0, 1, 2].includes(frames.known_buttons_count) || typeof frames.known_buttons_associated !== 'boolean' ||
+        !guestPayMetadata || !frames || ![0, 1, 2].includes(frames.known_buttons_count) || typeof frames.known_buttons_associated !== 'boolean' ||
         typeof frames.payment_quote_frame_qualified !== 'boolean' || frames.known_buttons_associated && frames.known_buttons_count !== 1) fail('payment_inspection_unverified');
     return { ...stopped('enhanced_payment_readiness_observed'), status: 'observed',
       initialization_allowed: false, checkout_navigation_issued: false, card_initialization_issued: false,
@@ -1759,6 +1761,7 @@ export async function inspectHostedEnhancedPaymentReadiness(context, request, op
         gates: Object.fromEntries(gateNames.map(key => [key, quote.gates?.[key] === true])),
         missing_evidence: (quote.missing_evidence || []).filter(key => gateNames.includes(key)),
         missing_profiles: (report.missing_profiles || []).filter(key => profileNames.includes(key)),
+        guest_pay_metadata: guestPayMetadata,
         frame_association: { known_buttons_count: frames.known_buttons_count,
           known_buttons_associated: frames.known_buttons_associated, payment_quote_frame_qualified: frames.payment_quote_frame_qualified } } };
   } catch (error) { return stopped(error?.[STOP] || 'payment_inspection_unavailable'); }

@@ -1,11 +1,12 @@
-# Hosted exact-release scheduler: disabled integration
+# Hosted exact-release scheduler: bounded trial complete, paused
 
 `HostedReleaseScheduler` is an opt-in, single-read tick around a fixed
 read-only Unix-socket action and `ReleaseSnapshots.ingest`. A running worker
 uses `operator_monitor_lease_read`, which remains blocked without a scoped
-browser lease. The
-`finder-monitor` entry point wires the private socket reader to a durable worker
-loop, but is **not installed or running as a VPS service**. Without `--run` it
+browser lease. The `finder-monitor` entry point wires the private socket reader
+to a durable worker loop. Its separate VPS service was installed and completed
+a six-check bounded live trial on October 26, 2026 UTC; it was then paused and
+stopped. It is not currently polling. Without `--run` it
 only prints health. Even with `--run` it exits if the schedule is paused, the
 kill switch is active, or the reader is unavailable; it never resumes a schedule.
 `--run` also requires one or more explicit `--release-id` values and cannot
@@ -101,20 +102,31 @@ The scoped operator-recovery bridge was deployed and completed one read of each
 of releases `28720177`, `5520534` and `13053315` on October 25, 2026. Each
 returned a complete single-page observation, as recorded in
 [discogs-monitor-recovery.md](discogs-monitor-recovery.md). The historical
-marker remains, and neither the recurring worker nor the purchase path was
-activated. Repeated live-monitoring behavior remains unverified. The site
+marker remains. These three one-time reads preceded the separate six-check
+worker trial; their 19, 23 and 21 offer counts are not the later worker results.
+The purchase path was not activated. The site
 terms concern is disclosed in the recovery document; Nic requested private-use
 monitoring after that disclosure. A new live restriction still stops reads.
 
-The next browser-lease implementation is **offline only**. It requires a fresh
-owner-acknowledged normal marketplace page, keeps the historical stop marker,
-and allows only six attempts across the same three IDs over two hours. A
-durable 15-minute global slot and attempt count survive service restart; the
+The reviewed browser lease was subsequently deployed and activated after fresh
+owner verification of a normal marketplace page. It kept the historical stop
+marker and allowed six attempts across the same three IDs over two hours. The
+installed worker completed all six scheduled checks. Successive observations
+of the same releases detected changed listings and suppressed duplicate change
+events for unchanged observations. No later offer counts, exact event counts or
+price differences are reconstructed here. After the trial, the schedule was
+explicitly paused and the worker stopped without automatic lease renewal.
+
+The durable 15-minute global slot and attempt count survive service restart; the
 boot-bound lease itself must be reverified after restart. It revokes on an
 actual access restriction or uncertain result and honors a reported
-`Retry-After` on 429/503. It has not been installed on the hosted browser or
-activated, and no recurring worker is running. A successful lease trial would
-still not prove uninterrupted long-term availability or checkout.
+`Retry-After` on 429/503. Live hosted-worker restart recovery and live multi-page
+traversal remain unverified; their fixture coverage is not a live result. The
+completed trial does not prove uninterrupted long-term availability or checkout.
+Three monitoring targets (`28720177`, `5520534`, `13053315`) remain saved. The
+56 Nights rule is also persisted but disabled: USD 10.00 maximum all-in, media
+VG+ and sleeve VG+, with no seller-rating or feedback-count minimum. Unknown
+delivered totals cannot qualify, and buying remains disabled.
 
 The reviewer applies exact-release and observation freshness, release quantity,
 seller-comment damage, media/sleeve grade, seller reputation and all-in
@@ -130,8 +142,9 @@ rehearsal. The integrated test uses a disposable fixture cart and a
 final quote.
 
 The private server does **not** construct this pipeline, supply a detail
-reader, expose its bundle as an endpoint, or start a candidate worker. Live
-targets remain empty and polling stays paused. No browser navigation or cart
+reader, expose its bundle as an endpoint, or start a candidate worker. The three
+saved ID-only monitoring targets do not supply that missing candidate-worker
+integration, and polling stays paused. No browser navigation or cart
 mutation is triggered by this dry-run code.
 
 For a web-only private test release, verify the exact source path and wait up
@@ -161,8 +174,11 @@ Tests use disposable SQLite and synthetic pages. One integration test runs the
 real socket client through a private temporary Unix socket into the scheduler
 and durable baseline; it has no Discogs session or network. Other tests exercise
 restart cadence, nonoverlap, pause/revision races, incomplete pages and failure
-backoff. Runtime activation is still blocked by Discogs' site terms for automated
-listing collection. The owner approved a fixed-read private browser handoff;
+backoff. Discogs' site-terms concern for automated listing collection remains
+disclosed; no express written consent is verified. After that disclosure the
+owner requested private-use monitoring, and the bounded worker trial ran. That
+decision does not clear a future actual access restriction. The owner approved
+a fixed-read private browser handoff;
 the dedicated group-restricted Unix socket can connect the host-side reader
 without exposing the browser profile. Connection does not start a worker or
 authorize recurring collection.
@@ -173,18 +189,19 @@ The rule editor supports a saved release ID/link, an all-in per-item ceiling,
 separate media and sleeve grades, seller percentage and feedback thresholds,
 and a shipping destination. One-copy claims and contextual rejection of
 disclosed missing or damaged playable media exist in the isolated dry run.
-There are zero saved hosted targets. The hosted service starts no scheduler or
-candidate worker, and purchasing stays disabled.
+Three ID-only monitoring targets and the disabled 56 Nights rule are saved. The
+web service starts no scheduler or candidate worker; the separate monitoring
+worker is stopped and its schedule paused. Purchasing stays disabled.
 
-This is not an operational auto-buyer. The last bounded hosted item read returned
+This is not an operational auto-buyer. An earlier bounded hosted item read returned
 `access_restricted`; the browser bridge stopped. A later ordinary home-page
 visit in the same private viewer displayed Discogs/Cloudflare security
 verification. A later read-only observation of that viewer showed the ordinary
 home page with signed-in account controls. This does not clear the item-route
 restriction or the browser bridge's stop latch. Do not restart the browser,
 repeat the item request, solve a challenge, or use another route to evade the
-restriction. The owner supplied release `4204639` for a new detection test, but
-no live read was attempted while that stop remains; its offer count is unknown.
+restriction. At that checkpoint, the owner supplied release `4204639` for a new
+detection test, but no live read was attempted; its offer count is unknown.
 
 Even after ordinary item access is restored, the hosted detail reader does not
 attach trusted exact-release media quantity or physical pressing evidence, and

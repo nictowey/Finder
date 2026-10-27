@@ -8,7 +8,12 @@ from test_discogs_hosted_scheduler import page, resume, scheduler
 from test_discogs_hosted_scheduler import setup as hosted_setup
 from test_discogs_release_snapshots import listing
 
-from finder.discogs_hosted_scheduler import MIN_INTERVAL, HostedReadError, HostedReleaseScheduler
+from finder.discogs_hosted_scheduler import (
+    MIN_INTERVAL,
+    WORKER_HEARTBEAT_STALE_SECONDS,
+    HostedReadError,
+    HostedReleaseScheduler,
+)
 from finder.discogs_hosted_worker import run
 from finder.discogs_release_snapshots import assemble_release_pages
 from finder.discogs_rules import RulesStore, release_id
@@ -128,6 +133,58 @@ def test_worker_does_not_repeat_after_restart(setup, monkeypatch, tmp_path):
         == "signal"
     )
     assert reads == [123]
+    state = scheduler(database, clock, Reader()).health()["worker"]
+    assert state["status"] == "stopped"
+    assert state["last_tick_status"] == "idle"
+    assert state["stop_reason"] == "signal"
+
+
+def test_separate_worker_heartbeat_is_durable_and_never_claims_process_liveness(setup):
+    database, clock = setup
+    worker = scheduler(database, clock, lambda _: page(clock[0]))
+    assert worker.health()["worker"]["status"] == "never_started"
+    run_id = "a" * 32
+    worker.worker_started(run_id, [123])
+    assert worker.health()["worker"]["status"] == "recent_heartbeat"
+    assert worker.health()["worker"]["scope"] == [123]
+    clock[0] += WORKER_HEARTBEAT_STALE_SECONDS + 1
+    assert (
+        scheduler(database, clock, lambda _: page(clock[0])).health()["worker"]["status"]
+        == "heartbeat_stale"
+    )
+    worker.worker_heartbeat(run_id, tick_status="changed")
+    assert worker.health()["worker"]["last_tick_status"] == "changed"
+    worker.worker_stopped(run_id, "signal")
+    recorded = scheduler(database, clock, lambda _: page(clock[0])).health()["worker"]
+    assert recorded["status"] == "stopped"
+    assert recorded["stop_reason"] == "signal"
+    assert recorded["last_tick_status"] == "changed"
+    with pytest.raises(RuntimeError):
+        worker.worker_heartbeat(run_id)
+
+
+def test_replaced_worker_cannot_claim_a_read_after_its_heartbeat_stales(setup):
+    database, clock = setup
+    reads = []
+
+    def read(release):
+        reads.append(release)
+        return page(clock[0])
+
+    worker = scheduler(database, clock, read)
+    old_run, new_run = "a" * 32, "b" * 32
+    worker.worker_started(old_run, [123])
+    with pytest.raises(RuntimeError):
+        worker.worker_started(new_run, [123])
+    clock[0] += WORKER_HEARTBEAT_STALE_SECONDS + 1
+    worker.worker_started(new_run, [123])
+    resume(worker)
+    assert worker.tick(expected_worker_run_id=old_run)["status"] == "idle"
+    assert reads == []
+    assert worker.tick(expected_worker_run_id=new_run)["status"] == "baseline"
+    assert reads == [123]
+    with pytest.raises(RuntimeError):
+        worker.worker_heartbeat(old_run)
 
 
 def test_multiple_exact_release_targets_have_independent_due_slots(setup):
@@ -199,3 +256,7 @@ def test_access_restriction_pauses_worker_with_explicit_code(setup, monkeypatch,
     result = run(database, tmp_path / "socket", threading.Event(), allowed_releases=[123])
     assert result == {"status": "stopped", "reason": "access_restricted", "purchase_allowed": False}
     assert scheduler(database, clock, RestrictedReader()).health()["paused"] is True
+    assert (
+        scheduler(database, clock, RestrictedReader()).health()["worker"]["stop_reason"]
+        == "access_restricted"
+    )

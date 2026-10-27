@@ -539,6 +539,8 @@ test('fixed payment inspection IPC returns only finite readiness diagnostics and
   try {
     const result = await exchange(socket, paymentInspectionRequest()); assert.equal(result.status, 'observed');
     assert.equal(result.inspection.merchant_total.amount, '5.05'); assert.equal(result.inspection.final_quote_verified, false);
+    assert.equal(result.inspection.guest_pay_metadata.status, 'unsupported_collection');
+    assert.equal(result.inspection.guest_pay_metadata.submit_count, null);
     assert.equal(result.payment_allowed, false); assert.equal(result.final_submission_allowed, false); assert.equal(result.initialization_allowed, false);
     assert.equal(JSON.stringify(result).includes('NEVER_EXPORT'), false); assert.equal(JSON.stringify(result).includes('secret.invalid'), false);
     assert.equal(calls, 1);
@@ -547,6 +549,40 @@ test('fixed payment inspection IPC returns only finite readiness diagnostics and
   const another = await listenHostedGuestPreparation({}, socket, config);
   try { assert.equal((await exchange(socket, paymentInspectionRequest())).code, 'payment_inspection_authorization_required'); assert.equal(calls, 1); }
   finally { await another(); }
+});
+
+test('guest public Pay metadata is bounded observation only and cannot qualify the provider quote', async () => {
+  const socket = path(), config = options(); let metadata;
+  config.authorize = async () => ({ schema: 'discogs_guest_payment_inspection_authorization_v1', mode: 'inspect_enhanced_payment' });
+  config.fixtureOperations.inspect_enhanced_payment = async () => ({ status: 'observed', code: 'enhanced_payment_readiness_observed',
+    inspection: { ...paymentInspectionPayload(), guest_pay_metadata: metadata } });
+  const close = await listenHostedGuestPreparation({}, socket, config);
+  try {
+    metadata = { schema: 'discogs_guest_pay_metadata_v1', status: 'observed', paypal_origin_count: 1,
+      candidate_count: 1, associated_count: 1, eligible_count: 1, unsupported_count: 0, truncated: false,
+      submit_count: 1, submit_visible: true, submit_enabled: true, button_type_matches: true,
+      label: 'Pay $5.05', amount: '5.05', currency: null, same_document_verified: true,
+      frame_associated: true, location: 'paypal_child' };
+    const result = await exchange(socket, paymentInspectionRequest());
+    assert.equal(result.code, 'enhanced_payment_readiness_observed');
+    assert.deepEqual(result.inspection.guest_pay_metadata, metadata);
+    assert.equal(result.inspection.final_quote_verified, false);
+    assert.equal(result.inspection.frame_association.payment_quote_frame_qualified, false);
+    assert.equal(result.inspection.payment_enabled, false);
+    assert.equal(result.payment_allowed, false);
+    for (const mutate of [value => { value.card_value = 'NEVER_EXPORT'; },
+      value => { value.source_url = 'https://www.paypal.com/form?token=NEVER_EXPORT'; },
+      value => { value.label = 'Pay $5.05 NEVER_EXPORT'; }, value => { value.amount = '5.06'; },
+      value => { value.location = 'NEVER_EXPORT'; }, value => { value.candidate_count = 3; },
+      value => { value.currency = 'USD'; }, value => { value.frame_associated = false; }]) {
+      const original = structuredClone(metadata); mutate(metadata);
+      const rejected = await exchange(socket, paymentInspectionRequest());
+      assert.equal(rejected.code, 'payment_inspection_unverified');
+      assert.equal(Object.hasOwn(rejected, 'inspection'), false);
+      assert.equal(JSON.stringify(rejected).includes('NEVER_EXPORT'), false);
+      metadata = original;
+    }
+  } finally { await close(); }
 });
 
 test('payment inspection sanitizer rejects malformed, private, contradictory or incomplete diagnostics atomically', async () => {

@@ -6,9 +6,9 @@ const { test, before } = require('node:test');
 const { JSDOM } = require('jsdom');
 const { randomUUID } = require('node:crypto');
 let collectEnhancedPaymentQuoteDom, inspectCurrentEnhancedPaymentQuote,
-  parseEnhancedPaymentQuoteEvidence, waitForEnhancedPaymentQuoteSettlement;
+  parseEnhancedPaymentQuoteEvidence, waitForEnhancedPaymentQuoteSettlement, collectGuestPayControlMetadataDom, sanitizeGuestPayMetadata;
 before(async () => ({ collectEnhancedPaymentQuoteDom, inspectCurrentEnhancedPaymentQuote,
-  parseEnhancedPaymentQuoteEvidence, waitForEnhancedPaymentQuoteSettlement } = await import('../scripts/discogs_enhanced_payment_quote.mjs')));
+  parseEnhancedPaymentQuoteEvidence, waitForEnhancedPaymentQuoteSettlement, collectGuestPayControlMetadataDom, sanitizeGuestPayMetadata } = await import('../scripts/discogs_enhanced_payment_quote.mjs')));
 const URL = 'https://www.discogs.com/marketplace/checkout';
 const HTML = `<!doctype html><html><head><title>Checkout</title></head><body>
   <h1>Checkout from ExampleSeller</h1><div class="_checkout-summary__content_fixture">
@@ -35,6 +35,8 @@ function fixture(html = HTML) {
     evaluateHandle: async () => { calls.push('document_handle'); return currentDocument; },
     evaluate: async (fn, arg) => {
       if (fn === collectEnhancedPaymentQuoteDom) { calls.push('merchant_dom'); return dom.window.eval(`(${fn.toString()})()`); }
+      if (fn === collectGuestPayControlMetadataDom) { calls.push('public_pay_metadata');
+        return dom.window.eval(`(${fn.toString()})`)({ ...arg, expectedDocument: arg.expectedDocument === currentDocument ? dom.window.document : {} }); }
       calls.push('same_document'); assert.equal(arg, documentHandle); return currentDocument === documentHandle;
     }, frames: () => { calls.push('frames'); return []; }, mainFrame: () => main };
   return { page, calls, dom, main, documentHandle, changeDocument: () => { currentDocument = {}; }, changeUrl: value => { url = value; } };
@@ -89,6 +91,222 @@ test('known buttons-frame metadata is not qualification of a final-payment quote
     assert.equal(result.provenance.frame_association.payment_quote_frame_qualified, false);
     assert.equal(result.final_quote_verified, false); assert.equal(JSON.stringify(result).includes('TOP_SECRET'), false);
   } finally { await waitForEnhancedPaymentQuoteSettlement(f.page); f.dom.window.close(); }
+});
+
+function publicGuestFrame(f, { html = '<button id="submit-button" type="button">Pay $5.05</button>', changeDuringRead = null } = {}) {
+  // Synthetic anatomy only. No particular live provider path has been observed.
+  const dom = new JSDOM(`<html><body>${html}<aside>TOP_SECRET_ADDRESS</aside><input value="TOP_SECRET_PAN"></body></html>`,
+    { url: 'https://www.paypal.com/fixture-unqualified?token=TOP_SECRET#TOP_SECRET', runScripts: 'outside-only' });
+  dom.window.Element.prototype.getClientRects = () => [{ width: 100, height: 20 }];
+  Object.defineProperty(dom.window.HTMLInputElement.prototype, 'value', { get() { throw new Error('Forbidden private input'); } });
+  Object.defineProperty(dom.window.document.querySelector('aside'), 'textContent', { get() { throw new Error('Forbidden address read'); } });
+  for (const method of ['click', 'focus']) dom.window.HTMLElement.prototype[method] = () => { throw new Error('Forbidden effect'); };
+  const handle = { dispose: async () => {} };
+  let visible = true, currentHandle = handle, url = dom.window.location.href, parent = f.main, attached = true;
+  const frame = { url: () => url, parentFrame: () => parent,
+    evaluateHandle: async () => handle,
+    frameElement: async () => ({ dispose: async () => {}, isVisible: async () => visible,
+      contentFrame: async () => attached ? frame : null, ownerFrame: async () => f.main }),
+    evaluate: async (fn, arg) => {
+      if (fn === collectGuestPayControlMetadataDom) {
+        const result = dom.window.eval(`(${fn.toString()})`)({ ...arg, expectedDocument: arg.expectedDocument === currentHandle ? dom.window.document : {} });
+        changeDuringRead?.({ hide: () => { visible = false; }, detach: () => { attached = false; },
+          replace: () => { currentHandle = {}; }, redirect: () => { url = 'https://www.paypal.com/changed'; },
+          reparent: () => { parent = {}; } });
+        return result;
+      }
+      assert.equal(arg, handle); return currentHandle === handle;
+    } };
+  return { frame, dom };
+}
+
+test('fixed public Pay metadata supports merchant main document and never infers currency from the dollar sign', async () => {
+  for (const label of ['Pay $5.05', 'Pay $5.05 USD']) {
+    const f = fixture(HTML.replace('<button>Pay $5.05</button>', `<button id="submit-button" type="button">${label}</button>`));
+    try {
+      const result = await inspectCurrentEnhancedPaymentQuote(f.page);
+      assert.equal(result.guest_pay_metadata.status, 'observed');
+      assert.equal(result.guest_pay_metadata.location, 'merchant_main');
+      assert.equal(result.guest_pay_metadata.amount, '5.05');
+      assert.equal(result.guest_pay_metadata.currency, label.endsWith('USD') ? 'USD' : null);
+      assert.equal(result.guest_pay_metadata.frame_associated, true);
+      assert.equal(result.guest_pay_metadata.same_document_verified, true);
+      assert.deepEqual(result.provider_displayed, { amount: null, currency: null });
+      assert.equal(result.final_quote_verified, false); assert.equal(result.payment_allowed, false);
+      assert.equal(JSON.stringify(result).includes('TOP_SECRET'), false);
+    } finally { await waitForEnhancedPaymentQuoteSettlement(f.page); f.dom.window.close(); }
+  }
+});
+
+test('public PayPal child is associated by actual frame/document identity without qualifying its unknown path or exposing tokens', async () => {
+  const f = fixture(), guest = publicGuestFrame(f);
+  f.page.frames = () => [guest.frame];
+  try {
+    const result = await inspectCurrentEnhancedPaymentQuote(f.page);
+    assert.equal(result.guest_pay_metadata.status, 'observed');
+    assert.equal(result.guest_pay_metadata.location, 'paypal_child');
+    assert.equal(result.guest_pay_metadata.currency, null); assert.equal(result.guest_pay_metadata.eligible_count, 1);
+    assert.equal(result.provenance.frame_association.payment_quote_frame_qualified, false);
+    assert.equal(result.gates.provider_dom_qualification, false);
+    assert.equal(JSON.stringify(result).includes('TOP_SECRET'), false);
+    assert.equal(JSON.stringify(result).includes('fixture-unqualified'), false);
+  } finally { await waitForEnhancedPaymentQuoteSettlement(f.page); guest.dom.window.close(); f.dom.window.close(); }
+});
+
+test('readable scoped documents with no fixed Pay control differ from unsupported public-control anatomy and legacy absence', async () => {
+  const noControl = fixture();
+  try { assert.equal((await inspectCurrentEnhancedPaymentQuote(noControl.page)).guest_pay_metadata.status, 'no_eligible_frame'); }
+  finally { await waitForEnhancedPaymentQuoteSettlement(noControl.page); noControl.dom.window.close(); }
+  assert.equal(sanitizeGuestPayMetadata(undefined).status, 'unsupported_collection');
+  assert.equal(sanitizeGuestPayMetadata(null).status, 'unsupported_collection');
+  for (const html of ['<button id="submit-button" type="submit">Pay $5.05</button>',
+    '<button id="submit-button" type="button">PRIVATE</button>',
+    '<button id="submit-button" type="button" hidden>Pay $5.05</button>',
+    '<button id="submit-button" type="button">Pay $5.05<input value="PRIVATE"></button>']) {
+    const f = fixture(), guest = publicGuestFrame(f, { html }); f.page.frames = () => [guest.frame];
+    try { const result = await inspectCurrentEnhancedPaymentQuote(f.page);
+      assert.equal(result.guest_pay_metadata.status, 'unsupported_collection'); assert.equal(result.guest_pay_metadata.label, null);
+    } finally { await waitForEnhancedPaymentQuoteSettlement(f.page); guest.dom.window.close(); f.dom.window.close(); }
+  }
+});
+
+test('duplicate eligible public controls and bounded excess frames cannot be reported as a unique associated Pay control', async () => {
+  for (const count of [2, 3]) {
+    const f = fixture(), guests = Array.from({ length: count }, () => publicGuestFrame(f));
+    f.page.frames = () => guests.map(item => item.frame);
+    try { const result = await inspectCurrentEnhancedPaymentQuote(f.page);
+      assert.equal(result.guest_pay_metadata.status, count === 2 ? 'ambiguous' : 'unsupported_collection');
+      assert.equal(result.guest_pay_metadata.truncated, count === 3);
+      assert.equal(result.guest_pay_metadata.label, null); assert.equal(result.guest_pay_metadata.frame_associated, false);
+    } finally { await waitForEnhancedPaymentQuoteSettlement(f.page); guests.forEach(item => item.dom.window.close()); f.dom.window.close(); }
+  }
+});
+
+test('guest frame visibility, ownership, URL and document mutations during public read invalidate metadata association', async () => {
+  for (const key of ['hide', 'detach', 'replace', 'redirect', 'reparent']) {
+    const f = fixture(), guest = publicGuestFrame(f, { changeDuringRead: changes => changes[key]() });
+    f.page.frames = () => [guest.frame];
+    try { const result = await inspectCurrentEnhancedPaymentQuote(f.page);
+      assert.equal(result.guest_pay_metadata.status, 'unsupported_collection');
+      assert.equal(result.guest_pay_metadata.same_document_verified, false); assert.equal(result.guest_pay_metadata.label, null);
+    } finally { await waitForEnhancedPaymentQuoteSettlement(f.page); guest.dom.window.close(); f.dom.window.close(); }
+  }
+});
+
+test('public metadata validator rejects inconsistent counts, text, currency, associations and private extra fields', () => {
+  const good = { schema: 'discogs_guest_pay_metadata_v1', status: 'observed', paypal_origin_count: 1,
+    candidate_count: 1, associated_count: 1, eligible_count: 1, unsupported_count: 0, truncated: false,
+    submit_count: 1, submit_visible: true, submit_enabled: false, button_type_matches: true,
+    label: 'Pay $5.05', amount: '5.05', currency: null, location: 'paypal_child', same_document_verified: true, frame_associated: true };
+  assert.deepEqual(sanitizeGuestPayMetadata(good), good);
+  for (const change of [{ label: 'TOP_SECRET' }, { amount: '5.06' }, { currency: 'USD' }, { location: 'unknown' },
+    { frame_associated: false }, { candidate_count: 3 }, { candidate_count: 0 }, { associated_count: 0 },
+    { unsupported_count: 2 }, { value: 'TOP_SECRET' }, { same_document_verified: false }]) {
+    assert.equal(sanitizeGuestPayMetadata({ ...good, ...change }), null);
+  }
+});
+
+test('unsupported guest frame APIs and raw read exceptions preserve merchant evidence with explicit unsupported metadata', async () => {
+  for (const method of ['parentFrame', 'frameElement', 'evaluateHandle', 'evaluate']) {
+    const f = fixture(), guest = publicGuestFrame(f); f.page.frames = () => [guest.frame];
+    guest.frame[method] = () => { throw new Error('TOP_SECRET_EXCEPTION'); };
+    try { const result = await inspectCurrentEnhancedPaymentQuote(f.page);
+      assert.equal(result.code, 'provider_final_quote_unverified');
+      assert.equal(result.merchant_displayed.total.amount, '5.05');
+      assert.equal(result.guest_pay_metadata.status, 'unsupported_collection');
+      assert.equal(JSON.stringify(result).includes('TOP_SECRET'), false);
+    } finally { await waitForEnhancedPaymentQuoteSettlement(f.page); guest.dom.window.close(); f.dom.window.close(); }
+  }
+});
+
+test('unknown origins and known buttons documents are never inspected for a guest Pay control', async () => {
+  const f = fixture(); let forbiddenReads = 0;
+  const frame = { url: () => 'https://different.example/unknown?secret=TOP_SECRET',
+    evaluate: () => { forbiddenReads++; throw new Error('Forbidden unknown-origin DOM'); },
+    frameElement: () => { forbiddenReads++; throw new Error('Forbidden unknown-origin association'); } };
+  f.page.frames = () => [frame];
+  try { const result = await inspectCurrentEnhancedPaymentQuote(f.page);
+    assert.equal(forbiddenReads, 0); assert.equal(result.guest_pay_metadata.status, 'no_eligible_frame');
+    assert.equal(result.guest_pay_metadata.paypal_origin_count, 0);
+    // This is absence only within merchant/eligible PayPal candidates, never all unknown origins.
+    assert.equal(result.final_quote_verified, false); assert.equal(JSON.stringify(result).includes('TOP_SECRET'), false);
+  } finally { await waitForEnhancedPaymentQuoteSettlement(f.page); f.dom.window.close(); }
+});
+
+test('cancelled public guest reads drain the actual pending call, reject reentry and issue no later read', async () => {
+  const f = fixture(), guest = publicGuestFrame(f), entered = deferred(), finish = deferred(), controller = new AbortController();
+  const original = guest.frame.evaluate; let sameDocumentReads = 0;
+  guest.frame.evaluate = async (fn, arg) => {
+    if (fn === collectGuestPayControlMetadataDom) { entered.resolve(); await finish.promise; return original(fn, arg); }
+    sameDocumentReads++; return original(fn, arg);
+  };
+  f.page.frames = () => [guest.frame];
+  try {
+    const reading = inspectCurrentEnhancedPaymentQuote(f.page, { signal: controller.signal });
+    await entered.promise; const readsBeforeCancel = sameDocumentReads; controller.abort();
+    assert.equal((await reading).code, 'read_cancelled');
+    assert.equal((await inspectCurrentEnhancedPaymentQuote(f.page)).code, 'quote_read_in_progress');
+    let settled = false; const drainage = waitForEnhancedPaymentQuoteSettlement(f.page).then(() => { settled = true; });
+    await new Promise(resolve => setImmediate(resolve)); assert.equal(settled, false);
+    finish.resolve(); await drainage;
+    assert.equal(sameDocumentReads, readsBeforeCancel);
+  } finally { finish.resolve(); await waitForEnhancedPaymentQuoteSettlement(f.page); guest.dom.window.close(); f.dom.window.close(); }
+});
+
+test('fixed guest collector checks captured document and actual allowed origin before any DOM query, including a last-moment redirect', async () => {
+  for (const when of ['handle', 'evaluation']) {
+    const f = fixture(), guest = publicGuestFrame(f); let forbiddenQueries = 0;
+    f.page.frames = () => [guest.frame];
+    const query = guest.dom.window.document.querySelectorAll.bind(guest.dom.window.document);
+    guest.dom.window.document.querySelectorAll = selector => {
+      if (guest.dom.window.location.origin !== 'https://www.paypal.com') forbiddenQueries++;
+      return query(selector);
+    };
+    const handle = guest.frame.evaluateHandle, evaluate = guest.frame.evaluate;
+    guest.frame.url = () => guest.dom.window.location.href;
+    if (when === 'handle') guest.frame.evaluateHandle = async () => {
+      const result = await handle(); guest.dom.reconfigure({ url: 'https://unknown.example/private?token=TOP_SECRET' }); return result;
+    };
+    else guest.frame.evaluate = async (fn, arg) => {
+      if (fn === collectGuestPayControlMetadataDom) guest.dom.reconfigure({ url: 'https://unknown.example/private?token=TOP_SECRET' });
+      return evaluate(fn, arg);
+    };
+    try { const result = await inspectCurrentEnhancedPaymentQuote(f.page);
+      assert.equal(forbiddenQueries, 0); assert.equal(result.guest_pay_metadata.status, 'unsupported_collection');
+      assert.equal(result.guest_pay_metadata.label, null); assert.equal(result.final_quote_verified, false);
+    } finally { await waitForEnhancedPaymentQuoteSettlement(f.page); guest.dom.window.close(); f.dom.window.close(); }
+  }
+  const f = fixture(); let queried = 0;
+  f.dom.window.document.querySelectorAll = () => { queried++; throw new Error('must not query replaced document'); };
+  try {
+    const result = f.dom.window.eval(`(${collectGuestPayControlMetadataDom.toString()})`)({ role: 'merchant_main', expectedDocument: {} });
+    assert.equal(result.status, 'unsupported_collection'); assert.equal(queried, 0);
+  } finally { f.dom.window.close(); }
+});
+
+test('child metadata is revalidated after an awaited destination matcher, including navigation or detachment while matcher is pending', async () => {
+  for (const change of ['navigate', 'detach']) {
+    const f = fixture(), guest = publicGuestFrame(f), entered = deferred(), finish = deferred();
+    f.page.frames = () => [guest.frame];
+    const originalElement = guest.frame.frameElement;
+    let detached = false;
+    guest.frame.frameElement = async () => { const element = await originalElement();
+      return { ...element, contentFrame: async () => detached ? null : guest.frame }; };
+    guest.frame.url = () => guest.dom.window.location.href;
+    try {
+      const reading = inspectCurrentEnhancedPaymentQuote(f.page, { destinationMatcher: async () => {
+        entered.resolve(); await finish.promise; return null;
+      } });
+      await entered.promise;
+      if (change === 'navigate') guest.dom.reconfigure({ url: 'https://www.paypal.com/changed-after-metadata' });
+      else detached = true;
+      finish.resolve();
+      const result = await reading;
+      assert.equal(result.guest_pay_metadata.status, 'unsupported_collection');
+      assert.equal(result.guest_pay_metadata.frame_associated, false); assert.equal(result.guest_pay_metadata.same_document_verified, false);
+      assert.equal(result.guest_pay_metadata.label, null); assert.equal(result.final_quote_verified, false);
+    } finally { finish.resolve(); await waitForEnhancedPaymentQuoteSettlement(f.page); guest.dom.window.close(); f.dom.window.close(); }
+  }
 });
 
 test('trusted opaque merchant destination match cannot prove provider delivery with default Ship to billing checked', async () => {

@@ -11,7 +11,10 @@ const denyDispatcher={dispatch(){throw new Error('External resource forbidden.')
 const clone=value=>structuredClone(value);
 let saved={revision:0,targets:[],owned:[],mode:'dry_run',purchasing_enabled:false,capabilities:{listing_read_enabled:false},
   in_app_alerts:{channel:'in_app_only',messages_sent:0,purchase_allowed:false,control_revision:null,pending:[]},
-  hosted_schedule:{paused:true,monitor_releases:[],targets:[],reader_ready:false,purchase_allowed:false}};
+  hosted_schedule:{paused:true,monitor_releases:[],targets:[],reader_ready:false,purchase_allowed:false,
+    reviewed_lease_release_ids:[28720177,5520534,13053315],
+    worker:{status:'never_started',scope:[],started_at:null,last_heartbeat_at:null,
+      last_tick_at:null,last_tick_status:null,stopped_at:null,stop_reason:null}}};
 let mutationFailure=null, readFailure=null, failReadAfterSave=false, delayed=null;
 let evaluation={eligible_for_review:false,reasons:['Pressing evidence is unknown.'],total:null,purchase_allowed:false};
 let listingFailure=null;
@@ -166,15 +169,33 @@ function clickText(text) {
   assert.deepEqual(saved.hosted_schedule.monitor_releases.map(row=>row.release_id),[5520534,13053315,28720177]);
   assert.equal(saved.hosted_schedule.paused,true);
   assert.match(el('hosted-schedule-status').textContent,/paused; 3 monitor-only IDs enabled/);
+  assert.match(el('hosted-schedule-status').textContent,/No separate worker heartbeat has been recorded by this version/);
+  assert.match(el('monitor-releases').textContent,/Reviewed bounded-lease scope: 5520534, 13053315, 28720177/);
+  assert.match(el('monitor-releases').textContent,/expiry and remaining reads are unverified here/);
+  saved.hosted_schedule.monitor_releases.push({release_id:999,enabled:false});
+  el('refresh').click();await settled(w);
+  assert.match(el('monitor-releases').textContent,/reviewed bounded-lease code does not cover this release/);
+  saved.hosted_schedule.monitor_releases=saved.hosted_schedule.monitor_releases.filter(row=>row.release_id!==999);
   saved.hosted_schedule.paused=false;saved.hosted_schedule.kill_switch=false;
+  saved.hosted_schedule.worker={status:'recent_heartbeat',scope:[28720177,5520534,13053315],
+    started_at:1792975000,last_heartbeat_at:1792975096,last_tick_at:1792975096,
+    last_tick_status:'baseline',stopped_at:null,stop_reason:null};
   saved.hosted_schedule.targets=[{release_id:5520534,last_attempt:1792975096,
     last_status:'baseline',failures:0,next_due:1792975996}];
   el('refresh').click();await settled(w);
   assert.match(el('hosted-schedule-status').textContent,/Last stored complete read: release 5520534, baseline/);
-  assert.match(el('hosted-schedule-status').textContent,/does not verify worker liveness/);
+  assert.match(el('hosted-schedule-status').textContent,/recent heartbeat/);
+  assert.match(el('hosted-schedule-status').textContent,/not independent proof/);
   assert.doesNotMatch(el('hosted-schedule-status').textContent,/this app has no browser reader/);
-  saved.hosted_schedule.paused=true;saved.hosted_schedule.kill_switch=true;
+  saved.hosted_schedule.worker={...saved.hosted_schedule.worker,status:'heartbeat_stale'};
   el('refresh').click();await settled(w);
+  assert.match(el('hosted-schedule-status').textContent,/heartbeat is stale/);
+  saved.hosted_schedule.paused=true;saved.hosted_schedule.kill_switch=true;
+  saved.hosted_schedule.worker={...saved.hosted_schedule.worker,status:'stopped',
+    stopped_at:1792975200,stop_reason:'schedule_paused'};
+  el('refresh').click();await settled(w);
+  assert.match(el('hosted-schedule-status').textContent,/worker stopped/);
+  assert.match(el('hosted-schedule-status').textContent,/schedule paused/);
   assert.equal(posts('/api/listing').length,0);
   const pause=[...d.querySelectorAll('.monitor-release-toggle')][0];pause.click();await settled(w);
   assert.equal(saved.hosted_schedule.monitor_releases[0].enabled,false);

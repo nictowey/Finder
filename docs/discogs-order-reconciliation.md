@@ -233,3 +233,36 @@ fresh current-form/document evidence. It persisted the returned opaque reference
 before later checks. The socket regression retains the actual minimal response
 shape with a clearly synthetic replacement UUID; no payment or address values are
 part of that fixture.
+
+### Bounded guest-control metadata extension (not activated)
+
+The next read-only collector inspects only the observed `#submit-button` public
+control in the merchant main document and bounded visible, directly owned
+`https://www.paypal.com` child frames other than the known `/smart/buttons`
+frame. It does not guess a guest URL path or export any URL, query or fragment.
+The fixed collector reads the control's public Pay label, type, visibility and
+disabled state, with same-document and frame-ownership checks. No input value,
+address, hidden application state, token or network payload is collected.
+
+The `guest_pay_metadata` diagnostic distinguishes `unsupported_collection`,
+`no_eligible_frame`, `ambiguous` and a uniquely observed control. Missing metadata
+from the older `provider: null` producer means unsupported collection; it is not
+evidence that a live guest frame is missing. A no-eligible result refers only to
+the bounded allowlist. A `$` label alone leaves currency unknown. Even observed
+Pay metadata does not qualify a final quote, delivery, selected method, terms,
+receipt, or payment dispatch. Production Pay remains hard-disabled.
+
+This code is not yet active in the existing browser. The running process holds
+its imported modules and resident Page in memory; uploading replacements or
+reloading its local policy cannot install a new collector. No supported hot-load
+route exists. A browser-service restart would discard the initialized form, so
+this implementation pass does not activate it, dismiss the form or restart.
+
+For consolidated activation after review and CI: first record a truthful normal
+blank-form disposition with fresh complete All/All merchant history, preserving
+all prior records and uncertainty about provider drafts. Then install the full
+reviewed browser dependency set in one restart with the same profile and retained
+stop/audit files. Restore the form only through a new reviewed bounded no-submit
+preparation and inspect it through a fresh read-only job. Monitoring UI/worker
+code can be installed independently without restarting the browser or starting a
+worker; no deployment or monitoring activation is performed by this document.

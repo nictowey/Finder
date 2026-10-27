@@ -28,6 +28,10 @@ MAX_BACKOFF = 24 * 60 * 60
 MAX_RESPONSE = 262_144
 SHARED_SOCKET = Path("/var/lib/sniper/browser-bridge/sniper-read-only.sock")
 SHARED_OWNER = 10001
+WORKER_HEARTBEAT_STALE_SECONDS = 150
+# The reviewed bounded browser-lease code accepts only these IDs. This is not
+# evidence that a lease exists now, has remaining reads, or has not expired.
+REVIEWED_BROWSER_LEASE_RELEASES = frozenset({28720177, 5520534, 13053315})
 
 
 def _cloud_control(store):
@@ -186,6 +190,16 @@ class HostedReleaseScheduler:
                     CREATE TABLE IF NOT EXISTS discogs_monitor_releases (
                         release_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL
                         CHECK(enabled IN (0,1)));
+                    CREATE TABLE IF NOT EXISTS discogs_hosted_worker_status (
+                        id INTEGER PRIMARY KEY CHECK(id=1),
+                        run_id TEXT NOT NULL,
+                        scope_json TEXT NOT NULL,
+                        started_at REAL NOT NULL,
+                        heartbeat_at REAL NOT NULL,
+                        last_tick_at REAL,
+                        last_tick_status TEXT,
+                        stopped_at REAL,
+                        stop_reason TEXT);
                     CREATE TABLE IF NOT EXISTS cloud_control (
                         id INTEGER PRIMARY KEY CHECK(id=1),
                         killed INTEGER NOT NULL CHECK(killed IN(0,1)),
@@ -258,6 +272,87 @@ class HostedReleaseScheduler:
         finally:
             store.close()
 
+    def worker_started(self, run_id, releases):
+        """Record a separately managed worker run, never start or resume it."""
+        if (
+            not isinstance(run_id, str)
+            or len(run_id) != 32
+            or any(char not in "0123456789abcdef" for char in run_id)
+            or not isinstance(releases, (list, tuple))
+            or not releases
+            or any(type(value) is not int or value < 1 for value in releases)
+        ):
+            raise ValueError("A worker run and exact scope are required.")
+        now = self.clock()
+        store = RulesStore(self.database)
+        try:
+            with store.db:
+                store.db.execute("BEGIN IMMEDIATE")
+                previous = store.db.execute(
+                    "SELECT heartbeat_at,stopped_at FROM discogs_hosted_worker_status WHERE id=1"
+                ).fetchone()
+                if (
+                    previous
+                    and previous[1] is None
+                    and (0 <= now - previous[0] <= WORKER_HEARTBEAT_STALE_SECONDS)
+                ):
+                    raise RuntimeError("Another worker has a recent heartbeat.")
+                store.db.execute(
+                    "INSERT INTO discogs_hosted_worker_status"
+                    "(id,run_id,scope_json,started_at,heartbeat_at) VALUES(1,?,?,?,?) "
+                    "ON CONFLICT(id) DO UPDATE SET run_id=excluded.run_id,"
+                    "scope_json=excluded.scope_json,started_at=excluded.started_at,"
+                    "heartbeat_at=excluded.heartbeat_at,last_tick_at=NULL,"
+                    "last_tick_status=NULL,stopped_at=NULL,stop_reason=NULL",
+                    (run_id, json.dumps(sorted(set(releases))), now, now),
+                )
+        finally:
+            store.close()
+
+    def worker_heartbeat(self, run_id, *, tick_status=None):
+        if tick_status is not None and tick_status not in {
+            "idle",
+            "baseline",
+            "changed",
+            "unchanged",
+            "blocked",
+        }:
+            raise ValueError("Invalid worker tick status.")
+        now = self.clock()
+        store = RulesStore(self.database)
+        try:
+            with store.db:
+                store.db.execute("BEGIN IMMEDIATE")
+                changed = store.db.execute(
+                    "UPDATE discogs_hosted_worker_status SET heartbeat_at=?,"
+                    "last_tick_at=CASE WHEN ? IS NULL THEN last_tick_at ELSE ? END,"
+                    "last_tick_status=COALESCE(?,last_tick_status) "
+                    "WHERE id=1 AND run_id=? AND stopped_at IS NULL",
+                    (now, tick_status, now, tick_status, run_id),
+                ).rowcount
+                if changed != 1:
+                    raise RuntimeError("Worker status ownership changed.")
+        finally:
+            store.close()
+
+    def worker_stopped(self, run_id, reason):
+        if not isinstance(reason, str) or not reason.isidentifier() or len(reason) > 48:
+            raise ValueError("A bounded worker stop reason is required.")
+        now = self.clock()
+        store = RulesStore(self.database)
+        try:
+            with store.db:
+                store.db.execute("BEGIN IMMEDIATE")
+                changed = store.db.execute(
+                    "UPDATE discogs_hosted_worker_status SET heartbeat_at=?,stopped_at=?,"
+                    "stop_reason=? WHERE id=1 AND run_id=? AND stopped_at IS NULL",
+                    (now, now, reason, run_id),
+                ).rowcount
+                if changed != 1:
+                    raise RuntimeError("Worker status ownership changed.")
+        finally:
+            store.close()
+
     def health(self):
         store = RulesStore(self.database)
         try:
@@ -276,6 +371,49 @@ class HostedReleaseScheduler:
                 )
             ]
             control = _cloud_control(store)
+            worker = store.db.execute(
+                "SELECT scope_json,started_at,heartbeat_at,last_tick_at,"
+                "last_tick_status,stopped_at,stop_reason "
+                "FROM discogs_hosted_worker_status WHERE id=1"
+            ).fetchone()
+            if worker is None:
+                worker_health = {
+                    "status": "never_started",
+                    "scope": [],
+                    "started_at": None,
+                    "last_heartbeat_at": None,
+                    "last_tick_at": None,
+                    "last_tick_status": None,
+                    "stopped_at": None,
+                    "stop_reason": None,
+                }
+            else:
+                try:
+                    scope = json.loads(worker[0])
+                    if not isinstance(scope, list) or any(
+                        type(value) is not int or value < 1 for value in scope
+                    ):
+                        scope = []
+                except (TypeError, ValueError):
+                    scope = []
+                age = self.clock() - worker[2]
+                status = (
+                    "stopped"
+                    if worker[5] is not None
+                    else "recent_heartbeat"
+                    if 0 <= age <= WORKER_HEARTBEAT_STALE_SECONDS
+                    else "heartbeat_stale"
+                )
+                worker_health = {
+                    "status": status,
+                    "scope": scope,
+                    "started_at": worker[1],
+                    "last_heartbeat_at": worker[2],
+                    "last_tick_at": worker[3],
+                    "last_tick_status": worker[4],
+                    "stopped_at": worker[5],
+                    "stop_reason": worker[6],
+                }
             return {
                 "paused": bool(row[0]),
                 "revision": row[1],
@@ -286,6 +424,8 @@ class HostedReleaseScheduler:
                 "reader_ready": bool(getattr(self.reader, "ready", lambda: False)()),
                 "worker_scope": sorted(self.allowed_releases) if self.allowed_releases else None,
                 "monitor_releases": monitor_releases,
+                "reviewed_lease_release_ids": sorted(REVIEWED_BROWSER_LEASE_RELEASES),
+                "worker": worker_health,
                 "targets": [
                     dict(
                         zip(
@@ -301,12 +441,24 @@ class HostedReleaseScheduler:
         finally:
             store.close()
 
-    def _claim(self):
+    def _claim(self, *, expected_worker_run_id=None):
         now = self.clock()
         store = RulesStore(self.database)
         try:
             with store.db:
                 store.db.execute("BEGIN IMMEDIATE")
+                if expected_worker_run_id is not None:
+                    owner = store.db.execute(
+                        "SELECT run_id,heartbeat_at,stopped_at "
+                        "FROM discogs_hosted_worker_status WHERE id=1"
+                    ).fetchone()
+                    if (
+                        not owner
+                        or owner[0] != expected_worker_run_id
+                        or owner[2] is not None
+                        or not 0 <= now - owner[1] <= WORKER_HEARTBEAT_STALE_SECONDS
+                    ):
+                        return None
                 state = store.db.execute(
                     "SELECT paused,revision,next_request,lease_until "
                     "FROM discogs_hosted_schedule WHERE id=1"
@@ -387,9 +539,9 @@ class HostedReleaseScheduler:
         finally:
             store.close()
 
-    def tick(self):
+    def tick(self, *, expected_worker_run_id=None):
         """Perform at most one due read; never return purchase eligibility."""
-        claim = self._claim()
+        claim = self._claim(expected_worker_run_id=expected_worker_run_id)
         if claim is None:
             return {"status": "idle", "purchase_allowed": False}
         (

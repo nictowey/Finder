@@ -160,7 +160,9 @@ Saving the same release updates its rules.</p>
 <section class="panel evaluator" aria-labelledby="monitor-release-title">
 <h2 id="monitor-release-title">Monitor-only release IDs</h2>
 <p class="muted">Save an exact Discogs release ID or release link without setting buying rules.
-Saving an ID does not start the hosted browser schedule, create a quote, or permit a purchase.</p>
+Saving an ID does not start the hosted browser schedule, create a quote, or permit a purchase.
+Reviewed bounded-lease code covers only the release IDs shown below; this does not mean a lease is active
+or has remaining reads. Other IDs remain drafts.</p>
 <form id="monitor-release-form"><label for="monitor-release-id">Release ID or link</label>
 <input id="monitor-release-id" required maxlength="500" autocomplete="off" placeholder="e.g. 28720177 or a Discogs release link">
 <div class="actions"><button type="submit" id="save-monitor-release" disabled>Save for read-only monitoring</button></div></form>
@@ -321,12 +323,24 @@ function renderSaved() {
   const last=recorded[0];
   const lastRead=last ? `Last stored complete read: release ${last.release_id}, ${last.last_status} at ${new Date(last.last_attempt*1000).toISOString()}.` :
     'No completed read is recorded.';
+  const worker=hosted?.worker;
+  const workerTime=(value)=>Number.isFinite(value) && value>0 && value<8640000000000 ?
+    new Date(value*1000).toISOString() : 'an unknown time';
+  const workerStatus=worker?.status==='stopped' ?
+    `Separate worker stopped at ${workerTime(worker.stopped_at)}; reason: ${typeof worker.stop_reason==='string' && /^[a-z0-9_]{1,48}$/.test(worker.stop_reason) ? readable(worker.stop_reason) : 'unknown'}.` :
+    worker?.status==='recent_heartbeat' ?
+      `Separate worker reported a recent heartbeat at ${workerTime(worker.last_heartbeat_at)}. This is not independent proof that its process is still running.` :
+    worker?.status==='heartbeat_stale' ?
+      `Separate worker heartbeat is stale; last heard at ${workerTime(worker.last_heartbeat_at)}. Do not assume reads continue.` :
+    worker?.status==='never_started' ?
+      'No separate worker heartbeat has been recorded by this version.' :
+      'Separate worker heartbeat status is unavailable.';
   el('hosted-schedule-status').textContent=hosted?.paused === true ?
-    `Exact-release browser schedule: paused; ${enabledIds} monitor-only IDs enabled. No unattended browser reads. ${lastRead}` :
+    `Exact-release browser schedule: paused; ${enabledIds} monitor-only IDs enabled. No unattended browser reads. ${lastRead} ${workerStatus}` :
     hosted?.paused === false && hosted.kill_switch === true ?
-      `Exact-release schedule is stopped by its safety control. ${lastRead}` :
+      `Exact-release schedule is stopped by its safety control. ${lastRead} ${workerStatus}` :
     hosted?.paused === false && hosted.kill_switch === false ?
-      `Exact-release schedule is resumed for ${enabledIds} monitor-only IDs. ${lastRead} This page does not verify worker liveness or future availability.` :
+      `Exact-release schedule is resumed for ${enabledIds} monitor-only IDs. ${lastRead} ${workerStatus} Browser lease expiry and remaining reads are unverified here; a recent heartbeat does not verify future availability.` :
     'Exact-release browser schedule status is unavailable or unverified.';
   if (targets.length === 0) el('targets').append(node('p', 'No targets yet. Add your first set of rules.', 'empty'));
   targets.forEach((target) => {
@@ -409,6 +423,13 @@ function renderMonitorReleases() {
     box.append(node('p', 'Monitor-only saved state is unavailable. No read has started.', 'error'));
     return;
   }
+  const leaseIds=Array.isArray(hosted.reviewed_lease_release_ids) &&
+    hosted.reviewed_lease_release_ids.length<=20 &&
+    hosted.reviewed_lease_release_ids.every(id=>Number.isSafeInteger(id) && id>0) ?
+      new Set(hosted.reviewed_lease_release_ids) : null;
+  box.append(node('p', leaseIds ?
+    `Reviewed bounded-lease scope: ${[...leaseIds].sort((a,b)=>a-b).join(', ')}. An active lease, its expiry and remaining reads are unverified here. Saving another ID does not extend it.` :
+    'Reviewed browser lease scope is unavailable. Saved IDs are not proof of active coverage.', 'muted'));
   if (!hosted.monitor_releases.length) {
     box.append(node('p', 'No monitor-only releases saved. The schedule remains off.', 'muted'));
     return;
@@ -416,8 +437,10 @@ function renderMonitorReleases() {
   hosted.monitor_releases.forEach((row) => {
     const card=node('article', '', 'target');
     card.append(node('h3', `Release ${row.release_id}`),
-      node('p', row.enabled && hosted.paused === true ? 'Saved for read-only checks; hosted schedule is still paused.' :
-        row.enabled ? 'Enabled for read-only checks; see the last stored result above. Buying is disabled.' :
+      node('p', !leaseIds?.has(row.release_id) ?
+        'Saved as a draft; the reviewed bounded-lease code does not cover this release.' :
+        row.enabled && hosted.paused === true ? 'Saved for read-only checks; hosted schedule is still paused.' :
+        row.enabled ? 'Enabled in saved configuration; an active lease and future reads are not verified here. Buying is disabled.' :
         'Monitor-only checks paused; a separate enabled buying rule may still request reads.', 'muted'));
     const button=node('button', row.enabled ? 'Pause monitor-only checks' : 'Enable monitor-only checks',
       'secondary monitor-release-toggle'); button.type='button';

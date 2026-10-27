@@ -6,6 +6,7 @@ import { createServer } from 'node:net';
 import { chmod, lstat, stat, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import * as guestPreparation from './discogs_hosted_guest_prepare.mjs';
+import { sanitizeGuestPayMetadata } from './discogs_enhanced_payment_quote.mjs';
 
 export const HOSTED_GUEST_SOCKET = '/bridge/sniper-guest-prepare.sock';
 const MAX_REQUEST_BYTES = 16384;
@@ -224,8 +225,9 @@ const READONLY_EFFECTS = ['checkout_navigation_issued', 'navigation_issued', 'ca
   'payment_issued', 'pay_issued', 'payment_invoked', 'pay_invoked', 'approval_invoked', 'capture_invoked', 'dispatch_issued'];
 function sanitizedPaymentInspection(value) {
   const booleans = ['document_bound', 'claim_verified', 'ledger_head_verified', 'final_quote_verified', 'provider_destination_verified', 'provider_terms_verified', 'payment_enabled'];
-  if (!fixedKeys(value, ['schema', ...booleans, 'ledger_state', 'quote_status', 'merchant_subtotal', 'merchant_shipping',
-    'merchant_total', 'selected_shipping_label', 'merchant_destination_match', 'gates', 'missing_evidence', 'missing_profiles', 'frame_association']) ||
+  const fields = ['schema', ...booleans, 'ledger_state', 'quote_status', 'merchant_subtotal', 'merchant_shipping',
+    'merchant_total', 'selected_shipping_label', 'merchant_destination_match', 'gates', 'missing_evidence', 'missing_profiles', 'frame_association'];
+  if (!(fixedKeys(value, fields) || fixedKeys(value, [...fields, 'guest_pay_metadata'])) ||
       value.schema !== 'enhanced_payment_readiness_v1' || value.ledger_state !== 'guest_form_observed_repeat_blocked' ||
       !['unverified', 'observed'].includes(value.quote_status) || booleans.some(key => typeof value[key] !== 'boolean') ||
       value.document_bound !== true || value.claim_verified !== true || value.ledger_head_verified !== true || value.payment_enabled !== false ||
@@ -239,8 +241,11 @@ function sanitizedPaymentInspection(value) {
   const missing = (values, allowed) => Array.isArray(values) && values.length <= allowed.length &&
     values.every(item => allowed.includes(item)) && new Set(values).size === values.length;
   const frame = value.frame_association;
+  // Older collectors supplied provider:null without guest collection support.
+  // An absent diagnostic means unsupported collection, never a missing frame.
+  const guestPayMetadata = sanitizeGuestPayMetadata(value.guest_pay_metadata);
   if (!missing(value.missing_evidence, PAYMENT_INSPECTION_GATES) || !missing(value.missing_profiles, PAYMENT_INSPECTION_PROFILES) ||
-      !fixedKeys(frame, ['known_buttons_count', 'known_buttons_associated', 'payment_quote_frame_qualified']) ||
+      !guestPayMetadata || !fixedKeys(frame, ['known_buttons_count', 'known_buttons_associated', 'payment_quote_frame_qualified']) ||
       ![0, 1, 2].includes(frame.known_buttons_count) || typeof frame.known_buttons_associated !== 'boolean' ||
       typeof frame.payment_quote_frame_qualified !== 'boolean' ||
       value.final_quote_verified && !PAYMENT_INSPECTION_GATES.every(key => value.gates[key]) ||
@@ -261,7 +266,8 @@ function sanitizedPaymentInspection(value) {
     ledger_state: value.ledger_state, quote_status: value.quote_status,
     merchant_subtotal: { ...value.merchant_subtotal }, merchant_shipping: { ...value.merchant_shipping }, merchant_total: { ...value.merchant_total },
     selected_shipping_label: value.selected_shipping_label, merchant_destination_match: value.merchant_destination_match,
-    gates: { ...value.gates }, missing_evidence: [...value.missing_evidence], missing_profiles: [...value.missing_profiles], frame_association: { ...frame } };
+    gates: { ...value.gates }, missing_evidence: [...value.missing_evidence], missing_profiles: [...value.missing_profiles],
+    frame_association: { ...frame }, guest_pay_metadata: guestPayMetadata };
 }
 function safeResult(value, { captureAllowed = false, preflightAllowed = false, paymentInspectionAllowed = false } = {}) {
   if (paymentInspectionAllowed || value?.code === 'enhanced_payment_readiness_observed') {

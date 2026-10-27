@@ -1,6 +1,7 @@
 /** Fixed read-only payment-evidence producer for the already-open enhanced
- * checkout. The merchant summary DOM is observed; guest-payment form anatomy is
- * not qualified. Never reads payment inputs, addresses, account data or values.
+ * checkout. Merchant summary and narrowly public guest Pay-control metadata may
+ * be observed; no provider final-quote profile is qualified. Never reads payment
+ * inputs, addresses, account data or values.
  */
 import { randomUUID } from 'node:crypto';
 import { collectEnhancedCheckoutDom } from './discogs_enhanced_checkout.mjs';
@@ -32,6 +33,170 @@ const number = value => typeof value === 'number' && Number.isFinite(value);
 const money = value => record(value, ['amount', 'currency']) && value.currency === 'USD' &&
   typeof value.amount === 'string' && MONEY.test(value.amount);
 const cents = value => { const [whole, fraction] = value.split('.'); return BigInt(whole) * 100n + BigInt(fraction); };
+const PAY_METADATA_COUNTS = ['paypal_origin_count', 'candidate_count', 'associated_count', 'eligible_count', 'unsupported_count'];
+const PAY_METADATA_NULLS = ['submit_count', 'submit_visible', 'submit_enabled', 'button_type_matches', 'label', 'amount', 'currency', 'location'];
+const emptyPayMetadata = status => ({ schema: 'discogs_guest_pay_metadata_v1', status,
+  ...Object.fromEntries(PAY_METADATA_COUNTS.map(key => [key, 0])), truncated: false,
+  ...Object.fromEntries(PAY_METADATA_NULLS.map(key => [key, null])), same_document_verified: false, frame_associated: false });
+
+/** Public metadata only. This does not qualify a quote, destination or Pay action.
+ * no_eligible_frame concerns the merchant/associated PayPal candidates only;
+ * unknown-origin documents are never inspected or evidence of global absence. */
+export function sanitizeGuestPayMetadata(value) {
+  if (value === undefined || value === null) return emptyPayMetadata('unsupported_collection');
+  if (!record(value, ['schema', 'status', ...PAY_METADATA_COUNTS, 'truncated', ...PAY_METADATA_NULLS,
+    'same_document_verified', 'frame_associated']) || value.schema !== 'discogs_guest_pay_metadata_v1' ||
+      !['observed', 'no_eligible_frame', 'unsupported_collection', 'ambiguous'].includes(value.status) ||
+      PAY_METADATA_COUNTS.some(key => ![0, 1, 2].includes(value[key])) || typeof value.truncated !== 'boolean' ||
+      typeof value.same_document_verified !== 'boolean' || typeof value.frame_associated !== 'boolean') return null;
+  if (value.eligible_count > value.associated_count || value.associated_count > value.candidate_count ||
+      value.unsupported_count > value.associated_count) return null;
+  if (value.status !== 'observed') {
+    if (PAY_METADATA_NULLS.some(key => value[key] !== null) || value.same_document_verified || value.frame_associated ||
+        value.status === 'no_eligible_frame' && (value.eligible_count !== 0 || value.unsupported_count !== 0 || value.truncated || value.associated_count < 1) ||
+        value.status === 'ambiguous' && (value.eligible_count !== 2 || value.unsupported_count !== 0 || value.truncated)) return null;
+  } else {
+    const label = typeof value.label === 'string' ? /^Pay \$((?:0|[1-9][0-9]{0,6})\.[0-9]{2})( USD)?$/u.exec(value.label) : null;
+    if (value.truncated || value.eligible_count !== 1 || value.unsupported_count !== 0 || value.associated_count < 1 ||
+        value.submit_count !== 1 || value.submit_visible !== true || typeof value.submit_enabled !== 'boolean' ||
+        value.button_type_matches !== true || !label || value.amount !== label[1] || value.currency !== (label[2] ? 'USD' : null) ||
+        !['merchant_main', 'paypal_child'].includes(value.location) || !value.same_document_verified || !value.frame_associated) return null;
+  }
+  return { ...value };
+}
+
+/** Self-contained fixed public control inspection. Never reads any input,
+ * arbitrary attributes, page text, hidden content or application state. */
+export function collectGuestPayControlMetadataDom(binding) {
+  const unsupported = count => ({ schema: 'discogs_guest_pay_control_dom_v1', status: 'unsupported_collection',
+    submit_count: count, submit_visible: null, submit_enabled: null, button_type_matches: null, label: null, amount: null, currency: null });
+  try {
+    if (typeof document === 'undefined' || typeof location === 'undefined' ||
+        !binding || binding.expectedDocument !== document ||
+        !['merchant_main', 'paypal_child'].includes(binding.role)) return unsupported(null);
+    const current = new URL(location.href);
+    if (binding.role === 'merchant_main' ? current.href !== 'https://www.discogs.com/marketplace/checkout' :
+      current.origin !== 'https://www.paypal.com' || current.pathname === '/smart/buttons' || current.username || current.password) return unsupported(null);
+    if (document.readyState !== 'complete') return unsupported(null);
+    const matches = document.querySelectorAll('#submit-button');
+    if (matches.length === 0) return { ...unsupported(0), status: 'absent' };
+    if (matches.length !== 1) return unsupported(2);
+    const button = matches[0];
+    if (button.tagName !== 'BUTTON' || button.getAttribute('type') !== 'button') return unsupported(1);
+    const visible = node => {
+      if (!node?.isConnected) return false;
+      for (let current = node; current; current = current.parentElement) {
+        if (current.hidden || current.getAttribute('aria-hidden') === 'true') return false;
+        const style = document.defaultView.getComputedStyle(current);
+        if (style.display === 'none' || ['hidden', 'collapse'].includes(style.visibility) ||
+            style.contentVisibility === 'hidden' || style.opacity === '0') return false;
+      }
+      return [...node.getClientRects()].some(rect => rect.width > 0 && rect.height > 0);
+    };
+    if (!visible(button)) return unsupported(1);
+    let visited = 0, length = 0;
+    const text = (node, depth) => {
+      if (++visited > 12 || depth > 3) throw new Error('unsupported');
+      if (node.nodeType === 3) {
+        length += (node.nodeValue || '').length;
+        if (length > 40) throw new Error('unsupported');
+        return node.nodeValue || '';
+      }
+      if (node.nodeType !== 1 || node !== button && node.tagName !== 'SPAN' || !visible(node)) throw new Error('unsupported');
+      return [...node.childNodes].map(child => text(child, depth + 1)).join('');
+    };
+    const label = text(button, 0).replace(/\s+/gu, ' ').trim();
+    const parsed = /^Pay \$((?:0|[1-9][0-9]{0,6})\.[0-9]{2})( USD)?$/u.exec(label);
+    if (!parsed) return unsupported(1);
+    return { schema: 'discogs_guest_pay_control_dom_v1', status: 'observed', submit_count: 1,
+      submit_visible: true, submit_enabled: !button.disabled && !button.matches(':disabled') && button.getAttribute('aria-disabled') !== 'true',
+      button_type_matches: true, label, amount: parsed[1], currency: parsed[2] ? 'USD' : null };
+  } catch { return unsupported(null); }
+}
+
+async function inspectGuestPayMetadata(page, frames, mainDocument, { read, readHandle }) {
+  const result = emptyPayMetadata('unsupported_collection');
+  const count = value => Math.min(value, 2);
+  const main = await read(() => page.mainFrame()), candidates = [{ target: page, location: 'merchant_main', document: mainDocument }];
+  let originCount = 0, children = 0;
+  for (const frame of frames) {
+    const url = await read(() => frame.url());
+    let parsed; try { parsed = new URL(url); } catch { continue; }
+    if (frame === main || parsed.origin !== 'https://www.paypal.com' || parsed.username || parsed.password) continue;
+    originCount++;
+    if (parsed.pathname === '/smart/buttons') continue;
+    children++;
+    if (children <= 2) candidates.push({ target: frame, location: 'paypal_child', url });
+  }
+  result.paypal_origin_count = count(originCount); result.candidate_count = count(candidates.length);
+  result.truncated = children > 2;
+  const eligible = []; let associated = 0, unsupported = 0, incomplete = false;
+  for (const candidate of candidates) {
+    let counted = false;
+    try {
+    const { target, location } = candidate;
+    if (location === 'paypal_child') {
+      if (await read(() => target.parentFrame()) !== main) continue;
+      const element = await readHandle(() => target.frameElement());
+      if (await read(() => element.isVisible()) !== true || await read(() => element.contentFrame()) !== target ||
+          await read(() => element.ownerFrame()) !== main) continue;
+      candidate.element = element;
+      candidate.document = await readHandle(() => target.evaluateHandle(() => document));
+      if (await read(() => target.url()) !== candidate.url || await read(() => target.parentFrame()) !== main ||
+          await read(() => element.isVisible()) !== true || await read(() => element.contentFrame()) !== target ||
+          await read(() => element.ownerFrame()) !== main ||
+          await read(() => target.evaluate(expected => document === expected, candidate.document)) !== true) {
+        incomplete = true; continue;
+      }
+    }
+    associated++; counted = true;
+    let observed;
+    try { observed = await read(() => target.evaluate(collectGuestPayControlMetadataDom,
+      { role: location, expectedDocument: candidate.document })); }
+    catch (error) { if (error?.[STOP]) throw error; unsupported++; continue; }
+    if (location === 'paypal_child' && (await read(() => target.url()) !== candidate.url ||
+        await read(() => target.parentFrame()) !== main || await read(() => candidate.element.isVisible()) !== true ||
+        await read(() => candidate.element.contentFrame()) !== target || await read(() => candidate.element.ownerFrame()) !== main) ||
+        await read(() => target.evaluate(expected => document === expected, candidate.document)) !== true) {
+      unsupported++; continue;
+    }
+    if (!record(observed, ['schema', 'status', 'submit_count', 'submit_visible', 'submit_enabled', 'button_type_matches', 'label', 'amount', 'currency']) ||
+        observed.schema !== 'discogs_guest_pay_control_dom_v1') { unsupported++; continue; }
+    if (observed.status === 'absent' && observed.submit_count === 0) continue;
+    const proposed = { ...emptyPayMetadata('observed'), candidate_count: result.candidate_count,
+      associated_count: 1, eligible_count: 1, submit_count: observed.submit_count, submit_visible: observed.submit_visible,
+      submit_enabled: observed.submit_enabled, button_type_matches: observed.button_type_matches, label: observed.label,
+      amount: observed.amount, currency: observed.currency, location, same_document_verified: true, frame_associated: true };
+    if (observed.status !== 'observed' || !sanitizeGuestPayMetadata(proposed)) { unsupported++; continue; }
+    eligible.push(proposed);
+    } catch (error) {
+      if (error?.[STOP]) throw error;
+      if (counted) unsupported++; else incomplete = true;
+    }
+  }
+  // Retain private bindings, not serialized handles. The caller invokes this
+  // AFTER all other awaited matchers/merchant checks, immediately before return.
+  return async () => {
+  try {
+    const afterFrames = await read(() => page.frames());
+    if (!Array.isArray(afterFrames) || afterFrames.length !== frames.length || afterFrames.some((frame, index) => frame !== frames[index])) incomplete = true;
+  } catch (error) { if (error?.[STOP]) throw error; incomplete = true; }
+  for (const candidate of candidates) {
+    if (candidate.location !== 'paypal_child' || !candidate.element || !candidate.document) continue;
+    try {
+      if (await read(() => candidate.target.url()) !== candidate.url || await read(() => candidate.target.parentFrame()) !== main ||
+        await read(() => candidate.element.isVisible()) !== true || await read(() => candidate.element.contentFrame()) !== candidate.target ||
+        await read(() => candidate.element.ownerFrame()) !== main ||
+        await read(() => candidate.target.evaluate(expected => document === expected, candidate.document)) !== true) incomplete = true;
+    } catch (error) { if (error?.[STOP]) throw error; incomplete = true; }
+  }
+  result.associated_count = count(associated); result.eligible_count = count(eligible.length); result.unsupported_count = count(unsupported);
+  if (result.truncated || unsupported || incomplete) return result;
+  if (eligible.length > 1) return { ...result, status: 'ambiguous' };
+  if (eligible.length === 0) return { ...result, status: 'no_eligible_frame' };
+  return { ...eligible[0], paypal_origin_count: result.paypal_origin_count, associated_count: result.associated_count };
+  };
+}
 function merchantEvidence(value) {
   if (!record(value, ['schema', 'status', 'source', 'purchase_allowed', 'seller_handle', 'visible_row_count', 'displayed', 'selected_shipping_label']) ||
       value.schema !== 'discogs_enhanced_checkout_dom_v1' || value.status !== 'observed' ||
@@ -64,8 +229,8 @@ function destinationEvidence(value, documentRef) {
 }
 
 /** Typed future-provider input contract. It is not DOM qualification or payment
- * authorization. Current production never supplies it: known Pay $5.05 screen
- * text has no verified selector/ISO currency/finality/delivery binding.
+ * authorization. Current production supplies provider:null. Public Pay-control
+ * metadata has no qualified final quote, currency inference or delivery binding.
  * @typedef {object} ProviderDisplayEvidence
  * @property {'discogs_provider_display_evidence_v1'} schema
  * @property {string} layout_id Fixed, reviewed collector profile (none yet).
@@ -144,8 +309,8 @@ export async function waitForEnhancedPaymentQuoteSettlement(page) {
   while (tasks?.size) await Promise.allSettled([...tasks]);
 }
 
-/** Existing-page production path. Only the fixed observed merchant collector is
- * evaluated. Unknown provider payment documents are never inspected. Optional
+/** Existing-page production path. The fixed merchant summary and narrowly
+ * public #submit-button metadata are inspected; no provider quote is qualified. Optional
  * destinationMatcher is a trusted same-process opaque binding port, not input
  * data: it receives the actual Page/Document handle and must never return PII.
  */
@@ -202,14 +367,19 @@ export async function inspectCurrentEnhancedPaymentQuote(page, { signal = null, 
       associated = await read(() => element.isVisible()) === true && await read(() => element.contentFrame()) === buttons[0] &&
         await read(() => element.ownerFrame()) === page.mainFrame();
     }
+    let finalizeGuestPayMetadata;
+    try { finalizeGuestPayMetadata = await inspectGuestPayMetadata(page, frames, documentHandle, { read, readHandle }); }
+    catch (error) { if (error?.[STOP]) throw error; finalizeGuestPayMetadata = async () => emptyPayMetadata('unsupported_collection'); }
     const destination = destinationMatcher === null ? null : await read(() => destinationMatcher({
       page, documentHandle, document_ref: documentRef, observed_at: observedAt, expires_at: observedAt + 20 }));
     if (await read(() => page.url()) !== ENHANCED_PAYMENT_QUOTE_URL ||
         await read(() => page.evaluate(expected => document === expected, documentHandle)) !== true) return base('document_changed');
-    return parseEnhancedPaymentQuoteEvidence({ merchant, provider: null, destination, provenance: {
+    const guestPayMetadata = await finalizeGuestPayMetadata();
+    return { ...parseEnhancedPaymentQuoteEvidence({ merchant, provider: null, destination, provenance: {
       schema: 'discogs_payment_quote_provenance_v1', source: 'current_enhanced_checkout', document_ref: documentRef,
       observed_at: observedAt, expires_at: observedAt + 20, same_document_verified: true,
-      frame_association: { known_buttons_count: Math.min(buttons.length, 2), known_buttons_associated: associated, payment_quote_frame_qualified: false } } });
+      frame_association: { known_buttons_count: Math.min(buttons.length, 2), known_buttons_associated: associated, payment_quote_frame_qualified: false } } }),
+    guest_pay_metadata: sanitizeGuestPayMetadata(guestPayMetadata) || emptyPayMetadata('unsupported_collection') };
   } catch (error) { return base(error?.[STOP] || 'read_failed'); }
   finally {
     for (const handle of handles) dispose(handle);
