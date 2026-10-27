@@ -119,8 +119,9 @@ export function sanitizeHostedPaymentControlResult(value, command, { now = Date.
   const result = { ...stop(code, UNCERTAIN_CODES.has(code)), status };
   if (status === 'observed' && code === 'secure_entry_completed') {
     const ref = field('entry_ref'), start = field('entry_started_at'), completed = field('entry_completed_at');
-    if (command !== 'complete_secure_entry' || request !== null && request.entry_ref !== ref || typeof ref !== 'string' || !UUID.test(ref) || !number(start) || !number(completed) ||
-        start > completed || completed > now || completed - start > 300) return stop('payment_control_response_unverified', true);
+    if (command !== 'complete_secure_entry' || request !== null &&
+        (request.entry_ref !== ref || request.completed_at !== completed) || typeof ref !== 'string' || !UUID.test(ref) || !number(start) || !number(completed) ||
+        start > completed || completed > now || now - completed >= 60) return stop('payment_control_response_unverified', true);
     Object.assign(result, { entry_ref: ref, entry_started_at: start, entry_completed_at: completed });
   }
   for (const key of ['guest_state', 'real_order_state']) if (STATES.has(field(key))) result[key] = field(key);

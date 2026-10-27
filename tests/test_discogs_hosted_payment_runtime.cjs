@@ -299,7 +299,7 @@ test('isolated launcher and fixed payment IPC hand off one public guest form wit
   await assert.rejects(readFile(join(f.directory, 'enhanced-payment-confirmation.json')), { code: 'ENOENT' });
 });
 
-test('expired entry scope cannot complete a suspended secure-entry handoff', async t => {
+test('human secure entry can complete after scope expiry without a browser read or Pay authority', async t => {
   const f = await fixture(t), browser = interceptedCheckout(f.context, t);
   f.setPages([browser.page]); await rm(f.policyPath);
   const acquireContextLease = leaseApi.createHostedContextLease();
@@ -312,20 +312,30 @@ test('expired entry scope cannot complete a suspended secure-entry handoff', asy
   const entryScope = { schema: 'discogs_secure_entry_scope_v1', release_id: 3422100,
     listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD', max_total: '5.05',
     expected_guest_head: f.policy.expected_guest_head,
-    expected_claim_sha256: f.policy.expected_claim_sha256, expires_at: Date.now() / 1000 + 2.5 };
+    expected_claim_sha256: f.policy.expected_claim_sha256, expires_at: Date.now() / 1000 + 180 };
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   const begun = await runtime.beginSecureEntry(entryScope);
   assert.equal(begun.status, 'entry_ready', begun.code);
   const reads = browser.reads, inventory = f.browserCalls;
-  await new Promise(resolve => setTimeout(resolve, Math.max(1,
-    Math.ceil((entryScope.expires_at - Date.now() / 1000) * 1000) + 25)));
+  assert.equal(acquireContextLease(), null, 'privacy lock remains held throughout human entry');
+  t.mock.timers.setTime(Date.now() + 301_000);
+  assert.ok(Date.now() / 1000 > entryScope.expires_at);
+  const abort = new AbortController(); abort.abort();
+  assert.equal((await runtime.completeSecureEntry({ entry_ref: begun.entry_ref,
+    completed_at: Date.now() / 1000 }, { signal: abort.signal })).status, 'blocked');
+  assert.equal((await runtime.completeSecureEntry({ entry_ref: randomUUID(),
+    completed_at: Date.now() / 1000 })).status, 'blocked');
+  assert.equal(acquireContextLease(), null, 'invalid completions cannot release the privacy lock');
+  const completion = await runtime.completeSecureEntry({ entry_ref: begun.entry_ref,
+    completed_at: Date.now() / 1000 });
+  assert.equal(completion.code, 'secure_entry_completed', completion.code);
+  assert.ok(completion.entry_completed_at - begun.entry_started_at > 300);
   assert.equal((await runtime.completeSecureEntry({ entry_ref: begun.entry_ref,
     completed_at: Date.now() / 1000 })).status, 'blocked');
   assert.equal((await runtime.resumeAfterEntry(f.scope)).status, 'blocked');
   assert.equal((await runtime.attemptPayment(f.scope)).status, 'blocked');
   assert.equal(browser.reads, reads); assert.equal(f.browserCalls, inventory);
   assert.equal(browser.clicks, 0);
-  assert.equal(acquireContextLease(), null, 'expired in-memory handoff stays leased until explicit shutdown');
-  await runtime.close();
   const released = acquireContextLease(); assert.equal(typeof released, 'function'); released();
 });
 
@@ -360,10 +370,90 @@ test('browser disconnect while entry reads are suspended closes control and inva
   assert.equal(browser.clicks, 0);
 });
 
+test('changed durable guest claim during private card entry cannot release the lock or qualify Pay', async t => {
+  const f = await fixture(t), browser = interceptedCheckout(f.context, t);
+  f.setPages([browser.page]); await rm(f.policyPath);
+  const acquireContextLease = leaseApi.createHostedContextLease();
+  const runtime = runtimeApi.createHostedPaymentRuntimeFixture({ context: f.context,
+    acquireContextLease, entryGate: true, liveGate: true, policyPath: f.policyPath,
+    confirmationPath: join(f.directory, 'enhanced-payment-confirmation.json'),
+    guestLedgerDirectory: f.directory, accessStopPath: join(f.directory, 'access-stopped'),
+    orderLedgerPort: f.ledger });
+  t.after(() => runtime.close());
+  const scope = { schema: 'discogs_secure_entry_scope_v1', release_id: 3422100,
+    listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD', max_total: '5.05',
+    expected_guest_head: f.policy.expected_guest_head,
+    expected_claim_sha256: f.policy.expected_claim_sha256, expires_at: Date.now() / 1000 + 180 };
+  const begun = await runtime.beginSecureEntry(scope);
+  assert.equal(begun.status, 'entry_ready', begun.code);
+  const last = join(f.directory, 'guest-checkout-000005.json');
+  const changed = JSON.parse(await readFile(last, 'utf8'));
+  changed.payload.seller = 'DifferentSeller';
+  await writeFile(last, enc(changed));
+  const reads = browser.reads, inventory = f.browserCalls;
+  assert.equal((await runtime.completeSecureEntry({ entry_ref: begun.entry_ref,
+    completed_at: Date.now() / 1000 })).status, 'blocked');
+  assert.equal(acquireContextLease(), null, 'failed durable revalidation retains the privacy lock');
+  assert.equal((await runtime.attemptPayment(f.scope)).status, 'blocked');
+  assert.equal(browser.reads, reads); assert.equal(f.browserCalls, inventory);
+  assert.equal(browser.clicks, 0);
+});
+
+test('changed access stop during private card entry blocks completion without browser use', async t => {
+  const f = await fixture(t), browser = interceptedCheckout(f.context, t);
+  f.setPages([browser.page]); await rm(f.policyPath);
+  const acquireContextLease = leaseApi.createHostedContextLease();
+  const runtime = runtimeApi.createHostedPaymentRuntimeFixture({ context: f.context,
+    acquireContextLease, entryGate: true, liveGate: false, policyPath: f.policyPath,
+    confirmationPath: join(f.directory, 'enhanced-payment-confirmation.json'),
+    guestLedgerDirectory: f.directory, accessStopPath: join(f.directory, 'access-stopped'),
+    orderLedgerPort: f.ledger });
+  t.after(() => runtime.close());
+  const scope = { schema: 'discogs_secure_entry_scope_v1', release_id: 3422100,
+    listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD', max_total: '5.05',
+    expected_guest_head: f.policy.expected_guest_head,
+    expected_claim_sha256: f.policy.expected_claim_sha256, expires_at: Date.now() / 1000 + 180 };
+  const begun = await runtime.beginSecureEntry(scope);
+  assert.equal(begun.status, 'entry_ready', begun.code);
+  await writeFile(join(f.directory, 'access-stopped'), 'unexpected_state\n');
+  const reads = browser.reads, inventory = f.browserCalls;
+  assert.equal((await runtime.completeSecureEntry({ entry_ref: begun.entry_ref,
+    completed_at: Date.now() / 1000 })).status, 'blocked');
+  assert.equal(acquireContextLease(), null);
+  assert.equal(browser.reads, reads); assert.equal(f.browserCalls, inventory);
+  assert.equal(browser.clicks, 0);
+});
+
+test('completion snapshots the original token and time before an asynchronous durable recheck', async t => {
+  const f = await fixture(t), browser = interceptedCheckout(f.context, t);
+  f.setPages([browser.page]); await rm(f.policyPath);
+  const runtime = runtimeApi.createHostedPaymentRuntimeFixture({ context: f.context,
+    acquireContextLease: leaseApi.createHostedContextLease(), entryGate: true, liveGate: false,
+    policyPath: f.policyPath, confirmationPath: join(f.directory, 'enhanced-payment-confirmation.json'),
+    guestLedgerDirectory: f.directory, accessStopPath: join(f.directory, 'access-stopped'),
+    orderLedgerPort: f.ledger });
+  t.after(() => runtime.close());
+  const scope = { schema: 'discogs_secure_entry_scope_v1', release_id: 3422100,
+    listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD', max_total: '5.05',
+    expected_guest_head: f.policy.expected_guest_head,
+    expected_claim_sha256: f.policy.expected_claim_sha256, expires_at: Date.now() / 1000 + 180 };
+  const begun = await runtime.beginSecureEntry(scope);
+  assert.equal(begun.status, 'entry_ready', begun.code);
+  const originalTime = Date.now() / 1000;
+  const completion = { entry_ref: begun.entry_ref, completed_at: originalTime };
+  const pending = runtime.completeSecureEntry(completion);
+  completion.entry_ref = randomUUID();
+  completion.completed_at = originalTime + 120;
+  const result = await pending;
+  assert.equal(result.code, 'secure_entry_completed', result.code);
+  assert.equal(result.entry_ref, begun.entry_ref);
+  assert.equal(result.entry_completed_at, originalTime);
+  assert.equal(browser.clicks, 0);
+});
+
 test('entry-only completion later binds the original token and document to independently authorized Pay', async t => {
   const f = await fixture(t), browser = interceptedCheckout(f.context, t);
   f.setPages([browser.page]);
-  const policyBytes = enc(f.policy);
   await rm(f.policyPath);
   const runtime = runtimeApi.createHostedPaymentRuntimeFixture({
     context: f.context, acquireContextLease: leaseApi.createHostedContextLease(),
@@ -385,7 +475,8 @@ test('entry-only completion later binds the original token and document to indep
   assert.equal(browser.reads, noPolicyReads); assert.equal(f.browserCalls, noPolicyInventory);
   const completed = await runtime.completeSecureEntry({ entry_ref: begun.entry_ref, completed_at: Date.now() / 1000 });
   assert.equal(completed.code, 'secure_entry_completed');
-  await writeFile(f.policyPath, policyBytes, { flag: 'wx', mode: 0o600 });
+  f.policy.authorized_at = Date.now() / 1000;
+  await writeFile(f.policyPath, enc(f.policy), { flag: 'wx', mode: 0o600 });
   await writeFile(join(f.directory, 'enhanced-payment-confirmation.json'), enc(confirmedMetadata(f, begun.entry_ref)),
     { flag: 'wx', mode: 0o600 });
   const resumed = await runtime.resumeAfterEntry(f.scope);
@@ -394,6 +485,78 @@ test('entry-only completion later binds the original token and document to indep
   assert.equal(attempted.code, 'submission_unknown', attempted.code);
   assert.equal(browser.clicks, 1);
   assert.equal((await f.ledger.status()).ledger.state, 'submission_unknown');
+});
+
+test('late human completion leaves old Pay policy expired and needs fresh post-entry authority', async t => {
+  const f = await fixture(t), browser = interceptedCheckout(f.context, t);
+  f.setPages([browser.page]);
+  const oldPolicy = enc(f.policy);
+  await rm(f.policyPath);
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  const runtime = runtimeApi.createHostedPaymentRuntimeFixture({ context: f.context,
+    acquireContextLease: leaseApi.createHostedContextLease(), entryGate: true, liveGate: true,
+    policyPath: f.policyPath, confirmationPath: join(f.directory, 'enhanced-payment-confirmation.json'),
+    guestLedgerDirectory: f.directory, accessStopPath: join(f.directory, 'access-stopped'),
+    orderLedgerPort: f.ledger });
+  t.after(() => runtime.close());
+  const entryScope = { schema: 'discogs_secure_entry_scope_v1', release_id: 3422100,
+    listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD', max_total: '5.05',
+    expected_guest_head: f.policy.expected_guest_head,
+    expected_claim_sha256: f.policy.expected_claim_sha256, expires_at: Date.now() / 1000 + 180 };
+  const begun = await runtime.beginSecureEntry(entryScope);
+  assert.equal(begun.status, 'entry_ready', begun.code);
+  const suspendedReads = browser.reads, suspendedInventory = f.browserCalls;
+  t.mock.timers.setTime(Date.now() + 301_000);
+  const completed = await runtime.completeSecureEntry({ entry_ref: begun.entry_ref,
+    completed_at: Date.now() / 1000 });
+  assert.equal(completed.code, 'secure_entry_completed', completed.code);
+  assert.equal(browser.reads, suspendedReads); assert.equal(f.browserCalls, suspendedInventory);
+  await writeFile(f.policyPath, oldPolicy, { flag: 'wx', mode: 0o600 });
+  const beforeOldPolicy = browser.reads;
+  assert.equal((await runtime.resumeAfterEntry(f.scope)).status, 'blocked');
+  assert.equal(browser.reads, beforeOldPolicy);
+  assert.equal(browser.clicks, 0);
+  const now = Date.now() / 1000;
+  f.scope.expires_at = now + 180;
+  f.scope.quote_fingerprint = fixedApi.fixedEnhancedPayQuoteFingerprint(f.scope);
+  f.policy.authorized_at = now;
+  f.policy.expires_at = now + 120;
+  await writeFile(f.policyPath, enc(f.policy));
+  await writeFile(join(f.directory, 'enhanced-payment-confirmation.json'),
+    enc(confirmedMetadata(f, begun.entry_ref)), { flag: 'wx', mode: 0o600 });
+  const resumed = await runtime.resumeAfterEntry(f.scope);
+  assert.equal(resumed.code, 'fresh_post_entry_context_verified', resumed.code);
+  assert.equal(browser.clicks, 0, 'fresh authority and quote inspection are still noncommitting');
+  assert.equal((await f.ledger.status()).ledger, null);
+});
+
+test('fresh Pay authority after entry cannot resume against a changed checkout document', async t => {
+  const f = await fixture(t), browser = interceptedCheckout(f.context, t);
+  f.setPages([browser.page]); await rm(f.policyPath);
+  const runtime = runtimeApi.createHostedPaymentRuntimeFixture({ context: f.context,
+    acquireContextLease: leaseApi.createHostedContextLease(), entryGate: true, liveGate: true,
+    policyPath: f.policyPath, confirmationPath: join(f.directory, 'enhanced-payment-confirmation.json'),
+    guestLedgerDirectory: f.directory, accessStopPath: join(f.directory, 'access-stopped'),
+    orderLedgerPort: f.ledger });
+  t.after(() => runtime.close());
+  const scope = { schema: 'discogs_secure_entry_scope_v1', release_id: 3422100,
+    listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD', max_total: '5.05',
+    expected_guest_head: f.policy.expected_guest_head,
+    expected_claim_sha256: f.policy.expected_claim_sha256, expires_at: Date.now() / 1000 + 180 };
+  const begun = await runtime.beginSecureEntry(scope);
+  assert.equal(begun.status, 'entry_ready', begun.code);
+  const done = await runtime.completeSecureEntry({ entry_ref: begun.entry_ref,
+    completed_at: Date.now() / 1000 });
+  assert.equal(done.code, 'secure_entry_completed');
+  f.policy.authorized_at = Date.now() / 1000;
+  await writeFile(f.policyPath, enc(f.policy), { flag: 'wx', mode: 0o600 });
+  await writeFile(join(f.directory, 'enhanced-payment-confirmation.json'),
+    enc(confirmedMetadata(f, begun.entry_ref)), { flag: 'wx', mode: 0o600 });
+  f.setPages([]); // Synthetic resident-document replacement, never a navigation.
+  assert.equal((await runtime.resumeAfterEntry(f.scope)).status, 'blocked');
+  assert.equal((await runtime.attemptPayment(f.scope)).status, 'blocked');
+  assert.equal(browser.clicks, 0);
+  assert.equal((await f.ledger.status()).ledger, null);
 });
 
 test('entry-only Pay confirmation must be newer than the actual secure-entry completion', async t => {
@@ -457,7 +620,7 @@ test('entry-only Pay policy cannot switch to another valid same-item guest claim
     expectedClaim: next.claim })).claim_verified, true);
   assert.notEqual(next.claim, entryScope.expected_claim_sha256);
   const nextPolicy = { ...f.policy, expected_guest_head: next.head,
-    expected_claim_sha256: next.claim };
+    expected_claim_sha256: next.claim, authorized_at: Date.now() / 1000 };
   await writeFile(f.policyPath, enc(nextPolicy), { flag: 'wx', mode: 0o600 });
   await writeFile(join(f.directory, 'enhanced-payment-confirmation.json'),
     enc(confirmedMetadata(f, begun.entry_ref)), { flag: 'wx', mode: 0o600 });

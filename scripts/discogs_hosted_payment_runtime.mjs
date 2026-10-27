@@ -176,6 +176,8 @@ function factory({ context, acquireContextLease, entryGate = false, liveGate = f
         (policy.expected_guest_head !== entryScope.expected_guest_head ||
          policy.expected_claim_sha256 !== entryScope.expected_claim_sha256))
       throw new Error('entry_guest_claim_changed');
+    if (entryMode === 'entry_only' && entryCompleted && policy.authorized_at < entryCompletedAt)
+      throw new Error('post_entry_owner_authorization_required');
     return policy;
   };
   const guestFor = async (scope, expectedClaim, expectedHead) => {
@@ -203,11 +205,22 @@ function factory({ context, acquireContextLease, entryGate = false, liveGate = f
         still.state !== guest.state) throw new Error('guest_claim_changed');
     return guest;
   };
-  const entryGuestFor = async (scope, signal = null) => {
-    if (!entryEnabled() || signal?.aborted || !validEntryScope(scope, Date.now() / 1000))
+  // Identity and preserved-stop checks are metadata only. Completion uses the
+  // original frozen scope: acknowledging finished entry cannot renew its grant
+  // or grant any authority to read the page, initialize again, or pay.
+  const entryBindingFor = async (scope, signal = null) => {
+    if (!entryEnabled() || signal?.aborted)
       throw new Error('secure_entry_scope_unavailable');
     if (!await preservedAccessStop(accessStopPath)) throw new Error('access_history_unverified');
     const guest = await guestFor(scope, scope.expected_claim_sha256, scope.expected_guest_head);
+    const stopRetained = await preservedAccessStop(accessStopPath);
+    if (!entryEnabled() || signal?.aborted || !stopRetained)
+      throw new Error('secure_entry_scope_changed');
+    return guest;
+  };
+  const entryGuestFor = async (scope, signal = null) => {
+    if (!validEntryScope(scope, Date.now() / 1000)) throw new Error('secure_entry_scope_unavailable');
+    const guest = await entryBindingFor(scope, signal);
     if (!entryEnabled() || signal?.aborted || !validEntryScope(scope, Date.now() / 1000))
       throw new Error('secure_entry_scope_changed');
     return guest;
@@ -356,6 +369,7 @@ function factory({ context, acquireContextLease, entryGate = false, liveGate = f
       try {
         if (entryGate) {
           await entryGuestFor(scope, signal);
+          if (!entryEnabled() || signal?.aborted) return stop('hosted_secure_entry_unavailable');
           preheldRelease = acquireContextLease();
           if (typeof preheldRelease !== 'function') return stop('hosted_browser_busy');
           await ensurePage();
@@ -413,22 +427,28 @@ function factory({ context, acquireContextLease, entryGate = false, liveGate = f
       }
     },
     completeSecureEntry: async (completion, { signal = null } = {}) => {
+      if (!exact(completion, ['entry_ref', 'completed_at'])) return stop('secure_entry_completion_unverified');
+      // Snapshot own primitive values before any await; never execute getters.
+      const completionRef = Object.getOwnPropertyDescriptor(completion, 'entry_ref')?.value;
+      const completedAt = Object.getOwnPropertyDescriptor(completion, 'completed_at')?.value;
+      const reportedAt = Date.now() / 1000;
       if (!entryEnabled() || entryMode !== 'entry_only' || !entryRelease ||
-          entryCompleted || entryCompleting || !exact(completion, ['entry_ref', 'completed_at']) ||
-          completion.entry_ref !== entryRef || signal?.aborted ||
-          !Number.isFinite(completion.completed_at) || completion.completed_at < entryAt ||
-          completion.completed_at > Date.now() / 1000 || completion.completed_at - entryAt > 300)
+          entryCompleted || entryCompleting ||
+          completionRef !== entryRef || signal?.aborted ||
+          !Number.isFinite(completedAt) || completedAt < entryAt ||
+          completedAt > reportedAt || reportedAt - completedAt >= 60)
         return stop('secure_entry_completion_unverified');
       entryCompleting = true;
       try {
-        await entryGuestFor(entryScope, signal);
-        if (!entryEnabled() || signal?.aborted || Date.now() / 1000 >= entryScope.expires_at)
+        await entryBindingFor(entryScope, signal);
+        const verifiedAt = Date.now() / 1000;
+        if (!entryEnabled() || signal?.aborted || completedAt > verifiedAt || verifiedAt - completedAt >= 60)
           return stop('secure_entry_completion_unverified');
-        entryCompleted = true; entryCompletedAt = completion.completed_at;
+        entryCompleted = true; entryCompletedAt = completedAt;
         entryRelease(); entryRelease = null;
         return Object.freeze({ status: 'observed', code: 'secure_entry_completed',
           entry_ref: entryRef, entry_started_at: entryAt,
-          entry_completed_at: completion.completed_at, payment_allowed: false,
+          entry_completed_at: completedAt, payment_allowed: false,
           purchase_allowed: false });
       } catch { return stop('secure_entry_completion_unverified'); }
       finally { entryCompleting = false; }

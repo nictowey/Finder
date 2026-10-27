@@ -245,3 +245,35 @@ test('public projection keeps observed effect facts but rejects malformed or mis
   assert.equal(sanitizeHostedPaymentControlResult({ status: 'observed', code: 'secure_entry_completed', entry_ref: ref,
     entry_started_at: now - 2, entry_completed_at: now - 1 }, 'complete_secure_entry', { request: { entry_ref: randomUUID() } }).requires_reconciliation, true);
 });
+
+test('completion projection permits delayed human entry but binds the truthful fresh report time', async () => {
+  const now = Date.now() / 1000, ref = randomUUID(), completed = now - 1;
+  const value = { status: 'observed', code: 'secure_entry_completed', entry_ref: ref,
+    entry_started_at: now - 3600, entry_completed_at: completed, payment_allowed: false };
+  const request = { entry_ref: ref, completed_at: completed };
+  const accepted = sanitizeHostedPaymentControlResult(value, 'complete_secure_entry', { now, request });
+  assert.equal(accepted.code, 'secure_entry_completed');
+  assert.equal(accepted.payment_allowed, false);
+  assert.equal(accepted.entry_completed_at, completed);
+  assert.equal(accepted.entry_started_at, now - 3600);
+  for (const changed of [completed - 1, completed + 1]) {
+    assert.equal(sanitizeHostedPaymentControlResult(value, 'complete_secure_entry',
+      { now, request: { ...request, completed_at: changed } }).requires_reconciliation, true);
+  }
+  assert.equal(sanitizeHostedPaymentControlResult({ ...value, entry_completed_at: now - 60 },
+    'complete_secure_entry', { now, request: { entry_ref: ref, completed_at: now - 60 } }).requires_reconciliation, true);
+  const dir = await directory(), path = join(dir, 'payment-control.sock');
+  let invocations = 0;
+  const close = await listenHostedPaymentControlFixture(runtime({ completeSecureEntry: async input => {
+    invocations++;
+    return { ...value, entry_completed_at: input.completed_at };
+  } }), path, { enabled: true });
+  try {
+    const reply = await exchange(path, wire('complete_secure_entry', request));
+    assert.equal(reply.code, 'secure_entry_completed');
+    assert.equal(reply.entry_completed_at, completed);
+    assert.equal(reply.payment_allowed, false); assert.equal(invocations, 1);
+    const stale = await exchange(path, wire('complete_secure_entry', { entry_ref: ref, completed_at: now - 3600 }));
+    assert.equal(stale.code, 'unsupported_payment_request'); assert.equal(invocations, 1);
+  } finally { await close(); await rm(dir, { recursive: true, force: true }); }
+});

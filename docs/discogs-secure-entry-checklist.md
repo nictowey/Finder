@@ -1,12 +1,15 @@
 # Private checkout operator checklist
 
-This checklist separates secure entry from permission to pay. It describes the
-reviewed `002a9a6` runtime plus the local cart-read drain correction below. The
-`002a9a6` image is built but not activated and must include that correction before
-secure-entry use. The live browser
-is still at `c447ab2`, ledger58 is preserved, and the blank guest form was closed
-normally. Fresh All/All Purchases reconciliation is blocked by the displayed
-Cloudflare human-verification challenge. Disposition59 is not recorded.
+This checklist separates secure entry from permission to pay. The cart-read
+privacy correction was activated in `60992b2`; a real blank-form observation and
+entry handoff were recorded at ledger64. The owner subsequently reported entry
+complete, then a provider `SESSION_EXPIRED` message and the form disappearing.
+Those later reports are user evidence, not an agent inspection or proof that
+hidden/restored input values were cleared. No Pay action is recorded.
+
+The late-completion correction described below is a local code change until
+separately activated. It cannot change the old resident runtime's closure in
+memory. Keep its privacy lock and browser untouched during implementation.
 
 ## Exact approved scope
 
@@ -36,9 +39,10 @@ Cloudflare human-verification challenge. Disposition59 is not recorded.
    drain every CUA actor used for this browser. Stop manual screenshots, AX/DOM
    inspection, Inspector, page-content logging, traces and browser input.
 7. Invoke the fixed `begin_secure_entry` command with the actual guest
-   head/claim and expiry. Only `entry_ready` with `reads_suspended: true` confirms
-   the managed entry lock. Record the original entry reference/time and expiry;
-   do not inspect the page after that response.
+   head/claim and expiry. This bounded grant is checked while beginning entry;
+   it is not a deadline for the owner to finish typing. Only `entry_ready` with
+   `reads_suspended: true` confirms the managed entry lock. Record the original
+   entry reference/time and grant expiry; do not inspect the page afterward.
 
 ## During entry and completion
 
@@ -49,15 +53,23 @@ Cloudflare human-verification challenge. Disposition59 is not recorded.
   matches the saved merchant destination after billing entry.
 - Obtain an explicit completion report and final non-sensitive details. Send
   `complete_secure_entry` with its original token and genuine completion time;
-  this releases the entry-only lease without declaring payment readiness.
-- An expired scope, disconnect or restart is not a successful handoff. Do not
-  reuse or renew its timestamp/token. Expiry does not automatically release the
-  privacy lock. Pause dependent actions and review recovery; never synthesize a
-  completion merely to unlock the browser.
+  the report must still be fresh when delivered. The corrected path accepts
+  entry lasting longer than the original begin grant. It checks only the
+  unchanged anchored claim/head and access-stop metadata before releasing the
+  entry lease once. It neither reads the page nor declares payment readiness.
+- Grant expiry does not automatically release the privacy lock or renew any
+  authority. Disconnect, restart, wrong token, changed metadata or cancellation
+  blocks completion. Never change the original expiry or synthesize completion
+  to unlock the browser. A retry must follow a verified known outcome.
+- Provider-session expiry is separate from application grant expiry. An entry
+  completion acknowledgement cannot renew a provider session. Stop repeated
+  payment-control clicks and reinitialization; retain the original claim and
+  unknown outcome. A user report that the form disappeared does not establish
+  whether hidden or restored input values remain, or whether an order exists.
 
 ## Before any payment
 
-Require separate current authorization, genuine post-completion amount,
+Require separate current authorization issued after entry completion, genuine post-completion amount,
 delivery, selected method and visible terms/notices confirmation, fresh
 same-document revalidation and the durable real-order fence. All must retain the
 original entry document, guest claim/head and token. No payment input values are
