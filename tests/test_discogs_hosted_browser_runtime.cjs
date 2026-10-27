@@ -86,6 +86,29 @@ test('orderly close is idempotent and does not report an unexpected failure', as
   await noSocket();
 });
 
+test('actual launcher attaches a disabled payment caller without reading the resident page or private policy', async () => {
+  const item = fixture(); let pageReads = 0;
+  item.context.pages = () => { pageReads++; throw new Error('No payment browser read'); };
+  const close = await launchHostedReadOnlyBrowser(item.firefox, '/profile', socketPath);
+  try {
+    assert.equal(close.payment.paymentEnabled, false);
+    for (const action of ['inspectReadiness', 'beginSecureEntry', 'resumeAfterEntry', 'attemptPayment']) {
+      assert.equal((await close.payment[action]({})).code, 'hosted_payment_disabled');
+    }
+    assert.equal(pageReads, 0);
+  } finally { await close(); }
+});
+
+test('launcher rejects payment callback/path overrides or live gate on the development socket before browser launch', async () => {
+  for (const paymentRuntime of [{ liveGate: true }, { liveGate: false, policyPath: '/tmp/foreign' },
+    { liveGate: false, readAuthorization() {} }, { liveGate: 'true' }]) {
+    const item = fixture();
+    await assert.rejects(launchHostedReadOnlyBrowser(item.firefox, '/profile', socketPath, { paymentRuntime }),
+      { message: 'fixed_payment_runtime_configuration_required' });
+    assert.equal(item.calls.length, 0);
+  }
+});
+
 test('an unresponsive browser close cannot retain the socket or wait indefinitely', async () => {
   const item = fixture({ hangClose: true });
   const close = await launchHostedReadOnlyBrowser(item.firefox, '/profile', socketPath);

@@ -505,3 +505,41 @@ unknown before the committing action, followed by ordinary merchant order/status
 reconciliation; absent or unqualified receipt evidence retains unknown and the
 one-copy fence. This batch is offline implementation and intercepted testing,
 not live payment qualification, activation or permission for another item.
+
+### Dormant resident-runtime caller
+
+The launcher now attaches `close.payment` to the same resident browser context
+and shared lease used by its read-only sockets. The ordinary runner supplies no
+live gate. There is no new payment RPC, listener, browser, profile or credential.
+The default-off caller performs no policy, ledger or browser reads.
+
+The caller's fixed owner-only metadata files are
+`/bridge/guest-card-actions/enhanced-payment-authorization.json` and
+`/bridge/guest-card-actions/enhanced-payment-confirmation.json`. Neither is
+created by installation or this implementation pass. Exact schema, ownership,
+0600 permissions, expiry, revocation and one-copy KC scope are required. The
+authorization explicitly records a single-item test mode; it does not invent an
+enabled generic buying rule. It pins the actual existing guest claim and
+observed-form head, validates their full anchored chain and exact scope, and
+reads the existing real-order ledger. Payment and preparation may have distinct
+intent IDs; the trusted authorization's immutable claim/head references provide
+their binding. A prior unknown real-order outcome blocks a new entry handoff.
+
+Entry startup is reserved synchronously. Browser inventory and private document
+witnesses are read only while the shared context lease is held; that same lease
+is transferred once to the fixed port. Once `entry_ready` is returned, browser
+reads remain suspended until explicit resumption. The confirmation must contain
+the returned entry reference and the original genuine post-entry timestamp,
+explicit final amount/currency, delivery choice, selected card-method reference,
+terms and notice answers. These facts are never defaulted to true or renewed by
+rereading the file. Fresh quote reads receive current DOM observation times
+while retaining the user's original confirmation time and expiry. No payment
+input values or full destination values enter either metadata file.
+
+The executable rehearsal uses the actual launcher and runtime readers with
+isolated private files, an anchored synthetic guest ledger and a real temporary
+SQLite order ledger. Only browser DOM and its final fixed click are intercepted;
+no payment network is available. Passing it is offline integration evidence,
+not evidence of live payment, payment-method availability or a merchant receipt.
+Live gates remain off and the existing blank form/audit are preserved pending a
+separate consolidated activation plan and genuine user entry/confirmation.

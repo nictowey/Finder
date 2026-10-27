@@ -3,6 +3,7 @@
  */
 import { listenHostedReadOnly } from './discogs_hosted_readonly.mjs';
 import { createHostedContextLease, listenHostedGuestPreparation, HOSTED_GUEST_SOCKET } from './discogs_hosted_guest_socket.mjs';
+import { createHostedPaymentRuntime, createHostedPaymentRuntimeFixture } from './discogs_hosted_payment_runtime.mjs';
 
 export const HOSTED_BROWSER_SHUTDOWN_MS = 2000;
 
@@ -19,7 +20,9 @@ async function boundedShutdown(operations) {
   } finally { clearTimeout(timer); }
 }
 
-export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPath, { guestPreparation = null } = {}) {
+const paymentFixture = Symbol('isolated_payment_runtime_fixture');
+export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPath, { guestPreparation = null,
+  paymentRuntime = null, [paymentFixture]: fixture = null } = {}) {
   if (!firefox || typeof firefox.launchPersistentContext !== 'function' ||
       profilePath !== '/profile' || !['/tmp/sniper-read-only.sock', '/bridge/sniper-read-only.sock'].includes(socketPath)) {
     throw new TypeError('unsupported_hosted_browser_configuration');
@@ -30,6 +33,11 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
       typeof guestPreparation.authorize !== 'function' || typeof guestPreparation.accessGuard !== 'function')) {
     throw new TypeError('scoped_guest_configuration_required');
   }
+  if (paymentRuntime !== null && (!paymentRuntime || typeof paymentRuntime !== 'object' || Array.isArray(paymentRuntime) ||
+      Object.keys(paymentRuntime).join('|') !== 'liveGate' || typeof paymentRuntime.liveGate !== 'boolean' ||
+      paymentRuntime.liveGate && fixture === null && socketPath !== '/bridge/sniper-read-only.sock')) {
+    throw new TypeError('fixed_payment_runtime_configuration_required');
+  }
   const acquireContextLease = createHostedContextLease();
   const context = await firefox.launchPersistentContext(profilePath, {
     headless: false,
@@ -37,7 +45,7 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
     noDefaultViewport: true,
     firefoxUserPrefs: { 'signon.rememberSignons': false },
   });
-  let browser, closeSocket, closeGuestSocket, shutdown, closing = false, unavailable = false;
+  let browser, closeSocket, closeGuestSocket, payment, shutdown, closing = false, unavailable = false;
   let reportUnavailable;
   const unavailablePromise = new Promise(resolve => { reportUnavailable = resolve; });
   const close = () => {
@@ -46,6 +54,7 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
     shutdown = boundedShutdown([
       () => closeSocket?.(),
       () => closeGuestSocket?.(),
+      () => payment?.close(),
       () => context.close(),
     ]).finally(() => {
       context.off?.('close', browserUnavailable);
@@ -71,6 +80,7 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
   Object.defineProperties(close, {
     unavailable: { value: unavailablePromise },
     isAvailable: { value: isAvailable },
+    payment: { get: () => payment },
   });
   try {
     if (typeof context.on !== 'function' || typeof context.off !== 'function' ||
@@ -81,6 +91,11 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
         typeof browser.isConnected !== 'function') throw new Error('browser_unavailable');
     browser.on('disconnected', browserUnavailable);
     if (!isAvailable()) throw new Error('browser_unavailable');
+    // Same resident context and same lease as both read-only sockets. The
+    // ordinary runner supplies no live gate; no payment RPC is exposed here.
+    const paymentOptions = { context, acquireContextLease, liveGate: paymentRuntime?.liveGate === true };
+    payment = fixture === null ? createHostedPaymentRuntime(paymentOptions) :
+      createHostedPaymentRuntimeFixture({ ...fixture, ...paymentOptions });
     closeSocket = await listenHostedReadOnly(context, socketPath,
     socketPath === '/bridge/sniper-read-only.sock' ? {
       durableStopPath: '/bridge/access-stopped',
@@ -102,4 +117,15 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
     await close().catch(() => {});
     throw error;
   }
+}
+
+/** Only isolated metadata paths and an intercepted browser may be supplied by
+ * Node's test runner. The production launcher has no factory/callback override. */
+export function launchHostedPaymentRuntimeFixtureBrowser(firefox, profilePath, socketPath, options = {}) {
+  if (process.env.NODE_TEST_CONTEXT === undefined || !options || typeof options !== 'object' || Array.isArray(options) ||
+      Object.keys(options).sort().join('|') !== 'fixture|liveGate' || typeof options.liveGate !== 'boolean') {
+    throw new TypeError('fixture_context_required');
+  }
+  return launchHostedReadOnlyBrowser(firefox, profilePath, socketPath,
+    { paymentRuntime: { liveGate: options.liveGate }, [paymentFixture]: options.fixture });
 }
