@@ -415,3 +415,56 @@ preparation, append a genuine form observation, then a distinct bounded
 read-only metadata job. Report actual ancestry before proposing any eligibility
 extension. No web deployment, payment, merge or monitoring activation is part
 of this plan.
+
+### October 27: live two-hop guest-frame evidence
+
+The private `ea60e1c` activation and subsequent bounded no-submit run obtained
+actual ancestry evidence. Normal blank-form dismissal, fresh complete All/All
+Purchases with zero orders, and append-only disposition 41 preceded activation;
+the earlier unknown record remained intact. The next server preparation took
+5.709 seconds, with 41.377 seconds of destination freshness remaining. A visual
+observation of blank fields and Pay $5.05 appended observation 46. No card data
+was entered and Pay was untouched.
+
+The separate read-only metadata job completed in 3.157 seconds. Of 14 inventoried
+frames, three were non-direct PayPal candidates. One `paypal_smart_other` frame
+had an actual two-hop chain to the exact verified buttons frame and then the
+merchant checkout. Both edges passed visibility, content-frame, owner-frame,
+parent and Document-continuity checks; that guest frame contained one fixed
+public `button#submit-button[type="button"]`. The other two candidates failed
+visible association at their first edge. There was no traversal truncation or
+inspection error. The aggregate diagnostic is `incomplete` because those two
+candidate chains are rejected; this does not negate the individually verified
+two-hop chain or qualify an arbitrary nested frame.
+
+At that revision nested eligibility remained disabled, so the public Pay
+metadata still reported `no_eligible_frame`. This evidence supports only a
+narrow same-process two-hop eligibility extension retaining the original Frame,
+Document and iframe ownership objects. Sanitized diagnostic booleans alone are
+not an authority to select a frame. Merchant USD 0.10 + 4.95 = 5.05 remained
+observable; provider explicit currency, final-charge/tax treatment, delivery,
+terms, selected payment method and positive merchant receipt remain unqualified.
+Zero merchant orders does not establish absence of a provider draft.
+
+The narrow public-metadata collector now admits only the verified two-hop
+`paypal_smart_other -> same verified paypal_buttons -> merchant_checkout`
+relationship. It retains the actual Frame, iframe element and Document objects,
+checks both edges before and after the fixed public-label read, and rechecks the
+excluded hidden peers after awaited work. The observed hidden peers remain
+excluded through their own visible/ownership/content/Document proofs; no higher
+relationship is guessed for them. Other visible nesting, ambiguous controls,
+changed documents/URLs/ownership and traversal limits fail closed. The existing
+unique `#submit-button` collector must still prove BUTTON/type=button, visibility,
+enabled status and its bounded public label. A duplicate ID of another type is
+not ignored. Direct plus nested candidates share the original two-frame cap.
+The final nested check proves ancestors and the merchant first, then finishes
+with leaf URL, parent, iframe association/visibility and Document identity, so
+a leaf replacement during an awaited ancestor proof cannot retain eligibility.
+
+The 14-frame regression graph uses synthetic URLs and credentials-shaped test
+strings to model the observed categories and relationships. It is offline
+evidence, not a claim of another live pass. `paypal_child` in the existing
+metadata schema includes this explicitly verified descendant; the ancestry
+diagnostic records the two-hop relationship. A bare Pay $5.05 label still has
+`currency: null`. Public control eligibility never enables Pay or qualifies a
+provider final quote, destination, payment method, terms or merchant receipt.

@@ -111,6 +111,8 @@ export function collectGuestPayControlMetadataDom(binding) {
     const current = new URL(location.href);
     if (binding.role === 'merchant_main' ? current.href !== 'https://www.discogs.com/marketplace/checkout' :
       current.origin !== 'https://www.paypal.com' || current.pathname === '/smart/buttons' || current.username || current.password) return unsupported(null);
+    if (binding.nested === true && (binding.role !== 'paypal_child' || current.href !== binding.expectedUrl ||
+        !current.pathname.startsWith('/smart/') || current.pathname === '/smart/buttons')) return unsupported(null);
     if (document.readyState !== 'complete') return unsupported(null);
     const matches = document.querySelectorAll('#submit-button');
     if (matches.length === 0) return { ...unsupported(0), status: 'absent' };
@@ -146,6 +148,18 @@ export function collectGuestPayControlMetadataDom(binding) {
       submit_visible: true, submit_enabled: !button.disabled && !button.matches(':disabled') && button.getAttribute('aria-disabled') !== 'true',
       button_type_matches: true, label, amount: parsed[1], currency: parsed[2] ? 'USD' : null };
   } catch { return unsupported(null); }
+}
+
+// The observed nested anatomy is exactly one smart guest under the actual
+// verified buttons frame, then the merchant. This captures no input or state.
+function captureNestedGuestDocument(binding) {
+  try {
+    const current = new URL(location.href);
+    if (current.href !== binding.expectedUrl || current.origin !== 'https://www.paypal.com' || current.username || current.password ||
+        (binding.buttons ? current.pathname !== '/smart/buttons' : binding.guest &&
+          (!current.pathname.startsWith('/smart/') || current.pathname === '/smart/buttons'))) return null;
+    return document;
+  } catch { return null; }
 }
 
 async function inspectGuestPayMetadata(page, frames, mainDocument, { read, readHandle, buttonsAssociation }) {
@@ -197,17 +211,81 @@ async function inspectGuestPayMetadata(page, frames, mainDocument, { read, readH
     }
   }
   result.paypal_origin_count = count(diagnostic.origin);
-  // Diagnostic evidence only. Nested frames stay excluded from children and
-  // eligibleControls until an actual supported ancestry profile is qualified.
+  // Only the now-observed exact two-edge smart guest -> actual buttons ->
+  // merchant relationship can join public-control metadata collection. This
+  // never qualifies a provider final quote, destination, payment or dispatch.
   const nestedFrames = inventory.filter(entry => entry.kind === 'non_direct').map(entry => entry.target);
   const finalizeAncestry = nestedFrames.length ? await startGuestPayAncestryDiagnostic(page, {
     frames, main, mainDocument, nestedFrames, buttonsAssociation, read, readHandle,
   }) : null;
+  const nestedEntries = inventory.filter(entry => entry.kind === 'non_direct');
+  const nestedIndex = report => {
+    if (!report || !['observed', 'incomplete'].includes(report.status) || !['complete', 'candidate_incomplete'].includes(report.reason) ||
+        report.truncated || report.candidate_count !== nestedEntries.length || report.candidates.length !== nestedEntries.length ||
+        buttonsAssociation.value !== true || !buttonsAssociation.frame) return -1;
+    const positive = [];
+    for (let i = 0; i < report.candidates.length; i++) {
+      const item = report.candidates[i], first = item.hops[0];
+      if (nestedEntries[i].parent === buttonsAssociation.frame && item.public_submit_count === 1 && item.category === 'paypal_smart_other' && item.stop === 'merchant_root' &&
+          item.depth === 2 && item.chain_complete && item.buttons_ancestor_verified && item.hops.length === 2 &&
+          first.child_category === 'paypal_smart_other' && first.parent_category === 'paypal_buttons' &&
+          item.hops[1].child_category === 'paypal_buttons' && item.hops[1].parent_category === 'merchant_checkout' &&
+          item.hops.every(hop => ['visible', 'content_frame_matches', 'owner_frame_matches', 'documents_same'].every(key => hop[key] === true))) positive.push(i);
+      // The only incomplete peers in the actual anatomy are hidden, correctly
+      // owned children. Unknown, deeper or visibly unassociated peers cannot be
+      // ignored to assert a unique public control.
+      else if (!(item.stop === 'association_mismatch' && item.depth === 1 && !item.chain_complete &&
+          item.public_submit_count === null && !item.buttons_ancestor_verified && ['paypal_smart_other', 'paypal_other', 'paypal_buttons'].includes(first?.parent_category) &&
+          first.visible === false && first.content_frame_matches === true && first.owner_frame_matches === true && first.documents_same === true)) return -1;
+    }
+    return positive.length === 1 ? positive[0] : -1;
+  };
+  let nestedSelected = null, nestedButton = null;
+  if (finalizeAncestry) {
+    const initialAncestry = await finalizeAncestry(), index = nestedIndex(initialAncestry);
+    result.ancestry_diagnostic = initialAncestry;
+    if (index !== -1) {
+      try {
+        nestedButton = inventory.find(entry => entry.target === buttonsAssociation.frame && entry.kind === 'buttons');
+        if (!nestedButton || !nestedButton.element) throw new Error('nested_buttons_unavailable');
+        nestedButton.document = await readHandle(() => nestedButton.target.evaluateHandle(captureNestedGuestDocument,
+          { expectedUrl: nestedButton.url, buttons: true }));
+        for (let i = 0; i < nestedEntries.length; i++) {
+          const entry = nestedEntries[i];
+          entry.element = await readHandle(() => entry.target.frameElement());
+          entry.visible = await read(() => entry.element.isVisible()); entry.content = await read(() => entry.element.contentFrame());
+          entry.owner = await read(() => entry.element.ownerFrame());
+          if (!entry.document) entry.document = await readHandle(() => entry.target.evaluateHandle(captureNestedGuestDocument,
+            { expectedUrl: entry.url, buttons: false, guest: i === index }));
+          const parentEntry = inventory.find(value => value.target === entry.parent);
+          if (!parentEntry || parentEntry.kind === 'other_origin' || parentEntry.kind === 'merchant_main') throw new Error('nested_parent_unverified');
+          if (!parentEntry.document) parentEntry.document = await readHandle(() => parentEntry.target.evaluateHandle(captureNestedGuestDocument,
+            { expectedUrl: parentEntry.url, buttons: parentEntry.kind === 'buttons', guest: false }));
+          entry.kind = i === index ? 'nested_eligible' : 'nested_hidden'; entry.nested = true; entry.nestedParent = parentEntry;
+          if (entry.visible !== (i === index) || entry.content !== entry.target || entry.owner !== entry.parent) throw new Error('nested_edge_unverified');
+        }
+        nestedSelected = nestedEntries[index]; children.push(nestedSelected);
+        diagnostic.non_direct--; diagnostic.eligible_frames++;
+      } catch (error) { if (error?.[STOP]) throw error; errors.add(nestedButton || page); }
+    }
+  }
   result.candidate_count = result.associated_count = count(1 + children.length);
   result.truncated = children.length > 2;
   const eligibleControls = []; let selectedPayEntry = null;
   let unsupported = 0;
   const stableEntry = async entry => {
+    // Prove ancestors first. No awaited ancestor proof may follow the leaf's
+    // final URL/parent/element/Document checks and hide a late leaf mutation.
+    if (entry.nested) {
+      if (!entry.nestedParent || entry.parent !== entry.nestedParent.target) return false;
+      if (entry.kind === 'nested_eligible') {
+        if (buttonsAssociation.value !== true || entry.nestedParent.target !== buttonsAssociation.frame ||
+            await read(() => page.url()) !== ENHANCED_PAYMENT_QUOTE_URL ||
+            await read(() => page.evaluate(expected => document === expected, mainDocument)) !== true ||
+            !await stableEntry(entry.nestedParent)) return false;
+      } else if (await read(() => entry.nestedParent.target.url()) !== entry.nestedParent.url ||
+          await read(() => entry.nestedParent.target.evaluate(expected => document === expected, entry.nestedParent.document)) !== true) return false;
+    }
     if (await read(() => entry.target === main ? page.url() : entry.target.url()) !== entry.url) return false;
     if (['other_origin', 'merchant_main'].includes(entry.kind) || entry.kind === 'buttons' && !entry.element) return true;
     if (entry.kind === 'error') return false;
@@ -227,19 +305,21 @@ async function inspectGuestPayMetadata(page, frames, mainDocument, { read, readH
     const { target, location, entry } = candidate;
     try {
       if (entry) {
-        entry.document = await readHandle(() => target.evaluateHandle(() => document));
+        if (!entry.document) entry.document = await readHandle(() => target.evaluateHandle(() => document));
         candidate.document = entry.document;
         if (!await stableEntry(entry)) { changed = true; continue; }
       }
       const observed = await read(() => {
         diagnostic.inspected++;
-        return target.evaluate(collectGuestPayControlMetadataDom, { role: location, expectedDocument: candidate.document });
+        return target.evaluate(collectGuestPayControlMetadataDom, { role: location, expectedDocument: candidate.document,
+          ...(entry?.nested ? { nested: true, expectedUrl: entry.url } : {}) });
       });
       if (entry ? !await stableEntry(entry) : await read(() => target.evaluate(expected => document === expected, candidate.document)) !== true) {
         changed = true; continue;
       }
       if (!record(observed, ['schema', 'status', 'submit_count', 'submit_visible', 'submit_enabled', 'button_type_matches', 'label', 'amount', 'currency']) ||
           observed.schema !== 'discogs_guest_pay_control_dom_v1') { unsupported++; continue; }
+      candidate.publicObservation = observed;
       if (observed.status === 'absent' && observed.submit_count === 0) continue;
       const proposed = { ...emptyPayMetadata('observed'), candidate_count: result.candidate_count,
         associated_count: 1, eligible_count: 1, submit_count: observed.submit_count, submit_visible: observed.submit_visible,
@@ -255,7 +335,23 @@ async function inspectGuestPayMetadata(page, frames, mainDocument, { read, readH
   return async () => {
     // These additional diagnostic awaits must precede the original full audit,
     // especially the selected direct child's final identity/ownership check.
-    if (finalizeAncestry) result.ancestry_diagnostic = await finalizeAncestry();
+    if (finalizeAncestry) {
+      result.ancestry_diagnostic = await finalizeAncestry();
+      if (nestedSelected && nestedIndex(result.ancestry_diagnostic) !== nestedEntries.indexOf(nestedSelected)) changed = true;
+    }
+    if (nestedSelected && !result.truncated && !errors.size) {
+      try {
+        for (const candidate of candidates) {
+          const entry = candidate.entry;
+          if (entry && !await stableEntry(entry)) { changed = true; break; }
+          const current = await read(() => candidate.target.evaluate(collectGuestPayControlMetadataDom,
+            { role: candidate.location, expectedDocument: candidate.document,
+              ...(entry?.nested ? { nested: true, expectedUrl: entry.url } : {}) }));
+          const keys = ['schema', 'status', 'submit_count', 'submit_visible', 'submit_enabled', 'button_type_matches', 'label', 'amount', 'currency'];
+          if (!record(current, keys) || !candidate.publicObservation || keys.some(key => current[key] !== candidate.publicObservation[key])) changed = true;
+        }
+      } catch (error) { if (error?.[STOP]) throw error; errors.add(nestedSelected); }
+    }
     try {
       const afterFrames = await read(() => page.frames());
       if (!Array.isArray(afterFrames) || afterFrames.length !== frames.length || afterFrames.some((frame, index) => frame !== frames[index])) changed = true;
@@ -271,6 +367,9 @@ async function inspectGuestPayMetadata(page, frames, mainDocument, { read, readH
       try { if (!await stableEntry(selectedPayEntry)) changed = true; }
       catch (error) { if (error?.[STOP]) throw error; errors.add(selectedPayEntry); }
     }
+    if (nestedSelected && changed && result.ancestry_diagnostic?.candidates.length) result.ancestry_diagnostic = {
+      ...result.ancestry_diagnostic, status: 'changed', reason: 'inventory_changed', candidates: result.ancestry_diagnostic.candidates.map(candidate => ({
+        ...candidate, stop: 'document_changed', chain_complete: false, buttons_ancestor_verified: false, public_submit_count: null })) };
     diagnostic.error = Math.min(errors.size, 32);
     result.eligible_count = count(eligibleControls.length);
     result.unsupported_count = Math.min(count(unsupported), result.associated_count);

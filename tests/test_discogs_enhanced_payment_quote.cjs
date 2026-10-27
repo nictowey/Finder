@@ -122,8 +122,174 @@ function publicGuestFrame(f, { html = '<button id="submit-button" type="button">
       assert.equal(arg, handle); return currentHandle === handle;
     } };
   return { frame, dom, setVisible: value => { visible = value; }, setParent: value => { parent = value; },
-    setAttached: value => { attached = value; }, setUrl: value => { url = value; }, replaceDocument: () => { currentHandle = {}; } };
+    setAttached: value => { attached = value; }, setUrl: value => { url = value; dom.reconfigure({ url: value }); }, replaceDocument: () => { currentHandle = {}; } };
 }
+
+function observedNestedGuestFixture() {
+  // Actual observed categories/relationships, with synthetic paths and secrets.
+  // Fourteen inventory members: main, known buttons, one visible guest, two
+  // hidden nested peers and nine unrelated origins. This is not a quote profile.
+  const f = fixture(), buttons = publicGuestFrame(f, { html: '<div>buttons container</div>' }), guest = publicGuestFrame(f);
+  buttons.setUrl('https://www.paypal.com/smart/buttons?token=TOP_SECRET_BUTTONS');
+  guest.setUrl('https://www.paypal.com/smart/fixture-guest?token=TOP_SECRET_GUEST'); guest.setParent(buttons.frame);
+  const hiddenSmart = publicGuestFrame(f), hiddenOther = publicGuestFrame(f);
+  hiddenSmart.setUrl('https://www.paypal.com/smart/fixture-hidden?token=TOP_SECRET_HIDDEN'); hiddenSmart.setParent(guest.frame); hiddenSmart.setVisible(false);
+  hiddenOther.setUrl('https://www.paypal.com/fixture-hidden-other?token=TOP_SECRET_HIDDEN'); hiddenOther.setParent(guest.frame); hiddenOther.setVisible(false);
+  const unrelated = Array.from({ length: 9 }, (_, i) => ({ url: () => `https://unrelated.example/${i}?token=TOP_SECRET`, parentFrame: () => f.main,
+    frameElement: () => { throw new Error('Unrelated DOM forbidden'); }, evaluate: () => { throw new Error('Unrelated DOM forbidden'); } }));
+  const frames = [f.main, ...unrelated.slice(0, 4), hiddenSmart.frame, buttons.frame, hiddenOther.frame, ...unrelated.slice(4), guest.frame];
+  f.page.frames = () => frames;
+  let guestLabelReads = 0; const evaluate = guest.frame.evaluate;
+  guest.frame.evaluate = async (fn, arg) => { if (fn === collectGuestPayControlMetadataDom) guestLabelReads++; return evaluate(fn, arg); };
+  const close = async () => { await waitForEnhancedPaymentQuoteSettlement(f.page); [buttons, guest, hiddenSmart, hiddenOther].forEach(value => value.dom.window.close()); f.dom.window.close(); };
+  return { f, buttons, guest, hiddenSmart, hiddenOther, frames, unrelated, close, get guestLabelReads() { return guestLabelReads; } };
+}
+
+function assertNoPaymentQualification(result) {
+  assert.equal(result.payment_allowed, false); assert.equal(result.final_submission_allowed, false); assert.equal(result.final_quote_verified, false);
+  assert.equal(result.destination_verified, false); assert.equal(result.provider_terms_verified, false);
+  if (result.provenance) assert.equal(result.provenance.frame_association.payment_quote_frame_qualified, false);
+  assert.equal(JSON.stringify(result).includes('TOP_SECRET'), false);
+}
+
+test('actual fourteen-frame observed relationship admits one public nested smart guest through the verified buttons frame only', async () => {
+  const f = observedNestedGuestFixture();
+  try {
+    const result = await inspectCurrentEnhancedPaymentQuote(f.f.page), metadata = result.guest_pay_metadata;
+    assert.equal(f.frames.length, 14); assert.equal(metadata.status, 'observed'); assert.equal(metadata.label, 'Pay $5.05');
+    assert.equal(metadata.currency, null); assert.equal(metadata.location, 'paypal_child'); assert.equal(metadata.eligible_count, 1);
+    assert.equal(metadata.same_document_verified, true); assert.equal(metadata.frame_associated, true);
+    assert.equal(metadata.selection_diagnostic.eligible_frames, 1); assert.equal(metadata.selection_diagnostic.non_direct, 2);
+    assert.equal(metadata.ancestry_diagnostic.candidate_count, 3);
+    const positive = metadata.ancestry_diagnostic.candidates.find(value => value.public_submit_count === 1);
+    assert.equal(positive.category, 'paypal_smart_other'); assert.equal(positive.depth, 2); assert.equal(positive.buttons_ancestor_verified, true);
+    assert.deepEqual(metadata.ancestry_diagnostic.candidates.filter(value => value.public_submit_count === null).map(value => value.hops[0].parent_category),
+      ['paypal_smart_other', 'paypal_smart_other']);
+    assert.equal(f.guestLabelReads, 2); assert.deepEqual(sanitizeGuestPayMetadata(metadata), metadata); assertNoPaymentQualification(result);
+  } finally { await f.close(); }
+});
+
+test('nested public metadata rejects wrong leaf category, deeper ancestry, unrelated or multiple buttons and visible unknown peers', async () => {
+  for (const mode of ['wrong-leaf', 'depth-three', 'sibling-buttons', 'multiple-buttons', 'visible-peer']) {
+    const f = observedNestedGuestFixture(); let added = null;
+    try {
+      if (mode === 'wrong-leaf') f.guest.setUrl('https://www.paypal.com/fixture-guest');
+      if (mode === 'depth-three') { added = publicGuestFrame(f.f, { html: '<div>intermediate</div>' }); added.setUrl('https://www.paypal.com/smart/intermediate');
+        added.setParent(f.buttons.frame); f.guest.setParent(added.frame); f.frames.push(added.frame); }
+      if (mode === 'sibling-buttons') { f.buttons.setUrl('https://www.paypal.com/smart/unverified-container'); }
+      if (mode === 'multiple-buttons') { added = publicGuestFrame(f.f, { html: '<div>other buttons</div>' }); added.setUrl('https://www.paypal.com/smart/buttons?other=TOP_SECRET'); f.frames.push(added.frame); }
+      if (mode === 'visible-peer') f.hiddenOther.setVisible(true);
+      const result = await inspectCurrentEnhancedPaymentQuote(f.f.page);
+      assert.notEqual(result.guest_pay_metadata?.status, 'observed', mode); assert.equal(f.guestLabelReads, 0, mode); assertNoPaymentQualification(result);
+    } finally { if (added) added.dom.window.close(); await f.close(); }
+  }
+});
+
+test('both ancestry edges must be visible with matching owner/content and duplicate public IDs are rejected', async () => {
+  for (const mode of ['leaf-hidden', 'leaf-detached', 'buttons-hidden', 'buttons-detached', 'leaf-owner', 'buttons-owner', 'duplicate-id']) {
+    const f = observedNestedGuestFixture();
+    try {
+      if (mode === 'leaf-hidden') f.guest.setVisible(false);
+      if (mode === 'leaf-detached') f.guest.setAttached(false);
+      if (mode === 'buttons-hidden') f.buttons.setVisible(false);
+      if (mode === 'buttons-detached') f.buttons.setAttached(false);
+      if (mode === 'leaf-owner') { const element = await f.guest.frame.frameElement(); f.guest.frame.frameElement = async () => ({ ...element, ownerFrame: async () => f.f.main }); }
+      if (mode === 'buttons-owner') { const element = await f.buttons.frame.frameElement(); f.buttons.frame.frameElement = async () => ({ ...element, ownerFrame: async () => ({}) }); }
+      if (mode === 'duplicate-id') f.guest.dom.window.document.body.insertAdjacentHTML('beforeend','<input id="submit-button" value="TOP_SECRET">');
+      const result = await inspectCurrentEnhancedPaymentQuote(f.f.page);
+      assert.notEqual(result.guest_pay_metadata?.status, 'observed', mode); assertNoPaymentQualification(result);
+    } finally { await f.close(); }
+  }
+});
+
+test('nested metadata rejects same-URL leaf/buttons/main replacement and hidden-peer changes after matcher awaits', async () => {
+  for (const mode of ['leaf-document', 'buttons-document', 'main-document', 'hidden-visible', 'hidden-document', 'leaf-url', 'control-changed']) {
+    const f = observedNestedGuestFixture();
+    try {
+      const result = await inspectCurrentEnhancedPaymentQuote(f.f.page, { destinationMatcher: async () => {
+        if (mode === 'leaf-document') f.guest.replaceDocument();
+        if (mode === 'buttons-document') f.buttons.replaceDocument();
+        if (mode === 'main-document') f.f.changeDocument();
+        if (mode === 'hidden-visible') f.hiddenOther.setVisible(true);
+        if (mode === 'hidden-document') f.hiddenOther.replaceDocument();
+        if (mode === 'leaf-url') f.guest.setUrl('https://unknown.example/private?token=TOP_SECRET');
+        if (mode === 'control-changed') f.guest.dom.window.document.querySelector('#submit-button').textContent = 'Pay $6.05';
+        return null;
+      } });
+      assert.notEqual(result.guest_pay_metadata?.status, 'observed', mode); assertNoPaymentQualification(result);
+    } finally { await f.close(); }
+  }
+});
+
+test('nested capture cancellation retains the pending handle and performs no late public control read', async () => {
+  const f = observedNestedGuestFixture(), entered = deferred(), finish = deferred(), controller = new AbortController();
+  const handle = f.guest.frame.evaluateHandle;
+  f.guest.frame.evaluateHandle = async (fn, arg) => {
+    if (fn.name === 'captureNestedGuestDocument') { entered.resolve(); await finish.promise; }
+    return handle(fn, arg);
+  };
+  try {
+    const request = inspectCurrentEnhancedPaymentQuote(f.f.page, { signal: controller.signal }); await entered.promise; controller.abort();
+    const result = await request; assert.equal(result.code, 'read_cancelled'); assert.equal(f.guestLabelReads, 0);
+    let settled = false; const drain = waitForEnhancedPaymentQuoteSettlement(f.f.page).then(() => { settled = true; });
+    await new Promise(resolve => setImmediate(resolve)); assert.equal(settled, false);
+    finish.resolve(); await drain; assert.equal(f.guestLabelReads, 0); assertNoPaymentQualification(result);
+  } finally { finish.resolve(); await f.close(); }
+});
+
+test('late hidden-peer activation during the final public re-read cannot retain nested eligibility', async () => {
+  const f = observedNestedGuestFixture(); let publicReads = 0; const evaluate = f.guest.frame.evaluate;
+  f.guest.frame.evaluate = async (fn, arg) => {
+    const value = await evaluate(fn, arg);
+    if (fn === collectGuestPayControlMetadataDom && ++publicReads === 2) f.hiddenOther.setVisible(true);
+    return value;
+  };
+  try {
+    const result = await inspectCurrentEnhancedPaymentQuote(f.f.page);
+    assert.equal(result.guest_pay_metadata.status, 'unsupported_collection');
+    assert.equal(result.guest_pay_metadata.selection_diagnostic.reason, 'frame_changed');
+    assert.equal(result.guest_pay_metadata.ancestry_diagnostic.status, 'changed'); assertNoPaymentQualification(result);
+  } finally { await f.close(); }
+});
+
+test('final ancestor/main proof cannot hide a late same-URL leaf replacement, detach or reparent', async () => {
+  for (const mode of ['document', 'detach', 'reparent', 'visibility']) {
+    const f = observedNestedGuestFixture(); let inventories = 0, finalRootProofs = 0, mutated = false;
+    f.f.page.frames = () => { inventories++; return f.frames; };
+    const evaluate = f.f.page.evaluate;
+    f.f.page.evaluate = async (fn, arg) => {
+      const result = await evaluate(fn, arg);
+      if (inventories >= 4 && arg === f.f.documentHandle && ++finalRootProofs === 2) {
+        mutated = true;
+        if (mode === 'document') f.guest.replaceDocument();
+        if (mode === 'detach') f.guest.setAttached(false);
+        if (mode === 'reparent') f.guest.setParent(f.f.main);
+        if (mode === 'visibility') f.guest.setVisible(false);
+      }
+      return result;
+    };
+    try {
+      const result = await inspectCurrentEnhancedPaymentQuote(f.f.page);
+      assert.equal(mutated, true, mode); assert.equal(result.guest_pay_metadata.status, 'unsupported_collection', mode);
+      assert.equal(result.guest_pay_metadata.selection_diagnostic.reason, 'frame_changed', mode);
+      assert.equal(result.guest_pay_metadata.ancestry_diagnostic.status, 'changed', mode); assertNoPaymentQualification(result);
+    } finally { await f.close(); }
+  }
+});
+
+test('direct plus nested controls stay ambiguous and combined eligible-child cap remains two', async () => {
+  for (const count of [1, 2]) {
+    const f = observedNestedGuestFixture(), direct = Array.from({ length: count }, () => publicGuestFrame(f.f));
+    f.frames.push(...direct.map(value => value.frame));
+    try {
+      const result = await inspectCurrentEnhancedPaymentQuote(f.f.page), metadata = result.guest_pay_metadata;
+      assert.equal(metadata.status, count === 1 ? 'ambiguous' : 'unsupported_collection');
+      assert.equal(metadata.selection_diagnostic.eligible_frames, count + 1);
+      if (count === 2) { assert.equal(metadata.truncated, true); assert.equal(metadata.selection_diagnostic.reason, 'eligible_frame_limit'); }
+      assertNoPaymentQualification(result);
+    } finally { direct.forEach(value => value.dom.window.close()); await f.close(); }
+  }
+});
 
 test('fixed public Pay metadata supports merchant main document and never infers currency from the dollar sign', async () => {
   for (const label of ['Pay $5.05', 'Pay $5.05 USD']) {
