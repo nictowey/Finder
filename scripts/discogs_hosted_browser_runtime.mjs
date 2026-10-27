@@ -5,6 +5,7 @@ import { listenHostedReadOnly } from './discogs_hosted_readonly.mjs';
 import { createHostedContextLease, listenHostedGuestPreparation, HOSTED_GUEST_SOCKET } from './discogs_hosted_guest_socket.mjs';
 import { createHostedPaymentRuntime, createHostedPaymentRuntimeFixture } from './discogs_hosted_payment_runtime.mjs';
 import { listenHostedPaymentControl, listenHostedPaymentControlFixture, HOSTED_PAYMENT_CONTROL_SOCKET } from './discogs_hosted_payment_control.mjs';
+import { startBrowserRequestDiagnostics } from './discogs_browser_request_diagnostics.mjs';
 
 export const HOSTED_BROWSER_SHUTDOWN_MS = 2000;
 export const HOSTED_BROWSER_BLANK_STARTUP_MS = 5000;
@@ -85,7 +86,9 @@ async function boundedShutdown(operations) {
 const paymentFixture = Symbol('isolated_payment_runtime_fixture');
 const blankStartupFixture = Symbol('isolated_blank_startup_fixture');
 export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPath, { guestPreparation = null,
-  paymentRuntime = null, [paymentFixture]: fixture = null, [blankStartupFixture]: blankFixture = false } = {}) {
+  paymentRuntime = null, requestDiagnostics = false,
+  [paymentFixture]: fixture = null, [blankStartupFixture]: blankFixture = false } = {}) {
+  if (typeof requestDiagnostics !== 'boolean') throw new TypeError('request_diagnostics_boolean_required');
   if (!firefox || typeof firefox.launchPersistentContext !== 'function' ||
       profilePath !== '/profile' || !['/tmp/sniper-read-only.sock', '/bridge/sniper-read-only.sock'].includes(socketPath)) {
     throw new TypeError('unsupported_hosted_browser_configuration');
@@ -117,13 +120,15 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
       'browser.sessionstore.max_resumed_crashes': 0,
     },
   });
-  let browser, blankStartup, releaseStartupLease, closeSocket, closeGuestSocket, closePaymentSocket, payment, shutdown, closing = false, unavailable = false;
+  let browser, blankStartup, releaseStartupLease, releaseDiagnosticLease, diagnostics,
+    closeSocket, closeGuestSocket, closePaymentSocket, payment, shutdown, closing = false, unavailable = false;
   let reportUnavailable;
   const unavailablePromise = new Promise(resolve => { reportUnavailable = resolve; });
   const close = () => {
     if (shutdown) return shutdown;
     closing = true;
     shutdown = boundedShutdown([
+      () => diagnostics?.stop(),
       () => blankStartup?.dispose(),
       () => closeSocket?.(),
       () => closeGuestSocket?.(),
@@ -157,6 +162,8 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
     unavailable: { value: unavailablePromise },
     isAvailable: { value: isAvailable },
     payment: { get: () => payment },
+    stopRequestDiagnostics: { value: () => diagnostics?.stop() },
+    requestDiagnosticsSnapshot: { value: () => diagnostics?.snapshot() ?? null },
   });
   try {
     if (typeof context.on !== 'function' || typeof context.off !== 'function' ||
@@ -204,6 +211,21 @@ export async function launchHostedReadOnlyBrowser(firefox, profilePath, socketPa
     if (!isAvailable()) throw new Error('browser_unavailable');
     blankStartup?.verify();
     blankStartup?.dispose();
+    if (requestDiagnostics) {
+      // Transfer the startup lease without an entry/read gap. While observing,
+      // every managed reader, entry and payment operation stays excluded.
+      releaseDiagnosticLease = releaseStartupLease ?? acquireContextLease();
+      if (typeof releaseDiagnosticLease !== 'function') throw new Error('request_diagnostics_busy');
+      releaseStartupLease = null;
+      diagnostics = startBrowserRequestDiagnostics(context, { enabled: true, report: summary => {
+        try { console.log(summary); }
+        finally {
+          // During shutdown keep the lease held until the context is retired.
+          if (!closing) { releaseDiagnosticLease?.(); releaseDiagnosticLease = null; }
+        }
+      } });
+      if (diagnostics.snapshot().state === 'observing') console.log('private_browser_request_diagnostics_started');
+    }
     releaseStartupLease?.();
     releaseStartupLease = null;
     return close;

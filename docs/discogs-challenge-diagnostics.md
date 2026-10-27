@@ -50,9 +50,9 @@ history is actually observed; zero visible non-archived orders is insufficient.
 
 ## Dormant collector — not deployed or attached
 
-`scripts/discogs_browser_request_diagnostics.mjs` is a standalone opt-in utility.
-No hosted-browser launcher imports it, and the hosted-browser image recipe does
-not package it. It is off by default;
+`scripts/discogs_browser_request_diagnostics.mjs` is an opt-in utility. The staged
+hosted-browser runtime imports it and its image recipe copies it, but this code
+has not been uploaded, built or activated on the private host. It is off by default;
 even its context is untouched unless `enabled: true` is explicitly supplied.
 Future attachment needs a separately reviewed permitted diagnostic pass. The
 module itself provides no permission or mechanism to request/retry a page.
@@ -98,24 +98,64 @@ payment, or transaction-state change is performed by this utility.
 
 ## Proposed activation scope — not executed
 
-This change does not add a production import, a browser-control endpoint or a
-live attachment. Before activation, review the minimal existing-resident-context
-hook and whether it needs one profile-preserving service activation; do not
-launch another controller or transfer cookies. Upload/build/restart scope, if
-needed, must be explicitly included in that activation review, using only the
-already established private host and preserving its stop and audit records.
+The previously missing resident-context hook is staged in the existing runtime,
+not a new IPC/browser-control endpoint. Production opt-in is exactly
+`SNIPER_BROWSER_REQUEST_DIAGNOSTICS=once`; absence disables it, and every other
+value fails closed before browser launch. `once` means one observer lifetime in
+that explicitly started process, not a cross-restart permission or a retry grant.
+The existing fixed sockets cannot start or rearm it. Qualification reload remains
+policy-only, not code hot reload. The currently deployed older image still has
+no hook, so code activation/restart is required before the first live use.
 
-An offline source review confirmed that `sniper-browser-bridge-runner.mjs`
-does not import the collector, `HostedBrowserBridge.Dockerfile` does not copy it,
-and the existing read-only, guest and payment-control sockets expose no request
-observer operation. Qualification reload changes policy only; it is not code
-hot reload. Thus the deployed tooling cannot presently run this categorized
-collector against its resident context without a reviewed fixed hook and code
-activation. A separate process, debug-port attachment or second browser is not
-an equivalent supported path and is not proposed. No credential, cookie,
-network, permission or browser-security setting change is needed by the proposed
-hook, but a fresh ordinary sign-in may be required after the reported reset.
-That user-dependent state has not been checked.
+After controlled blank startup and listener verification, the hook transfers
+the shared context lease directly from startup into observation, with no gap
+for managed entry/payment/readers. It releases the lease when collection stops
+normally, at the event/duration cap, or by the fixed stop control. During browser
+shutdown the lease stays held until context retirement. Disabled startup attaches
+no request listeners and adds no observer work. The runtime exposes only an
+internal snapshot/stop handle to its runner, never the context or arbitrary code.
+
+While this opt-in process runs, `SIGUSR2` to the **verified Node bridge-runner
+process** stops diagnostics only: it does not close/restart the browser, change
+authorization or resume collection. Repeated stop signals remain harmless. A
+signal during startup is retained until the stop handle exists. The handler is
+removed on runner shutdown. Do not signal the service client, container PID 1
+or an unverified PID, and do not send this signal in default/off mode.
+
+### Small activation sequence, pending release of the deployment hold
+
+1. Review the exact code-only bundle/hashes: collector, runtime, fixed runner,
+   Dockerfile and manifest. Upload only that bundle to the established private
+   `15.204.246.41`; never include a profile, cookies, logs or credentials. Build
+   on the verified existing image without pulling/installing software. No live
+   upload, build or restart has occurred in this implementation pass.
+2. Verify current UI state and audit/profile preservation prerequisites. At
+   17:42:03 UTC ordinary viewer observation showed the Discogs verifier again;
+   sign-in status remained unknown after the owner-reported reset. Do not assume
+   the tab is blank or signed in. No click/refresh/solve/login followed that
+   observation. A fresh ordinary sign-in could require user action later.
+3. After explicit activation review, perform one profile-preserving activation
+   of `sniper-browser-view.service` using the pinned new image and temporary
+   opt-in environment. Keep automatic restart disabled for this one pass, keep
+   monitoring/Pay off and preserve every stop, receipt and ledger record. No
+   credential, cookie, network, permission or browser-security changes are
+   part of this scope. No second controller or debugging port is involved.
+4. Pre-stage the single normal access check. The observer starts immediately
+   after blank startup, logs `private_browser_request_diagnostics_started` and
+   runs at most 60 seconds/128 total events; the budget is not extended by UI
+   delays. Confirm that fixed start marker and a single healthy runner before
+   the approved normal navigation. No checkout or card-entry handoff belongs
+   in this pass. The managed shared lease remains held while collecting.
+5. On the first challenge/restriction or completed observation, stop the
+   collector with SIGUSR2 to the verified runner and return the tab normally
+   to blank. Otherwise it stops at its cap. Verify exactly one fixed v2 summary,
+   `state: stopped`, the stop reason and counts within bounds; no URL/payload
+   text may appear. Confirm browser health, unchanged audit/ledger hashes and
+   no repeat observer start. A later signal cannot rearm it.
+6. Remove the temporary opt-in from future service launches without restarting
+   the current browser, and verify it is absent from the next-start definition.
+   Do not restore automatic restarts or alter another setting incidentally.
+   Any subsequent diagnostic is a separately coordinated pass.
 
 The eventual separately approved diagnostic is one ordinary same-profile access
 check, with this observer attached only outside secure entry and under the

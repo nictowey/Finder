@@ -6,12 +6,13 @@ const { EventEmitter } = require('node:events');
 const { connect } = require('node:net');
 const { stat } = require('node:fs/promises');
 let launchHostedReadOnlyBrowser, HOSTED_BROWSER_SHUTDOWN_MS, runHostedBrowser,
-  establishHostedBlankStartup, HOSTED_BROWSER_BLANK_STARTUP_MS, launchHostedBlankStartupFixtureBrowser;
+  establishHostedBlankStartup, HOSTED_BROWSER_BLANK_STARTUP_MS, launchHostedBlankStartupFixtureBrowser,
+  parseRequestDiagnosticsMode;
 before(async () => {
   ({ launchHostedReadOnlyBrowser, HOSTED_BROWSER_SHUTDOWN_MS,
     establishHostedBlankStartup, HOSTED_BROWSER_BLANK_STARTUP_MS, launchHostedBlankStartupFixtureBrowser } =
     await import('../scripts/discogs_hosted_browser_runtime.mjs'));
-  ({ runHostedBrowser } = await import('../scripts/sniper-browser-bridge-runner.mjs'));
+  ({ runHostedBrowser, parseRequestDiagnosticsMode } = await import('../scripts/sniper-browser-bridge-runner.mjs'));
 });
 const socketPath = '/tmp/sniper-read-only.sock';
 
@@ -276,7 +277,76 @@ test('actual launcher attaches a disabled payment caller without reading the res
       assert.equal((await close.payment[action]({})).code, 'hosted_payment_disabled');
     }
     assert.equal(pageReads, 0);
+    assert.equal(close.requestDiagnosticsSnapshot(), null);
+    assert.equal(item.context.listenerCount('response'), 0);
+    assert.equal(item.context.listenerCount('requestfailed'), 0);
   } finally { await close(); }
+});
+
+async function readEmptyRequest() {
+  return await new Promise((resolve, reject) => {
+    const client = connect(socketPath); let data = '';
+    client.setEncoding('utf8'); client.on('connect', () => client.write('{}\n'));
+    client.on('data', value => { data += value; });
+    client.on('error', reject); client.on('end', () => resolve(JSON.parse(data)));
+  });
+}
+
+test('resident diagnostics observe the same context while its shared lease excludes reads until fixed stop', async t => {
+  const item = fixture(), output = []; let pageReads = 0;
+  item.context.pages = () => { pageReads++; throw new Error('sensitive page read'); };
+  t.mock.method(console, 'log', value => output.push(value));
+  const close = await launchHostedReadOnlyBrowser(item.firefox, '/profile', socketPath, { requestDiagnostics: true });
+  try {
+    assert.equal(close.requestDiagnosticsSnapshot().state, 'observing');
+    assert.equal((await readEmptyRequest()).code, 'read_in_progress');
+    item.context.emit('response', { url: () => 'https://challenges.cloudflare.com/turnstile/v0/api.js?SECRET', status: () => 403 });
+    close.stopRequestDiagnostics(); close.stopRequestDiagnostics();
+    assert.equal(close.requestDiagnosticsSnapshot().state, 'stopped');
+    assert.equal(close.requestDiagnosticsSnapshot().stop_reason, 'manual');
+    assert.equal((await readEmptyRequest()).code, 'unsupported_read_request');
+    assert.equal(item.context.listenerCount('response'), 0);
+    assert.equal(item.context.listenerCount('requestfailed'), 0);
+    assert.equal(pageReads, 0);
+    const reports = output.filter(value => value.startsWith('{'));
+    assert.equal(reports.length, 1);
+    assert.equal(JSON.parse(reports[0]).resource_counts.challenge_bootstrap.response_counts.forbidden_403, 1);
+    assert.doesNotMatch(reports[0], /SECRET|https|cloudflare/);
+  } finally { await close(); }
+});
+
+for (const stop of ['duration', 'event_cap', 'disconnect']) {
+  test(`resident diagnostic ${stop} shutdown detaches and cannot restart itself`, async t => {
+    const item = fixture(), output = [];
+    t.mock.method(console, 'log', value => output.push(value));
+    if (stop === 'duration') t.mock.timers.enable({ apis: ['setTimeout'] });
+    const close = await launchHostedReadOnlyBrowser(item.firefox, '/profile', socketPath, { requestDiagnostics: true });
+    try {
+      assert.equal((await readEmptyRequest()).code, 'read_in_progress');
+      if (stop === 'duration') t.mock.timers.tick(60000);
+      else if (stop === 'disconnect') item.browser.emit('disconnected');
+      else for (let i = 0; i < 128; i++) item.context.emit('response', { url: () => 'https://x.dnstest.dev/', status: () => 200 });
+      if (stop === 'disconnect') { await close.unavailable; await close(); }
+      else assert.equal((await readEmptyRequest()).code, 'unsupported_read_request');
+      assert.equal(close.requestDiagnosticsSnapshot().state, 'stopped');
+      assert.equal(close.requestDiagnosticsSnapshot().stop_reason, stop === 'duration' ? 'duration_cap' : stop === 'disconnect' ? 'manual' : 'event_cap');
+      const before = close.requestDiagnosticsSnapshot().observed_events;
+      item.context.emit('response', new Proxy({}, { get() { throw new Error('stopped metadata read'); } }));
+      assert.equal(close.requestDiagnosticsSnapshot().observed_events, before);
+      assert.equal(item.context.listenerCount('response'), 0);
+      assert.equal(item.context.listenerCount('requestfailed'), 0);
+      assert.equal(output.filter(value => value.startsWith('{')).length, 1);
+    } finally { await close(); }
+  });
+}
+
+test('diagnostic mode is absent by default and accepts only the explicit once token', async () => {
+  assert.equal(parseRequestDiagnosticsMode(undefined), false);
+  assert.equal(parseRequestDiagnosticsMode('once'), true);
+  for (const value of ['', '1', 'true', 'false', true, {}, null]) assert.throws(() => parseRequestDiagnosticsMode(value), /invalid_request_diagnostics_mode/);
+  const item = fixture();
+  await assert.rejects(launchHostedReadOnlyBrowser(item.firefox, '/profile', socketPath, { requestDiagnostics: 'once' }), /request_diagnostics_boolean_required/);
+  assert.equal(item.calls.length, 0);
 });
 
 test('launcher rejects payment callback/path overrides or live gate on the development socket before browser launch', async () => {
@@ -309,7 +379,7 @@ function runnerFixture({ holdLaunch = false, closeFails = false } = {}) {
   const hold = new Promise(resolve => { ready = resolve; });
   const close = Object.assign(async () => {
     calls.push('close'); if (closeFails) throw new Error('private driver details');
-  }, { unavailable, isAvailable: () => true });
+  }, { unavailable, isAvailable: () => true, stopRequestDiagnostics: () => calls.push('diagnostics_stop') });
   const options = { signals, report: value => output.push(value),
     loadQualification: async () => null,
     loadPaymentMode: async () => ({ entryGate: false, liveGate: false, controlEnabled: false }),
@@ -336,6 +406,35 @@ test('runner wires explicit owner entry-only mode without enabling payment', asy
   assert.equal(typeof item.calls[0][3].guestPreparation.accessGuard, 'function');
   assert.equal(typeof item.calls[0][3].guestPreparation.authorize, 'function');
   assert.deepEqual(item.errors, []);
+});
+
+test('runner diagnostic opt-in and SIGUSR2 only stop collection, never the browser or restart it', async () => {
+  const item = runnerFixture(); item.options.requestDiagnostics = true;
+  const running = runHostedBrowser('firefox-port', item.options);
+  await item.launched; await new Promise(resolve => setImmediate(resolve));
+  assert.equal(item.calls[0][3].requestDiagnostics, true);
+  item.signals.emit('SIGUSR2'); item.signals.emit('SIGUSR2');
+  assert.equal(item.calls.filter(value => value === 'diagnostics_stop').length, 2);
+  assert.ok(!item.calls.includes('close'));
+  item.signals.emit('SIGTERM'); assert.equal(await running, 0);
+  assert.equal(item.calls.filter(value => Array.isArray(value)).length, 1);
+  assert.equal(item.signals.listenerCount('SIGUSR2'), 0);
+});
+
+test('diagnostic stop during startup is retained until the resident control is available', async () => {
+  const item = runnerFixture({ holdLaunch: true }); item.options.requestDiagnostics = true;
+  const running = runHostedBrowser('firefox-port', item.options);
+  await item.launched; item.signals.emit('SIGUSR2'); item.ready();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(item.calls.filter(value => value === 'diagnostics_stop').length, 1);
+  item.signals.emit('SIGTERM'); assert.equal(await running, 0);
+  assert.equal(item.signals.listenerCount('SIGUSR2'), 0);
+});
+
+test('diagnostics packaging includes only the fixed collector module, not a general remote evaluator', async () => {
+  const { readFile } = require('node:fs/promises');
+  const file = await readFile(require('node:path').join(__dirname, '../deployment/HostedBrowserBridge.Dockerfile'), 'utf8');
+  assert.ok(file.includes('COPY scripts/discogs_browser_request_diagnostics.mjs /app/scripts/discogs_browser_request_diagnostics.mjs\n'));
 });
 
 test('runner rejects invalid payment mode before opening a browser', async () => {

@@ -6,6 +6,7 @@ COPY scripts/discogs_cart_inspector.mjs /app/scripts/discogs_cart_inspector.mjs
 COPY scripts/discogs_listing_detail_snapshot.mjs /app/scripts/discogs_listing_detail_snapshot.mjs
 COPY scripts/discogs_release_snapshot.mjs /app/scripts/discogs_release_snapshot.mjs
 COPY scripts/discogs_browser_memory.mjs /app/scripts/discogs_browser_memory.mjs
+COPY scripts/discogs_browser_request_diagnostics.mjs /app/scripts/discogs_browser_request_diagnostics.mjs
 COPY scripts/discogs_hosted_browser_runtime.mjs /app/scripts/discogs_hosted_browser_runtime.mjs
 COPY scripts/discogs_hosted_payment_runtime.mjs /app/scripts/discogs_hosted_payment_runtime.mjs
 COPY scripts/discogs_hosted_payment_control.mjs /app/scripts/discogs_hosted_payment_control.mjs
