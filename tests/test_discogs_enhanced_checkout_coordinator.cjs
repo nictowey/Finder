@@ -5,10 +5,13 @@
 // below is intercepted synthetic metadata. No HTTP, payment or receipt DOM claim.
 const assert = require('node:assert/strict');
 const { test, before } = require('node:test');
-const { mkdtemp, rm } = require('node:fs/promises');
+const { mkdtemp, rm, mkdir, copyFile, readdir, readFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, createHash } = require('node:crypto');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const { pathToFileURL } = require('node:url');
 let createEnhancedCheckoutCoordinator, createEnhancedCheckoutCoordinatorFixture,
   createBoundEnhancedOrderFencePort, createEnhancedOrderLedgerFixturePort,
   attemptEnhancedPayment, KC_ORDER_SCOPE;
@@ -177,4 +180,73 @@ test('production coordinator invokes the actual fixed quote producer and never p
   assert.equal(result.quote.merchant_displayed.total.amount, '5.05'); assert.equal(result.quote.final_quote_verified, false);
   assert.equal(result.quote.amount_basis, 'merchant_aggregate_preparation_only'); assert.equal(result.payment.code, 'enhanced_payment_disabled');
   assert.ok(calls.includes('fixed_quote_collector')); assert.ok(calls.includes('dispose'));
+});
+
+
+test('packaged-layout non-test subprocess imports the exact dependency closure and keeps payment disabled without effects', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sniper-coordinator-package-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const modules = [
+    'discogs_enhanced_checkout_coordinator.mjs', 'discogs_enhanced_payment_quote.mjs',
+    'discogs_enhanced_payment_adapter.mjs', 'discogs_enhanced_order_ledger_port.mjs',
+    'discogs_merchant_order_evidence.mjs', 'discogs_enhanced_checkout.mjs',
+    'discogs_hosted_readonly.mjs', 'discogs_cart_inspector.mjs',
+    'discogs_release_snapshot.mjs', 'discogs_listing_detail_snapshot.mjs',
+  ];
+  const copiedFiles = [...modules.map(name => `scripts/${name}`),
+    'scripts/discogs_order_ledger_port.py', 'src/finder/discogs_order_reconciliation.py'];
+  assert.equal(modules.length, 10);
+  for (const relative of copiedFiles) {
+    const target = join(directory, relative);
+    await mkdir(join(target, '..'), { recursive: true });
+    await copyFile(join(__dirname, '..', relative), target);
+  }
+  const snapshot = async () => {
+    const files = [];
+    const walk = async relative => {
+      for (const entry of await readdir(join(directory, relative), { withFileTypes: true })) {
+        const path = relative ? `${relative}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) await walk(path);
+        else { assert.equal(entry.isFile(), true); files.push([path,
+          createHash('sha256').update(await readFile(join(directory, path))).digest('hex')]); }
+      }
+    };
+    await walk(''); return files.sort(([a], [b]) => a.localeCompare(b));
+  };
+  const before = await snapshot();
+  assert.deepEqual(before.map(([name]) => name).sort(), [...copiedFiles].sort());
+  const source = `
+    import assert from 'node:assert/strict';
+    import childProcess from 'node:child_process';
+    import net from 'node:net';
+    import fs from 'node:fs/promises';
+    import { syncBuiltinESMExports } from 'node:module';
+    assert.equal(process.env.NODE_TEST_CONTEXT, undefined);
+    let externalEffects = 0;
+    const forbidden = () => { externalEffects++; throw new Error('forbidden_external_effect'); };
+    for (const key of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) childProcess[key] = forbidden;
+    for (const key of ['createServer', 'connect', 'createConnection']) net[key] = forbidden;
+    for (const key of ['writeFile', 'appendFile', 'mkdir', 'unlink', 'rename', 'chmod', 'open']) fs[key] = forbidden;
+    globalThis.fetch = forbidden;
+    Object.defineProperty(globalThis, 'document', { get: forbidden });
+    Object.defineProperty(globalThis, 'window', { get: forbidden });
+    syncBuiltinESMExports();
+    const module = await import(process.argv[1]);
+    const coordinator = module.createEnhancedCheckoutCoordinator();
+    assert.equal(coordinator.paymentEnabled, false);
+    const result = await coordinator.attemptPayment({}, { enablePay: true, dispatchObservedPay: forbidden });
+    assert.equal(result.code, 'enhanced_payment_disabled');
+    assert.equal(result.purchase_allowed, false);
+    assert.equal(result.may_submit_again, false);
+    assert.throws(() => module.createEnhancedCheckoutCoordinator({ enablePay: true }), /fixed_production_coordinator_configuration_required/);
+    assert.throws(() => module.createEnhancedCheckoutCoordinatorFixture({}), /fixture_context_required/);
+    assert.equal(externalEffects, 0);
+    console.log(JSON.stringify({ payment_code: result.code, payment_enabled: coordinator.paymentEnabled, external_effects: externalEffects }));
+  `;
+  const { stdout, stderr } = await promisify(execFile)(process.execPath,
+    ['--input-type=module', '--eval', source, pathToFileURL(join(directory, 'scripts/discogs_enhanced_checkout_coordinator.mjs')).href],
+    { cwd: directory, env: { PATH: process.env.PATH || '', TMPDIR: process.env.TMPDIR || tmpdir() }, timeout: 5000, maxBuffer: 8192 });
+  assert.equal(stderr, '');
+  assert.deepEqual(JSON.parse(stdout), { payment_code: 'enhanced_payment_disabled', payment_enabled: false, external_effects: 0 });
+  assert.deepEqual(await snapshot(), before); // No ledger/journal/runtime/config or source mutation.
 });

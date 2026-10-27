@@ -119,3 +119,42 @@ otherwise that positive layout remains unverified until a separately authorized
 real transaction. No order should be placed merely to manufacture a fixture.
 The absence of a supported Wallet/browserAuth route currently prevents secure
 automatic card entry; no persistent card credential setup is authorized.
+
+### Operator and read-only staging checklist
+
+Normal Firefox Inspector observation on October 27 established one matching
+`#submit-button` node, an HTML `button` with `type="button"`, displaying
+`Pay $5.05` in the currently open guest form. Its containing form also displayed
+the billing-address section, checked `Ship to billing address` choice and age
+notice. This is operator-inspected public metadata, **not** an installed provider
+DOM profile: exact provider frame origin/document association, explicit currency,
+final-charge treatment, destination match, payment method and full terms remain
+unqualified. No input values were read. The button was not activated.
+
+Before further inspection:
+
+- Claim the viewer using its fresh full tab record. The extension attachment can
+  change while the numeric tab ID stays the same.
+- Check native Chrome focus when viewer input appears ineffective. An open outer
+  Chrome View menu was observed intercepting input; dismissing that menu through
+  its exposed Cancel action and using normal Firefox context-menu Inspect
+  restored Inspector access. This did not require a payment-page reload.
+- Verify the remote UI actually changed before the next action; the outer noVNC
+  accessibility tree does not expose or settle the remote Firefox DOM. Focus the
+  Inspector search visibly before typing public selectors. Never type into a
+  payment field, activate Pay or capture input values during qualification.
+- Close only Inspector and preserve the blank form. A public ID and dollar label
+  alone cannot enable payment or resolve an existing submission fence.
+
+For dormant staging, preserve the module tree exercised by the packaged-layout
+test in `test_discogs_enhanced_checkout_coordinator.cjs`: ten MJS dependencies,
+`scripts/discogs_order_ledger_port.py` and
+`src/finder/discogs_order_reconciliation.py`. A normal, non-test subprocess must
+import, construct and report `enhanced_payment_disabled` with no browser, network
+or file effects. Do not initialize or open the real ledger merely to smoke-test
+staging: opening an older ledger may migrate its schema, and reconciliation
+writes evidence. No live Page object is available in a separate import process;
+read-only browser use still requires reviewed wiring into the existing runtime.
+The current fixed IPC does not expose a coordinator action. Stage files only;
+do not introduce a debugging connection, reuse a spent grant or restart the
+browser to make the library callable.
