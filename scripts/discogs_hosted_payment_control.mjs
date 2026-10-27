@@ -44,9 +44,13 @@ const stop = (code, uncertain = false) => ({ schema: 'discogs_hosted_payment_con
   payment_allowed: false, purchase_allowed: false, may_submit_again: false,
   ...(uncertain ? { requires_reconciliation: true, outcome: 'uncertain' } : {}) });
 
-async function privateDirectory(path) {
-  const info = await lstat(path);
-  if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid() || (info.mode & 0o7777) !== 0o700)
+async function privateDirectory(path, socketParent = false) {
+  const info = await lstat(path), mode = info.mode & 0o7777;
+  // The existing /bridge mount is owner10001/2710: its group may traverse,
+  // never read/write. Preserve it; the socket itself remains owner-only0600.
+  // Policy/mode-file directories retain the stricter exact0700 requirement.
+  if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid() ||
+      !(mode === 0o700 || socketParent && mode === 0o2710))
     throw new Error('owner_private_payment_directory_required');
 }
 async function loadMode(path) {
@@ -134,7 +138,7 @@ async function listen(runtime, socketPath, options, fixture) {
   if (!runtime || [...Object.values(COMMANDS), 'inspectEntryReadiness'].some(method => typeof runtime[method] !== 'function')) throw new TypeError('fixed_payment_runtime_required');
   if (options.timeoutMs !== undefined && (!fixture || !Number.isInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 35_000))
     throw new TypeError('bounded_fixture_deadline_required');
-  await privateDirectory(dirname(socketPath));
+  await privateDirectory(dirname(socketPath), true);
   try { await lstat(socketPath); throw new Error('payment_control_path_exists'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   let closing = false, uncertain = false, active = false, closePromise = null, owned = null;
   const connections = new Map(), pending = new Set();

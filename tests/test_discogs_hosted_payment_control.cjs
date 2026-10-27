@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const { test, before } = require('node:test');
 const { connect } = require('node:net');
-const { mkdtemp, chmod, writeFile, readFile, lstat, unlink, rm, symlink, link, rename } = require('node:fs/promises');
+const { mkdtemp, chmod, chown, writeFile, readFile, lstat, unlink, rm, symlink, link, rename } = require('node:fs/promises');
 const { randomUUID } = require('node:crypto');
 const { join } = require('node:path');
 let listenHostedPaymentControl, listenHostedPaymentControlFixture, loadHostedPaymentModeFixture,
@@ -67,6 +67,28 @@ test('fixed mode loader fails closed and accepts only private exact three-state 
     const target = join(dir, 'target'); await rename(path, target); await symlink(target, path); assert.deepEqual(await loadHostedPaymentModeFixture(path), off); await unlink(path);
     await rename(target, path); await chmod(dir, 0o755); assert.deepEqual(await loadHostedPaymentModeFixture(path), off); await chmod(dir, 0o700);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('socket accepts the exact existing2710 parent without changing it while mode-file parent stays0700', async () => {
+  const dir = await directory(), path = join(dir, 'payment-control.sock'), mode = join(dir, 'mode.json');
+  try {
+    // /tmp may inherit a group not held by this macOS test user. Set only
+    // this disposable fixture to the current primary group before setgid.
+    await chown(dir, process.getuid(), process.getgid());
+    await chmod(dir, 0o2710); assert.equal((await lstat(dir)).mode & 0o7777, 0o2710);
+    const close = await listenHostedPaymentControlFixture(runtime(), path, { enabled: true });
+    try {
+      assert.equal((await lstat(dir)).mode & 0o7777, 0o2710); assert.equal((await lstat(path)).mode & 0o7777, 0o600);
+      assert.equal((await exchange(path, wire())).code, 'anchored_guest_claim_observed');
+    } finally { await close(); }
+    await writeFile(mode, JSON.stringify({ schema: 'discogs_hosted_payment_mode_v1', mode: 'secure_entry' }), { mode: 0o600 });
+    assert.deepEqual(await loadHostedPaymentModeFixture(mode), off); //2710 exception is socket-only.
+    for (const permissions of [0o2770, 0o2740, 0o2705, 0o2702, 0o775, 0o710]) {
+      await chmod(dir, permissions);
+      await assert.rejects(listenHostedPaymentControlFixture(runtime(), path, { enabled: true }), /owner_private_payment_directory_required/);
+      await assert.rejects(lstat(path), { code: 'ENOENT' });
+    }
+  } finally { await chmod(dir, 0o700); await rm(dir, { recursive: true, force: true }); }
 });
 
 test('strict schemas reject inputs, credentials, enable flags, arbitrary paths and changed KC scope before invocation', async () => {
