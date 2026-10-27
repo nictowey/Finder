@@ -117,7 +117,8 @@ function publicGuestFrame(f, { html = '<button id="submit-button" type="button">
       }
       assert.equal(arg, handle); return currentHandle === handle;
     } };
-  return { frame, dom };
+  return { frame, dom, setVisible: value => { visible = value; }, setParent: value => { parent = value; },
+    setAttached: value => { attached = value; }, setUrl: value => { url = value; }, replaceDocument: () => { currentHandle = {}; } };
 }
 
 test('fixed public Pay metadata supports merchant main document and never infers currency from the dollar sign', async () => {
@@ -177,9 +178,179 @@ test('duplicate eligible public controls and bounded excess frames cannot be rep
     try { const result = await inspectCurrentEnhancedPaymentQuote(f.page);
       assert.equal(result.guest_pay_metadata.status, count === 2 ? 'ambiguous' : 'unsupported_collection');
       assert.equal(result.guest_pay_metadata.truncated, count === 3);
+      assert.equal(result.guest_pay_metadata.selection_diagnostic.reason, count === 3 ? 'eligible_frame_limit' : 'complete');
+      assert.equal(result.guest_pay_metadata.selection_diagnostic.eligible_frames, count);
       assert.equal(result.guest_pay_metadata.label, null); assert.equal(result.guest_pay_metadata.frame_associated, false);
     } finally { await waitForEnhancedPaymentQuoteSettlement(f.page); guests.forEach(item => item.dom.window.close()); f.dom.window.close(); }
   }
+});
+
+test('hidden and nested PayPal frames do not spend eligible-child slots before the actual visible associated guest document', async () => {
+  const f = fixture(), guest = publicGuestFrame(f);
+  const hidden = Array.from({ length: 3 }, () => publicGuestFrame(f)), nested = Array.from({ length: 2 }, () => publicGuestFrame(f));
+  let forbidden = 0;
+  for (const frame of hidden) frame.setVisible(false);
+  for (const frame of nested) frame.setParent({});
+  for (const item of [...hidden, ...nested]) {
+    item.frame.evaluate = item.frame.evaluateHandle = () => { forbidden++; throw new Error('Excluded document queried'); };
+  }
+  const buttons = { url: () => 'https://www.paypal.com/smart/buttons?secret=TOP_SECRET', parentFrame: () => f.main,
+    frameElement: async () => ({ isVisible: async () => true, contentFrame: async () => buttons, ownerFrame: async () => f.main }),
+    evaluate: () => { forbidden++; throw new Error('Known buttons queried'); } };
+  f.page.frames = () => [f.main, ...hidden.map(item => item.frame), ...nested.map(item => item.frame), buttons, guest.frame];
+  try {
+    const result = await inspectCurrentEnhancedPaymentQuote(f.page);
+    const metadata = result.guest_pay_metadata;
+    assert.equal(metadata.status, 'observed'); assert.equal(metadata.location, 'paypal_child'); assert.equal(metadata.truncated, false);
+    assert.equal(metadata.candidate_count, 2); assert.equal(metadata.associated_count, 2); assert.equal(metadata.eligible_count, 1);
+    assert.deepEqual(metadata.selection_diagnostic, { schema: 'discogs_guest_pay_selection_v1', reason: 'complete',
+      total: 8, visited: 8, origin: 7, buttons_excluded: 1, non_direct: 2, hidden: 3, association_rejected: 0,
+      eligible_frames: 1, inspected: 2, error: 0 });
+    assert.equal(forbidden, 0); assert.equal(result.final_quote_verified, false); assert.equal(result.payment_allowed, false);
+    assert.equal(JSON.stringify(result).includes('TOP_SECRET'), false);
+  } finally { await waitForEnhancedPaymentQuoteSettlement(f.page); [...hidden, ...nested, guest].forEach(item => item.dom.window.close()); f.dom.window.close(); }
+});
+
+test('total-frame limit reports bounded selection diagnostics through the existing production coordinator without inventing frame counts', async () => {
+  const f = fixture(); let reads = 0;
+  f.page.frames = () => Array.from({ length: 33 }, () => ({ url: () => { reads++; throw new Error('Over-limit frame visited'); } }));
+  try {
+    const result = await inspectCurrentEnhancedPaymentQuote(f.page);
+    assert.equal(result.code, 'frame_metadata_unverified'); assert.equal(reads, 0);
+    assert.equal(result.guest_pay_metadata.status, 'unsupported_collection'); assert.equal(result.guest_pay_metadata.truncated, true);
+    assert.equal(result.guest_pay_metadata.selection_diagnostic.reason, 'total_frame_limit');
+    assert.equal(result.guest_pay_metadata.selection_diagnostic.total, 32); assert.equal(result.guest_pay_metadata.selection_diagnostic.visited, 0);
+    assert.equal(result.provenance, undefined); assert.ok(sanitizeGuestPayMetadata(result.guest_pay_metadata));
+    await waitForEnhancedPaymentQuoteSettlement(f.page);
+    const { createEnhancedCheckoutCoordinator, waitForEnhancedCheckoutCoordinatorSettlement } = await import('../scripts/discogs_enhanced_checkout_coordinator.mjs');
+    const report = await createEnhancedCheckoutCoordinator().inspectPaymentReadiness(f.page);
+    await waitForEnhancedCheckoutCoordinatorSettlement(f.page);
+    assert.equal(report.quote.guest_pay_metadata.selection_diagnostic.reason, 'total_frame_limit');
+    assert.equal(report.quote.code, 'frame_metadata_unverified'); assert.equal(report.payment_allowed, false); assert.equal(reads, 0);
+  } finally { await waitForEnhancedPaymentQuoteSettlement(f.page); f.dom.window.close(); }
+});
+
+test('excluded frames changing URL, direct parent, visibility or ownership during a matcher invalidate the original selection', async () => {
+  for (const mode of ['other_origin', 'non_direct', 'hidden', 'association_rejected']) {
+    const f = fixture(), guest = publicGuestFrame(f), excluded = publicGuestFrame(f);
+    if (mode === 'other_origin') excluded.setUrl('https://unknown.example/private?token=TOP_SECRET');
+    if (mode === 'non_direct') excluded.setParent({});
+    if (mode === 'hidden') excluded.setVisible(false);
+    if (mode === 'association_rejected') excluded.setAttached(false);
+    let forbidden = 0;
+    excluded.frame.evaluate = excluded.frame.evaluateHandle = () => { forbidden++; throw new Error('Excluded document read'); };
+    f.page.frames = () => [excluded.frame, guest.frame];
+    try {
+      const result = await inspectCurrentEnhancedPaymentQuote(f.page, { destinationMatcher: async () => {
+        if (mode === 'other_origin') excluded.setUrl('https://www.paypal.com/newly-eligible');
+        if (mode === 'non_direct') excluded.setParent(f.main);
+        if (mode === 'hidden') excluded.setVisible(true);
+        if (mode === 'association_rejected') excluded.setAttached(true);
+        return null;
+      } });
+      assert.equal(result.guest_pay_metadata.status, 'unsupported_collection');
+      assert.equal(result.guest_pay_metadata.selection_diagnostic.reason, 'frame_changed');
+      assert.equal(result.guest_pay_metadata.frame_associated, false); assert.equal(result.guest_pay_metadata.label, null);
+      assert.equal(forbidden, 0); assert.equal(result.final_quote_verified, false);
+    } finally { await waitForEnhancedPaymentQuoteSettlement(f.page); guest.dom.window.close(); excluded.dom.window.close(); f.dom.window.close(); }
+  }
+});
+
+test('mutable frame-array inventory and same-URL selected document replacement cannot preserve positive selection', async () => {
+  for (const mode of ['array_mutation', 'document_replacement']) {
+    const f = fixture(), guest = publicGuestFrame(f), frames = [guest.frame]; f.page.frames = () => frames;
+    try {
+      const result = await inspectCurrentEnhancedPaymentQuote(f.page, { destinationMatcher: async () => {
+        if (mode === 'array_mutation') frames.push({ url: () => 'https://unknown.example/new' });
+        else guest.replaceDocument();
+        return null;
+      } });
+      assert.equal(result.guest_pay_metadata.status, 'unsupported_collection');
+      assert.equal(result.guest_pay_metadata.selection_diagnostic.reason, 'frame_changed');
+      assert.equal(result.guest_pay_metadata.label, null);
+    } finally { await waitForEnhancedPaymentQuoteSettlement(f.page); guest.dom.window.close(); f.dom.window.close(); }
+  }
+});
+
+test('same-URL merchant or selected document replacement during a later excluded-frame audit invalidates retained metadata', async () => {
+  for (const mode of ['merchant', 'selected_child']) {
+    const f = fixture(), guest = publicGuestFrame(f); let changed = false;
+    const excluded = { url: () => {
+      if (!changed && f.calls.includes('public_pay_metadata')) {
+        changed = true;
+        if (mode === 'merchant') f.changeDocument(); else guest.replaceDocument();
+      }
+      return 'https://unknown.example/excluded';
+    } };
+    f.page.frames = () => [guest.frame, excluded];
+    try {
+      const result = await inspectCurrentEnhancedPaymentQuote(f.page);
+      assert.equal(changed, true);
+      if (mode === 'merchant') assert.equal(result.code, 'document_changed');
+      else {
+        assert.equal(result.guest_pay_metadata.status, 'unsupported_collection');
+        assert.equal(result.guest_pay_metadata.selection_diagnostic.reason, 'frame_changed');
+      }
+      assert.equal(result.final_quote_verified, false); assert.equal(result.payment_allowed, false);
+    } finally { await waitForEnhancedPaymentQuoteSettlement(f.page); guest.dom.window.close(); f.dom.window.close(); }
+  }
+});
+
+test('selection diagnostic remains optional for legacy metadata and rejects arbitrary text, counts, getters and extra fields', () => {
+  const legacy = sanitizeGuestPayMetadata(null);
+  assert.ok(sanitizeGuestPayMetadata(legacy));
+  const diagnostic = { schema: 'discogs_guest_pay_selection_v1', reason: 'frame_inspection_error', total: 1, visited: 1, origin: 0,
+    buttons_excluded: 0, non_direct: 0, hidden: 0, association_rejected: 0, eligible_frames: 0, inspected: 0, error: 1 };
+  const cloned = sanitizeGuestPayMetadata({ ...legacy, selection_diagnostic: diagnostic });
+  assert.deepEqual(cloned.selection_diagnostic, diagnostic); assert.notEqual(cloned.selection_diagnostic, diagnostic);
+  for (const bad of [{ ...diagnostic, reason: 'TOP_SECRET' }, { ...diagnostic, total: 33 }, { ...diagnostic, url: 'TOP_SECRET' },
+    { ...diagnostic, visited: 2 }, { ...diagnostic, eligible_frames: 2 }, { ...diagnostic, inspected: 2 }]) {
+    assert.equal(sanitizeGuestPayMetadata({ ...legacy, selection_diagnostic: bad }), null);
+  }
+  const getter = { ...diagnostic }; Object.defineProperty(getter, 'reason', { enumerable: true, get() { throw new Error('Getter must not run'); } });
+  assert.equal(sanitizeGuestPayMetadata({ ...legacy, selection_diagnostic: getter }), null);
+  const complete = { schema: 'discogs_guest_pay_selection_v1', reason: 'complete', total: 1, visited: 1, origin: 1,
+    buttons_excluded: 0, non_direct: 0, hidden: 0, association_rejected: 0, eligible_frames: 1, inspected: 2, error: 0 };
+  assert.equal(sanitizeGuestPayMetadata({ ...legacy, truncated: true, selection_diagnostic: complete }), null);
+  assert.equal(sanitizeGuestPayMetadata({ ...legacy, selection_diagnostic: { ...diagnostic, error: 0 } }), null);
+  assert.equal(sanitizeGuestPayMetadata({ ...legacy, truncated: true, selection_diagnostic: { ...diagnostic, reason: 'total_frame_limit', total: 31, visited: 0, error: 0 } }), null);
+  assert.equal(sanitizeGuestPayMetadata({ ...legacy, truncated: true, selection_diagnostic: { ...complete, reason: 'eligible_frame_limit', total: 2, visited: 2, origin: 2, eligible_frames: 2, inspected: 0 } }), null);
+  assert.equal(sanitizeGuestPayMetadata({ ...legacy, selection_diagnostic: { ...complete, visited: 0 } }), null);
+  assert.equal(sanitizeGuestPayMetadata({ ...legacy, selection_diagnostic: { ...complete, eligible_frames: 0, inspected: 0 } }), null);
+  const observedChild = { ...legacy, status: 'observed', candidate_count: 1, associated_count: 1, eligible_count: 1,
+    submit_count: 1, submit_visible: true, submit_enabled: true, button_type_matches: true, label: 'Pay $5.05', amount: '5.05',
+    currency: null, location: 'paypal_child', same_document_verified: true, frame_associated: true,
+    selection_diagnostic: { ...complete, origin: 0, eligible_frames: 0, inspected: 1 } };
+  assert.equal(sanitizeGuestPayMetadata(observedChild), null);
+});
+
+test('known buttons association becoming hidden during the matcher is not reported as still associated', async () => {
+  const f = fixture(); let visible = true;
+  const buttons = { url: () => 'https://www.paypal.com/smart/buttons?private=TOP_SECRET', parentFrame: () => f.main,
+    frameElement: async () => ({ isVisible: async () => visible, contentFrame: async () => buttons, ownerFrame: async () => f.main }),
+    evaluate: () => { throw new Error('Known buttons DOM must not be read'); } };
+  f.page.frames = () => [buttons];
+  try {
+    const result = await inspectCurrentEnhancedPaymentQuote(f.page, { destinationMatcher: async () => { visible = false; return null; } });
+    assert.equal(result.provenance.frame_association.known_buttons_associated, false);
+    assert.equal(result.guest_pay_metadata.selection_diagnostic.reason, 'frame_changed');
+    assert.equal(result.final_quote_verified, false);
+  } finally { await waitForEnhancedPaymentQuoteSettlement(f.page); f.dom.window.close(); }
+});
+
+test('cancellation during candidate classification retains pending metadata reads and never proceeds to document queries', async () => {
+  const f = fixture(), guest = publicGuestFrame(f), entered = deferred(), finish = deferred(), controller = new AbortController();
+  const original = guest.frame.frameElement; let forbidden = 0;
+  guest.frame.frameElement = async () => { entered.resolve(); await finish.promise; return original(); };
+  guest.frame.evaluate = guest.frame.evaluateHandle = () => { forbidden++; throw new Error('Must not continue canceled classification'); };
+  f.page.frames = () => [guest.frame];
+  try {
+    const reading = inspectCurrentEnhancedPaymentQuote(f.page, { signal: controller.signal });
+    await entered.promise; controller.abort(); assert.equal((await reading).code, 'read_cancelled');
+    let settled = false; const drainage = waitForEnhancedPaymentQuoteSettlement(f.page).then(() => { settled = true; });
+    await new Promise(resolve => setImmediate(resolve)); assert.equal(settled, false);
+    finish.resolve(); await drainage; assert.equal(forbidden, 0);
+  } finally { finish.resolve(); await waitForEnhancedPaymentQuoteSettlement(f.page); guest.dom.window.close(); f.dom.window.close(); }
 });
 
 test('guest frame visibility, ownership, URL and document mutations during public read invalidate metadata association', async () => {

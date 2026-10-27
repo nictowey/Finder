@@ -653,6 +653,40 @@ test('a valid enhanced inspection cannot carry probe-only timing through its ear
   } finally { await close(); }
 });
 
+test('guest frame selection diagnostics cross IPC only as bounded counts and fixed reasons, never payment authority', async () => {
+  const socket = path(), config = options(); let metadata;
+  config.authorize = async () => ({ schema: 'discogs_guest_payment_inspection_authorization_v1', mode: 'inspect_enhanced_payment' });
+  config.fixtureOperations.inspect_enhanced_payment = async () => ({ status: 'observed', code: 'enhanced_payment_readiness_observed',
+    inspection: { ...paymentInspectionPayload(), guest_pay_metadata: metadata } });
+  const close = await listenHostedGuestPreparation({}, socket, config);
+  try {
+    metadata = { schema: 'discogs_guest_pay_metadata_v1', status: 'observed', paypal_origin_count: 2,
+      candidate_count: 2, associated_count: 2, eligible_count: 1, unsupported_count: 0, truncated: false,
+      submit_count: 1, submit_visible: true, submit_enabled: false, button_type_matches: true,
+      label: 'Pay $5.05', amount: '5.05', currency: null, same_document_verified: true,
+      frame_associated: true, location: 'paypal_child', selection_diagnostic: {
+        schema: 'discogs_guest_pay_selection_v1', reason: 'complete', total: 8, visited: 8, origin: 6,
+        buttons_excluded: 1, non_direct: 3, hidden: 1, association_rejected: 0,
+        eligible_frames: 1, inspected: 2, error: 0 } };
+    const result = await exchange(socket, paymentInspectionRequest());
+    assert.equal(result.code, 'enhanced_payment_readiness_observed');
+    assert.deepEqual(result.inspection.guest_pay_metadata, metadata);
+    assert.equal(result.inspection.payment_enabled, false); assert.equal(result.inspection.final_quote_verified, false);
+    assert.equal(result.initialization_allowed, false); assert.equal(result.payment_allowed, false);
+    for (const mutate of [value => { value.total = 33; }, value => { value.visited = -1; },
+      value => { value.reason = 'https://www.paypal.com/private?token=NEVER_EXPORT'; },
+      value => { value.frame_url = 'NEVER_EXPORT'; }, value => { value.hidden = '1'; },
+      value => { value.schema = 'unsupported'; }]) {
+      const original = structuredClone(metadata); mutate(metadata.selection_diagnostic);
+      const rejected = await exchange(socket, paymentInspectionRequest());
+      assert.equal(rejected.code, 'payment_inspection_unverified');
+      assert.equal(Object.hasOwn(rejected, 'inspection'), false);
+      assert.equal(JSON.stringify(rejected).includes('NEVER_EXPORT'), false);
+      metadata = original;
+    }
+  } finally { await close(); }
+});
+
 test('payment inspection sanitizer rejects malformed, private, contradictory or incomplete diagnostics atomically', async () => {
   const socket = path(), config = options(); let payload;
   config.authorize = async () => ({ schema: 'discogs_guest_payment_inspection_authorization_v1', mode: 'inspect_enhanced_payment' });

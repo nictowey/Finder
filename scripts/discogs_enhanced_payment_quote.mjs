@@ -35,6 +35,12 @@ const money = value => record(value, ['amount', 'currency']) && value.currency =
 const cents = value => { const [whole, fraction] = value.split('.'); return BigInt(whole) * 100n + BigInt(fraction); };
 const PAY_METADATA_COUNTS = ['paypal_origin_count', 'candidate_count', 'associated_count', 'eligible_count', 'unsupported_count'];
 const PAY_METADATA_NULLS = ['submit_count', 'submit_visible', 'submit_enabled', 'button_type_matches', 'label', 'amount', 'currency', 'location'];
+const SELECTION_COUNTS = ['total', 'visited', 'origin', 'buttons_excluded', 'non_direct', 'hidden',
+  'association_rejected', 'eligible_frames', 'inspected', 'error'];
+const SELECTION_REASONS = ['total_frame_limit', 'eligible_frame_limit', 'frame_changed', 'frame_inspection_error',
+  'control_metadata_unsupported', 'complete'];
+const selectionDiagnostic = (reason, total = 0) => ({ schema: 'discogs_guest_pay_selection_v1', reason,
+  ...Object.fromEntries(SELECTION_COUNTS.map(key => [key, key === 'total' ? Math.min(total, 32) : 0])) });
 const emptyPayMetadata = status => ({ schema: 'discogs_guest_pay_metadata_v1', status,
   ...Object.fromEntries(PAY_METADATA_COUNTS.map(key => [key, 0])), truncated: false,
   ...Object.fromEntries(PAY_METADATA_NULLS.map(key => [key, null])), same_document_verified: false, frame_associated: false });
@@ -44,8 +50,9 @@ const emptyPayMetadata = status => ({ schema: 'discogs_guest_pay_metadata_v1', s
  * unknown-origin documents are never inspected or evidence of global absence. */
 export function sanitizeGuestPayMetadata(value) {
   if (value === undefined || value === null) return emptyPayMetadata('unsupported_collection');
+  const hasSelection = typeof value === 'object' && Object.hasOwn(value, 'selection_diagnostic');
   if (!record(value, ['schema', 'status', ...PAY_METADATA_COUNTS, 'truncated', ...PAY_METADATA_NULLS,
-    'same_document_verified', 'frame_associated']) || value.schema !== 'discogs_guest_pay_metadata_v1' ||
+    'same_document_verified', 'frame_associated', ...(hasSelection ? ['selection_diagnostic'] : [])]) || value.schema !== 'discogs_guest_pay_metadata_v1' ||
       !['observed', 'no_eligible_frame', 'unsupported_collection', 'ambiguous'].includes(value.status) ||
       PAY_METADATA_COUNTS.some(key => ![0, 1, 2].includes(value[key])) || typeof value.truncated !== 'boolean' ||
       typeof value.same_document_verified !== 'boolean' || typeof value.frame_associated !== 'boolean') return null;
@@ -61,6 +68,23 @@ export function sanitizeGuestPayMetadata(value) {
         value.submit_count !== 1 || value.submit_visible !== true || typeof value.submit_enabled !== 'boolean' ||
         value.button_type_matches !== true || !label || value.amount !== label[1] || value.currency !== (label[2] ? 'USD' : null) ||
         !['merchant_main', 'paypal_child'].includes(value.location) || !value.same_document_verified || !value.frame_associated) return null;
+  }
+  if (hasSelection) {
+    const diagnostic = value.selection_diagnostic;
+    if (!record(diagnostic, ['schema', 'reason', ...SELECTION_COUNTS]) || diagnostic.schema !== 'discogs_guest_pay_selection_v1' ||
+        !SELECTION_REASONS.includes(diagnostic.reason) || SELECTION_COUNTS.some(key => !Number.isInteger(diagnostic[key]) || diagnostic[key] < 0 || diagnostic[key] > 32) ||
+        diagnostic.visited > diagnostic.total || diagnostic.origin > diagnostic.visited ||
+        ['buttons_excluded', 'non_direct', 'hidden', 'association_rejected', 'eligible_frames'].reduce((sum, key) => sum + diagnostic[key], 0) > diagnostic.origin ||
+        diagnostic.inspected > diagnostic.eligible_frames + 1 ||
+        diagnostic.reason !== 'complete' && value.status !== 'unsupported_collection' ||
+        ['total_frame_limit', 'eligible_frame_limit'].includes(diagnostic.reason) && !value.truncated ||
+        diagnostic.reason === 'complete' && (diagnostic.error !== 0 || value.truncated || diagnostic.visited !== diagnostic.total ||
+          ['buttons_excluded', 'non_direct', 'hidden', 'association_rejected', 'eligible_frames'].reduce((sum, key) => sum + diagnostic[key], 0) !== diagnostic.origin) ||
+        value.status === 'observed' && value.location === 'paypal_child' && diagnostic.eligible_frames < 1 ||
+        diagnostic.reason === 'total_frame_limit' && (diagnostic.total !== 32 || SELECTION_COUNTS.some(key => key !== 'total' && diagnostic[key] !== 0)) ||
+        diagnostic.reason === 'eligible_frame_limit' && (diagnostic.eligible_frames <= 2 || diagnostic.inspected !== 0) ||
+        diagnostic.reason === 'frame_inspection_error' && diagnostic.error === 0) return null;
+    return { ...value, selection_diagnostic: { ...diagnostic } };
   }
   return { ...value };
 }
@@ -114,87 +138,130 @@ export function collectGuestPayControlMetadataDom(binding) {
   } catch { return unsupported(null); }
 }
 
-async function inspectGuestPayMetadata(page, frames, mainDocument, { read, readHandle }) {
+async function inspectGuestPayMetadata(page, frames, mainDocument, { read, readHandle, buttonsAssociation }) {
   const result = emptyPayMetadata('unsupported_collection');
+  const diagnostic = selectionDiagnostic(frames.length > 32 ? 'total_frame_limit' : 'complete', frames.length);
+  result.selection_diagnostic = diagnostic;
+  if (frames.length > 32) { result.truncated = true; return async () => result; }
   const count = value => Math.min(value, 2);
-  const main = await read(() => page.mainFrame()), candidates = [{ target: page, location: 'merchant_main', document: mainDocument }];
-  let originCount = 0, children = 0;
+  const main = await read(() => page.mainFrame()), inventory = [], children = [];
+  let changed = false;
+  const errors = new Set();
+  // Classify the complete bounded inventory BEFORE spending the two-child cap.
+  // Excluded frames retain private snapshots so a late new candidate cannot be
+  // ignored. No unknown-origin or excluded document is queried for controls.
   for (const frame of frames) {
-    const url = await read(() => frame.url());
-    let parsed; try { parsed = new URL(url); } catch { continue; }
-    if (frame === main || parsed.origin !== 'https://www.paypal.com' || parsed.username || parsed.password) continue;
-    originCount++;
-    if (parsed.pathname === '/smart/buttons') continue;
-    children++;
-    if (children <= 2) candidates.push({ target: frame, location: 'paypal_child', url });
-  }
-  result.paypal_origin_count = count(originCount); result.candidate_count = count(candidates.length);
-  result.truncated = children > 2;
-  const eligible = []; let associated = 0, unsupported = 0, incomplete = false;
-  for (const candidate of candidates) {
-    let counted = false;
+    const entry = { target: frame, url: null, kind: 'other_origin' };
+    inventory.push(entry); diagnostic.visited++;
     try {
-    const { target, location } = candidate;
-    if (location === 'paypal_child') {
-      if (await read(() => target.parentFrame()) !== main) continue;
-      const element = await readHandle(() => target.frameElement());
-      if (await read(() => element.isVisible()) !== true || await read(() => element.contentFrame()) !== target ||
-          await read(() => element.ownerFrame()) !== main) continue;
-      candidate.element = element;
-      candidate.document = await readHandle(() => target.evaluateHandle(() => document));
-      if (await read(() => target.url()) !== candidate.url || await read(() => target.parentFrame()) !== main ||
-          await read(() => element.isVisible()) !== true || await read(() => element.contentFrame()) !== target ||
-          await read(() => element.ownerFrame()) !== main ||
-          await read(() => target.evaluate(expected => document === expected, candidate.document)) !== true) {
-        incomplete = true; continue;
+      entry.url = await read(() => frame === main ? page.url() : frame.url());
+      let parsed; try { parsed = new URL(entry.url); } catch { continue; }
+      if (frame === main) { entry.kind = 'merchant_main'; continue; }
+      if (parsed.origin !== 'https://www.paypal.com' || parsed.username || parsed.password) continue;
+      diagnostic.origin++;
+      if (parsed.pathname === '/smart/buttons') {
+        entry.kind = 'buttons'; diagnostic.buttons_excluded++;
+        if (buttonsAssociation.value && frame === buttonsAssociation.frame) {
+          entry.parent = await read(() => frame.parentFrame()); entry.element = buttonsAssociation.element;
+          entry.visible = await read(() => entry.element.isVisible()); entry.content = await read(() => entry.element.contentFrame());
+          entry.owner = await read(() => entry.element.ownerFrame());
+          if (entry.parent !== main || entry.visible !== true || entry.content !== frame || entry.owner !== main) {
+            changed = true; buttonsAssociation.value = false;
+          }
+        }
+        continue;
       }
-    }
-    associated++; counted = true;
-    let observed;
-    try { observed = await read(() => target.evaluate(collectGuestPayControlMetadataDom,
-      { role: location, expectedDocument: candidate.document })); }
-    catch (error) { if (error?.[STOP]) throw error; unsupported++; continue; }
-    if (location === 'paypal_child' && (await read(() => target.url()) !== candidate.url ||
-        await read(() => target.parentFrame()) !== main || await read(() => candidate.element.isVisible()) !== true ||
-        await read(() => candidate.element.contentFrame()) !== target || await read(() => candidate.element.ownerFrame()) !== main) ||
-        await read(() => target.evaluate(expected => document === expected, candidate.document)) !== true) {
-      unsupported++; continue;
-    }
-    if (!record(observed, ['schema', 'status', 'submit_count', 'submit_visible', 'submit_enabled', 'button_type_matches', 'label', 'amount', 'currency']) ||
-        observed.schema !== 'discogs_guest_pay_control_dom_v1') { unsupported++; continue; }
-    if (observed.status === 'absent' && observed.submit_count === 0) continue;
-    const proposed = { ...emptyPayMetadata('observed'), candidate_count: result.candidate_count,
-      associated_count: 1, eligible_count: 1, submit_count: observed.submit_count, submit_visible: observed.submit_visible,
-      submit_enabled: observed.submit_enabled, button_type_matches: observed.button_type_matches, label: observed.label,
-      amount: observed.amount, currency: observed.currency, location, same_document_verified: true, frame_associated: true };
-    if (observed.status !== 'observed' || !sanitizeGuestPayMetadata(proposed)) { unsupported++; continue; }
-    eligible.push(proposed);
+      entry.parent = await read(() => frame.parentFrame());
+      if (entry.parent !== main) { entry.kind = 'non_direct'; diagnostic.non_direct++; continue; }
+      entry.element = await readHandle(() => frame.frameElement());
+      entry.visible = await read(() => entry.element.isVisible());
+      entry.content = await read(() => entry.element.contentFrame());
+      entry.owner = await read(() => entry.element.ownerFrame());
+      if (typeof entry.visible !== 'boolean') throw new Error('unsupported_frame_metadata');
+      if (!entry.visible) { entry.kind = 'hidden'; diagnostic.hidden++; continue; }
+      if (entry.content !== frame || entry.owner !== main) { entry.kind = 'association_rejected'; diagnostic.association_rejected++; continue; }
+      entry.kind = 'eligible'; diagnostic.eligible_frames++; children.push(entry);
     } catch (error) {
-      if (error?.[STOP]) throw error;
-      if (counted) unsupported++; else incomplete = true;
+      if (error?.[STOP]) throw error; entry.kind = 'error'; errors.add(entry);
+      if (entry.target === buttonsAssociation.frame) buttonsAssociation.value = false;
     }
   }
-  // Retain private bindings, not serialized handles. The caller invokes this
-  // AFTER all other awaited matchers/merchant checks, immediately before return.
-  return async () => {
-  try {
-    const afterFrames = await read(() => page.frames());
-    if (!Array.isArray(afterFrames) || afterFrames.length !== frames.length || afterFrames.some((frame, index) => frame !== frames[index])) incomplete = true;
-  } catch (error) { if (error?.[STOP]) throw error; incomplete = true; }
-  for (const candidate of candidates) {
-    if (candidate.location !== 'paypal_child' || !candidate.element || !candidate.document) continue;
+  result.paypal_origin_count = count(diagnostic.origin);
+  result.candidate_count = result.associated_count = count(1 + children.length);
+  result.truncated = children.length > 2;
+  const eligibleControls = []; let selectedPayEntry = null;
+  let unsupported = 0;
+  const stableEntry = async entry => {
+    if (await read(() => entry.target === main ? page.url() : entry.target.url()) !== entry.url) return false;
+    if (['other_origin', 'merchant_main'].includes(entry.kind) || entry.kind === 'buttons' && !entry.element) return true;
+    if (entry.kind === 'error') return false;
+    if (await read(() => entry.target.parentFrame()) !== entry.parent) return false;
+    // A non-direct frame cannot become eligible without changing its parent.
+    if (entry.kind === 'non_direct') return true;
+    if (await read(() => entry.element.isVisible()) !== entry.visible ||
+        await read(() => entry.element.contentFrame()) !== entry.content ||
+        await read(() => entry.element.ownerFrame()) !== entry.owner) return false;
+    return !entry.document || await read(() => entry.target.evaluate(expected => document === expected, entry.document)) === true;
+  };
+  const candidates = [{ target: page, location: 'merchant_main', document: mainDocument },
+    ...(result.truncated || errors.size ? [] : children.map(entry => ({ ...entry, location: 'paypal_child', entry })))];
+  // Too many actually eligible children is a limit failure, never permission to
+  // inspect an arbitrary first two; merchant-main metadata has its own slot.
+  if (!result.truncated && !errors.size) for (const candidate of candidates) {
+    const { target, location, entry } = candidate;
     try {
-      if (await read(() => candidate.target.url()) !== candidate.url || await read(() => candidate.target.parentFrame()) !== main ||
-        await read(() => candidate.element.isVisible()) !== true || await read(() => candidate.element.contentFrame()) !== candidate.target ||
-        await read(() => candidate.element.ownerFrame()) !== main ||
-        await read(() => candidate.target.evaluate(expected => document === expected, candidate.document)) !== true) incomplete = true;
-    } catch (error) { if (error?.[STOP]) throw error; incomplete = true; }
+      if (entry) {
+        entry.document = await readHandle(() => target.evaluateHandle(() => document));
+        candidate.document = entry.document;
+        if (!await stableEntry(entry)) { changed = true; continue; }
+      }
+      const observed = await read(() => {
+        diagnostic.inspected++;
+        return target.evaluate(collectGuestPayControlMetadataDom, { role: location, expectedDocument: candidate.document });
+      });
+      if (entry ? !await stableEntry(entry) : await read(() => target.evaluate(expected => document === expected, candidate.document)) !== true) {
+        changed = true; continue;
+      }
+      if (!record(observed, ['schema', 'status', 'submit_count', 'submit_visible', 'submit_enabled', 'button_type_matches', 'label', 'amount', 'currency']) ||
+          observed.schema !== 'discogs_guest_pay_control_dom_v1') { unsupported++; continue; }
+      if (observed.status === 'absent' && observed.submit_count === 0) continue;
+      const proposed = { ...emptyPayMetadata('observed'), candidate_count: result.candidate_count,
+        associated_count: 1, eligible_count: 1, submit_count: observed.submit_count, submit_visible: observed.submit_visible,
+        submit_enabled: observed.submit_enabled, button_type_matches: observed.button_type_matches, label: observed.label,
+        amount: observed.amount, currency: observed.currency, location, same_document_verified: true, frame_associated: true };
+      if (observed.status !== 'observed' || !sanitizeGuestPayMetadata(proposed)) { unsupported++; continue; }
+      eligibleControls.push(proposed);
+      selectedPayEntry = eligibleControls.length === 1 ? entry : null;
+    } catch (error) { if (error?.[STOP]) throw error; errors.add(entry || page); unsupported++; }
   }
-  result.associated_count = count(associated); result.eligible_count = count(eligible.length); result.unsupported_count = count(unsupported);
-  if (result.truncated || unsupported || incomplete) return result;
-  if (eligible.length > 1) return { ...result, status: 'ambiguous' };
-  if (eligible.length === 0) return { ...result, status: 'no_eligible_frame' };
-  return { ...eligible[0], paypal_origin_count: result.paypal_origin_count, associated_count: result.associated_count };
+  // Called AFTER the destination matcher and merchant checks. Every original
+  // frame is revalidated, including excluded hidden/non-direct/other origins.
+  return async () => {
+    try {
+      const afterFrames = await read(() => page.frames());
+      if (!Array.isArray(afterFrames) || afterFrames.length !== frames.length || afterFrames.some((frame, index) => frame !== frames[index])) changed = true;
+    } catch (error) { if (error?.[STOP]) throw error; errors.add(page); }
+    for (const entry of inventory) {
+      if (entry.kind === 'error') continue;
+      try { if (!await stableEntry(entry)) { changed = true; if (entry.target === buttonsAssociation.frame) buttonsAssociation.value = false; } }
+      catch (error) { if (error?.[STOP]) throw error; errors.add(entry); if (entry.target === buttonsAssociation.frame) buttonsAssociation.value = false; }
+    }
+    // A selected child may have changed while later excluded frames were
+    // audited. Recheck that private binding last; never rescan for a new child.
+    if (selectedPayEntry) {
+      try { if (!await stableEntry(selectedPayEntry)) changed = true; }
+      catch (error) { if (error?.[STOP]) throw error; errors.add(selectedPayEntry); }
+    }
+    diagnostic.error = Math.min(errors.size, 32);
+    result.eligible_count = count(eligibleControls.length);
+    result.unsupported_count = Math.min(count(unsupported), result.associated_count);
+    diagnostic.reason = errors.size ? 'frame_inspection_error' : changed ? 'frame_changed' : result.truncated ? 'eligible_frame_limit' :
+      unsupported ? 'control_metadata_unsupported' : 'complete';
+    if (diagnostic.reason !== 'complete') return result;
+    if (eligibleControls.length > 1) return { ...result, status: 'ambiguous' };
+    if (eligibleControls.length === 0) return { ...result, status: 'no_eligible_frame' };
+    return { ...eligibleControls[0], paypal_origin_count: result.paypal_origin_count, associated_count: result.associated_count,
+      selection_diagnostic: diagnostic };
   };
 }
 function merchantEvidence(value) {
@@ -355,30 +422,44 @@ export async function inspectCurrentEnhancedPaymentQuote(page, { signal = null, 
     const observedAt = Date.now() / 1000;
     const merchant = await read(() => page.evaluate(collectEnhancedCheckoutDom));
     if (!merchantEvidence(merchant)) return base(merchant?.code === 'access_restricted' ? 'access_restricted' : 'merchant_summary_unverified');
-    const frames = await read(() => page.frames());
-    if (!Array.isArray(frames) || frames.length > 32) return base('frame_metadata_unverified');
+    const currentFrames = await read(() => page.frames());
+    if (!Array.isArray(currentFrames) || currentFrames.length > 32) {
+      const diagnostic = selectionDiagnostic(Array.isArray(currentFrames) ? 'total_frame_limit' : 'frame_inspection_error', Array.isArray(currentFrames) ? currentFrames.length : 0);
+      if (!Array.isArray(currentFrames)) diagnostic.error = 1;
+      return { ...base('frame_metadata_unverified'), merchant_displayed: merchantEvidence(merchant),
+        guest_pay_metadata: { ...emptyPayMetadata('unsupported_collection'), truncated: Array.isArray(currentFrames), selection_diagnostic: diagnostic } };
+    }
+    const frames = [...currentFrames]; // A provider may reuse and mutate its array.
     const buttons = frames.filter(frame => {
       try { const url = new URL(frame.url()); return url.origin === 'https://www.paypal.com' && url.pathname === '/smart/buttons' && !url.username && !url.password && !url.hash; }
       catch { return false; }
     });
-    let associated = false;
+    let associated = false, buttonsElement = null;
     if (buttons.length === 1 && buttons[0].parentFrame() === page.mainFrame()) {
       const element = await readHandle(() => buttons[0].frameElement());
+      buttonsElement = element;
       associated = await read(() => element.isVisible()) === true && await read(() => element.contentFrame()) === buttons[0] &&
         await read(() => element.ownerFrame()) === page.mainFrame();
     }
+    const buttonsAssociation = { value: associated, frame: buttons[0] || null, element: buttonsElement };
     let finalizeGuestPayMetadata;
-    try { finalizeGuestPayMetadata = await inspectGuestPayMetadata(page, frames, documentHandle, { read, readHandle }); }
-    catch (error) { if (error?.[STOP]) throw error; finalizeGuestPayMetadata = async () => emptyPayMetadata('unsupported_collection'); }
+    try { finalizeGuestPayMetadata = await inspectGuestPayMetadata(page, frames, documentHandle, { read, readHandle, buttonsAssociation }); }
+    catch (error) {
+      if (error?.[STOP]) throw error;
+      const diagnostic = selectionDiagnostic('frame_inspection_error', frames.length); diagnostic.error = 1;
+      finalizeGuestPayMetadata = async () => ({ ...emptyPayMetadata('unsupported_collection'), selection_diagnostic: diagnostic });
+    }
     const destination = destinationMatcher === null ? null : await read(() => destinationMatcher({
       page, documentHandle, document_ref: documentRef, observed_at: observedAt, expires_at: observedAt + 20 }));
     if (await read(() => page.url()) !== ENHANCED_PAYMENT_QUOTE_URL ||
         await read(() => page.evaluate(expected => document === expected, documentHandle)) !== true) return base('document_changed');
     const guestPayMetadata = await finalizeGuestPayMetadata();
+    if (await read(() => page.url()) !== ENHANCED_PAYMENT_QUOTE_URL ||
+        await read(() => page.evaluate(expected => document === expected, documentHandle)) !== true) return base('document_changed');
     return { ...parseEnhancedPaymentQuoteEvidence({ merchant, provider: null, destination, provenance: {
       schema: 'discogs_payment_quote_provenance_v1', source: 'current_enhanced_checkout', document_ref: documentRef,
       observed_at: observedAt, expires_at: observedAt + 20, same_document_verified: true,
-      frame_association: { known_buttons_count: Math.min(buttons.length, 2), known_buttons_associated: associated, payment_quote_frame_qualified: false } } }),
+      frame_association: { known_buttons_count: Math.min(buttons.length, 2), known_buttons_associated: buttonsAssociation.value, payment_quote_frame_qualified: false } } }),
     guest_pay_metadata: sanitizeGuestPayMetadata(guestPayMetadata) || emptyPayMetadata('unsupported_collection') };
   } catch (error) { return base(error?.[STOP] || 'read_failed'); }
   finally {

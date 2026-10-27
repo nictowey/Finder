@@ -258,7 +258,7 @@ disposition 29. Its single restart retained the same profile, 179 preserved file
 original access stop and inactive monitoring. Web UI deployment was separately
 rejected by approval review and remains excluded pending specific approval.
 
-### Read-only probe budget diagnosis (fix not activated)
+### Historical read-only probe budget diagnosis
 
 The first new scoped read returned `probe_deadline_expired` in 1.732 seconds while
 105.611 seconds remained on its policy. Confirmation, checkout navigation and
@@ -288,10 +288,65 @@ delayed-read tests establish behavior, not that 5000ms will solve the prior live
 timeout.
 
 The running browser holds imported modules in memory. Policy reload cannot
-install this source fix, and no supported hot-load route exists. Consolidate
-the probe and socket changes into one reviewed private-browser update after CI.
-No initialized guest form currently needs preservation because the last attempt
-stopped before initialization. A later live test needs fresh complete history,
-a distinct bounded job and genuinely current evidence; it must not replay the
-spent inspect phase. Web deployment, Pay, purchases and monitoring activation
-remain excluded from this diagnostic pass.
+install source fixes, and no supported hot-load route exists. The probe/socket
+fix was subsequently activated as `2fd7c25` with the same profile and preserved
+history; later Cart probes completed in 244 ms and 164 ms. The historical slow
+stage remains unknown. No initialized form was discarded by that update: the
+preceding attempt had stopped before initialization. Subsequent jobs described
+below are distinct scoped jobs, not reuse of a spent inspect phase. Web deployment,
+Pay, purchases and monitoring activation remain excluded.
+
+### Actual guest metadata result and bounded selection repair
+
+On October 27, the `2fd7c25` runtime completed another authorized no-submit
+preparation after fresh complete All-archive / All-status zero-order history.
+Confirmation took 0.353 seconds and server preparation took 5.483 seconds.
+The blank form visibly showed `Pay $5.05`; no card data was entered and Pay was
+not clicked. Observation 34 was appended once after the unknown initialization
+outcome. Both records remain immutable; initialization remains denied until a
+separately reviewed disposition. Provider-draft, order and payment states remain
+unverified.
+
+The new read-only job completed both reads in 2.431 seconds. It verified the
+resident document, claim, ledger head, merchant identity/conditions and USD
+0.10 + 4.95 = 5.05. One known buttons frame was associated. Guest Pay metadata
+returned `unsupported_collection`, `truncated=true`, associated count 1 and
+eligible count 0; its origin and candidate counts saturated at 2. This does not
+establish that a guest Pay control was absent. Source inspection confirms the
+old collector counted all non-buttons PayPal frames against its two-frame cap
+before checking direct ownership and visibility. The exact skipped frame was
+not retained, so identifying any particular live frame as the omitted Pay frame
+would be an inference.
+
+The repair applies supported origin, direct-parent, visibility and frame-element
+association checks before the two-guest-frame cap. Total inventory traversal
+remains bounded at 32. All considered frame identities and classifications are
+rechecked after awaited work; a hidden, nested or other-origin frame becoming
+eligible late invalidates the observation. Multiple eligible Pay controls and
+incomplete traversal remain unqualified. The optional `selection_diagnostic`
+contains only its fixed schema, an enumerated reason and counts capped at 32;
+no URL, query, fragment, input value, address or exception text is returned.
+Its offline multi-frame tests simulate the observed capped-count failure, not
+the unretained live frame hierarchy. Public Pay metadata still cannot qualify
+provider finality, currency, delivery, terms, selected funding or a receipt.
+
+The installed read-only methods cannot return the new classifications: both
+guest metadata and the separate buttons-frame diagnostic retain their old
+capped schemas. Reloading a policy changes authorization only. Job
+`2280f56e-e9e2-48f1-b529-de7df2575f40` is spent and cannot be replayed. No
+undocumented or alternate control path is used to extract additional evidence.
+The repaired producer and coordinator retain a `total_frame_limit` diagnostic
+when inventory exceeds 32, without querying those frames or inventing a zero
+buttons count. The hosted inspection's existing blocked-result boundary may
+still reduce that overflow to `payment_inspection_unverified`; it does not yet
+forward the richer overflow diagnostic. The current at-most-32-frame selection
+diagnostics use the existing metadata field and its strict sanitizer.
+
+Activation is a separate consolidated step after CI/review, not part of this
+repair pass. Preserve the current blank form and observation 34. Any required
+restart first needs normal blank-form dismissal, verified form absence, fresh
+complete All/All reconciliation and a truthful append-only disposition. Update
+the strict private operator projection for the optional diagnostic alongside the
+runtime, then use a distinct bounded no-submit preparation and read-only job
+for live proof. No restart, new initialization, Pay, web deployment, merge or
+monitoring activation is performed by this offline repair.
