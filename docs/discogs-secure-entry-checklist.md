@@ -7,9 +7,11 @@ complete, then a provider `SESSION_EXPIRED` message and the form disappearing.
 Those later reports are user evidence, not an agent inspection or proof that
 hidden/restored input values were cleared. No Pay action is recorded.
 
-The late-completion correction described below is a local code change until
-separately activated. It cannot change the old resident runtime's closure in
-memory. Keep its privacy lock and browser untouched during implementation.
+The corrected runtime is activated in `51ac938` after verified retirement of the
+old entered context and controlled blank startup. Original records remain at
+ledger64; fresh complete order reconciliation and disposition65 are blocked by
+the current verification loop. See [challenge diagnostics](discogs-challenge-diagnostics.md).
+No new secure-entry handoff or payment is ready while that access gate remains.
 
 ## Exact approved scope
 
@@ -114,7 +116,8 @@ drains outstanding quote reads before retaining that lease. The audit reproduced
 a cart-inspector timeout returning while its underlying DOM operation remained
 pending. Both ordinary and operator cart wrappers now track that actual read,
 so their lease cannot release until it resolves or rejects. Four regressions
-failed before the correction and passed afterward; live activation is pending.
+failed before the correction and passed afterward; the corrected readers are
+included in the activated `51ac938` image.
 Test fixtures make
 payment-input getters and network payment unavailable. Expiry, cancellation,
 browser loss and restart tests cover token invalidation and duplicate fencing.
