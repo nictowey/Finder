@@ -1271,3 +1271,33 @@ No selector broadening, hydration wait, fallback frame choice or initialization
 retry is part of this diagnostic change. A separate scoped read-only job after
 tested deployment is needed to inspect actual current counts. It cannot recover
 the historical count or reuse the spent preparation job.
+
+### Bounded provider readiness after merchant settlement
+
+The subsequent inspect-only job `f6ad0aec-9b04-4ac6-8d7b-8086f50367d8` on
+`94860b2` observed one exact provider frame and one card control, with association,
+visibility, readiness and enabled predicates true and no existing form. The
+sanitized predicate fixture records this actual observation and the previously
+observed control attributes; full provider HTML was not retained. Its offline
+tests reconstruct only those attributes and simulate delayed attachment/control
+availability. The observation cannot prove the earlier failure-time count or
+establish hydration as that historical cause.
+
+Preparation now gives the provider UI one fixed five-second readiness-acceptance
+window, clamped to the original operation deadline. Missing frames and a single
+associated but incomplete/hidden/disabled control may settle during this window.
+Every wait is DOM-only and followed by complete same-checkout-document, quote,
+destination, title, grade and item-detail revalidation. The window is never reset.
+Multiple matching frames or controls, inspection errors, explicit association
+failures, restrictions, an existing guest form or an extra agreement stop
+immediately. No alternate frame, URL, selector or initializer is tried.
+
+The five seconds bound when readiness may be accepted, not how soon a hung raw
+browser read settles: such reads remain under the original absolute operation
+deadline and retain the existing pending-read lease until completion. Cancellation
+does not release that lease over outstanding work or resume later initialization.
+The exact ready frame/control document bindings, durable claim and final current
+checkout/control/authorization revalidation before dispatch remain mandatory.
+This is a narrow timing mitigation with offline regressions, not proof of the
+historical timing cause or a completed payment. A fresh reviewed one-use no-submit
+test, with complete order reconciliation, is still required for live proof.

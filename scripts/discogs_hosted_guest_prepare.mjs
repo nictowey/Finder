@@ -466,6 +466,7 @@ export async function inspectHostedProviderFrames(page, read) {
     total_count: null, origin_count: null, buttons_path_count: null, matching_count: null,
     truncated: false, candidates: [] };
   const matches = [];
+  let extraAgreement = false;
   const count = value => Math.min(value, 2);
   const guarded = async action => {
     try { return await read(action); }
@@ -473,9 +474,9 @@ export async function inspectHostedProviderFrames(page, read) {
   };
   try {
     const all = await guarded(() => page.frames());
-    if (!Array.isArray(all)) return { diagnostic, frames: [] };
+    if (!Array.isArray(all)) return { diagnostic, frames: [], extraAgreement };
     diagnostic.total_count = count(all.length);
-    if (all.length > 32) { diagnostic.truncated = true; return { diagnostic, frames: [] }; }
+    if (all.length > 32) { diagnostic.truncated = true; return { diagnostic, frames: [], extraAgreement }; }
     const main = await guarded(() => page.mainFrame());
     let originCount = 0, pathCount = 0;
     const providerFrames = [];
@@ -521,7 +522,8 @@ export async function inspectHostedProviderFrames(page, read) {
         candidate.provider_ready = provider?.ready === true;
         candidate.access = provider?.access === 'normal' ? 'normal' : 'restricted';
         candidate.existing_guest_form = provider?.existing_form === true;
-        if (candidate.access === 'restricted') { candidate.error_stage = 'none'; break; }
+        extraAgreement = provider.agreements === true;
+        if (candidate.access === 'restricted' || candidate.existing_guest_form || extraAgreement) { candidate.error_stage = 'none'; break; }
         candidate.error_stage = 'card_control';
         const controls = await guarded(() => frame.locator(GUEST_CARD_SELECTOR).count());
         if (!Number.isSafeInteger(controls) || controls < 0) throw new Error('provider_inspection_failed');
@@ -539,10 +541,10 @@ export async function inspectHostedProviderFrames(page, read) {
     }
     diagnostic.selection = diagnostic.candidates.some(candidate => candidate.error_stage !== 'none') ? 'error' :
       matches.length === 0 ? 'missing' : matches.length === 1 ? 'one' : 'multiple';
-    return { diagnostic, frames: matches };
+    return { diagnostic, frames: matches, extraAgreement };
   } catch (error) {
     if (error?.[STOP]) throw error;
-    return { diagnostic, frames: [] };
+    return { diagnostic, frames: [], extraAgreement };
   }
 }
 
@@ -815,10 +817,36 @@ export async function prepareHostedGuestForm(context, request, options = {}) {
       return summary;
     };
     await checkoutRead();
-    const frameInspection = await inspectHostedProviderFrames(page, bounded);
-    extras.provider_frame_diagnostic = frameInspection.diagnostic;
-    if (frameInspection.diagnostic.candidates.some(candidate => candidate.access === 'restricted')) fail('access_restricted');
-    if (frameInspection.diagnostic.selection === 'error') fail('provider_frame_inspection_error');
+    // Merchant React data can settle before the separately loaded provider UI.
+    // Wait only for this checkout document, within BOTH the original operation
+    // deadline and one fixed five-second settlement window. No navigation,
+    // initializer or alternative frame is tried during this DOM-only wait.
+    const settlementDeadline = Math.min(deadline, Date.now() + 5000);
+    let frameInspection;
+    for (;;) {
+      check();
+      frameInspection = await inspectHostedProviderFrames(page, bounded);
+      const diagnostic = frameInspection.diagnostic;
+      extras.provider_frame_diagnostic = diagnostic;
+      if (diagnostic.candidates.some(candidate => candidate.access === 'restricted')) fail('access_restricted');
+      if (diagnostic.candidates.some(candidate => candidate.existing_guest_form === true)) fail('existing_guest_form_preserved');
+      if (frameInspection.extraAgreement) fail('extra_agreement_required');
+      if (diagnostic.selection === 'error') fail('provider_frame_inspection_error');
+      if (frameInspection.frames.length > 1) fail('provider_frame_multiple');
+      const candidate = diagnostic.candidates.find(value => value.allowlisted);
+      if (frameInspection.frames.length === 1 && (!candidate || candidate.direct_parent !== true ||
+          candidate.content_frame_matches !== true || candidate.owner_frame_matches !== true)) fail('provider_frame_unassociated');
+      if (candidate?.card_count === 2) fail('card_control_changed');
+      const remaining = settlementDeadline - Date.now();
+      if (remaining <= 0) fail(frameInspection.frames.length === 0 ? 'provider_frame_missing' : 'provider_not_ready');
+      if (candidate && ['element_visible', 'provider_ready', 'card_visible', 'card_enabled',
+        'card_aria_enabled', 'url_stable'].every(key => candidate[key] === true) && candidate.card_count === 1) break;
+      await bounded(() => new Promise(resolve => setTimeout(resolve, Math.min(100, remaining))));
+      // Revalidate document, amount, destination, title, grades and detail after
+      // each wait. The settlement deadline is never reset by an observation.
+      await checkoutRead();
+    }
+    await checkoutRead();
     const frames = frameInspection.frames;
     if (frames.length === 0) fail('provider_frame_missing');
     if (frames.length !== 1) fail('provider_frame_multiple');
@@ -831,6 +859,11 @@ export async function prepareHostedGuestForm(context, request, options = {}) {
     frameDocument = await bounded(() => frame.evaluateHandle(() => document));
     card = await bounded(() => frame.$(GUEST_CARD_SELECTOR));
     const cardRead = async () => {
+      const currentFrames = await bounded(() => page.frames());
+      if (!Array.isArray(currentFrames) || currentFrames.length > 32) fail('provider_frame_inspection_error');
+      const matchingFrames = currentFrames.filter(candidate => isObservedCardFrame(candidate.url()));
+      if (matchingFrames.length > 1) fail('provider_frame_multiple');
+      if (matchingFrames.length !== 1 || matchingFrames[0] !== frame) fail('provider_frame_changed');
       const providerState = await bounded(() => frame.evaluate(collectHostedGuestDom, { stage: 'provider' }));
       if (providerState.access !== 'normal') fail('access_restricted');
       if (!providerState.ready) fail('provider_not_ready');
@@ -899,7 +932,7 @@ export async function prepareHostedGuestForm(context, request, options = {}) {
       ready_ref: request.ready_ref, scope_digest: guestCardScopeDigest(scope), claim_sha256: grant.claim_sha256,
       outcome: 'unknown', observed_at: Date.now() / 1000 });
     if (outcome.type !== 'claim_outcome_recorded') fail('outcome_recording_uncertain');
-    return stopped('guest_form_observation_required', { initialization: 'outcome_requires_reconciliation',
+    return stopped('guest_form_observation_required', { ...extras, initialization: 'outcome_requires_reconciliation',
       checkout_navigation_issued: true, card_initialization_issued: true });
   } catch (error) {
     if (navigationIssued) uncertain.add(context);

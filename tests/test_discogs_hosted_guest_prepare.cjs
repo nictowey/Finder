@@ -375,6 +375,117 @@ test('preparation permanently reports distinct missing/multiple/error frame stop
   });
 });
 
+test('captured ready provider predicates settle after a simulated delayed frame or late observed control without another Go', async () => {
+  const captured = JSON.parse(await readFile(new URL('./fixtures/discogs_provider_readiness_94860b2.json', 'file://' + __filename), 'utf8'));
+  const attrs = captured.observed_card_control_attributes;
+  const control = '<a ' + Object.entries(attrs).map(([name, value]) => `${name}="${value}"`).join(' ') + '>Debit or Credit Card</a>';
+  // This small DOM reconstructs observed attributes; timing and the rest of the
+  // merchant/buyer fixture remain simulated, not captured full provider HTML.
+  for (const mode of ['frame', 'control']) await ledgerFixture(async f => {
+    const b = browser({ provider: '<!doctype html><title>PayPal</title>' + control + '<div id="card-fields-container"></div>' });
+    const originalFrames = b.page.frames, node = b.state.provider.window.document.querySelector('a'); let polls = 0;
+    if (mode === 'control') node.remove();
+    b.page.frames = () => {
+      polls++;
+      if (mode === 'frame' && polls < 3) return [];
+      if (mode === 'control' && polls === 2) b.state.provider.window.document.body.append(node);
+      return originalFrames();
+    };
+    try {
+      const result = await execute(f, b);
+      assert.equal(result.code, 'guest_form_observation_required', json(result));
+      assert.deepEqual(result.provider_frame_diagnostic.candidates[0], captured.provider_frame_diagnostic.candidates[0]);
+      assert.ok(polls >= 2); assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 1, 0]);
+      assert.equal((await records(f.directory)).at(-1).payload.outcome, 'unknown');
+    } finally { b.close(); }
+  });
+});
+
+test('provider settlement immediately rejects multiple frames, errors, restrictions, existing forms and extra agreements', async () => {
+  for (const mode of ['multiple', 'error', 'restricted', 'form', 'agreement']) await ledgerFixture(async f => {
+    const b = browser({ duplicateFrames: mode === 'multiple', provider: mode === 'restricted' ?
+      providerMarkup.replace('<title>PayPal</title>', '<title>Cloudflare</title>') : providerMarkup });
+    if (mode === 'error') b.frame.frameElement = () => { throw new Error('SECRET'); };
+    if (mode === 'form') b.state.provider.window.document.querySelector('#card-fields-container').innerHTML = '<input value="NEVER_READ">';
+    if (mode === 'agreement') b.state.provider.window.document.body.insertAdjacentHTML('beforeend', '<input type="checkbox">');
+    if (['restricted', 'form', 'agreement'].includes(mode)) {
+      b.state.provider.window.document.querySelector('a').remove();
+      b.frame.locator = () => { throw new Error('must stop before control inspection'); };
+    }
+    const originalFrames = b.page.frames; let polls = 0;
+    b.page.frames = () => { polls++; return originalFrames(); };
+    try {
+      const result = await execute(f, b);
+      assert.equal(result.code, { multiple: 'provider_frame_multiple', error: 'provider_frame_inspection_error',
+        restricted: 'access_restricted', form: 'existing_guest_form_preserved', agreement: 'extra_agreement_required' }[mode]);
+      assert.equal(polls, 1); assert.equal((await records(f.directory)).length, 0);
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]); assert.ok(!json(result).includes('NEVER_READ'));
+    } finally { b.close(); }
+  });
+});
+
+test('provider settlement stops on checkout document, quote or destination change and never reissues navigation', async () => {
+  for (const mode of ['document', 'quote', 'destination']) await ledgerFixture(async f => {
+    const b = browser();
+    b.page.frames = () => {
+      if (mode === 'document') b.state.merchant = dom(summary, CHECKOUT);
+      if (mode === 'quote') b.state.merchant.window.document.querySelector('._checkout-summary__total--color-red_fixture dd').textContent = '$5.06 USD';
+      if (mode === 'destination') b.state.merchant.window.document.querySelector('address span').textContent = 'OTHER_PRIVATE';
+      return [];
+    };
+    try {
+      const result = await execute(f, b);
+      assert.equal(result.code, mode === 'document' ? 'checkout_document_changed' :
+        mode === 'quote' ? 'checkout_scope_unverified' : 'visible_scope_evidence_missing', json(result));
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]); assert.equal((await records(f.directory)).length, 0);
+      assert.ok(!json(result).includes('OTHER_PRIVATE'));
+    } finally { b.state.merchant.window.close(); b.close(); }
+  });
+});
+
+test('provider settlement cancellation drains pending wait and cannot initialize later', async () => ledgerFixture(async f => {
+  const b = browser(), controller = new AbortController(); let scheduled = false, polls = 0;
+  b.page.frames = () => { polls++; if (!scheduled) { scheduled = true; setTimeout(() => controller.abort(), 20); } return []; };
+  try {
+    const result = await execute(f, b, controller.signal);
+    assert.equal(result.code, 'cancelled');
+    await port.waitForHostedGuestPreparationSettlement(b.context);
+    assert.equal(polls, 1); assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]);
+    assert.equal((await records(f.directory)).length, 0);
+  } finally { b.close(); }
+}));
+
+test('a new duplicate or replacement frame after the durable claim blocks final dispatch and remains unknown', async () => {
+  for (const mode of ['duplicate', 'replacement']) await ledgerFixture(async f => {
+    const b = browser(), originalFrames = b.page.frames;
+    b.page.frames = async () => (await records(f.directory)).length === 3 ?
+      mode === 'duplicate' ? [b.frame, b.frame] : [{ ...b.frame }] : originalFrames();
+    try {
+      const result = await execute(f, b);
+      assert.equal(result.code, mode === 'duplicate' ? 'provider_frame_multiple' : 'provider_frame_changed');
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]);
+      assert.equal((await records(f.directory)).at(-1).payload.outcome, 'unknown');
+    } finally { b.close(); }
+  });
+});
+
+test('provider settlement cannot renew its fixed acceptance window or the original authorization deadline', async () => {
+  for (const mode of ['settlement', 'original']) await ledgerFixture(async f => {
+    const b = browser(), actualNow = Date.now, originalFrames = b.page.frames; let polls = 0;
+    b.page.frames = () => {
+      polls++;
+      Date.now = () => actualNow() + (mode === 'settlement' ? 6000 : 301000);
+      return mode === 'settlement' ? originalFrames() : [];
+    };
+    try {
+      const result = await execute(f, b);
+      assert.equal(result.code, mode === 'settlement' ? 'provider_not_ready' : 'deadline_expired', json(result));
+      assert.equal(polls, 1); assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]);
+      assert.equal((await records(f.directory)).length, 0);
+    } finally { Date.now = actualNow; b.close(); }
+  });
+});
+
 test('provider diagnostic predicates retain association and readiness failures without treating unknown as false', async () => {
   for (const mode of ['parent', 'visibility', 'content', 'owner', 'ready', 'controls']) {
     const b = browser(); b.state.merchant = dom(summary, CHECKOUT);
