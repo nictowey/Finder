@@ -1488,7 +1488,10 @@ test('staged launcher uses only approved profile and fixed socket, then closes c
   try {
     assert.equal(calls[0][1], '/profile');
     assert.deepEqual(calls[0][2], { headless: false, acceptDownloads: false,
-      noDefaultViewport: true, firefoxUserPrefs: { 'signon.rememberSignons': false } });
+      noDefaultViewport: true, firefoxUserPrefs: { 'signon.rememberSignons': false,
+        'browser.sessionstore.resume_from_crash': false,
+        'browser.sessionstore.resume_session_once': false,
+        'browser.sessionstore.max_resumed_crashes': 0, 'browser.startup.page': 0 } });
     assert.equal((await stat('/tmp/sniper-read-only.sock')).mode & 0o777, 0o600);
   } finally { await close(); }
   assert.deepEqual(calls.at(-1), ['close']);
