@@ -234,9 +234,9 @@ before later checks. The socket regression retains the actual minimal response
 shape with a clearly synthetic replacement UUID; no payment or address values are
 part of that fixture.
 
-### Bounded guest-control metadata extension (not activated)
+### Bounded guest-control metadata extension
 
-The next read-only collector inspects only the observed `#submit-button` public
+The read-only collector inspects only the observed `#submit-button` public
 control in the merchant main document and bounded visible, directly owned
 `https://www.paypal.com` child frames other than the known `/smart/buttons`
 frame. It does not guess a guest URL path or export any URL, query or fragment.
@@ -252,17 +252,46 @@ the bounded allowlist. A `$` label alone leaves currency unknown. Even observed
 Pay metadata does not qualify a final quote, delivery, selected method, terms,
 receipt, or payment dispatch. Production Pay remains hard-disabled.
 
-This code is not yet active in the existing browser. The running process holds
-its imported modules and resident Page in memory; uploading replacements or
-reloading its local policy cannot install a new collector. No supported hot-load
-route exists. A browser-service restart would discard the initialized form, so
-this implementation pass does not activate it, dismiss the form or restart.
+The browser-only `f11f0f7` image was activated on October 27 after a normal blank
+form dismissal, complete All/All zero-order reconciliation and append-only
+disposition 29. Its single restart retained the same profile, 179 preserved files,
+original access stop and inactive monitoring. Web UI deployment was separately
+rejected by approval review and remains excluded pending specific approval.
 
-For consolidated activation after review and CI: first record a truthful normal
-blank-form disposition with fresh complete All/All merchant history, preserving
-all prior records and uncertainty about provider drafts. Then install the full
-reviewed browser dependency set in one restart with the same profile and retained
-stop/audit files. Restore the form only through a new reviewed bounded no-submit
-preparation and inspect it through a fresh read-only job. Monitoring UI/worker
-code can be installed independently without restarting the browser or starting a
-worker; no deployment or monitoring activation is performed by this document.
+### Read-only probe budget diagnosis (fix not activated)
+
+The first new scoped read returned `probe_deadline_expired` in 1.732 seconds while
+105.611 seconds remained on its policy. Confirmation, checkout navigation and
+initialization were never dispatched; the consumed inspect phase stays spent.
+The ledger remains at disposition 29. No live guest-control metadata was obtained.
+
+Code confirms that the probe had a fixed 1500ms internal deadline. The specific
+slow read was not retained and remains unknown. A Cart probe does not execute
+the enhanced guest-metadata collector, so this timeout is not evidence that the
+new collector failed. Cold-page readiness or browser read latency are possible
+contributors, not established causes.
+
+The scoped fix uses a fixed 5000ms probe budget, matching the existing enhanced
+read-only inspection bound and leaving 3 seconds within the fixed 8 second client
+timeout. The deadline is still the earliest of that budget, the original policy
+expiry, and (for confirmation) the document reference and 60 second visual-ACK
+expiry. No expiry is renewed by an observation or a timeout. Cancellation
+returns promptly and pending browser reads retain their context lease; late
+results cannot create destination authority.
+
+`probe_timing` reports only a fixed schema, effective budget, capped monotonic
+elapsed milliseconds, fixed last-stage name and up to 10 unique stage records
+with capped dispatched-read counts and elapsed time. It carries no page values,
+addresses, URLs, tokens or exception text. Malformed or cross-action diagnostics
+are rejected; reported effects remain visible as scope violations. Offline
+delayed-read tests establish behavior, not that 5000ms will solve the prior live
+timeout.
+
+The running browser holds imported modules in memory. Policy reload cannot
+install this source fix, and no supported hot-load route exists. Consolidate
+the probe and socket changes into one reviewed private-browser update after CI.
+No initialized guest form currently needs preservation because the last attempt
+stopped before initialization. A later live test needs fresh complete history,
+a distinct bounded job and genuinely current evidence; it must not replay the
+spent inspect phase. Web deployment, Pay, purchases and monitoring activation
+remain excluded from this diagnostic pass.

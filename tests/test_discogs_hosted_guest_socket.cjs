@@ -177,6 +177,54 @@ test('observed phase-one enhanced checkout probe omits initialization authority'
   } finally { await close(); }
 });
 
+test('readonly probe timings retain bounded stages on success and timeout without payload values', async () => {
+  const socket = path(), config = options(); let code = 'probe_deadline_expired';
+  const timing = { schema: 'discogs_guest_probe_timing_v1', budget_ms: 5000, elapsed_ms: 5004,
+    last_stage: 'provider', stages: [{ stage: 'authorization', elapsed_ms: 0, reads: 0 },
+      { stage: 'inventory', elapsed_ms: 4, reads: 1 }, { stage: 'provider', elapsed_ms: 5000, reads: 3 }] };
+  config.fixtureOperations.probe_guest_evidence = async () => ({ status: code === 'current_dom_evidence_only' ? 'observed' : 'blocked',
+    code, probe_timing: timing, address: 'NEVER_EXPORT', error: 'NEVER_EXPORT' });
+  const close = await listenHostedGuestPreparation({}, socket, config);
+  try {
+    for (code of ['probe_deadline_expired', 'current_dom_evidence_only']) {
+      const result = await exchange(socket, request('probe_guest_evidence'));
+      assert.equal(result.code, code); assert.deepEqual(result.probe_timing, timing);
+      assert.equal(result.payment_allowed, false); assert.equal(result.final_submission_allowed, false);
+      assert.equal(JSON.stringify(result).includes('NEVER_EXPORT'), false);
+    }
+  } finally { await close(); }
+});
+
+test('malformed or cross-action probe timings reject atomically and never conceal a reported effect', async () => {
+  const socket = path(), config = options(); let timing;
+  const original = { schema: 'discogs_guest_probe_timing_v1', budget_ms: 5000, elapsed_ms: 12,
+    last_stage: 'snapshot', stages: [{ stage: 'snapshot', elapsed_ms: 12, reads: 1 }] };
+  config.fixtureOperations.probe_guest_evidence = async () => ({ status: 'observed', code: 'current_dom_evidence_only',
+    document_ref: randomUUID(), observed: { destination_match: true }, probe_timing: timing });
+  config.fixtureOperations.prepare_guest_form = async () => ({ status: 'blocked', code: 'probe_deadline_expired', probe_timing: original });
+  const close = await listenHostedGuestPreparation({}, socket, config);
+  try {
+    for (const change of [value => { value.address = 'NEVER_EXPORT'; }, value => { value.last_stage = 'NEVER_EXPORT'; },
+      value => { value.stages[0].url = 'NEVER_EXPORT'; }, value => { value.stages[0].stage = 'NEVER_EXPORT'; },
+      value => { value.budget_ms = 5001; }, value => { value.elapsed_ms = -1; }, value => { value.elapsed_ms = 60001; },
+      value => { value.stages[0].reads = 101; }, value => { value.stages.push({ ...value.stages[0] }); },
+      value => { value.last_stage = 'detail'; }, value => { value.stages = []; }]) {
+      timing = structuredClone(original); change(timing);
+      const result = await exchange(socket, request('probe_guest_evidence'));
+      assert.equal(result.code, 'probe_unverified'); assert.equal(Object.hasOwn(result, 'document_ref'), false);
+      assert.equal(Object.hasOwn(result, 'observed'), false); assert.equal(Object.hasOwn(result, 'probe_timing'), false);
+      assert.equal(JSON.stringify(result).includes('NEVER_EXPORT'), false);
+    }
+    assert.equal((await exchange(socket, request('prepare_guest_form'))).code, 'probe_unverified');
+    config.fixtureOperations.probe_guest_evidence = async () => ({ status: 'observed', code: 'current_dom_evidence_only',
+      probe_timing: { private: 'NEVER_EXPORT' }, card_initialization_issued: true });
+    const effect = await exchange(socket, request('probe_guest_evidence'));
+    assert.equal(effect.code, 'readonly_scope_violation'); assert.equal(effect.card_initialization_issued, true);
+    assert.equal(effect.stop_required, true); assert.equal(effect.payment_allowed, false);
+    assert.equal(Object.hasOwn(effect, 'probe_timing'), false); assert.equal(JSON.stringify(effect).includes('NEVER_EXPORT'), false);
+  } finally { await close(); }
+});
+
 test('shared context lease blocks reader while preparation owns context, then releases after completion', async () => {
   const guest = path(), reader = `/tmp/guest-reader-${randomUUID().slice(0, 8)}.sock`;
   const acquireContextLease = createHostedContextLease(), entered = deferred(), finish = deferred();
@@ -352,7 +400,10 @@ test('separate fixed preflight action reports only noncommitting diagnostics and
     assert.equal(observed.checkout_navigation_issued, true); assert.equal(observed.normal_cart_transition_verified, true);
     assert.equal(observed.initialization_allowed, false); assert.equal(observed.card_initialization_allowed, false);
     assert.equal(observed.final_submission_allowed, false); assert.equal(Object.hasOwn(observed, 'address'), false);
-    assert.equal((await exchange(socket, request('probe_guest_evidence'))).code, 'preflight_authorization_required');
+    const readonlyViolation = await exchange(socket, request('probe_guest_evidence'));
+    assert.equal(readonlyViolation.code, 'readonly_scope_violation');
+    assert.equal(readonlyViolation.checkout_navigation_issued, true);
+    assert.equal(readonlyViolation.stop_required, true);
     assert.equal(preflights, 1); assert.equal(prepares, 0);
     result.card_initialization_issued = true;
     const violation = await exchange(socket, message);
@@ -581,6 +632,23 @@ test('guest public Pay metadata is bounded observation only and cannot qualify t
       assert.equal(Object.hasOwn(rejected, 'inspection'), false);
       assert.equal(JSON.stringify(rejected).includes('NEVER_EXPORT'), false);
       metadata = original;
+    }
+  } finally { await close(); }
+});
+
+test('a valid enhanced inspection cannot carry probe-only timing through its early success response', async () => {
+  const socket = path(), config = options(); let timing;
+  config.authorize = async () => ({ schema: 'discogs_guest_payment_inspection_authorization_v1', mode: 'inspect_enhanced_payment' });
+  config.fixtureOperations.inspect_enhanced_payment = async () => ({ status: 'observed', code: 'enhanced_payment_readiness_observed',
+    inspection: paymentInspectionPayload(), probe_timing: timing });
+  const close = await listenHostedGuestPreparation({}, socket, config);
+  try {
+    for (timing of [{ schema: 'discogs_guest_probe_timing_v1', budget_ms: 5000, elapsed_ms: 1,
+      last_stage: 'inventory', stages: [{ stage: 'inventory', elapsed_ms: 1, reads: 1 }] }, { private: 'NEVER_EXPORT' }]) {
+      const result = await exchange(socket, paymentInspectionRequest());
+      assert.equal(result.code, 'probe_unverified'); assert.equal(result.status, 'blocked');
+      assert.equal(Object.hasOwn(result, 'inspection'), false); assert.equal(Object.hasOwn(result, 'probe_timing'), false);
+      assert.equal(result.payment_allowed, false); assert.equal(JSON.stringify(result).includes('NEVER_EXPORT'), false);
     }
   } finally { await close(); }
 });

@@ -178,6 +178,20 @@ function fixedKeys(value, keys) {
   return value && typeof value === 'object' && !Array.isArray(value) &&
     Object.keys(value).sort().join('|') === [...keys].sort().join('|');
 }
+function sanitizedProbeTiming(value) {
+  const stages = guestPreparation.PROBE_TIMING_STAGES;
+  const integer = (number, max) => Number.isInteger(number) && number >= 0 && number <= max;
+  if (!Array.isArray(stages) || !fixedKeys(value, ['schema', 'budget_ms', 'elapsed_ms', 'last_stage', 'stages']) ||
+      value.schema !== 'discogs_guest_probe_timing_v1' || !integer(value.budget_ms, guestPreparation.PROBE_READ_BUDGET_MS) ||
+      !integer(value.elapsed_ms, 60000) || !stages.includes(value.last_stage) || !Array.isArray(value.stages) ||
+      value.stages.length < 1 || value.stages.length > stages.length ||
+      value.stages.some(row => !fixedKeys(row, ['stage', 'elapsed_ms', 'reads']) || !stages.includes(row.stage) ||
+        !integer(row.elapsed_ms, 60000) || !integer(row.reads, 100)) ||
+      new Set(value.stages.map(row => row.stage)).size !== value.stages.length ||
+      value.stages.at(-1).stage !== value.last_stage) return null;
+  return { schema: value.schema, budget_ms: value.budget_ms, elapsed_ms: value.elapsed_ms,
+    last_stage: value.last_stage, stages: value.stages.map(row => ({ ...row })) };
+}
 const diagnosticCount = value => Number.isInteger(value) && value >= 0 && value <= 2;
 function sanitizedCartBinding(value) {
   const keys = ['schema', 'first_failed', ...CART_BINDING_COUNTS, ...CART_BINDING_BOOLEANS];
@@ -269,11 +283,18 @@ function sanitizedPaymentInspection(value) {
     gates: { ...value.gates }, missing_evidence: [...value.missing_evidence], missing_profiles: [...value.missing_profiles],
     frame_association: { ...frame }, guest_pay_metadata: guestPayMetadata };
 }
-function safeResult(value, { captureAllowed = false, preflightAllowed = false, paymentInspectionAllowed = false } = {}) {
-  if (paymentInspectionAllowed || value?.code === 'enhanced_payment_readiness_observed') {
+function safeResult(value, { captureAllowed = false, preflightAllowed = false, paymentInspectionAllowed = false, probeAllowed = false } = {}) {
+  if (probeAllowed || paymentInspectionAllowed || value?.code === 'enhanced_payment_readiness_observed') {
     const effects = Object.fromEntries(READONLY_EFFECTS.filter(key => value?.[key] === true).map(key => [key, true]));
     if (Object.keys(effects).length) return { ...stop('readonly_scope_violation'), stop_required: true,
       initialization_allowed: false, initialization: 'outcome_requires_reconciliation', ...effects };
+  }
+  const hasProbeTiming = Object.hasOwn(value || {}, 'probe_timing');
+  const probeTiming = hasProbeTiming && probeAllowed ? sanitizedProbeTiming(value.probe_timing) : null;
+  if (hasProbeTiming && !probeTiming) {
+    const effects = Object.fromEntries(READONLY_EFFECTS.filter(key => value?.[key] === true).map(key => [key, true]));
+    return { ...stop('probe_unverified'), ...effects, ...(Object.keys(effects).length ?
+      { stop_required: true, initialization_allowed: false, initialization: 'outcome_requires_reconciliation' } : {}) };
   }
   if (value?.status === 'observed' && value.code === 'enhanced_payment_readiness_observed') {
     const inspection = paymentInspectionAllowed ? sanitizedPaymentInspection(value.inspection) : null;
@@ -375,6 +396,7 @@ function safeResult(value, { captureAllowed = false, preflightAllowed = false, p
       }
     }
   }
+  if (probeTiming) result.probe_timing = probeTiming;
   return result;
 }
 
@@ -444,7 +466,8 @@ export async function listenHostedGuestPreparation(context, socketPath, {
           return send(stop('payment_inspection_authorization_required'));
         }
         const result = await operations[message.action](context, message.request, { authorization, signal: controller.signal });
-        if (!controller.signal.aborted && !closing) send(safeResult(result, { captureAllowed: message.action === 'probe_guest_evidence' &&
+        if (!controller.signal.aborted && !closing) send(safeResult(result, { probeAllowed: message.action === 'probe_guest_evidence',
+          captureAllowed: message.action === 'probe_guest_evidence' &&
           message.request.phase === 'capture_cart_structure' && authorization?.mode === 'capture_cart_structure',
           preflightAllowed: message.action === 'cart_checkout_preflight' &&
           message.request.schema === 'discogs_guest_checkout_preflight_v1' && message.request.phase === 'navigate_checkout_preflight' &&

@@ -328,7 +328,7 @@ test('readonly provider diagnostics preserve original cancellation and deadline 
     const originalEvaluate = b.frame.evaluate;
     b.frame.evaluate = (...args) => { providerReads++; return originalEvaluate(...args); };
     b.frame.frameElement = async () => {
-      if (mode === 'cancel') controller.abort(); else Date.now = () => actualNow() + 2000;
+      if (mode === 'cancel') controller.abort(); else Date.now = () => actualNow() + isolated.PROBE_READ_BUDGET_MS + 1000;
       return original();
     };
     try {
@@ -336,6 +336,7 @@ test('readonly provider diagnostics preserve original cancellation and deadline 
       const result = await isolated.probeCurrentGuestPreparationEvidence(b.context, grant.request,
         { authorization: grant.authorization, signal: controller.signal });
       assert.equal(result.code, mode === 'cancel' ? 'cancelled' : 'probe_deadline_expired');
+      assert.equal(checkProbeTiming(result, isolated).last_stage, 'provider');
       assert.equal(providerReads, 0); assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
     } finally { Date.now = actualNow; b.state.merchant.window.close(); b.close(); }
   }
@@ -581,6 +582,89 @@ function confirmation(grant, observed) {
 }
 const probe = (b, grant, signal) => port.probeCurrentGuestPreparationEvidence(b.context, grant.request, { authorization: grant.authorization, signal });
 
+function checkProbeTiming(value, module = port) {
+  const timing = value.probe_timing;
+  assert.equal(timing.schema, 'discogs_guest_probe_timing_v1');
+  assert.ok(Number.isInteger(timing.budget_ms) && timing.budget_ms >= 0 && timing.budget_ms <= 5000);
+  assert.ok(Number.isInteger(timing.elapsed_ms) && timing.elapsed_ms >= 0 && timing.elapsed_ms <= 60000);
+  assert.ok(module.PROBE_TIMING_STAGES.includes(timing.last_stage));
+  assert.ok(timing.stages.length > 0 && timing.stages.length <= module.PROBE_TIMING_STAGES.length);
+  assert.equal(new Set(timing.stages.map(row => row.stage)).size, timing.stages.length);
+  for (const row of timing.stages) {
+    assert.deepEqual(Object.keys(row).sort(), ['stage', 'elapsed_ms', 'reads'].sort());
+    assert.ok(module.PROBE_TIMING_STAGES.includes(row.stage));
+    assert.ok(Number.isInteger(row.elapsed_ms) && row.elapsed_ms >= 0 && row.elapsed_ms <= 60000);
+    assert.ok(Number.isInteger(row.reads) && row.reads >= 0 && row.reads <= 100);
+  }
+  assert.ok(timing.stages.reduce((sum, row) => sum + row.elapsed_ms, 0) <= timing.elapsed_ms);
+  for (const secret of ['Fixture Street', 'PRIVATE', 'paypal.com', 'discogs.com', 'Synthetic KC', 'SESSION_EXPIRED']) {
+    assert.equal(JSON.stringify(timing).includes(secret), false);
+  }
+  return timing;
+}
+
+test('probe fixed five-second budget admits a normal delayed read beyond1500ms and reports grouped stage timing without authority changes', async () => {
+  const isolated = await import('../scripts/discogs_hosted_guest_prepare.mjs?probe-budget=' + randomUUID());
+  const b = browser(); b.state.merchant = dom(summary, CHECKOUT);
+  const pages = b.context.pages;
+  b.context.pages = async () => { await new Promise(resolve => setTimeout(resolve, 1650)); return pages(); };
+  try {
+    assert.equal(isolated.PROBE_READ_BUDGET_MS, 5000);
+    const grant = readonlyGrant();
+    const result = await isolated.probeCurrentGuestPreparationEvidence(b.context, grant.request, { authorization: grant.authorization });
+    assert.equal(result.status, 'observed', JSON.stringify(result));
+    const timing = checkProbeTiming(result, isolated);
+    assert.equal(timing.budget_ms, 5000); assert.ok(timing.elapsed_ms >= 1600 && timing.elapsed_ms < 5000);
+    assert.equal(timing.last_stage, 'binding');
+    assert.ok(timing.stages.find(row => row.stage === 'inventory').elapsed_ms >= 1600);
+    assert.ok(timing.stages.find(row => row.stage === 'inventory').reads >= 1);
+    assert.equal(result.destination_match, null); assert.equal(result.initialization_allowed, false);
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  } finally { await isolated.waitForHostedGuestPreparationSettlement(b.context); b.state.merchant.window.close(); b.close(); }
+});
+
+test('probe timing identifies timeout stage while policy expiry stays clamped and pending read remains retained', async () => {
+  const isolated = await import('../scripts/discogs_hosted_guest_prepare.mjs?probe-timing-timeout=' + randomUUID());
+  const b = browser(), entered = deferred(), finish = deferred(); let laterReads = 0;
+  b.context.pages = async () => { entered.resolve(); await finish.promise; return []; };
+  b.page.evaluate = async () => { laterReads++; throw new Error('must not resume after timeout'); };
+  const grant = readonlyGrant(); grant.authorization.expires_at = Date.now() / 1000 + .08;
+  try {
+    const pending = isolated.probeCurrentGuestPreparationEvidence(b.context, grant.request, { authorization: grant.authorization });
+    await entered.promise;
+    const result = await pending; assert.equal(result.code, 'probe_deadline_expired');
+    const timing = checkProbeTiming(result, isolated);
+    assert.ok(timing.budget_ms > 0 && timing.budget_ms <= 80); assert.equal(timing.last_stage, 'inventory');
+    assert.equal(timing.stages.find(row => row.stage === 'inventory').reads, 1);
+    let drained = false; const drainage = isolated.waitForHostedGuestPreparationSettlement(b.context).then(() => { drained = true; });
+    await eventLoopTurn(); assert.equal(drained, false);
+    finish.resolve(); await drainage; await eventLoopTurn(); assert.equal(laterReads, 0);
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  } finally { finish.resolve(); await isolated.waitForHostedGuestPreparationSettlement(b.context); b.close(); }
+});
+
+test('probe cancellation is prompt during pending read and expired authorization has zero read budget or calls', async () => {
+  const isolated = await import('../scripts/discogs_hosted_guest_prepare.mjs?probe-timing-cancel=' + randomUUID());
+  const b = browser(), entered = deferred(), finish = deferred(), controller = new AbortController();
+  b.context.pages = async () => { entered.resolve(); await finish.promise; return []; };
+  const grant = readonlyGrant();
+  try {
+    const pending = isolated.probeCurrentGuestPreparationEvidence(b.context, grant.request,
+      { authorization: grant.authorization, signal: controller.signal });
+    await entered.promise; const cancelledAt = performance.now(); controller.abort();
+    const result = await pending;
+    assert.equal(result.code, 'cancelled'); assert.ok(performance.now() - cancelledAt < 500);
+    assert.equal(checkProbeTiming(result, isolated).last_stage, 'inventory');
+    finish.resolve(); await isolated.waitForHostedGuestPreparationSettlement(b.context);
+    const expired = readonlyGrant(); expired.authorization.expires_at = Date.now() / 1000 - 1;
+    const stopped = await isolated.probeCurrentGuestPreparationEvidence(b.context, expired.request, { authorization: expired.authorization });
+    assert.equal(stopped.code, 'readonly_authorization_required');
+    const timing = checkProbeTiming(stopped, isolated);
+    assert.equal(timing.budget_ms, 0); assert.equal(timing.last_stage, 'authorization');
+    assert.deepEqual(timing.stages.map(row => row.reads), [0]);
+  } finally { finish.resolve(); await isolated.waitForHostedGuestPreparationSettlement(b.context); b.close(); }
+});
+
 test('distinct read-only authority reports honest unbound destination and safe structure without transaction evidence', async () => ledgerFixture(async f => {
   const b = browser(); b.state.merchant = dom(summary, CHECKOUT);
   try {
@@ -807,7 +891,9 @@ test('probe cancellation drains hidden inner-inspector DOM promise before runtim
   try {
     const running = probe(b, readonlyGrant(), controller.signal);
     await entered.promise; controller.abort();
-    assert.equal((await running).code, 'cancelled');
+    const result = await running;
+    assert.equal(result.code, 'cancelled');
+    assert.equal(checkProbeTiming(result).last_stage, 'summary');
     const readsAtCancellation = b.effects.evaluate;
     let drained = false;
     const settlement = port.waitForHostedGuestPreparationSettlement(b.context).then(() => { drained = true; });
@@ -964,10 +1050,10 @@ test('confirmation pending DOM read crossing either reference or visual-ack expi
         assert.ok(clock < boundaryExpiresAt, 'the boundary is still valid before the pending DOM read');
         await Promise.resolve(); // The request was valid when the pending read began.
         // Leave a real one-second scheduling margin before the production
-        // timer, then cross only the clamped expiry, not the 1500ms read budget.
+        // timer, then cross only the clamped expiry, not the fixed probe budget.
         clock += 1200;
         assert.ok(clock >= boundaryExpiresAt);
-        assert.ok(clock < pendingAt + 1500);
+        assert.ok(clock < pendingAt + port.PROBE_READ_BUDGET_MS);
       }
     } });
     const grant = readonlyGrant();

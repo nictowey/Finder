@@ -16,6 +16,9 @@ import { guestCardScopeDigest, validateGuestCardInspection, revalidateGuestCardC
 
 export const HOSTED_GUEST_LEDGER = '/bridge/guest-card-actions';
 export const HOSTED_GO_SELECTOR = 'button.order_button.checkout_v2[name="Action.ProceedCommerceCheckout"]';
+export const PROBE_READ_BUDGET_MS = 5000;
+export const PROBE_TIMING_STAGES = Object.freeze(['authorization', 'inventory', 'merchant_document', 'readiness',
+  'summary', 'snapshot', 'detail', 'provider', 'final', 'binding']);
 const CART = 'https://www.discogs.com/sell/cart/';
 const active = new WeakSet(), uncertain = new WeakSet();
 const pendingByContext = new WeakMap();
@@ -1231,45 +1234,72 @@ function readonlyAuthorizationValid(request, authorization) {
  * References expire within 300 seconds and are lost on process restart.
  */
 export async function probeCurrentGuestPreparationEvidence(context, request, { authorization, signal } = {}) {
-  if (!context || typeof context !== 'object' || !readonlyAuthorizationValid(request, authorization)) return stopped('readonly_authorization_required');
+  const startedAt = performance.now(), stageTimes = new Map([['authorization', { elapsed: 0, reads: 0 }]]);
+  let currentStage = 'authorization', stageAt = startedAt, timingBudget = 0;
+  const stage = name => {
+    const at = performance.now();
+    stageTimes.get(currentStage).elapsed += Math.max(0, at - stageAt);
+    currentStage = name; stageAt = at;
+    if (!stageTimes.has(name)) stageTimes.set(name, { elapsed: 0, reads: 0 });
+  };
+  const timed = value => {
+    stage(currentStage);
+    const elapsed = value => Math.min(60000, Math.max(0, Math.floor(value)));
+    return { ...value, probe_timing: { schema: 'discogs_guest_probe_timing_v1', budget_ms: timingBudget,
+      elapsed_ms: elapsed(performance.now() - startedAt), last_stage: currentStage,
+      stages: [...stageTimes].map(([name, value]) => ({ stage: name, elapsed_ms: elapsed(value.elapsed), reads: value.reads })) } };
+  };
+  const stop = (code, extras) => timed(stopped(code, extras));
+  if (!context || typeof context !== 'object' || !readonlyAuthorizationValid(request, authorization)) return stop('readonly_authorization_required');
   request = JSON.parse(stable(request)); authorization = JSON.parse(stable(authorization));
   const now = Date.now() / 1000, confirming = request.phase === 'confirm_saved_destination', capturing = request.phase === 'capture_cart_structure';
   let job = readonlyProbeJobs.get(request.job_id);
   if (confirming) {
-    if (!job || job.context !== context || job.document_ref !== request.document_ref) return stopped('probe_reference_unverified');
-    if (now >= job.reference_expires_at) return stopped('probe_reference_expired');
-    if (job.confirmation_consumed) return stopped('probe_job_replayed');
-    if (authorization.destination_ack.observed_at < job.reference_created_at) return stopped('readonly_authorization_required');
+    if (!job || job.context !== context || job.document_ref !== request.document_ref) return stop('probe_reference_unverified');
+    if (now >= job.reference_expires_at) return stop('probe_reference_expired');
+    if (job.confirmation_consumed) return stop('probe_job_replayed');
+    if (authorization.destination_ack.observed_at < job.reference_created_at) return stop('readonly_authorization_required');
     job.confirmation_consumed = true; // Consume before any await, including concurrent confirmation.
   } else {
-    if (job) return stopped('probe_job_replayed');
+    if (job) return stop('probe_job_replayed');
     for (const [id, prior] of readonlyProbeJobs) if (now >= prior.authorization_expires_at) readonlyProbeJobs.delete(id);
-    if (readonlyProbeJobs.size >= 64) return stopped('probe_capacity_exceeded');
+    if (readonlyProbeJobs.size >= 64) return stop('probe_capacity_exceeded');
     job = { context, authorization_expires_at: authorization.expires_at, confirmation_consumed: false };
     readonlyProbeJobs.set(request.job_id, job);
   }
-  const deadline = Math.min(Date.now() + 1500, authorization.expires_at * 1000,
+  const budgetStartedAt = Date.now();
+  const deadline = Math.min(budgetStartedAt + PROBE_READ_BUDGET_MS, authorization.expires_at * 1000,
     ...(confirming ? [job.reference_expires_at * 1000, (authorization.destination_ack.observed_at + 60) * 1000] : []));
+  timingBudget = Math.max(0, Math.floor(Math.min(PROBE_READ_BUDGET_MS, deadline - budgetStartedAt)));
   const read = async operation => {
     if (signal?.aborted) fail('cancelled');
     if (Date.now() >= deadline) fail('probe_deadline_expired');
-    let timer;
+    let timer, onAbort;
+    const operationStage = currentStage;
     try {
       const task = retainContextTask(context, Promise.resolve().then(() => {
         if (signal?.aborted) fail('cancelled');
         if (Date.now() >= deadline) fail('probe_deadline_expired');
+        const timing = stageTimes.get(operationStage); timing.reads = Math.min(100, timing.reads + 1);
         return operation();
       }));
       const value = await Promise.race([task, new Promise((_, reject) => {
         timer = setTimeout(() => reject(Object.assign(new Error('probe_deadline_expired'), { [STOP]: 'probe_deadline_expired' })), deadline - Date.now());
+        if (signal) {
+          onAbort = () => reject(Object.assign(new Error('cancelled'), { [STOP]: 'cancelled' }));
+          signal.addEventListener('abort', onAbort, { once: true });
+          if (signal.aborted) onAbort();
+        }
       })]);
       if (signal?.aborted) fail('cancelled');
       if (Date.now() >= deadline) fail('probe_deadline_expired');
       return value;
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); if (onAbort) signal.removeEventListener('abort', onAbort); }
   };
   try {
+    stage('inventory');
     const pages = await read(() => context.pages());
+    stage('merchant_document');
     const merchantPages = pages.filter(page => capturing ? page.url() === CART : [CART, GUEST_CARD_URL].includes(page.url()));
     if (merchantPages.length !== 1) fail('single_current_merchant_page_required');
     const page = merchantPages[0], url = page.url(), cart = url === CART;
@@ -1277,13 +1307,16 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
         !await read(() => page.evaluate(expected => document === expected, job.document_handle)))) fail('probe_document_changed');
     const documentHandle = confirming ? job.document_handle : await read(() => page.evaluateHandle(() => document));
     if (capturing) {
+      stage('snapshot');
       const snapshot = await read(() => page.evaluate(collectHostedCartStructureDom));
       if (snapshot?.status !== 'observed' || snapshot.code !== 'cart_structure_captured') {
         fail(['access_restricted', 'page_not_ready'].includes(snapshot?.code) ? snapshot.code : 'cart_capture_unverified');
       }
+      stage('final');
       if (page.url() !== CART || !await read(() => page.evaluate(expected => document === expected, documentHandle))) fail('probe_document_changed');
-      return { ...snapshot, initialization_allowed: false, card_entry_allowed: false, payment_allowed: false, final_submission_allowed: false };
+      return timed({ ...snapshot, initialization_allowed: false, card_entry_allowed: false, payment_allowed: false, final_submission_allowed: false });
     }
+    stage('readiness');
     try {
       await read(() => page.waitForFunction(hostedDocumentReadyDom, url,
         { timeout: Math.max(1, deadline - Date.now()), polling: 'raf' }));
@@ -1304,14 +1337,17 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
         return page.evaluate(...args);
       })),
     };
+    stage('summary');
     const summary = cart ? null : await read(() => inspectCurrentEnhancedCheckout(inspectorPage, { signal }));
     const cartDom = cart ? await read(() => page.evaluate(collectCartDom, '1366950910')) : null;
+    stage('snapshot');
     const dom = await read(() => page.evaluate(collectHostedGuestDom, {
       stage: cart ? 'cart' : 'checkout', privateDestinationSnapshot: true }));
     if (dom.access !== 'normal' || summary?.code === 'access_restricted') fail('access_restricted');
     if (!dom.ready) fail('page_not_ready');
     if (confirming && (!job.private_destination_snapshot || !dom.address_present)) fail('saved_destination_unverified');
     if (confirming && dom.private_destination_snapshot !== job.private_destination_snapshot) fail('saved_destination_snapshot_changed');
+    stage('detail');
     const detailPages = pages.filter(candidate => ['https://www.discogs.com/sell/item/1366950910',
       'https://www.discogs.com/shop/item/1366950910'].includes(candidate.url()));
     let detail = null, title = null, readiness = null;
@@ -1361,11 +1397,12 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
       readerGates.includes(cartDom.binding_gate) && cartDom.code === 'observed' ? {
         schema: 'cart_reader_predicates_v1', code: cartDom.code, first_failed: cartDom.binding_gate, counts: readerCounts,
       } : null;
+    stage('provider');
     const frameInspection = await inspectHostedProviderFrames(page, read);
     const frames = frameInspection.frames;
-    if (frameInspection.diagnostic.candidates.some(candidate => candidate.access === 'restricted')) return stopped('access_restricted', {
+    if (frameInspection.diagnostic.candidates.some(candidate => candidate.access === 'restricted')) return stop('access_restricted', {
       provider_frame_diagnostic: frameInspection.diagnostic });
-    if (frameInspection.diagnostic.selection === 'error') return stopped('provider_frame_inspection_error', {
+    if (frameInspection.diagnostic.selection === 'error') return stop('provider_frame_inspection_error', {
       provider_frame_diagnostic: frameInspection.diagnostic });
     if (frames.length === 1 && frames[0].parentFrame() === page.mainFrame()) {
       const frame = frames[0], element = await read(() => frame.frameElement());
@@ -1382,12 +1419,16 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
         }
       }
     }
+    stage('final');
     const finalSnapshot = await read(() => page.evaluate(collectHostedGuestDom, {
       stage: cart ? 'cart' : 'checkout', privateDestinationSnapshot: true }));
     if (finalSnapshot.access !== 'normal') fail('access_restricted');
     if (!finalSnapshot.ready) fail('page_not_ready');
     if (finalSnapshot.private_destination_snapshot !== dom.private_destination_snapshot) fail('saved_destination_snapshot_changed');
     if (page.url() !== url || !await read(() => page.evaluate(expected => document === expected, documentHandle))) fail('probe_document_changed');
+    stage('binding');
+    if (signal?.aborted) fail('cancelled');
+    if (Date.now() >= deadline) fail('probe_deadline_expired');
     // A document ref is an opaque observation handle, not destination approval.
     if (!confirming) {
       job.page = page; job.url = url; job.document_handle = documentHandle; job.document_ref = randomUUID();
@@ -1422,7 +1463,7 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
             existing_guest_form: false, amount_basis: 'explicit_merchant_checkout_total', final_payment_verified: false },
         } : null;
     }
-    return { status: 'observed', code: confirming ? 'approved_saved_destination_bound' : 'current_dom_evidence_only', observed,
+    return timed({ status: 'observed', code: confirming ? 'approved_saved_destination_bound' : 'current_dom_evidence_only', observed,
       document_ref: job.document_ref, merchant_route: cart ? 'cart' : 'enhanced_checkout',
       address_present: dom.address_present === true, destination_binding_available: confirming,
       destination_match: confirming ? true : null,
@@ -1436,8 +1477,8 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
       missing_fields: Object.keys(observed).filter(key => key !== 'existing_guest_form' && !observed[key]),
       normal_cart_transition_verified: false, initialization_allowed: false,
       source: 'current_visible_dom', final_quote_verified: false,
-      card_entry_allowed: false, payment_allowed: false, final_submission_allowed: false };
-  } catch (error) { return stopped(error?.[STOP] || 'probe_unverified'); }
+      card_entry_allowed: false, payment_allowed: false, final_submission_allowed: false });
+  } catch (error) { return stop(error?.[STOP] || 'probe_unverified'); }
 }
 
 /** Separately authorized, one-use normal Cart -> fresh Checkout preflight.
