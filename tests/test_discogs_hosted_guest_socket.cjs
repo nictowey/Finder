@@ -687,6 +687,41 @@ test('guest frame selection diagnostics cross IPC only as bounded counts and fix
   } finally { await close(); }
 });
 
+test('bounded nested ancestry crosses read-only IPC without making a nested Pay control eligible', async () => {
+  const socket = path(), config = options(); let metadata;
+  config.authorize = async () => ({ schema: 'discogs_guest_payment_inspection_authorization_v1', mode: 'inspect_enhanced_payment' });
+  config.fixtureOperations.inspect_enhanced_payment = async () => ({ status: 'observed', code: 'enhanced_payment_readiness_observed',
+    inspection: { ...paymentInspectionPayload(), guest_pay_metadata: metadata } });
+  const close = await listenHostedGuestPreparation({}, socket, config);
+  try {
+    // Synthetic ancestry proves transport sanitization, never a live provider profile.
+    metadata = { schema: 'discogs_guest_pay_metadata_v1', status: 'no_eligible_frame', paypal_origin_count: 2,
+      candidate_count: 1, associated_count: 1, eligible_count: 0, unsupported_count: 0, truncated: false,
+      submit_count: null, submit_visible: null, submit_enabled: null, button_type_matches: null,
+      label: null, amount: null, currency: null, same_document_verified: false, frame_associated: false, location: null,
+      ancestry_diagnostic: { schema: 'discogs_guest_pay_ancestry_v1', status: 'observed', reason: 'complete',
+        inventory_count: 3, candidate_count: 1, truncated: false, candidates: [{ category: 'paypal_other',
+          stop: 'merchant_root', depth: 2, chain_complete: true, buttons_ancestor_verified: true, public_submit_count: 1,
+          hops: [{ child_category: 'paypal_other', parent_category: 'paypal_buttons', visible: true,
+            content_frame_matches: true, owner_frame_matches: true, documents_same: true },
+          { child_category: 'paypal_buttons', parent_category: 'merchant_checkout', visible: true,
+            content_frame_matches: true, owner_frame_matches: true, documents_same: true }] }] } };
+    const result = await exchange(socket, paymentInspectionRequest());
+    assert.equal(result.code, 'enhanced_payment_readiness_observed');
+    assert.deepEqual(result.inspection.guest_pay_metadata, metadata);
+    assert.equal(result.inspection.payment_enabled, false); assert.equal(result.inspection.final_quote_verified, false);
+    assert.equal(result.initialization_allowed, false); assert.equal(result.payment_allowed, false);
+    for (const mutate of [value => { value.candidates[0].frame_url = 'NEVER_EXPORT'; },
+      value => { value.candidates[0].hops[0].parent_category = 'https://private.example/?token=NEVER_EXPORT'; },
+      value => { value.candidates[0].depth = 5; }, value => { value.candidates[0].hops[0].documents_same = false; }]) {
+      const original = structuredClone(metadata); mutate(metadata.ancestry_diagnostic);
+      const rejected = await exchange(socket, paymentInspectionRequest());
+      assert.equal(rejected.code, 'payment_inspection_unverified'); assert.equal(Object.hasOwn(rejected, 'inspection'), false);
+      assert.equal(JSON.stringify(rejected).includes('NEVER_EXPORT'), false); metadata = original;
+    }
+  } finally { await close(); }
+});
+
 test('payment inspection sanitizer rejects malformed, private, contradictory or incomplete diagnostics atomically', async () => {
   const socket = path(), config = options(); let payload;
   config.authorize = async () => ({ schema: 'discogs_guest_payment_inspection_authorization_v1', mode: 'inspect_enhanced_payment' });

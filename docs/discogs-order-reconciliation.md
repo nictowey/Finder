@@ -350,3 +350,68 @@ the strict private operator projection for the optional diagnostic alongside the
 runtime, then use a distinct bounded no-submit preparation and read-only job
 for live proof. No restart, new initialization, Pay, web deployment, merge or
 monitoring activation is performed by this offline repair.
+
+### October 27: actual bounded selection result and ancestry-only investigation
+
+The reviewed `4adc07d` private activation preserved 220 files, the saved browser
+profile, historical access stop and the 35-record ledger. Normal blank-form
+dismissal and fresh complete All/All Purchases with zero orders preceded its
+append-only disposition. This does not establish absence of a provider draft.
+The next bounded server preparation took 5.617 seconds, with 28.556 seconds left
+on the original destination acknowledgement. It opened a blank guest form;
+normal visual observation verified Pay $5.05 and appended observation 40 without
+altering the preceding unknown record. Card entry and Pay remained untouched.
+
+The subsequent read-only runtime job completed in 2.295 seconds. Its actual
+selection diagnostic traversed all 14 frames: four PayPal-origin frames, one
+buttons frame excluded, three non-direct frames rejected, zero eligible guest
+frames, zero inspection errors and no truncation. Known buttons association
+passed. Those counts do not identify which rejected frame contains the guest
+form or establish any ancestry relationship. Merchant USD 0.10 + 4.95 = 5.05
+remained observable; provider quote, currency, finality, delivery, terms, selected
+method and a positive merchant receipt remained unqualified.
+
+Normal Firefox Inspector separately selected the visible
+`BUTTON#submit-button[type=button]` labelled Pay $5.05. Inspector/Console mouse
+controls responded, but attempted ordinary clipboard and keyboard diagnostic
+entry produced no expression or result. No diagnostic was evaluated, and no
+frame ancestry is claimed from that attempt. It did not reload, dismiss or
+reinitialize the form. The script now acquires the missing evidence through the
+existing fixed read-only runtime collector rather than repeated Console input.
+
+The optional `ancestry_diagnostic` is diagnostic evidence only. It visits at most
+32 inventoried frames, four nested candidates and four parent edges per
+candidate. Exceeding a limit reports the bounded failure instead of choosing an
+arbitrary initial subset. Output contains only fixed origin/path categories,
+depth, ownership/visibility/document-continuity booleans, stop reasons and the
+capped count of `button#submit-button[type="button"]`. It excludes full URLs,
+queries/fragments, arbitrary text, hidden state, payment input values and
+exception text. Unknown or absent parents, cycles and unverified edges stop
+before control inspection. Every permitted edge must bind the actual child to
+its iframe element, owner frame and content frame, and the actual known
+Documents. A verified buttons ancestor is reported only if that same verified
+frame occurs in the observed chain; it may instead be a sibling.
+
+The new diagnostics never add a nested frame to eligible children or authorize
+Pay. A complete synthetic ancestry in tests therefore still leaves nested Pay
+metadata ineligible. Ambiguous controls, changed documents/edges and incomplete
+relationships stay explicitly unqualified. The read-only helper uses the
+existing cancellation, pending-read drainage, deadlines and handle cleanup.
+Final ancestry edge audits follow its final document reads; the existing direct
+Pay-child audit follows all added diagnostic awaits. Tests cover both late-read
+races with offline fixtures, not a claimed live provider hierarchy.
+
+This ancestry-only change is not activated in this pass. A consolidated live
+evidence plan must first verify the current form still blank, normally dismiss
+it, obtain fresh complete All/All Purchases and append a new disposition after
+observation 40. Preserve every old ledger/job byte, then build the two reviewed
+modules on the exact current private image and perform one scoped browser
+restart with the same profile. Stage the strict operator projection for the
+optional ancestry field before issuing fresh bounded jobs. If a startup
+read-only policy is needed to bind the existing IPC listener, keep it unused and
+archive it unchanged before the distinct reconciled preparation job; do not
+weaken expiry or rearm a spent grant. Use the proven batched no-submit
+preparation, append a genuine form observation, then a distinct bounded
+read-only metadata job. Report actual ancestry before proposing any eligibility
+extension. No web deployment, payment, merge or monitoring activation is part
+of this plan.

@@ -29,7 +29,7 @@ function fixture(html = HTML) {
   for (const key of ['value', 'checked']) Object.defineProperty(dom.window.HTMLInputElement.prototype, key, { get() { throw new Error('Forbidden payment input read'); } });
   for (const method of ['click', 'focus']) dom.window.HTMLElement.prototype[method] = () => { throw new Error('Forbidden control effect'); };
   dom.window.fetch = () => { throw new Error('Forbidden network'); };
-  const calls = [], documentHandle = { dispose: async () => calls.push('dispose') }, main = {};
+  const calls = [], documentHandle = { dispose: async () => calls.push('dispose') }, main = { parentFrame: () => null };
   let currentDocument = documentHandle, url = URL;
   const page = { url: () => { calls.push('url'); return url; },
     evaluateHandle: async () => { calls.push('document_handle'); return currentDocument; },
@@ -37,6 +37,7 @@ function fixture(html = HTML) {
       if (fn === collectEnhancedPaymentQuoteDom) { calls.push('merchant_dom'); return dom.window.eval(`(${fn.toString()})()`); }
       if (fn === collectGuestPayControlMetadataDom) { calls.push('public_pay_metadata');
         return dom.window.eval(`(${fn.toString()})`)({ ...arg, expectedDocument: arg.expectedDocument === currentDocument ? dom.window.document : {} }); }
+      if (fn.name === 'sameKnownDocument') return arg.expectedDocument === currentDocument && url === arg.url;
       calls.push('same_document'); assert.equal(arg, documentHandle); return currentDocument === documentHandle;
     }, frames: () => { calls.push('frames'); return []; }, mainFrame: () => main };
   return { page, calls, dom, main, documentHandle, changeDocument: () => { currentDocument = {}; }, changeUrl: value => { url = value; } };
@@ -106,7 +107,7 @@ function publicGuestFrame(f, { html = '<button id="submit-button" type="button">
   const frame = { url: () => url, parentFrame: () => parent,
     evaluateHandle: async () => handle,
     frameElement: async () => ({ dispose: async () => {}, isVisible: async () => visible,
-      contentFrame: async () => attached ? frame : null, ownerFrame: async () => f.main }),
+      contentFrame: async () => attached ? frame : null, ownerFrame: async () => parent }),
     evaluate: async (fn, arg) => {
       if (fn === collectGuestPayControlMetadataDom) {
         const result = dom.window.eval(`(${fn.toString()})`)({ ...arg, expectedDocument: arg.expectedDocument === currentHandle ? dom.window.document : {} });
@@ -115,6 +116,9 @@ function publicGuestFrame(f, { html = '<button id="submit-button" type="button">
           reparent: () => { parent = {}; } });
         return result;
       }
+      if (fn.name === 'sameKnownDocument') return arg.expectedDocument === currentHandle && url === arg.url;
+      if (fn.name === 'collectGuestPayAncestryControlDom') return dom.window.eval(`(${fn.toString()})`)({
+        ...arg, expectedDocument: arg.expectedDocument === currentHandle ? dom.window.document : {} });
       assert.equal(arg, handle); return currentHandle === handle;
     } };
   return { frame, dom, setVisible: value => { visible = value; }, setParent: value => { parent = value; },
@@ -228,6 +232,84 @@ test('total-frame limit reports bounded selection diagnostics through the existi
     assert.equal(report.quote.guest_pay_metadata.selection_diagnostic.reason, 'total_frame_limit');
     assert.equal(report.quote.code, 'frame_metadata_unverified'); assert.equal(report.payment_allowed, false); assert.equal(reads, 0);
   } finally { await waitForEnhancedPaymentQuoteSettlement(f.page); f.dom.window.close(); }
+});
+
+test('nested ancestry diagnostics count public controls without making nested frames eligible', async () => {
+  // Synthetic parent chain, not a claim about the still-unqualified live tree.
+  for (const count of [1, 2]) {
+    const f = fixture(), parent = publicGuestFrame(f, { html: '<div>public container</div>' });
+    const nested = Array.from({ length: count }, () => publicGuestFrame(f));
+    nested.forEach(item => item.setParent(parent.frame));
+    f.page.frames = () => [f.main, parent.frame, ...nested.map(item => item.frame)];
+    try {
+      const result = await inspectCurrentEnhancedPaymentQuote(f.page);
+      const metadata = result.guest_pay_metadata, ancestry = metadata.ancestry_diagnostic;
+      assert.equal(metadata.status, 'no_eligible_frame'); assert.equal(metadata.eligible_count, 0);
+      assert.equal(metadata.label, null); assert.equal(metadata.frame_associated, false);
+      assert.equal(ancestry.status, count === 1 ? 'observed' : 'incomplete');
+      assert.equal(ancestry.reason, count === 1 ? 'complete' : 'ambiguous_controls');
+      assert.equal(ancestry.candidate_count, count); assert.equal(ancestry.truncated, false);
+      for (const candidate of ancestry.candidates) {
+        assert.equal(candidate.public_submit_count, 1); assert.equal(candidate.stop, 'merchant_root');
+        assert.equal(candidate.depth, 2); assert.equal(candidate.chain_complete, true);
+        assert.equal(candidate.buttons_ancestor_verified, false);
+      }
+      assert.equal(result.final_quote_verified, false); assert.equal(result.payment_allowed, false);
+      assert.equal(result.provenance.frame_association.payment_quote_frame_qualified, false);
+      assert.equal(JSON.stringify(result).includes('TOP_SECRET'), false);
+      assert.deepEqual(sanitizeGuestPayMetadata(metadata), metadata);
+      assert.equal(sanitizeGuestPayMetadata({ ...metadata,
+        ancestry_diagnostic: { ...ancestry, private_url: 'TOP_SECRET' } }), null);
+    } finally {
+      await waitForEnhancedPaymentQuoteSettlement(f.page);
+      [parent, ...nested].forEach(item => item.dom.window.close()); f.dom.window.close();
+    }
+  }
+});
+
+test('nested diagnostics retain changed-ancestor evidence without qualifying a Pay control', async () => {
+  const f = fixture(), parent = publicGuestFrame(f, { html: '<div>public container</div>' }), nested = publicGuestFrame(f);
+  nested.setParent(parent.frame); f.page.frames = () => [f.main, parent.frame, nested.frame];
+  try {
+    const result = await inspectCurrentEnhancedPaymentQuote(f.page, { destinationMatcher: async () => {
+      parent.replaceDocument(); return null;
+    } });
+    assert.equal(result.guest_pay_metadata.status, 'unsupported_collection');
+    assert.equal(result.guest_pay_metadata.ancestry_diagnostic.status, 'changed');
+    assert.equal(result.guest_pay_metadata.ancestry_diagnostic.reason, 'inventory_changed');
+    assert.equal(result.guest_pay_metadata.ancestry_diagnostic.candidates[0].public_submit_count, null);
+    assert.equal(result.guest_pay_metadata.ancestry_diagnostic.candidates[0].chain_complete, false);
+    assert.equal(result.payment_allowed, false); assert.equal(result.final_quote_verified, false);
+  } finally {
+    await waitForEnhancedPaymentQuoteSettlement(f.page); [parent, nested].forEach(item => item.dom.window.close()); f.dom.window.close();
+  }
+});
+
+test('ancestry finalizer cannot outlive the final audit of an already selected direct Pay child', async () => {
+  for (const mode of ['document', 'association']) {
+    const f = fixture(), direct = publicGuestFrame(f), parent = publicGuestFrame(f, { html: '<div>public container</div>' });
+    const nested = publicGuestFrame(f); nested.setParent(parent.frame);
+    const frames = [f.main, direct.frame, parent.frame, nested.frame]; let inventories = 0;
+    f.page.frames = () => {
+      // Before the ordering fix this third inventory read ran inside the late
+      // ancestry finalizer, after the selected direct child had been audited.
+      if (++inventories === 3) {
+        if (mode === 'document') direct.replaceDocument(); else direct.setAttached(false);
+      }
+      return frames;
+    };
+    try {
+      const result = await inspectCurrentEnhancedPaymentQuote(f.page);
+      assert.ok(inventories >= 3);
+      assert.equal(result.guest_pay_metadata.status, 'unsupported_collection');
+      assert.equal(result.guest_pay_metadata.selection_diagnostic.reason, 'frame_changed');
+      assert.equal(result.guest_pay_metadata.label, null); assert.equal(result.guest_pay_metadata.frame_associated, false);
+      assert.equal(result.payment_allowed, false); assert.equal(result.final_quote_verified, false);
+    } finally {
+      await waitForEnhancedPaymentQuoteSettlement(f.page);
+      [direct, parent, nested].forEach(item => item.dom.window.close()); f.dom.window.close();
+    }
+  }
 });
 
 test('excluded frames changing URL, direct parent, visibility or ownership during a matcher invalidate the original selection', async () => {

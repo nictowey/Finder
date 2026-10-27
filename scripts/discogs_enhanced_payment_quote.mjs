@@ -5,6 +5,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { collectEnhancedCheckoutDom } from './discogs_enhanced_checkout.mjs';
+import { startGuestPayAncestryDiagnostic, sanitizeGuestPayAncestryDiagnostic } from './discogs_guest_pay_ancestry.mjs';
 
 export { collectEnhancedCheckoutDom as collectEnhancedPaymentQuoteDom };
 export const ENHANCED_PAYMENT_QUOTE_URL = 'https://www.discogs.com/marketplace/checkout';
@@ -51,8 +52,10 @@ const emptyPayMetadata = status => ({ schema: 'discogs_guest_pay_metadata_v1', s
 export function sanitizeGuestPayMetadata(value) {
   if (value === undefined || value === null) return emptyPayMetadata('unsupported_collection');
   const hasSelection = typeof value === 'object' && Object.hasOwn(value, 'selection_diagnostic');
+  const hasAncestry = typeof value === 'object' && Object.hasOwn(value, 'ancestry_diagnostic');
   if (!record(value, ['schema', 'status', ...PAY_METADATA_COUNTS, 'truncated', ...PAY_METADATA_NULLS,
-    'same_document_verified', 'frame_associated', ...(hasSelection ? ['selection_diagnostic'] : [])]) || value.schema !== 'discogs_guest_pay_metadata_v1' ||
+    'same_document_verified', 'frame_associated', ...(hasSelection ? ['selection_diagnostic'] : []),
+    ...(hasAncestry ? ['ancestry_diagnostic'] : [])]) || value.schema !== 'discogs_guest_pay_metadata_v1' ||
       !['observed', 'no_eligible_frame', 'unsupported_collection', 'ambiguous'].includes(value.status) ||
       PAY_METADATA_COUNTS.some(key => ![0, 1, 2].includes(value[key])) || typeof value.truncated !== 'boolean' ||
       typeof value.same_document_verified !== 'boolean' || typeof value.frame_associated !== 'boolean') return null;
@@ -84,7 +87,14 @@ export function sanitizeGuestPayMetadata(value) {
         diagnostic.reason === 'total_frame_limit' && (diagnostic.total !== 32 || SELECTION_COUNTS.some(key => key !== 'total' && diagnostic[key] !== 0)) ||
         diagnostic.reason === 'eligible_frame_limit' && (diagnostic.eligible_frames <= 2 || diagnostic.inspected !== 0) ||
         diagnostic.reason === 'frame_inspection_error' && diagnostic.error === 0) return null;
-    return { ...value, selection_diagnostic: { ...diagnostic } };
+    const ancestry = hasAncestry ? sanitizeGuestPayAncestryDiagnostic(value.ancestry_diagnostic) : null;
+    if (hasAncestry && !ancestry) return null;
+    return { ...value, selection_diagnostic: { ...diagnostic }, ...(hasAncestry ? { ancestry_diagnostic: ancestry } : {}) };
+  }
+  if (hasAncestry) {
+    const ancestry = sanitizeGuestPayAncestryDiagnostic(value.ancestry_diagnostic);
+    if (!ancestry) return null;
+    return { ...value, ancestry_diagnostic: ancestry };
   }
   return { ...value };
 }
@@ -187,6 +197,12 @@ async function inspectGuestPayMetadata(page, frames, mainDocument, { read, readH
     }
   }
   result.paypal_origin_count = count(diagnostic.origin);
+  // Diagnostic evidence only. Nested frames stay excluded from children and
+  // eligibleControls until an actual supported ancestry profile is qualified.
+  const nestedFrames = inventory.filter(entry => entry.kind === 'non_direct').map(entry => entry.target);
+  const finalizeAncestry = nestedFrames.length ? await startGuestPayAncestryDiagnostic(page, {
+    frames, main, mainDocument, nestedFrames, buttonsAssociation, read, readHandle,
+  }) : null;
   result.candidate_count = result.associated_count = count(1 + children.length);
   result.truncated = children.length > 2;
   const eligibleControls = []; let selectedPayEntry = null;
@@ -237,6 +253,9 @@ async function inspectGuestPayMetadata(page, frames, mainDocument, { read, readH
   // Called AFTER the destination matcher and merchant checks. Every original
   // frame is revalidated, including excluded hidden/non-direct/other origins.
   return async () => {
+    // These additional diagnostic awaits must precede the original full audit,
+    // especially the selected direct child's final identity/ownership check.
+    if (finalizeAncestry) result.ancestry_diagnostic = await finalizeAncestry();
     try {
       const afterFrames = await read(() => page.frames());
       if (!Array.isArray(afterFrames) || afterFrames.length !== frames.length || afterFrames.some((frame, index) => frame !== frames[index])) changed = true;
@@ -261,7 +280,7 @@ async function inspectGuestPayMetadata(page, frames, mainDocument, { read, readH
     if (eligibleControls.length > 1) return { ...result, status: 'ambiguous' };
     if (eligibleControls.length === 0) return { ...result, status: 'no_eligible_frame' };
     return { ...eligibleControls[0], paypal_origin_count: result.paypal_origin_count, associated_count: result.associated_count,
-      selection_diagnostic: diagnostic };
+      selection_diagnostic: diagnostic, ...(result.ancestry_diagnostic ? { ancestry_diagnostic: result.ancestry_diagnostic } : {}) };
   };
 }
 function merchantEvidence(value) {

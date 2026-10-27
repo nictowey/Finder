@@ -13,6 +13,7 @@ COPY scripts/discogs_hosted_guest_qualification.mjs /app/scripts/discogs_hosted_
 COPY scripts/discogs_enhanced_checkout.mjs /app/scripts/discogs_enhanced_checkout.mjs
 COPY scripts/discogs_enhanced_checkout_coordinator.mjs /app/scripts/discogs_enhanced_checkout_coordinator.mjs
 COPY scripts/discogs_enhanced_payment_quote.mjs /app/scripts/discogs_enhanced_payment_quote.mjs
+COPY scripts/discogs_guest_pay_ancestry.mjs /app/scripts/discogs_guest_pay_ancestry.mjs
 COPY scripts/discogs_enhanced_payment_adapter.mjs /app/scripts/discogs_enhanced_payment_adapter.mjs
 COPY scripts/discogs_enhanced_order_ledger_port.mjs /app/scripts/discogs_enhanced_order_ledger_port.mjs
 COPY scripts/discogs_merchant_order_evidence.mjs /app/scripts/discogs_merchant_order_evidence.mjs

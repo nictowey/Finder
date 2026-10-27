@@ -188,6 +188,7 @@ test('packaged-layout non-test subprocess imports the exact dependency closure a
   t.after(() => rm(directory, { recursive: true, force: true }));
   const modules = [
     'discogs_enhanced_checkout_coordinator.mjs', 'discogs_enhanced_payment_quote.mjs',
+    'discogs_guest_pay_ancestry.mjs',
     'discogs_enhanced_payment_adapter.mjs', 'discogs_enhanced_order_ledger_port.mjs',
     'discogs_merchant_order_evidence.mjs', 'discogs_enhanced_checkout.mjs',
     'discogs_hosted_readonly.mjs', 'discogs_cart_inspector.mjs',
@@ -195,7 +196,7 @@ test('packaged-layout non-test subprocess imports the exact dependency closure a
   ];
   const copiedFiles = [...modules.map(name => `scripts/${name}`),
     'scripts/discogs_order_ledger_port.py', 'src/finder/discogs_order_reconciliation.py'];
-  assert.equal(modules.length, 10);
+  assert.equal(modules.length, 11);
   const dockerfile = await readFile(join(__dirname, '../deployment/HostedBrowserBridge.Dockerfile'), 'utf8');
   for (const relative of copiedFiles) assert.ok(dockerfile.includes(`COPY ${relative} /app/${relative}\n`), relative);
   for (const relative of copiedFiles) {
