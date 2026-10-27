@@ -1239,3 +1239,35 @@ required navigation response, and later checkout document replacement remains
 blocked. A strict document-handle fixture reproduces the old live-shaped stop
 before the fix and reaches the intercepted no-submit boundary after it. This is
 offline regression evidence; corrected live form initialization is not yet proven.
+
+### October 27: provider-frame diagnostics
+
+The corrected `cc9472e` server job `4dba272b-a899-4269-8d24-ee1f4a52c8b7`
+passed the cart-to-checkout transition and stopped at `provider_frame_ambiguous`
+after 5.005 seconds, before card initialization or a new ledger claim. All 83
+prior files and the 11-record ledger were unchanged. The exact failure-time
+frame count was not logged and cannot be reconstructed from the later page.
+The user-facing checkout showed its normal two funding buttons; that visual
+does not establish how many runtime frames existed at the earlier stop.
+
+The existing scoped reader now reports `provider_frame_predicates_v1`: saturated
+counts for total, provider-origin, buttons-path and exact-allowlisted frames;
+at most two provider records with fixed association, readiness, access,
+existing-form and card-control predicates. A count of two means two-or-more;
+null means unobserved. `selection:one` describes one URL match, not eligibility
+or payment readiness. More than 32 total frames fails closed without scanning
+their documents. Diagnostic ordering never changes the full original match list
+or chooses a first frame. Non-allowlisted or unassociated documents are not
+inspected, and a restriction stops control inspection. Original cancellation,
+absolute deadline and pending-read settlement still apply.
+
+New preparation stops distinguish `provider_frame_missing`,
+`provider_frame_multiple` and `provider_frame_inspection_error`. The legacy
+ambiguous code remains readable for historical results. The IPC boundary accepts
+only the fixed capped schema; malformed diagnostics block while preserving any
+reported navigation/initialization effects. No URLs, query parameters, tokens,
+raw DOM, address, card field values or exception text are diagnostic output.
+No selector broadening, hydration wait, fallback frame choice or initialization
+retry is part of this diagnostic change. A separate scoped read-only job after
+tested deployment is needed to inspect actual current counts. It cannot recover
+the historical count or reuse the spent preparation job.

@@ -456,6 +456,96 @@ export function isObservedCardFrame(url) {
   catch { return false; }
 }
 
+/** Observational only. Never select a frame, navigate, invoke a control or return
+ * a URL/query, attribute value, field value, DOM text or exception message.
+ * Counts saturate at two (two means two-or-more); at most two provider records
+ * are inspected. The caller retains its original deadline/cancellation guard.
+ */
+export async function inspectHostedProviderFrames(page, read) {
+  const diagnostic = { schema: 'provider_frame_predicates_v1', selection: 'error',
+    total_count: null, origin_count: null, buttons_path_count: null, matching_count: null,
+    truncated: false, candidates: [] };
+  const matches = [];
+  const count = value => Math.min(value, 2);
+  const guarded = async action => {
+    try { return await read(action); }
+    catch (error) { if (error?.[STOP]) throw error; throw new Error('provider_inspection_failed'); }
+  };
+  try {
+    const all = await guarded(() => page.frames());
+    if (!Array.isArray(all)) return { diagnostic, frames: [] };
+    diagnostic.total_count = count(all.length);
+    if (all.length > 32) { diagnostic.truncated = true; return { diagnostic, frames: [] }; }
+    const main = await guarded(() => page.mainFrame());
+    let originCount = 0, pathCount = 0;
+    const providerFrames = [];
+    for (const frame of all) {
+      const url = await guarded(() => frame.url());
+      let parsed;
+      try { parsed = new URL(url); } catch { continue; }
+      if (parsed.origin !== 'https://www.paypal.com') continue;
+      originCount++;
+      if (parsed.pathname === '/smart/buttons') pathCount++;
+      const exact = isObservedCardFrame(url);
+      if (exact) matches.push(frame);
+      providerFrames.push({ frame, url, parsed, exact });
+    }
+    diagnostic.origin_count = count(originCount); diagnostic.buttons_path_count = count(pathCount);
+    diagnostic.matching_count = count(matches.length);
+    diagnostic.truncated = providerFrames.length > 2;
+    // Prioritize allowlisted records only for diagnostic coverage, never for
+    // choosing a control. The original complete match list remains unchanged.
+    providerFrames.sort((a, b) => Number(b.exact) - Number(a.exact));
+    for (const { frame, url, parsed, exact } of providerFrames.slice(0, 2)) {
+      const candidate = { origin_matches: true, path_matches: parsed.pathname === '/smart/buttons',
+        credentials_absent: !parsed.username && !parsed.password, fragment_absent: !parsed.hash,
+        allowlisted: exact, direct_parent: null, element_visible: null, content_frame_matches: null,
+        owner_frame_matches: null, provider_ready: null, access: 'unknown', existing_guest_form: null,
+        card_count: null, card_visible: null, card_enabled: null, card_aria_enabled: null,
+        url_stable: null, error_stage: 'none' };
+      diagnostic.candidates.push(candidate);
+      if (!exact) continue; // Never read a non-allowlisted provider document.
+      try {
+        candidate.error_stage = 'association';
+        candidate.direct_parent = await guarded(() => frame.parentFrame()) === main;
+        const element = await guarded(() => frame.frameElement());
+        candidate.element_visible = await guarded(() => element.isVisible());
+        candidate.content_frame_matches = await guarded(() => element.contentFrame()) === frame;
+        candidate.owner_frame_matches = await guarded(() => element.ownerFrame()) === main;
+        if (![candidate.direct_parent, candidate.element_visible, candidate.content_frame_matches,
+          candidate.owner_frame_matches].every(value => value === true)) { candidate.error_stage = 'none'; continue; }
+        candidate.error_stage = 'provider_dom';
+        const provider = await guarded(() => frame.evaluate(collectHostedGuestDom, { stage: 'provider' }));
+        if (!['normal', 'access_restricted'].includes(provider?.access) || typeof provider.ready !== 'boolean' ||
+            typeof provider.existing_form !== 'boolean') throw new Error('provider_inspection_failed');
+        candidate.provider_ready = provider?.ready === true;
+        candidate.access = provider?.access === 'normal' ? 'normal' : 'restricted';
+        candidate.existing_guest_form = provider?.existing_form === true;
+        if (candidate.access === 'restricted') { candidate.error_stage = 'none'; break; }
+        candidate.error_stage = 'card_control';
+        const controls = await guarded(() => frame.locator(GUEST_CARD_SELECTOR).count());
+        if (!Number.isSafeInteger(controls) || controls < 0) throw new Error('provider_inspection_failed');
+        candidate.card_count = count(controls);
+        if (controls === 1) {
+          const card = await guarded(() => frame.$(GUEST_CARD_SELECTOR));
+          candidate.card_visible = !!card && await guarded(() => card.isVisible());
+          candidate.card_enabled = !!card && await guarded(() => card.isEnabled());
+          candidate.card_aria_enabled = !!card && await guarded(() => card.getAttribute('aria-disabled')) === 'false';
+        }
+        candidate.url_stable = await guarded(() => frame.url()) === url;
+        if (!candidate.url_stable) throw new Error('provider_inspection_failed');
+        candidate.error_stage = 'none';
+      } catch (error) { if (error?.[STOP]) throw error; }
+    }
+    diagnostic.selection = diagnostic.candidates.some(candidate => candidate.error_stage !== 'none') ? 'error' :
+      matches.length === 0 ? 'missing' : matches.length === 1 ? 'one' : 'multiple';
+    return { diagnostic, frames: matches };
+  } catch (error) {
+    if (error?.[STOP]) throw error;
+    return { diagnostic, frames: [] };
+  }
+}
+
 async function helperMessage(mode, directory, value) {
   let output = '';
   const sink = new Writable({ write(chunk, encoding, done) { output += chunk.toString(); done(); } });
@@ -725,8 +815,13 @@ export async function prepareHostedGuestForm(context, request, options = {}) {
       return summary;
     };
     await checkoutRead();
-    const frames = (await bounded(() => page.frames())).filter(candidate => isObservedCardFrame(candidate.url()));
-    if (frames.length !== 1) fail('provider_frame_ambiguous');
+    const frameInspection = await inspectHostedProviderFrames(page, bounded);
+    extras.provider_frame_diagnostic = frameInspection.diagnostic;
+    if (frameInspection.diagnostic.candidates.some(candidate => candidate.access === 'restricted')) fail('access_restricted');
+    if (frameInspection.diagnostic.selection === 'error') fail('provider_frame_inspection_error');
+    const frames = frameInspection.frames;
+    if (frames.length === 0) fail('provider_frame_missing');
+    if (frames.length !== 1) fail('provider_frame_multiple');
     frame = frames[0];
     if (frame.parentFrame() !== page.mainFrame()) fail('provider_frame_unassociated');
     frameElement = await bounded(() => frame.frameElement());
@@ -1229,7 +1324,12 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
       readerGates.includes(cartDom.binding_gate) && cartDom.code === 'observed' ? {
         schema: 'cart_reader_predicates_v1', code: cartDom.code, first_failed: cartDom.binding_gate, counts: readerCounts,
       } : null;
-    const frames = (await read(() => page.frames())).filter(frame => isObservedCardFrame(frame.url()));
+    const frameInspection = await inspectHostedProviderFrames(page, read);
+    const frames = frameInspection.frames;
+    if (frameInspection.diagnostic.candidates.some(candidate => candidate.access === 'restricted')) return stopped('access_restricted', {
+      provider_frame_diagnostic: frameInspection.diagnostic });
+    if (frameInspection.diagnostic.selection === 'error') return stopped('provider_frame_inspection_error', {
+      provider_frame_diagnostic: frameInspection.diagnostic });
     if (frames.length === 1 && frames[0].parentFrame() === page.mainFrame()) {
       const frame = frames[0], element = await read(() => frame.frameElement());
       observed.provider_frame_associated = await read(() => element.isVisible()) &&
@@ -1282,6 +1382,7 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
       address_present: dom.address_present === true, destination_binding_available: confirming,
       destination_match: confirming ? true : null,
       detail_diagnostic: detailDiagnostic,
+      provider_frame_diagnostic: frameInspection.diagnostic,
       ...(cart ? { cart_binding_diagnostic: dom.cart_binding_diagnostic } : {}),
       ...(cartReaderDiagnostic ? { cart_reader_diagnostic: cartReaderDiagnostic } : {}),
       structure: { item_row_count: dom.item_row_count, item_title_present: dom.item_title_present,

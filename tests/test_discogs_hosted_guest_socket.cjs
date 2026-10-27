@@ -59,6 +59,45 @@ test('trusted scope/access callbacks required; denied scope never reaches browse
   finally { await close(); }
 });
 
+test('IPC retains bounded provider diagnostics and effect facts but blocks malformed or secret-shaped records', async () => {
+  const socket = path(), config = options();
+  const diagnostic = { schema: 'provider_frame_predicates_v1', selection: 'one', total_count: 2,
+    origin_count: 1, buttons_path_count: 1, matching_count: 1, truncated: false, candidates: [{
+      origin_matches: true, path_matches: true, credentials_absent: true, fragment_absent: true, allowlisted: true,
+      direct_parent: true, element_visible: true, content_frame_matches: true, owner_frame_matches: true,
+      provider_ready: true, access: 'normal', existing_guest_form: false, card_count: 1,
+      card_visible: true, card_enabled: true, card_aria_enabled: true, url_stable: true, error_stage: 'none' }] };
+  config.fixtureOperations.probe_guest_evidence = async () => ({ status: 'observed', code: 'current_dom_evidence_only', provider_frame_diagnostic: diagnostic });
+  const close = await listenHostedGuestPreparation({}, socket, config);
+  try {
+    const observed = await exchange(socket, request('probe_guest_evidence'));
+    assert.equal(observed.status, 'observed'); assert.deepEqual(observed.provider_frame_diagnostic, diagnostic);
+    for (const code of ['provider_frame_missing', 'provider_frame_multiple', 'provider_frame_inspection_error']) {
+      config.fixtureOperations.prepare_guest_form = async () => ({ status: 'blocked', code,
+        provider_frame_diagnostic: diagnostic, checkout_navigation_issued: true, card_initialization_issued: false, initialization: 'not_dispatched' });
+      const result = await exchange(socket, request('prepare_guest_form'));
+      assert.equal(result.code, code); assert.equal(result.checkout_navigation_issued, true);
+      assert.equal(result.card_initialization_issued, false); assert.deepEqual(result.provider_frame_diagnostic, diagnostic);
+    }
+    for (const alter of [d => { d.url = 'SECRET_URL'; }, d => { d.candidates[0].token = 'SECRET_TOKEN'; },
+      d => { d.candidates[0].access = 'SECRET'; }, d => { d.matching_count = 3; },
+      d => { d.candidates.push(d.candidates[0], d.candidates[0]); }, d => { d.candidates[0].error_stage = 'SECRET_EXCEPTION'; }]) {
+      const bad = structuredClone(diagnostic); alter(bad);
+      config.fixtureOperations.probe_guest_evidence = async () => ({ status: 'observed', code: 'current_dom_evidence_only',
+        provider_frame_diagnostic: bad, document_ref: randomUUID(), observed: { destination_match: true }, structure: { address_container_count: 1 } });
+      const result = await exchange(socket, request('probe_guest_evidence'));
+      assert.equal(result.status, 'blocked'); assert.equal(result.code, 'provider_frame_inspection_error');
+      assert.equal(result.document_ref, undefined); assert.equal(result.observed, undefined); assert.equal(result.structure, undefined);
+      assert.ok(!JSON.stringify(result).includes('SECRET'));
+      config.fixtureOperations.prepare_guest_form = async () => ({ status: 'blocked', code: 'guest_form_observation_required',
+        provider_frame_diagnostic: bad, checkout_navigation_issued: true, card_initialization_issued: true, initialization: 'outcome_requires_reconciliation' });
+      const issued = await exchange(socket, request('prepare_guest_form'));
+      assert.equal(issued.status, 'blocked'); assert.equal(issued.card_initialization_issued, true);
+      assert.equal(issued.checkout_navigation_issued, true); assert.equal(issued.initialization, 'outcome_requires_reconciliation');
+    }
+  } finally { await close(); }
+});
+
 test('readonly qualification exposes only opaque reference and bounded public structure', async () => {
   const socket = path(), config = options(), ref = randomUUID();
   config.fixtureOperations.probe_guest_evidence = async () => ({ status: 'observed', code: 'current_dom_evidence_only',

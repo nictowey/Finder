@@ -274,6 +274,131 @@ test('provider association, duplicate frames and duplicate/disabled/hidden card 
   });
 });
 
+test('provider frame diagnostics distinguish zero, multiple and inspection errors without effects or private data', async () => {
+  const read = action => Promise.resolve().then(action);
+  for (const mode of ['one', 'zero', 'multiple', 'truncated', 'error', 'overflow', 'invalid', 'other_path', 'fragment', 'restricted']) {
+    const b = browser({ duplicateFrames: mode === 'multiple',
+      frameUrl: mode === 'other_path' ? 'https://www.paypal.com/other?SECRET_QUERY' :
+        mode === 'fragment' ? PROVIDER + '#SECRET_FRAGMENT' : PROVIDER,
+      provider: mode === 'restricted' ? providerMarkup.replace('<title>PayPal</title>', '<title>Cloudflare</title>') : providerMarkup });
+    b.state.merchant = dom(summary, CHECKOUT);
+    if (mode === 'zero') b.page.frames = () => [];
+    if (mode === 'overflow') b.page.frames = () => Array(33).fill(b.frame);
+    if (mode === 'truncated') b.page.frames = () => Array(3).fill(b.frame);
+    if (mode === 'invalid') b.page.frames = () => null;
+    if (mode === 'error') b.frame.frameElement = () => { throw new Error('SECRET_EXCEPTION'); };
+    if (mode === 'restricted') b.frame.locator = () => { throw new Error('must not inspect controls after restriction'); };
+    try {
+      const { diagnostic: d, frames } = await port.inspectHostedProviderFrames(b.page, read);
+      assert.equal(d.schema, 'provider_frame_predicates_v1');
+      assert.equal(d.selection, ['zero', 'other_path', 'fragment'].includes(mode) ? 'missing' :
+        ['multiple', 'truncated'].includes(mode) ? 'multiple' : ['error', 'overflow', 'invalid'].includes(mode) ? 'error' : 'one');
+      if (mode === 'one' || mode === 'restricted') {
+        assert.equal(d.matching_count, 1); assert.equal(d.candidates[0].direct_parent, true);
+        assert.equal(d.candidates[0].content_frame_matches, true); assert.equal(d.candidates[0].owner_frame_matches, true);
+        assert.equal(d.candidates[0].element_visible, true); assert.equal(d.candidates[0].provider_ready, true);
+        assert.equal(d.candidates[0].card_count, mode === 'restricted' ? null : 1);
+        assert.equal(d.candidates[0].card_enabled, mode === 'restricted' ? null : true);
+        assert.equal(d.candidates[0].access, mode === 'restricted' ? 'restricted' : 'normal');
+      }
+      if (mode === 'multiple') { assert.equal(d.matching_count, 2); assert.equal(d.candidates.length, 2); }
+      if (mode === 'truncated') { assert.equal(d.matching_count, 2); assert.equal(d.candidates.length, 2); assert.equal(d.truncated, true); assert.equal(frames.length, 3); }
+      if (mode === 'zero') { assert.equal(d.matching_count, 0); assert.deepEqual(d.candidates, []); }
+      if (mode === 'error') { assert.equal(d.matching_count, 1); assert.equal(d.candidates[0].error_stage, 'association'); }
+      if (mode === 'overflow') { assert.equal(d.truncated, true); assert.equal(d.total_count, 2); assert.equal(d.matching_count, null); }
+      if (mode === 'invalid') assert.equal(d.total_count, null);
+      if (mode === 'other_path' || mode === 'fragment') {
+        assert.equal(d.origin_count, 1); assert.equal(d.candidates[0].allowlisted, false);
+        assert.equal(d.candidates[0].provider_ready, null); assert.equal(d.candidates[0].card_count, null);
+      }
+      for (const secret of ['SECRET', 'PRIVATE', 'paypal.com', 'Fixture Street']) assert.ok(!json(d).includes(secret));
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    } finally { b.state.merchant.window.close(); b.close(); }
+  }
+});
+
+test('readonly provider diagnostics preserve original cancellation and deadline without navigation or late reads', async () => {
+  // Each diagnostic scenario owns an isolated process-lifetime probe registry;
+  // do not consume the shared suite's intentional 64-job production capacity.
+  const isolated = await import('../scripts/discogs_hosted_guest_prepare.mjs?provider-cancel=' + randomUUID());
+  for (const mode of ['cancel', 'deadline']) {
+    const b = browser(), controller = new AbortController(), actualNow = Date.now;
+    b.state.merchant = dom(summary, CHECKOUT);
+    const original = b.frame.frameElement; let providerReads = 0;
+    const originalEvaluate = b.frame.evaluate;
+    b.frame.evaluate = (...args) => { providerReads++; return originalEvaluate(...args); };
+    b.frame.frameElement = async () => {
+      if (mode === 'cancel') controller.abort(); else Date.now = () => actualNow() + 2000;
+      return original();
+    };
+    try {
+      const grant = readonlyGrant();
+      const result = await isolated.probeCurrentGuestPreparationEvidence(b.context, grant.request,
+        { authorization: grant.authorization, signal: controller.signal });
+      assert.equal(result.code, mode === 'cancel' ? 'cancelled' : 'probe_deadline_expired');
+      assert.equal(providerReads, 0); assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    } finally { Date.now = actualNow; b.state.merchant.window.close(); b.close(); }
+  }
+});
+
+test('a restriction in the first provider frame stops all later candidate inspection', async () => {
+  const isolated = await import('../scripts/discogs_hosted_guest_prepare.mjs?provider-restriction=' + randomUUID());
+  const b = browser({ provider: providerMarkup.replace('<title>PayPal</title>', '<title>Cloudflare</title>') });
+  b.state.merchant = dom(summary, CHECKOUT);
+  let laterReads = 0;
+  const second = { url: () => PROVIDER, parentFrame: () => { laterReads++; throw new Error('must not inspect later frame'); } };
+  b.page.frames = () => [b.frame, second];
+  b.frame.locator = () => { throw new Error('must not inspect restricted controls'); };
+  try {
+    const grant = readonlyGrant();
+    const result = await isolated.probeCurrentGuestPreparationEvidence(b.context, grant.request, { authorization: grant.authorization });
+    assert.equal(result.code, 'access_restricted'); assert.equal(laterReads, 0);
+    const d = result.provider_frame_diagnostic;
+    assert.equal(d.matching_count, 2); assert.equal(d.candidates.length, 1);
+    assert.equal(d.candidates[0].access, 'restricted'); assert.equal(d.candidates[0].card_count, null);
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+  } finally { b.state.merchant.window.close(); b.close(); }
+});
+
+test('preparation permanently reports distinct missing/multiple/error frame stops before claiming or initializing', async () => {
+  for (const mode of ['missing', 'multiple', 'error']) await ledgerFixture(async f => {
+    const b = browser({ duplicateFrames: mode === 'multiple' });
+    if (mode === 'missing') b.page.frames = () => [];
+    if (mode === 'error') b.frame.frameElement = () => { throw new Error('SECRET_EXCEPTION'); };
+    try {
+      const result = await execute(f, b);
+      assert.equal(result.code, mode === 'error' ? 'provider_frame_inspection_error' : 'provider_frame_' + mode);
+      assert.equal(result.provider_frame_diagnostic.selection, mode);
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]);
+      assert.equal((await records(f.directory)).length, 0); assert.ok(!json(result).includes('SECRET'));
+    } finally { b.close(); }
+  });
+});
+
+test('provider diagnostic predicates retain association and readiness failures without treating unknown as false', async () => {
+  for (const mode of ['parent', 'visibility', 'content', 'owner', 'ready', 'controls']) {
+    const b = browser(); b.state.merchant = dom(summary, CHECKOUT);
+    if (mode === 'parent') b.frame.parentFrame = () => ({});
+    if (mode === 'visibility') b.state.merchant.window.document.querySelector('iframe').hidden = true;
+    if (mode === 'content' || mode === 'owner') {
+      const original = b.frame.frameElement;
+      b.frame.frameElement = async () => ({ ...await original(), [mode === 'content' ? 'contentFrame' : 'ownerFrame']: () => ({}) });
+    }
+    if (mode === 'ready') Object.defineProperty(b.state.provider.window.document, 'readyState', { value: 'interactive' });
+    if (mode === 'controls') b.state.provider.window.document.querySelector('a').remove();
+    try {
+      const { diagnostic: d } = await port.inspectHostedProviderFrames(b.page, action => Promise.resolve().then(action));
+      const c = d.candidates[0]; assert.equal(d.selection, 'one');
+      const key = { parent: 'direct_parent', visibility: 'element_visible', content: 'content_frame_matches',
+        owner: 'owner_frame_matches', ready: 'provider_ready' }[mode];
+      if (key) assert.equal(c[key], false);
+      if (['parent', 'visibility', 'content', 'owner'].includes(mode)) { assert.equal(c.provider_ready, null); assert.equal(c.card_count, null); }
+      if (mode === 'controls') { assert.equal(c.card_count, 0); assert.equal(c.card_visible, null); }
+      assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [0, 0, 0]);
+    } finally { b.state.merchant.window.close(); b.close(); }
+  }
+});
+
 test('revalidation catches DOM quote, title, destination and document changes after durable claim', async () => {
   for (const mutation of ['quote', 'title', 'address', 'document', 'control']) await ledgerFixture(async f => {
     let changed = false;
@@ -1261,7 +1386,7 @@ test('semantic cart address text/BR flow normalizes privately like source-derive
   }
   for (const markup of [ADDRESS.join('<br hidden>'), '<input value="PRIVATE">' + ADDRESS.join('<br>'), ADDRESS.slice(0, 2).join('<br>')]) {
     const b = browser({ cart: cartMarkup.replace(`<address>${addressMarkup}</address>`, `<address>${markup}</address>`) });
-    try { const result = await probe(b, readonlyGrant()); assert.equal(result.address_present, false); assert.equal(b.effects.go, 0); }
+    try { const result = await probe(b, readonlyGrant()); assert.equal(result.address_present, false, json(result)); assert.equal(b.effects.go, 0); }
     finally { b.close(); }
   }
 });

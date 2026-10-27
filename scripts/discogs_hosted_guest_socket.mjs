@@ -41,6 +41,7 @@ const CODES = new Set(['scoped_authorization_required', 'prior_attempt_unresolve
   'visible_scope_evidence_missing', 'cart_document_changed', 'cart_scope_unverified', 'checkout_control_unverified',
   'ledger_changed', 'checkout_control_changed', 'checkout_redirected', 'fresh_checkout_required', 'browser_page_set_changed',
   'checkout_document_changed', 'checkout_scope_unverified', 'provider_frame_ambiguous', 'provider_frame_unassociated',
+  'provider_frame_missing', 'provider_frame_multiple', 'provider_frame_inspection_error',
   'provider_not_ready', 'provider_frame_changed', 'card_control_changed', 'inspection_unverified', 'claim_unverified',
   'inspection_stale', 'execution_revalidation_failed', 'outcome_recording_uncertain', 'unknown_internal_stop',
   'guest_form_observation_required', 'operation_unavailable', 'probe_deadline_expired', 'single_current_checkout_required',
@@ -190,6 +191,26 @@ function sanitizedCartReader(value) {
   return { schema: value.schema, code: value.code, first_failed: value.first_failed,
     counts: Object.fromEntries(CART_READER_COUNTS.map(key => [key, value.counts[key]])) };
 }
+const PROVIDER_COUNTS = ['total_count', 'origin_count', 'buttons_path_count', 'matching_count'];
+const PROVIDER_FLAGS = ['origin_matches', 'path_matches', 'credentials_absent', 'fragment_absent', 'allowlisted',
+  'direct_parent', 'element_visible', 'content_frame_matches', 'owner_frame_matches', 'provider_ready',
+  'existing_guest_form', 'card_visible', 'card_enabled', 'card_aria_enabled', 'url_stable'];
+function sanitizedProviderFrames(value) {
+  if (!fixedKeys(value, ['schema', 'selection', ...PROVIDER_COUNTS, 'truncated', 'candidates']) ||
+      value.schema !== 'provider_frame_predicates_v1' || !['missing', 'one', 'multiple', 'error'].includes(value.selection) ||
+      PROVIDER_COUNTS.some(key => value[key] !== null && !diagnosticCount(value[key])) || typeof value.truncated !== 'boolean' ||
+      !Array.isArray(value.candidates) || value.candidates.length > 2) return null;
+  const candidates = [];
+  for (const item of value.candidates) {
+    if (!fixedKeys(item, [...PROVIDER_FLAGS, 'access', 'card_count', 'error_stage']) ||
+        PROVIDER_FLAGS.some(key => item[key] !== null && typeof item[key] !== 'boolean') ||
+        !['normal', 'restricted', 'unknown'].includes(item.access) || item.card_count !== null && !diagnosticCount(item.card_count) ||
+        !['none', 'association', 'provider_dom', 'card_control'].includes(item.error_stage)) return null;
+    candidates.push(Object.fromEntries([...PROVIDER_FLAGS, 'access', 'card_count', 'error_stage'].map(key => [key, item[key]])));
+  }
+  return { schema: value.schema, selection: value.selection,
+    ...Object.fromEntries(PROVIDER_COUNTS.map(key => [key, value[key]])), truncated: value.truncated, candidates };
+}
 function safeResult(value, { captureAllowed = false, preflightAllowed = false } = {}) {
   // Observed effects are facts, not capabilities: never rewrite a reported
   // initialization into false merely because this action forbids it.
@@ -224,6 +245,11 @@ function safeResult(value, { captureAllowed = false, preflightAllowed = false } 
     if (typeof value?.[key] === 'boolean') result[key] = value[key];
   }
   if (['not_dispatched', 'outcome_requires_reconciliation'].includes(value?.initialization)) result.initialization = value.initialization;
+  if (Object.hasOwn(value || {}, 'provider_frame_diagnostic')) {
+    const diagnostic = sanitizedProviderFrames(value.provider_frame_diagnostic);
+    if (diagnostic) result.provider_frame_diagnostic = diagnostic;
+    else { result.status = 'blocked'; result.code = 'provider_frame_inspection_error'; }
+  }
   if (Array.isArray(value?.missing_fields)) result.missing_fields = value.missing_fields.filter(key => MISSING.has(key));
   if (preflightAllowed && value?.scope_diagnostic?.schema === 'checkout_scope_predicates_v1') {
     const diagnostic = value.scope_diagnostic;
