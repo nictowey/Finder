@@ -885,7 +885,31 @@ quantity, amount, saved destination, normal access and ledger checks. Fresh
 checkout conditions must match the independently verified detail conditions
 before any initialization claim or card control could be reached.
 
-A separate bounded navigation-preflight policy is being implemented for the
+The read-only probe's `observed.condition_continuity=false` at `merchant_route=cart`
+therefore means continuity has **not been established at that stage**, not that
+the item/detail grades were observed to disagree. `structure.media_grade` and
+`structure.sleeve_grade` remain null. The generic `missing_fields` diagnostic is
+not a stage-specific navigation authorization checklist. The existing confirmed
+cart snapshot omits that continuity predicate only for normal Go to Checkout,
+retains the independently observed detail grades, and requires fresh checkout
+grades to match both before returning preflight success or reaching initialization.
+Neither a policy nor a request can supply accepted grades.
+
+On October 27, deployed `2fd7c25` completed one actual cart probe under job
+`3f772c96-5b75-426f-be89-c5fbdd23e392` in 244 ms of its 5,000 ms read budget
+(1.619 seconds including the host helper). Exact amounts, seller, quantity,
+detail support, title and item-price continuity were verified; condition
+continuity was false by the cart contract above. Destination was null because
+this inspect-only policy supplied no saved-destination acknowledgement. No
+navigation, initialization, card entry or payment occurred. All prior files,
+ledger29 and historical access stop were preserved. This run verifies timing
+diagnostics, not the unknown slow stage of the earlier 1.732-second timeout.
+The next live transition needs a distinct reviewed cart-preflight policy, a fresh
+inspect/reference and actual same-document saved-destination acknowledgement,
+batched confirmation and one normal Go, then fresh full checkout qualification.
+The spent inspect/reference above is not permission to resume or initialize.
+
+A separate bounded navigation-preflight policy supports the
 server test: inspect, same-document saved-destination confirmation, then one
 verified Go to Checkout. It retains private address binding inside the browser
 process and spends an immutable navigation receipt before that effect. It does

@@ -1508,8 +1508,18 @@ async function preflightFixture(run, config = {}, seed) {
     try {
       const first = await callProbe(grant);
       assert.equal(first.status, 'observed', JSON.stringify(first));
+      // Cart grades are deliberately unsupported. The aggregate diagnostic is
+      // false, not a grade mismatch or accepted condition proof. Checkout must
+      // independently establish continuity after the separately allowed Go.
+      assert.equal(first.merchant_route, 'cart');
+      assert.equal(first.observed.listing_detail_supported, true);
+      assert.equal(first.observed.condition_continuity, false);
+      assert.equal(first.structure.media_grade, null);
+      assert.equal(first.structure.sleeve_grade, null);
       const ack = confirmation(grant, first), confirmed = await callProbe(ack);
       assert.equal(confirmed.code, 'approved_saved_destination_bound', JSON.stringify(confirmed));
+      assert.equal(confirmed.observed.condition_continuity, false);
+      assert.equal(confirmed.destination_match, true);
       const state = await operator.inspectGuestCheckoutLedger({ directory: f.directory });
       const request = { schema: 'discogs_guest_checkout_preflight_v1', job_id: grant.request.job_id,
         phase: 'navigate_checkout_preflight', document_ref: first.document_ref };
