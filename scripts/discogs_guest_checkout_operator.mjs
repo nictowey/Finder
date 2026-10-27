@@ -531,9 +531,10 @@ async function ledger(directory, anchor) {
 }
 
 /** Disposition gate only: true never replaces current scope/quote/authentication checks. */
-export async function inspectGuestCheckoutLedger({ directory = '/state' } = {}) {
+export async function inspectGuestCheckoutLedger({ directory = '/state', expectedClaim = null } = {}) {
   let lock;
   try {
+    if (expectedClaim !== null && !hash(expectedClaim)) throw new Error('claim_changed');
     await privateDirectory(directory); lock = await lockDirectory(directory);
     const anchor = await anchors(directory), state = await ledger(directory, anchor);
     const index = state.records.findLastIndex(item => item.value.kind === 'attempt');
@@ -559,10 +560,13 @@ export async function inspectGuestCheckoutLedger({ directory = '/state' } = {}) 
       } else status = 'unverified';
     }
     return { current_head: state.head, record_count: state.records.length, state: status,
-      init_allowed: allowed, no_submit_init_allowed: noSubmitAllowed };
+      init_allowed: allowed, no_submit_init_allowed: noSubmitAllowed,
+      ...(expectedClaim !== null ? { claim_verified: status === 'guest_form_observed_repeat_blocked' &&
+        state.records[index]?.hash === expectedClaim && state.records.at(-1)?.value.kind === 'form_observation' } : {}) };
   } catch (error) {
     return { current_head: null, record_count: null, state: 'unverified', init_allowed: false, no_submit_init_allowed: false,
-      stop_reason: CLAIM_STOP_REASONS.get(error?.message) || 'unknown_internal_stop' };
+      stop_reason: CLAIM_STOP_REASONS.get(error?.message) || 'unknown_internal_stop',
+      ...(expectedClaim !== null ? { claim_verified: false } : {}) };
   } finally { if (lock) await lock.close(); }
 }
 

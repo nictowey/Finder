@@ -25,7 +25,33 @@ export async function runHostedBrowser(firefox, {
     if (close) await close();
   };
   try {
-    const guestPreparation = await loadQualification();
+    const initialQualification = await loadQualification();
+    if (initialQualification !== null &&
+        (!initialQualification || typeof initialQualification !== 'object' ||
+          typeof initialQualification.accessGuard !== 'function' ||
+          typeof initialQualification.authorize !== 'function')) {
+      throw new Error('invalid_guest_qualification_policy');
+    }
+    // Keep the same browser and socket. A reviewed local policy can change
+    // jobs while a guest form is open; each request must reload that policy.
+    // Missing, expired, revoked or invalid policy fails closed. Grants keep
+    // their own issuer's immutable identity/revalidation after authorization.
+    const guestPreparation = initialQualification === null ? null : Object.freeze({
+      accessGuard: async (...args) => {
+        try {
+          const current = await loadQualification();
+          return typeof current?.accessGuard === 'function' ?
+            await current.accessGuard(...args) === true : false;
+        } catch { return false; }
+      },
+      authorize: async (...args) => {
+        try {
+          const current = await loadQualification();
+          return typeof current?.authorize === 'function' ?
+            await current.authorize(...args) : null;
+        } catch { return null; }
+      },
+    });
     close = guestPreparation === null ?
       await launch(firefox, '/profile', '/bridge/sniper-read-only.sock') :
       await launch(firefox, '/profile', '/bridge/sniper-read-only.sock', { guestPreparation });

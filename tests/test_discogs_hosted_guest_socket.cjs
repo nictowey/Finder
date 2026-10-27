@@ -462,3 +462,95 @@ test('blocked preflight retains bounded predicate diagnostics without leaking de
     assert.ok(!JSON.stringify(result).includes('never export')); assert.equal(result.payment_allowed, false);
   } finally { await close(); }
 });
+
+function paymentInspectionPayload() {
+  const keys = ['provider_dom_qualification', 'provider_frame_and_document', 'provider_explicit_currency',
+    'provider_amount_matches_merchant', 'provider_final_all_in_total', 'final_tax_treatment', 'mandatory_charges_finality',
+    'provider_shipping_selection', 'provider_delivery_binding', 'provider_terms'];
+  return { schema: 'enhanced_payment_readiness_v1', document_bound: true, claim_verified: true, ledger_head_verified: true,
+    ledger_state: 'guest_form_observed_repeat_blocked', quote_status: 'unverified',
+    merchant_subtotal: { amount: '0.10', currency: 'USD' }, merchant_shipping: { amount: '4.95', currency: 'USD' },
+    merchant_total: { amount: '5.05', currency: 'USD' }, selected_shipping_label: 'Economy - Media Mail', merchant_destination_match: null,
+    final_quote_verified: false, provider_destination_verified: false, provider_terms_verified: false, payment_enabled: false,
+    gates: Object.fromEntries(keys.map(key => [key, false])), missing_evidence: keys,
+    missing_profiles: ['provider_final_quote_dom', 'provider_quote_frame_association', 'provider_delivery_destination', 'provider_terms',
+      'verified_pay_control', 'verified_selected_payment_method', 'merchant_positive_order_dom'],
+    frame_association: { known_buttons_count: 1, known_buttons_associated: true, payment_quote_frame_qualified: false } };
+}
+const paymentInspectionRequest = () => JSON.stringify({ action: 'inspect_enhanced_payment', request: {
+  schema: 'discogs_guest_payment_inspection_v1', job_id: randomUUID(), phase: 'inspect_payment_readiness',
+  document_ref: randomUUID(), claim_sha256: 'a'.repeat(64) } }) + '\n';
+
+test('fixed payment inspection IPC returns only finite readiness diagnostics and never accepts another authorization mode', async () => {
+  const socket = path(), config = options(); let calls = 0;
+  config.authorize = async () => ({ schema: 'discogs_guest_payment_inspection_authorization_v1', mode: 'inspect_enhanced_payment' });
+  config.fixtureOperations.inspect_enhanced_payment = async () => { calls++; return { status: 'observed', code: 'enhanced_payment_readiness_observed',
+    inspection: paymentInspectionPayload(), source_url: 'https://secret.invalid/token', address: 'NEVER_EXPORT',
+    payment_allowed: true, final_submission_allowed: true }; };
+  const close = await listenHostedGuestPreparation({}, socket, config);
+  try {
+    const result = await exchange(socket, paymentInspectionRequest()); assert.equal(result.status, 'observed');
+    assert.equal(result.inspection.merchant_total.amount, '5.05'); assert.equal(result.inspection.final_quote_verified, false);
+    assert.equal(result.payment_allowed, false); assert.equal(result.final_submission_allowed, false); assert.equal(result.initialization_allowed, false);
+    assert.equal(JSON.stringify(result).includes('NEVER_EXPORT'), false); assert.equal(JSON.stringify(result).includes('secret.invalid'), false);
+    assert.equal(calls, 1);
+  } finally { await close(); }
+  config.authorize = async () => ({ schema: 'discogs_guest_readonly_authorization_v1' });
+  const another = await listenHostedGuestPreparation({}, socket, config);
+  try { assert.equal((await exchange(socket, paymentInspectionRequest())).code, 'payment_inspection_authorization_required'); assert.equal(calls, 1); }
+  finally { await another(); }
+});
+
+test('payment inspection sanitizer rejects malformed, private, contradictory or incomplete diagnostics atomically', async () => {
+  const socket = path(), config = options(); let payload;
+  config.authorize = async () => ({ schema: 'discogs_guest_payment_inspection_authorization_v1', mode: 'inspect_enhanced_payment' });
+  config.fixtureOperations.inspect_enhanced_payment = async () => ({ status: 'observed', code: 'enhanced_payment_readiness_observed', inspection: payload });
+  const close = await listenHostedGuestPreparation({}, socket, config);
+  const mutations = [
+    value => { value.address = 'NEVER_EXPORT_PRIVATE'; }, value => { value.merchant_total.currency = 'CAD'; },
+    value => { value.merchant_total.amount = 'NEVER_EXPORT_PRIVATE'; }, value => { delete value.frame_association.known_buttons_count; },
+    value => { value.frame_association.known_buttons_count = null; }, value => { value.frame_association.known_buttons_count = 0; },
+    value => { value.missing_evidence = []; }, value => { value.missing_profiles = []; },
+    value => { value.quote_status = 'unverified'; value.final_quote_verified = true;
+      for (const key of Object.keys(value.gates)) value.gates[key] = true;
+      value.missing_evidence = []; value.missing_profiles = ['verified_pay_control', 'verified_selected_payment_method', 'merchant_positive_order_dom'];
+      value.provider_destination_verified = true; value.provider_terms_verified = true; },
+    value => { value.provider_destination_verified = true; }, value => { value.selected_shipping_label = 'Private\nAddress'; },
+  ];
+  try { for (const mutate of mutations) { payload = paymentInspectionPayload(); mutate(payload);
+    const result = await exchange(socket, paymentInspectionRequest()); assert.equal(result.code, 'payment_inspection_unverified');
+    assert.equal(Object.hasOwn(result, 'inspection'), false); assert.equal(JSON.stringify(result).includes('NEVER_EXPORT'), false);
+  } } finally { await close(); }
+});
+
+test('unexpected readonly inspection effect reports remain truthful scope violations, never fabricated no-effect successes', async () => {
+  const socket = path(), config = options(); let effect;
+  config.authorize = async () => ({ schema: 'discogs_guest_payment_inspection_authorization_v1', mode: 'inspect_enhanced_payment' });
+  config.fixtureOperations.inspect_enhanced_payment = async () => ({ status: 'observed', code: 'enhanced_payment_readiness_observed',
+    inspection: paymentInspectionPayload(), [effect]: true });
+  const close = await listenHostedGuestPreparation({}, socket, config);
+  try { for (effect of ['checkout_navigation_issued', 'card_initialization_issued', 'pay_invoked', 'payment_issued', 'approval_invoked', 'capture_invoked']) {
+    const result = await exchange(socket, paymentInspectionRequest()); assert.equal(result.code, 'readonly_scope_violation');
+    assert.equal(result.status, 'blocked'); assert.equal(result.stop_required, true); assert.equal(result[effect], true);
+    assert.equal(result.payment_allowed, false); assert.equal(result.final_submission_allowed, false);
+    assert.equal(Object.hasOwn(result, 'inspection'), false);
+  } } finally { await close(); }
+});
+
+test('payment inspection fixed blocked codes survive IPC but arbitrary provider or exception text does not', async () => {
+  const socket = path(), config = options(); let code;
+  config.authorize = async () => ({ schema: 'discogs_guest_payment_inspection_authorization_v1', mode: 'inspect_enhanced_payment' });
+  config.fixtureOperations.inspect_enhanced_payment = async () => ({ status: 'blocked', code, address: 'NEVER_EXPORT' });
+  const close = await listenHostedGuestPreparation({}, socket, config);
+  const codes = ['authorization_required', 'reference_unverified', 'scope_unverified', 'expired', 'replayed', 'busy', 'cancelled',
+    'timeout', 'ledger_unverified', 'document_changed', 'unverified', 'unavailable'].map(suffix => `payment_inspection_${suffix}`);
+  try {
+    for (code of codes) { const result = await exchange(socket, paymentInspectionRequest());
+      assert.equal(result.code, code); assert.equal(result.status, 'blocked'); assert.equal(result.payment_allowed, false);
+      assert.equal(JSON.stringify(result).includes('NEVER_EXPORT'), false);
+    }
+    code = 'NEVER_EXPORT_PROVIDER_TOKEN';
+    const redacted = await exchange(socket, paymentInspectionRequest()); assert.equal(redacted.code, 'operation_unavailable');
+    assert.equal(JSON.stringify(redacted).includes('NEVER_EXPORT'), false);
+  } finally { await close(); }
+});

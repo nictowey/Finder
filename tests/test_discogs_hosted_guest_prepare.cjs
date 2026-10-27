@@ -2299,3 +2299,203 @@ test('revocation during preparation cart reads prevents even Go navigation', asy
     if (armed && fn.name === 'collectCartDom') { armed = false; await revoke(); }
   } });
 });
+
+async function paymentInspectionFixture(run, { observedForm = true } = {}) {
+  await ledgerFixture(async f => {
+    const b = browser();
+    const policyDirectory = await mkdtemp(join(tmpdir(), 'payment-inspection-policy-'));
+    const realNow = Date.now; let clock;
+    try {
+      assert.equal((await execute(f, b)).code, 'guest_form_observation_required');
+      await port.waitForHostedGuestPreparationSettlement(b.context);
+      const attemptBytes = await readFile(join(f.directory, 'guest-checkout-000003.json'));
+      const outcomeBytes = await readFile(join(f.directory, 'guest-checkout-000004.json'));
+      const review = (await records(f.directory)).find(record => record.kind === 'review');
+      clock = realNow() + 5000; Date.now = () => clock;
+      const now = clock / 1000, s = f.request.scope, documentRef = review.payload.provenance.checkout_document_ref;
+      if (observedForm) {
+        const observed = await operatorRecord(f.directory, 'observation', { type: 'record_form_observation', source: 'operator_verified_current_blank_form',
+          previous_claim_sha256: sha(attemptBytes), previous_outcome_sha256: sha(outcomeBytes), intent_id: s.intent_id,
+          ready_ref: f.request.ready_ref, scope_digest: helper.guestCardScopeDigest(s), release_id: 3422100, listing_id: '1366950910',
+          seller: 'Mailman21842', quantity: 1, max_total: '5.05', checkout_document_ref: documentRef, current_document_ref: documentRef,
+          document_continuity_verified: true, current_url: CHECKOUT, access: 'normal', blank_form_visible: true, card_fields_blank: true,
+          payment_controls_untouched: true, displayed_pay_amount: '5.05', displayed_merchant_total: '5.05', currency: 'USD',
+          observed_at: now, expires_at: now + 60, merchant_order_status: 'unverified', payment_status: 'unverified', provider_draft_status: 'unverified' });
+        assert.equal(observed.type, 'form_observation_recorded', json(observed));
+      }
+      const isolated = await import('../scripts/discogs_hosted_guest_prepare.mjs?payment-inspection=' + randomUUID());
+      const { createHostedGuestQualificationFixture } = await import('../scripts/discogs_hosted_guest_qualification.mjs');
+      const state = await operator.inspectGuestCheckoutLedger({ directory: f.directory });
+      const policy = { schema: 'discogs_guest_payment_inspection_policy_v1', job_id: randomUUID(), approval_ref: randomUUID(),
+        issued_at: now, expires_at: now + 300, max_calls: 2, action: 'inspect_enhanced_payment',
+        scope: { release_id: '3422100', listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD', max_total: '5.05',
+          approved_destination_ref: 'saved_shipping_address' }, destination_ack: null, expected_ledger_head: state.current_head, claim_sha256: sha(attemptBytes) };
+      const policyPath = join(policyDirectory, 'guest-qualification.json'); await writeFile(policyPath, json(policy), { mode: 0o600 });
+      const issuer = await createHostedGuestQualificationFixture({ policyPath });
+      const inspect = { schema: 'discogs_guest_readonly_probe_v1', job_id: policy.job_id, phase: 'inspect' };
+      const first = await isolated.probeCurrentGuestPreparationEvidence(b.context, inspect, { authorization: await issuer.authorize(inspect) });
+      assert.equal(first.code, 'current_dom_evidence_only', json(first));
+      const request = { schema: 'discogs_guest_payment_inspection_v1', job_id: policy.job_id, phase: 'inspect_payment_readiness',
+        document_ref: first.document_ref, claim_sha256: policy.claim_sha256 };
+      const authorization = await issuer.authorize(request); assert.ok(authorization);
+      const beforeBytes = await Promise.all((await readdir(f.directory)).sort().map(async name => [name, await readFile(join(f.directory, name), 'utf8')]));
+      await run({ f, b, isolated, issuer, policy, policyPath, request, authorization, beforeBytes,
+        advance: milliseconds => { clock += milliseconds; },
+        inspect: (changes = {}) => isolated.createHostedPaymentInspectionFixture({ context: changes.context || b.context,
+          directory: f.directory, authorization: changes.authorization || authorization, signal: changes.signal })(changes.request || request) });
+    } finally { Date.now = realNow; b.close(); await rm(policyDirectory, { recursive: true, force: true }); }
+  });
+}
+
+test('scoped payment inspection uses actual resident checkout Page and current observed claim, without initialization or ledger writes', async () => paymentInspectionFixture(async ({ f, b, isolated, inspect, beforeBytes }) => {
+  const baseline = [b.effects.go, b.effects.card, b.effects.pay];
+  const input = b.state.provider.window.document.createElement('input');
+  Object.defineProperty(input, 'value', { get() { throw Error('PRIVATE_VALUE_MUST_NOT_BE_READ'); } });
+  b.state.provider.window.document.body.append(input);
+  for (const node of b.state.merchant.window.document.querySelectorAll('address,address span')) {
+    Object.defineProperty(node, 'textContent', { get() { throw Error('PRIVATE_ADDRESS_MUST_NOT_BE_READ'); } });
+    for (const child of node.childNodes) if (child.nodeType === 3) Object.defineProperty(child, 'nodeValue', { get() { throw Error('PRIVATE_ADDRESS_MUST_NOT_BE_READ'); } });
+  }
+  const result = await inspect(); await isolated.waitForHostedGuestPreparationSettlement(b.context);
+  assert.equal(result.code, 'enhanced_payment_readiness_observed', json(result));
+  assert.equal(result.inspection.merchant_total.amount, '5.05'); assert.equal(result.inspection.merchant_total.currency, 'USD');
+  assert.equal(result.inspection.claim_verified, true); assert.equal(result.inspection.document_bound, true);
+  assert.equal(result.inspection.final_quote_verified, false); assert.equal(result.inspection.merchant_destination_match, null);
+  assert.ok(result.inspection.missing_profiles.includes('provider_final_quote_dom'));
+  assert.equal(result.payment_allowed, false); assert.equal(result.card_initialization_issued, false);
+  assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], baseline);
+  assert.ok(!json(result).includes('PRIVATE')); assert.ok(!json(result).includes('Fixture Street'));
+  assert.equal((await inspect()).code, 'payment_inspection_replayed');
+  const afterBytes = await Promise.all((await readdir(f.directory)).sort().map(async name => [name, await readFile(join(f.directory, name), 'utf8')]));
+  assert.deepEqual(afterBytes, beforeBytes);
+}));
+
+test('payment inspection rejects authority expansion, wrong claim/head/context/document and missing observed-form evidence', async () => {
+  for (const mode of ['enable', 'pay', 'claim', 'head', 'context', 'document', 'expired', 'revoked']) await paymentInspectionFixture(async ({ b, inspect, request, authorization, advance, policyPath }) => {
+    let changes = {};
+    if (mode === 'enable') changes.request = { ...request, enablePay: true };
+    if (mode === 'pay') changes.authorization = { ...authorization, payment_allowed: true };
+    if (mode === 'claim') changes = { request: { ...request, claim_sha256: 'f'.repeat(64) }, authorization: { ...authorization, claim_sha256: 'f'.repeat(64) } };
+    if (mode === 'head') changes.authorization = { ...authorization, expected_ledger_head: 'e'.repeat(64) };
+    if (mode === 'context') changes.context = { pages: () => { throw Error('Wrong context must not be read'); } };
+    if (mode === 'document') b.state.merchant = dom(summary, CHECKOUT);
+    if (mode === 'expired') advance(301000);
+    if (mode === 'revoked') await rm(policyPath);
+    const baseline = [b.effects.go, b.effects.card, b.effects.pay];
+    const result = await inspect(changes); assert.equal(result.status, 'blocked', mode + json(result));
+    assert.equal(result.payment_allowed, false); assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], baseline);
+  });
+  await paymentInspectionFixture(async ({ inspect }) => {
+    assert.equal((await inspect()).code, 'payment_inspection_ledger_unverified');
+  }, { observedForm: false });
+});
+
+test('payment inspection rechecks document, ledger and issuer after actual read; concurrent calls cannot replay', async () => {
+  await paymentInspectionFixture(async ({ b, inspect }) => {
+    const outcomes = await Promise.all([inspect(), inspect()]);
+    assert.equal(outcomes.filter(result => result.code === 'enhanced_payment_readiness_observed').length, 1);
+    assert.equal(outcomes.filter(result => result.code === 'payment_inspection_replayed').length, 1);
+  });
+  for (const mode of ['document', 'ledger', 'revoked', 'deadline']) await paymentInspectionFixture(async ({ f, b, inspect, authorization, policyPath, advance }) => {
+    let validations = 0;
+    const changed = { ...authorization, revalidate: async options => {
+      validations++; if (validations === 2) {
+        if (mode === 'document') b.state.merchant = dom(summary, CHECKOUT);
+        if (mode === 'ledger') await writeFile(join(f.directory, 'guest-checkout-000005.json'), (await readFile(join(f.directory, 'guest-checkout-000005.json'), 'utf8')) + '\n', { mode: 0o600 });
+        if (mode === 'revoked') await rm(policyPath);
+        if (mode === 'deadline') advance(6000);
+      }
+      return authorization.revalidate(options);
+    } };
+    const result = await inspect({ authorization: changed }); assert.equal(result.status, 'blocked', mode + json(result));
+    assert.equal(result.payment_allowed, false);
+  });
+});
+
+test('cancelled payment inspection holds actual raw quote-read settlement and cannot qualify late or replay', async () => paymentInspectionFixture(async ({ b, isolated, inspect }) => {
+  let entered; const started = new Promise(resolve => { entered = resolve; });
+  let finish; const released = new Promise(resolve => { finish = resolve; });
+  const original = b.page.evaluate;
+  b.page.evaluate = async (fn, arg) => { if (fn.name === 'collectEnhancedCheckoutDom') { entered(); await released; } return original(fn, arg); };
+  const controller = new AbortController();
+  try {
+    const reading = inspect({ signal: controller.signal }); await started; controller.abort();
+    assert.equal((await reading).code, 'payment_inspection_cancelled');
+    assert.equal((await inspect()).code, 'payment_inspection_replayed');
+    let settled = false; const drainage = isolated.waitForHostedGuestPreparationSettlement(b.context).then(() => { settled = true; });
+    await new Promise(resolve => setImmediate(resolve)); assert.equal(settled, false);
+    finish(); await drainage; assert.equal(b.effects.pay, 0);
+  } finally { finish(); await isolated.waitForHostedGuestPreparationSettlement(b.context); }
+}));
+
+test('payment inspection rejects current checkout identity mutations before coordinator quote reading', async () => {
+  for (const mode of ['price', 'seller', 'title', 'quantity', 'detail', 'scope_missing']) await paymentInspectionFixture(async ({ b, isolated, inspect }) => {
+    const doc = b.state.merchant.window.document;
+    if (mode === 'price') doc.querySelector('._checkout-summary__total--color-red_fixture dd').textContent = '$5.06 USD';
+    if (mode === 'seller') doc.querySelector('h1').textContent = 'Checkout from OtherSeller';
+    if (mode === 'title') doc.querySelector('h3 span:nth-child(3)').textContent = 'Other Record';
+    if (mode === 'quantity') doc.querySelector('h2').textContent = 'Items (2)';
+    if (mode === 'detail') b.state.detail.window.document.querySelector('main a').setAttribute('href', 'https://www.discogs.com/release/999');
+    if (mode === 'scope_missing') {
+      // A new probe after the mutation may report diagnostics but cannot retain
+      // a payment-inspection identity snapshot for an unrelated checkout.
+      doc.querySelector('h1').textContent = 'Checkout from OtherSeller';
+      const grant = readonlyGrant();
+      const first = await isolated.probeCurrentGuestPreparationEvidence(b.context, grant.request, { authorization: grant.authorization });
+      const result = await isolated.createHostedPaymentInspectionFixture({ context: b.context, directory: '/tmp/not-read',
+        authorization: { ...grant.authorization, expires_at: grant.authorization.issued_at + 300,
+          schema: 'discogs_guest_payment_inspection_authorization_v1', mode: 'inspect_enhanced_payment',
+          expected_ledger_head: 'a'.repeat(64), claim_sha256: 'b'.repeat(64), revalidate: async () => true } })({
+        schema: 'discogs_guest_payment_inspection_v1', job_id: grant.request.job_id, phase: 'inspect_payment_readiness',
+        document_ref: first.document_ref, claim_sha256: 'b'.repeat(64) });
+      assert.equal(result.code, 'payment_inspection_scope_unverified'); return;
+    }
+    const baseline = [b.effects.go, b.effects.card, b.effects.pay];
+    const result = await inspect(); assert.equal(result.code, 'payment_inspection_scope_unverified', mode + json(result));
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], baseline);
+  });
+});
+
+test('payment inspection rejects a transiently changed coordinator quote even when the scoped checkout is restored afterward', async () => {
+  for (const mode of ['amount', 'shipping']) await paymentInspectionFixture(async ({ b, inspect }) => {
+    let summaries = 0; const original = b.page.evaluate;
+    b.page.evaluate = async (fn, arg) => {
+      if (fn.name !== 'collectEnhancedCheckoutDom' || ++summaries !== 2) return original(fn, arg);
+      // First known summary belongs to the precheck; the second is the actual
+      // coordinator quote producer. Restore the DOM before the postcheck.
+      const doc = b.state.merchant.window.document;
+      const label = doc.querySelector('._checkout-summary__totals_fixture div:nth-child(2) dt');
+      const shipping = doc.querySelector('._checkout-summary__totals_fixture div:nth-child(2) dd');
+      const total = doc.querySelector('._checkout-summary__total--color-red_fixture dd');
+      const previous = [label.textContent, shipping.textContent, total.textContent];
+      if (mode === 'amount') { shipping.textContent = '$5.95 USD'; total.textContent = '$6.05 USD'; }
+      else label.textContent = 'Shipping via PRIVATE_TRANSIENT_METHOD';
+      try { return await original(fn, arg); }
+      finally { [label.textContent, shipping.textContent, total.textContent] = previous; }
+    };
+    const result = await inspect(); assert.equal(result.code, 'payment_inspection_unverified', mode + json(result));
+    assert.ok(summaries >= 3); assert.equal(Object.hasOwn(result, 'inspection'), false);
+    assert.ok(!json(result).includes('PRIVATE_TRANSIENT')); assert.equal(b.effects.pay, 0);
+  });
+});
+
+test('payment inspection short authorization deadline aborts nested quote continuation while retaining dispatched raw-read drainage', async () => paymentInspectionFixture(async ({ b, isolated, inspect, authorization }) => {
+  let entered; const started = new Promise(resolve => { entered = resolve; });
+  let finish; const delayed = new Promise(resolve => { finish = resolve; });
+  const original = b.page.evaluate; let summaries = 0, rawFinished = false, laterReads = 0;
+  b.page.evaluate = async (fn, arg) => {
+    if (fn.name === 'collectEnhancedCheckoutDom' && ++summaries === 2) {
+      entered(); await delayed; rawFinished = true; return original(fn, arg);
+    }
+    if (rawFinished) laterReads++;
+    return original(fn, arg);
+  };
+  try {
+    const reading = inspect({ authorization: { ...authorization, expires_at: Date.now() / 1000 + 0.5 } });
+    await started; const result = await reading; assert.equal(result.code, 'payment_inspection_timeout');
+    let settled = false; const drainage = isolated.waitForHostedGuestPreparationSettlement(b.context).then(() => { settled = true; });
+    await new Promise(resolve => setImmediate(resolve)); assert.equal(settled, false);
+    finish(); await drainage; assert.equal(laterReads, 0); assert.equal(b.effects.pay, 0);
+    assert.equal((await inspect()).code, 'payment_inspection_replayed');
+  } finally { finish(); await isolated.waitForHostedGuestPreparationSettlement(b.context); }
+}));

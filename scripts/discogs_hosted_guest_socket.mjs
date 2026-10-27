@@ -51,7 +51,11 @@ const CODES = new Set(['scoped_authorization_required', 'prior_attempt_unresolve
   'saved_destination_unverified', 'probe_capacity_exceeded', 'single_current_merchant_page_required',
   'cart_structure_captured', 'cart_capture_unverified', 'cart_checkout_preflight_observed',
   'preflight_authorization_required', 'preflight_confirmation_required', 'preflight_ledger_unverified',
-  'checkout_data_unavailable', 'prepare_confirmation_required']);
+  'checkout_data_unavailable', 'prepare_confirmation_required',
+  'payment_inspection_authorization_required', 'payment_inspection_reference_unverified', 'payment_inspection_scope_unverified',
+  'payment_inspection_expired', 'payment_inspection_replayed', 'payment_inspection_busy', 'payment_inspection_cancelled',
+  'payment_inspection_timeout', 'payment_inspection_ledger_unverified', 'payment_inspection_document_changed',
+  'payment_inspection_unverified', 'payment_inspection_unavailable', 'enhanced_payment_readiness_observed']);
 const PUBLIC_TAGS = new Set(['A', 'SPAN', 'STRONG', 'B', 'EM', 'I', 'SMALL', 'BR', '#text']);
 const GRADE_TEXT = new Set(['Media', 'Media:', 'Sleeve', 'Sleeve:', 'P', 'Poor', 'Poor (P)',
   'F', 'Fair', 'Fair (F)', 'G', 'Good', 'Good (G)', 'G+', 'Good Plus', 'Good Plus (G+)',
@@ -211,7 +215,66 @@ function sanitizedProviderFrames(value) {
   return { schema: value.schema, selection: value.selection,
     ...Object.fromEntries(PROVIDER_COUNTS.map(key => [key, value[key]])), truncated: value.truncated, candidates };
 }
-function safeResult(value, { captureAllowed = false, preflightAllowed = false } = {}) {
+const PAYMENT_INSPECTION_GATES = ['provider_dom_qualification', 'provider_frame_and_document', 'provider_explicit_currency',
+  'provider_amount_matches_merchant', 'provider_final_all_in_total', 'final_tax_treatment', 'mandatory_charges_finality',
+  'provider_shipping_selection', 'provider_delivery_binding', 'provider_terms'];
+const PAYMENT_INSPECTION_PROFILES = ['provider_final_quote_dom', 'provider_quote_frame_association', 'provider_delivery_destination',
+  'provider_terms', 'verified_pay_control', 'verified_selected_payment_method', 'merchant_positive_order_dom'];
+const READONLY_EFFECTS = ['checkout_navigation_issued', 'navigation_issued', 'card_initialization_issued', 'card_data_entered',
+  'payment_issued', 'pay_issued', 'payment_invoked', 'pay_invoked', 'approval_invoked', 'capture_invoked', 'dispatch_issued'];
+function sanitizedPaymentInspection(value) {
+  const booleans = ['document_bound', 'claim_verified', 'ledger_head_verified', 'final_quote_verified', 'provider_destination_verified', 'provider_terms_verified', 'payment_enabled'];
+  if (!fixedKeys(value, ['schema', ...booleans, 'ledger_state', 'quote_status', 'merchant_subtotal', 'merchant_shipping',
+    'merchant_total', 'selected_shipping_label', 'merchant_destination_match', 'gates', 'missing_evidence', 'missing_profiles', 'frame_association']) ||
+      value.schema !== 'enhanced_payment_readiness_v1' || value.ledger_state !== 'guest_form_observed_repeat_blocked' ||
+      !['unverified', 'observed'].includes(value.quote_status) || booleans.some(key => typeof value[key] !== 'boolean') ||
+      value.document_bound !== true || value.claim_verified !== true || value.ledger_head_verified !== true || value.payment_enabled !== false ||
+      ![true, false, null].includes(value.merchant_destination_match) ||
+      !fixedKeys(value.gates, PAYMENT_INSPECTION_GATES) || PAYMENT_INSPECTION_GATES.some(key => typeof value.gates[key] !== 'boolean')) return null;
+  const money = key => fixedKeys(value[key], ['amount', 'currency']) && value[key].currency === 'USD' &&
+    typeof value[key].amount === 'string' && /^(?:0|[1-9][0-9]{0,6})\.[0-9]{2}$/u.test(value[key].amount);
+  if (!['merchant_subtotal', 'merchant_shipping', 'merchant_total'].every(money) ||
+      typeof value.selected_shipping_label !== 'string' || value.selected_shipping_label.length < 1 || value.selected_shipping_label.length > 100 ||
+      /[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/u.test(value.selected_shipping_label)) return null;
+  const missing = (values, allowed) => Array.isArray(values) && values.length <= allowed.length &&
+    values.every(item => allowed.includes(item)) && new Set(values).size === values.length;
+  const frame = value.frame_association;
+  if (!missing(value.missing_evidence, PAYMENT_INSPECTION_GATES) || !missing(value.missing_profiles, PAYMENT_INSPECTION_PROFILES) ||
+      !fixedKeys(frame, ['known_buttons_count', 'known_buttons_associated', 'payment_quote_frame_qualified']) ||
+      ![0, 1, 2].includes(frame.known_buttons_count) || typeof frame.known_buttons_associated !== 'boolean' ||
+      typeof frame.payment_quote_frame_qualified !== 'boolean' ||
+      value.final_quote_verified && !PAYMENT_INSPECTION_GATES.every(key => value.gates[key]) ||
+      value.provider_destination_verified && !value.gates.provider_delivery_binding || value.provider_terms_verified && !value.gates.provider_terms) return null;
+  const allGates = PAYMENT_INSPECTION_GATES.every(key => value.gates[key]);
+  const expectedMissing = PAYMENT_INSPECTION_GATES.filter(key => !value.gates[key]);
+  const expectedProfiles = [...(!value.gates.provider_dom_qualification ? ['provider_final_quote_dom'] : []),
+    ...(!value.gates.provider_frame_and_document ? ['provider_quote_frame_association'] : []),
+    ...(!value.gates.provider_delivery_binding ? ['provider_delivery_destination'] : []),
+    ...(!value.gates.provider_terms ? ['provider_terms'] : []), 'verified_pay_control', 'verified_selected_payment_method', 'merchant_positive_order_dom'];
+  if (value.final_quote_verified !== allGates || value.quote_status !== (allGates ? 'observed' : 'unverified') ||
+      value.provider_destination_verified !== (allGates && value.gates.provider_delivery_binding) ||
+      value.provider_terms_verified !== (allGates && value.gates.provider_terms) ||
+      value.missing_evidence.length !== expectedMissing.length || !value.missing_evidence.every(key => expectedMissing.includes(key)) ||
+      value.missing_profiles.length !== expectedProfiles.length || !value.missing_profiles.every(key => expectedProfiles.includes(key)) ||
+      frame.known_buttons_associated && frame.known_buttons_count !== 1) return null;
+  return { schema: value.schema, ...Object.fromEntries(booleans.map(key => [key, value[key]])),
+    ledger_state: value.ledger_state, quote_status: value.quote_status,
+    merchant_subtotal: { ...value.merchant_subtotal }, merchant_shipping: { ...value.merchant_shipping }, merchant_total: { ...value.merchant_total },
+    selected_shipping_label: value.selected_shipping_label, merchant_destination_match: value.merchant_destination_match,
+    gates: { ...value.gates }, missing_evidence: [...value.missing_evidence], missing_profiles: [...value.missing_profiles], frame_association: { ...frame } };
+}
+function safeResult(value, { captureAllowed = false, preflightAllowed = false, paymentInspectionAllowed = false } = {}) {
+  if (paymentInspectionAllowed || value?.code === 'enhanced_payment_readiness_observed') {
+    const effects = Object.fromEntries(READONLY_EFFECTS.filter(key => value?.[key] === true).map(key => [key, true]));
+    if (Object.keys(effects).length) return { ...stop('readonly_scope_violation'), stop_required: true,
+      initialization_allowed: false, initialization: 'outcome_requires_reconciliation', ...effects };
+  }
+  if (value?.status === 'observed' && value.code === 'enhanced_payment_readiness_observed') {
+    const inspection = paymentInspectionAllowed ? sanitizedPaymentInspection(value.inspection) : null;
+    if (!inspection) return stop('payment_inspection_unverified');
+    return { ...stop(value.code), status: 'observed', initialization_allowed: false,
+      checkout_navigation_issued: false, card_initialization_issued: false, inspection };
+  }
   // Observed effects are facts, not capabilities: never rewrite a reported
   // initialization into false merely because this action forbids it.
   if ((preflightAllowed || value?.code === 'cart_checkout_preflight_observed') &&
@@ -327,7 +390,8 @@ export async function listenHostedGuestPreparation(context, socketPath, {
     throw new TypeError('private_bridge_directory_required');
   }
   const operations = fixtureOperations || { prepare_guest_form: guestPreparation.prepareHostedGuestForm, probe_guest_evidence: guestPreparation.probeCurrentGuestPreparationEvidence,
-    cart_checkout_preflight: guestPreparation.preflightHostedGuestCheckout };
+    cart_checkout_preflight: guestPreparation.preflightHostedGuestCheckout,
+    inspect_enhanced_payment: guestPreparation.inspectHostedEnhancedPaymentReadiness };
   let closing = false, closePromise;
   const connections = new Map();
   const server = createServer(connection => {
@@ -353,7 +417,7 @@ export async function listenHostedGuestPreparation(context, socketPath, {
       try { message = JSON.parse(input.subarray(0, newline).toString('utf8')); } catch { return send(stop('unsupported_guest_request')); }
       if (!message || typeof message !== 'object' || Array.isArray(message) ||
           Object.keys(message).sort().join('|') !== 'action|request' ||
-          !['prepare_guest_form', 'probe_guest_evidence', 'cart_checkout_preflight'].includes(message.action) ||
+          !['prepare_guest_form', 'probe_guest_evidence', 'cart_checkout_preflight', 'inspect_enhanced_payment'].includes(message.action) ||
           !message.request || typeof message.request !== 'object' || Array.isArray(message.request)) return send(stop('unsupported_guest_request'));
       const release = acquireContextLease();
       if (typeof release !== 'function') return send(stop('read_in_progress'));
@@ -369,12 +433,19 @@ export async function listenHostedGuestPreparation(context, socketPath, {
             (authorization?.schema !== 'discogs_guest_preflight_authorization_v1' || authorization.mode !== 'cart_checkout_preflight')) {
           return send(stop('preflight_authorization_required'));
         }
+        if (message.action === 'inspect_enhanced_payment' &&
+            (authorization?.schema !== 'discogs_guest_payment_inspection_authorization_v1' || authorization.mode !== 'inspect_enhanced_payment')) {
+          return send(stop('payment_inspection_authorization_required'));
+        }
         const result = await operations[message.action](context, message.request, { authorization, signal: controller.signal });
         if (!controller.signal.aborted && !closing) send(safeResult(result, { captureAllowed: message.action === 'probe_guest_evidence' &&
           message.request.phase === 'capture_cart_structure' && authorization?.mode === 'capture_cart_structure',
           preflightAllowed: message.action === 'cart_checkout_preflight' &&
           message.request.schema === 'discogs_guest_checkout_preflight_v1' && message.request.phase === 'navigate_checkout_preflight' &&
-          authorization?.schema === 'discogs_guest_preflight_authorization_v1' && authorization.mode === 'cart_checkout_preflight' }));
+          authorization?.schema === 'discogs_guest_preflight_authorization_v1' && authorization.mode === 'cart_checkout_preflight',
+          paymentInspectionAllowed: message.action === 'inspect_enhanced_payment' &&
+          message.request.schema === 'discogs_guest_payment_inspection_v1' && message.request.phase === 'inspect_payment_readiness' &&
+          authorization?.schema === 'discogs_guest_payment_inspection_authorization_v1' && authorization.mode === 'inspect_enhanced_payment' }));
       } catch { if (!controller.signal.aborted) send(stop('operation_unavailable')); }
       finally {
         // Cancellation can return before a dispatched Playwright call settles.

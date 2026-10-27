@@ -108,15 +108,58 @@ test('truncated durable use marker or changed job identity never rearms a spent 
   await writeFile(identity, '{', { mode: 0o600 }); await assert.rejects(f.load(), /invalid_guest_qualification_policy/);
 });
 
-test('runner supplies valid local policy callbacks to existing runtime and keeps absent policy disabled', async () => {
-  for (const guestPreparation of [null, { authorize: () => null, accessGuard: () => false }]) {
-    const signals = new EventEmitter(); let launchArgs;
-    const close = Object.assign(async () => {}, { isAvailable: () => true, unavailable: new Promise(() => {}) });
-    const result = runHostedBrowser({}, { signals, report: () => {}, reportError: () => {},
-      loadQualification: async () => guestPreparation, startMemoryLogging: () => () => {},
-      launch: async (...args) => { launchArgs = args; queueMicrotask(() => signals.emit('SIGTERM')); return close; } });
-    assert.equal(await result, 0); assert.equal(launchArgs[3]?.guestPreparation ?? null, guestPreparation);
+test('runner keeps absent startup policy disabled without a later listener or browser relaunch', async () => {
+  const signals = new EventEmitter(); let launchArgs, launches = 0;
+  const close = Object.assign(async () => {}, { isAvailable: () => true, unavailable: new Promise(() => {}) });
+  const result = await runHostedBrowser({}, { signals, report: () => {}, reportError: () => {},
+    loadQualification: async () => null, startMemoryLogging: () => () => {},
+    launch: async (...args) => { launches++; launchArgs = args; queueMicrotask(() => signals.emit('SIGTERM')); return close; } });
+  assert.equal(result, 0); assert.equal(launches, 1);
+  assert.equal(launchArgs.length, 3);
+});
+
+test('malformed nonnull startup issuer never launches a browser or socket', async () => {
+  for (const invalid of [undefined, {}, { accessGuard: async () => true },
+    { authorize: async () => null }]) {
+    const signals = new EventEmitter(); let launches = 0, errors = 0;
+    const result = await runHostedBrowser({}, { signals, report: () => {},
+      reportError: () => { errors++; }, loadQualification: async () => invalid,
+      startMemoryLogging: () => () => {}, launch: async () => { launches++; throw new Error('unexpected_launch'); } });
+    assert.equal(result, 1); assert.equal(launches, 0); assert.equal(errors, 1);
   }
+});
+
+test('runner reloads each request on one browser: new reviewed job works; changed, revoked and expired policy deny', async t => {
+  const f = await fixture(t); await f.write();
+  const signals = new EventEmitter(); let launches = 0;
+  const close = Object.assign(async () => {}, { isAvailable: () => true, unavailable: new Promise(() => {}) });
+  const result = await runHostedBrowser({}, { signals, report: () => {}, reportError: () => {},
+    loadQualification: f.load, startMemoryLogging: () => () => {},
+    launch: async (_firefox, _profile, _socket, { guestPreparation }) => {
+      launches++;
+      assert.equal(await guestPreparation.accessGuard('probe_guest_evidence', f.inspect), true);
+      assert.ok(await guestPreparation.authorize(f.inspect));
+      assert.equal(await guestPreparation.authorize(f.inspect), null); // Spent old receipt.
+      f.policy.job_id = randomUUID(); await f.write();
+      const next = { ...f.inspect, job_id: f.policy.job_id };
+      assert.equal(await guestPreparation.accessGuard('probe_guest_evidence', f.inspect), false);
+      assert.equal(await guestPreparation.accessGuard('probe_guest_evidence', next), true);
+      f.policy.expires_at = 2801; await f.write(); // Same-job identity mutation.
+      assert.equal(await guestPreparation.accessGuard('probe_guest_evidence', next), false);
+      assert.equal(await guestPreparation.authorize(next), null);
+      f.policy.expires_at = 2800; await f.write();
+      assert.ok(await guestPreparation.authorize(next));
+      assert.equal(await guestPreparation.authorize(next), null);
+      await rm(f.policyPath); // Revocation cannot reuse either receipt.
+      assert.equal(await guestPreparation.accessGuard('probe_guest_evidence', next), false);
+      assert.equal(await guestPreparation.authorize(next), null);
+      await f.write(); f.setTime(2800);
+      assert.equal(await guestPreparation.accessGuard('probe_guest_evidence', next), false);
+      assert.equal(await guestPreparation.authorize(next), null);
+      queueMicrotask(() => signals.emit('SIGTERM'));
+      return close;
+    } });
+  assert.equal(result, 0); assert.equal(launches, 1);
 });
 
 
@@ -325,4 +368,91 @@ test('ordinary and preflight policies cannot authorize preparation, and a consum
   assert.ok(await f.issuer.authorize(f.prepare));
   assert.equal(await f.issuer.authorize(f.prepare), null);
   assert.equal(await (await f.load()).authorize(f.prepare), null);
+});
+
+async function paymentInspectionFixture(t) {
+  const f = await fixture(t);
+  f.policy.schema = 'discogs_guest_payment_inspection_policy_v1';
+  f.policy.action = 'inspect_enhanced_payment'; f.policy.max_calls = 2;
+  f.policy.expires_at = 1200; f.policy.expected_ledger_head = 'c'.repeat(64);
+  f.policy.claim_sha256 = 'd'.repeat(64);
+  await f.write();
+  const issuer = await f.load();
+  const request = { schema: 'discogs_guest_payment_inspection_v1', job_id: f.policy.job_id,
+    phase: 'inspect_payment_readiness', document_ref: randomUUID(), claim_sha256: f.policy.claim_sha256 };
+  return { ...f, issuer, request };
+}
+
+test('distinct payment inspection policy issues standard read-only inspect, then one exact durable payment-read grant', async t => {
+  const f = await paymentInspectionFixture(t);
+  assert.equal(await f.issuer.authorize(f.request), null);
+  assert.equal(await f.issuer.accessGuard('inspect_enhanced_payment', f.request), false);
+  const initial = await f.issuer.authorize(f.inspect);
+  assert.deepEqual(Object.keys(initial).sort(), ['schema', 'job_id', 'issued_at', 'expires_at',
+    'release_id', 'listing_id', 'seller', 'quantity', 'currency', 'max_total',
+    'approved_destination_ref'].sort());
+  assert.equal(initial.schema, 'discogs_guest_readonly_authorization_v1');
+  assert.equal(await f.issuer.accessGuard('probe_guest_evidence', f.request), false);
+  assert.equal(await f.issuer.accessGuard('inspect_enhanced_payment', f.request), true);
+  const attempts = await Promise.all([f.issuer.authorize(f.request), f.issuer.authorize(f.request)]);
+  assert.equal(attempts.filter(Boolean).length, 1);
+  const grant = attempts.find(Boolean);
+  assert.equal(grant.schema, 'discogs_guest_payment_inspection_authorization_v1');
+  assert.equal(grant.mode, 'inspect_enhanced_payment');
+  assert.equal(grant.expected_ledger_head, f.policy.expected_ledger_head);
+  assert.equal(grant.claim_sha256, f.policy.claim_sha256);
+  assert.equal(Object.hasOwn(grant, 'destination_ack'), false);
+  for (const key of ['payment_allowed', 'purchase_allowed', 'approval_ref', 'approved_destination_digest']) {
+    assert.equal(Object.hasOwn(grant, key), false);
+  }
+  assert.equal(await grant.revalidate(), true);
+  assert.equal(await (await f.load()).authorize(f.request), null);
+  const receipt = JSON.parse(await readFile(join(f.directory,
+    `guest-qualification-${f.policy.job_id}-6-payment-inspection.json`), 'utf8'));
+  assert.equal(receipt.document_ref, f.request.document_ref);
+  assert.equal(receipt.claim_sha256, f.request.claim_sha256);
+});
+
+test('payment inspection rejects malformed claim/document, cancellation, replay and changed receipt', async t => {
+  const f = await paymentInspectionFixture(t); assert.ok(await f.issuer.authorize(f.inspect));
+  assert.equal(await f.issuer.authorize({ ...f.request, claim_sha256: 'e'.repeat(64) }), null);
+  assert.equal(await f.issuer.authorize({ ...f.request, document_ref: 'not-a-uuid' }), null);
+  assert.equal(await f.issuer.authorize({ ...f.request, arbitrary: true }), null);
+  const controller = new AbortController(); controller.abort();
+  assert.equal(await f.issuer.authorize(f.request, { signal: controller.signal }), null);
+  const grant = await f.issuer.authorize(f.request); assert.ok(grant);
+  assert.equal(await f.issuer.authorize({ ...f.request, document_ref: randomUUID() }), null);
+  assert.equal(await grant.revalidate({ signal: controller.signal }), false);
+  const slot = join(f.directory, `guest-qualification-${f.policy.job_id}-6-payment-inspection.json`);
+  const receipt = JSON.parse(await readFile(slot, 'utf8'));
+  await writeFile(slot, JSON.stringify({ ...receipt, document_ref: randomUUID() }), { mode: 0o600 });
+  assert.equal(await grant.revalidate(), false);
+});
+
+test('payment inspection head/claim and null acknowledgement are immutable; revocation and expiry stop revalidation', async t => {
+  const f = await paymentInspectionFixture(t); assert.ok(await f.issuer.authorize(f.inspect));
+  f.policy.claim_sha256 = 'e'.repeat(64); await f.write();
+  await assert.rejects(f.load(), /invalid_guest_qualification_policy/);
+  f.policy.claim_sha256 = 'd'.repeat(64); f.policy.expected_ledger_head = 'e'.repeat(64);
+  await f.write(); await assert.rejects(f.load(), /invalid_guest_qualification_policy/);
+  f.policy.expected_ledger_head = 'c'.repeat(64);
+  f.policy.destination_ack = { source: 'operator_visual_saved_destination_match',
+    document_ref: randomUUID(), approved_destination_ref: 'saved_shipping_address', observed_at: 1000 };
+  await f.write(); await assert.rejects(f.load(), /invalid_guest_qualification_policy/);
+  f.policy.destination_ack = null; await f.write();
+  const grant = await f.issuer.authorize(f.request); assert.ok(grant);
+  await rm(f.policyPath); assert.equal(await grant.revalidate(), false);
+  await f.write(); f.setTime(1200); assert.equal(await grant.revalidate(), false);
+});
+
+test('older policies cannot gain payment inspection by changing phase or action', async t => {
+  const f = await fixture(t); await f.write(); const issuer = await f.load();
+  const request = { schema: 'discogs_guest_payment_inspection_v1', job_id: f.policy.job_id,
+    phase: 'inspect_payment_readiness', document_ref: randomUUID(), claim_sha256: 'd'.repeat(64) };
+  assert.equal(await issuer.accessGuard('inspect_enhanced_payment', request), false);
+  assert.equal(await issuer.authorize(request), null);
+  f.policy.schema = 'discogs_guest_payment_inspection_policy_v1';
+  f.policy.action = 'inspect_enhanced_payment'; f.policy.expires_at = 1200;
+  f.policy.expected_ledger_head = 'c'.repeat(64); f.policy.claim_sha256 = 'd'.repeat(64);
+  await f.write(); await assert.rejects(f.load(), /invalid_guest_qualification_policy/);
 });

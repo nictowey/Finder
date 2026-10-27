@@ -31,6 +31,7 @@ async function privateJson(path, { optional = false } = {}) {
 const capturePolicy = policy => policy?.schema === 'discogs_guest_cart_capture_policy_v1';
 const preflightPolicy = policy => policy?.schema === 'discogs_guest_cart_preflight_policy_v1';
 const preparePolicy = policy => policy?.schema === 'discogs_guest_prepare_policy_v1';
+const paymentInspectionPolicy = policy => policy?.schema === 'discogs_guest_payment_inspection_policy_v1';
 const HASH = /^[0-9a-f]{64}$/u;
 const PRIOR_FAILURE_KEYS = ['source', 'last_error_code', 'release_id', 'listing_id', 'seller', 'quantity', 'currency', 'max_total',
   'card_data_entered', 'pay_invoked', 'approval_invoked', 'capture_invoked', 'failure_observed_at', 'order_history_url',
@@ -54,15 +55,18 @@ function validPriorFailure(prior, policy, now, allowExpired) {
 }
 function validatePolicy(policy, now, { allowExpired = false } = {}) {
   if (!exact(policy, ['schema', 'job_id', 'approval_ref', 'issued_at', 'expires_at', 'max_calls', 'action', 'scope', 'destination_ack',
-    ...(preflightPolicy(policy) ? ['expected_ledger_head'] : preparePolicy(policy) ? PREPARE_KEYS : [])]) ||
-      !['discogs_guest_qualification_policy_v1', 'discogs_guest_cart_capture_policy_v1', 'discogs_guest_cart_preflight_policy_v1', 'discogs_guest_prepare_policy_v1'].includes(policy.schema) || !UUID.test(policy.job_id) || !UUID.test(policy.approval_ref) ||
-      policy.action !== (preparePolicy(policy) ? 'prepare_guest_form' : preflightPolicy(policy) ? 'cart_checkout_preflight' : 'probe_guest_evidence') ||
-      policy.max_calls !== (preparePolicy(policy) || preflightPolicy(policy) ? 3 : capturePolicy(policy) ? 1 : 2) ||
+    ...(paymentInspectionPolicy(policy) ? ['expected_ledger_head', 'claim_sha256'] :
+      preflightPolicy(policy) ? ['expected_ledger_head'] : preparePolicy(policy) ? PREPARE_KEYS : [])]) ||
+      !['discogs_guest_qualification_policy_v1', 'discogs_guest_cart_capture_policy_v1', 'discogs_guest_cart_preflight_policy_v1', 'discogs_guest_prepare_policy_v1', 'discogs_guest_payment_inspection_policy_v1'].includes(policy.schema) || !UUID.test(policy.job_id) || !UUID.test(policy.approval_ref) ||
+      policy.action !== (paymentInspectionPolicy(policy) ? 'inspect_enhanced_payment' : preparePolicy(policy) ? 'prepare_guest_form' : preflightPolicy(policy) ? 'cart_checkout_preflight' : 'probe_guest_evidence') ||
+      policy.max_calls !== (paymentInspectionPolicy(policy) ? 2 : preparePolicy(policy) || preflightPolicy(policy) ? 3 : capturePolicy(policy) ? 1 : 2) ||
       !Number.isFinite(policy.issued_at) || !Number.isFinite(policy.expires_at) || policy.issued_at < 0 ||
       policy.issued_at > now || !allowExpired && now >= policy.expires_at || policy.expires_at <= policy.issued_at ||
-      policy.expires_at - policy.issued_at > (preparePolicy(policy) ? 300 : 1800) || !exact(policy.scope, Object.keys(SCOPE)) ||
+      policy.expires_at - policy.issued_at > (preparePolicy(policy) || paymentInspectionPolicy(policy) ? 300 : 1800) || !exact(policy.scope, Object.keys(SCOPE)) ||
       Object.entries(SCOPE).some(([key, value]) => policy.scope[key] !== value)) invalid();
   if (preflightPolicy(policy) && !HASH.test(policy.expected_ledger_head || '')) invalid();
+  if (paymentInspectionPolicy(policy) && (!HASH.test(policy.expected_ledger_head || '') ||
+      !HASH.test(policy.claim_sha256 || ''))) invalid();
   if (preparePolicy(policy) && (!HASH.test(policy.expected_ledger_head || '') ||
       !HASH.test(policy.prior_form_disposition_sha256 || '') ||
       ![policy.intent_id, policy.ready_ref, policy.destination_ref].every(value => UUID.test(value || '')) ||
@@ -71,7 +75,7 @@ function validatePolicy(policy, now, { allowExpired = false } = {}) {
       policy.expires_at > policy.prior_failure.expires_at ||
       policy.expires_at > policy.prior_failure.order_history_observed_at + 300)) invalid();
   const ack = policy.destination_ack;
-  if (capturePolicy(policy) && ack !== null) invalid();
+  if ((capturePolicy(policy) || paymentInspectionPolicy(policy)) && ack !== null) invalid();
   if (ack !== null && (!exact(ack, ['document_ref', 'source', 'approved_destination_ref', 'observed_at']) ||
       !UUID.test(ack.document_ref) || ack.source !== 'operator_visual_saved_destination_match' ||
       ack.approved_destination_ref !== SCOPE.approved_destination_ref || !Number.isFinite(ack.observed_at) ||
@@ -83,11 +87,18 @@ function identity(policy) {
     issued_at: policy.issued_at, expires_at: policy.expires_at, max_calls: policy.max_calls,
     action: policy.action, scope: SCOPE,
     ...(preflightPolicy(policy) ? { expected_ledger_head: policy.expected_ledger_head } : {}),
+    ...(paymentInspectionPolicy(policy) ? { expected_ledger_head: policy.expected_ledger_head,
+      claim_sha256: policy.claim_sha256 } : {}),
     ...(preparePolicy(policy) ? Object.fromEntries(PREPARE_KEYS.map(key => [key, policy[key]])) : {}) };
 }
 function requestAllowed(request, policy) {
   const navigating = request?.phase === 'navigate_checkout_preflight';
   const preparing = request?.phase === 'prepare_guest_form';
+  const paymentInspection = request?.phase === 'inspect_payment_readiness';
+  if (paymentInspection) return paymentInspectionPolicy(policy) &&
+    exact(request, ['schema', 'job_id', 'phase', 'document_ref', 'claim_sha256']) &&
+    request.schema === 'discogs_guest_payment_inspection_v1' && request.job_id === policy.job_id &&
+    UUID.test(request.document_ref || '') && request.claim_sha256 === policy.claim_sha256;
   if (!exact(request, ['confirm_saved_destination', 'navigate_checkout_preflight', 'prepare_guest_form'].includes(request?.phase) ?
     ['schema', 'job_id', 'phase', 'document_ref'] : ['schema', 'job_id', 'phase']) ||
       request.schema !== (preparing ? 'discogs_guest_prepare_request_v1' : navigating ? 'discogs_guest_checkout_preflight_v1' : 'discogs_guest_readonly_probe_v1') || request.job_id !== policy.job_id) return false;
@@ -132,17 +143,20 @@ async function createIssuer(policyPath, now, fixture) {
     if (hash(identity(policy)) !== identityDigest) invalid();
     return policy;
   };
-  const slot = phase => `${prefix}-${phase === 'prepare_guest_form' ? '5-prepare' : phase === 'navigate_checkout_preflight' ? '4-checkout-preflight' : phase === 'capture_cart_structure' ? '3-cart-capture' : phase === 'inspect' ? '1-inspect' : '2-confirm'}.json`;
+  const slot = phase => `${prefix}-${phase === 'inspect_payment_readiness' ? '6-payment-inspection' : phase === 'prepare_guest_form' ? '5-prepare' : phase === 'navigate_checkout_preflight' ? '4-checkout-preflight' : phase === 'capture_cart_structure' ? '3-cart-capture' : phase === 'inspect' ? '1-inspect' : '2-confirm'}.json`;
   const validReceipt = receipt => {
     const bound = (preflightPolicy(first) || preparePolicy(first)) &&
       ['confirm_saved_destination', 'navigate_checkout_preflight', 'prepare_guest_form'].includes(receipt?.phase);
+    const paymentBound = paymentInspectionPolicy(first) && receipt?.phase === 'inspect_payment_readiness';
     return exact(receipt, ['schema', 'job_id', 'identity_sha256', 'phase', 'consumed_at',
-      ...(bound ? ['document_ref', 'destination_ack_observed_at'] : [])]) &&
+      ...(bound ? ['document_ref', 'destination_ack_observed_at'] : []),
+      ...(paymentBound ? ['document_ref', 'claim_sha256'] : [])]) &&
       receipt.schema === 'discogs_guest_qualification_use_v1' && receipt.job_id === first.job_id &&
-      receipt.identity_sha256 === identityDigest && ['inspect', 'confirm_saved_destination', 'capture_cart_structure', 'navigate_checkout_preflight', 'prepare_guest_form'].includes(receipt.phase) &&
+      receipt.identity_sha256 === identityDigest && ['inspect', 'confirm_saved_destination', 'capture_cart_structure', 'navigate_checkout_preflight', 'prepare_guest_form', 'inspect_payment_readiness'].includes(receipt.phase) &&
       Number.isFinite(receipt.consumed_at) && receipt.consumed_at >= first.issued_at && receipt.consumed_at < first.expires_at &&
       (!bound || UUID.test(receipt.document_ref) && Number.isFinite(receipt.destination_ack_observed_at) &&
-        receipt.destination_ack_observed_at >= first.issued_at && receipt.destination_ack_observed_at <= receipt.consumed_at);
+        receipt.destination_ack_observed_at >= first.issued_at && receipt.destination_ack_observed_at <= receipt.consumed_at) &&
+      (!paymentBound || UUID.test(receipt.document_ref) && receipt.claim_sha256 === first.claim_sha256);
   };
   const allowed = async request => {
     const policy = await load();
@@ -159,11 +173,16 @@ async function createIssuer(policyPath, now, fixture) {
           policy.destination_ack.observed_at < inspected.consumed_at || confirmed.consumed_at < policy.destination_ack.observed_at ||
           confirmed.document_ref !== request.document_ref || confirmed.destination_ack_observed_at !== policy.destination_ack.observed_at) return null;
     }
+    if (request.phase === 'inspect_payment_readiness') {
+      const inspected = await privateJson(slot('inspect'), { optional: true });
+      if (!validReceipt(inspected) || inspected.phase !== 'inspect' || inspected.consumed_at > now()) return null;
+    }
     return policy;
   };
   return Object.freeze({
     accessGuard: async (action, request, { signal } = {}) => {
       const expectedAction = request?.phase === 'prepare_guest_form' ? 'prepare_guest_form' :
+        request?.phase === 'inspect_payment_readiness' ? 'inspect_enhanced_payment' :
         request?.phase === 'navigate_checkout_preflight' ? 'cart_checkout_preflight' : 'probe_guest_evidence';
       if (action !== expectedAction || signal?.aborted) return false;
       try { return !!await allowed(request) && !signal?.aborted; } catch { return false; }
@@ -178,7 +197,9 @@ async function createIssuer(policyPath, now, fixture) {
         await exclusiveJson(slot(request.phase), { schema: 'discogs_guest_qualification_use_v1', job_id: policy.job_id,
           identity_sha256: identityDigest, phase: request.phase, consumed_at: consumedAt,
           ...((preflightPolicy(policy) || preparePolicy(policy)) && request.phase !== 'inspect' ? { document_ref: request.document_ref,
-            destination_ack_observed_at: policy.destination_ack.observed_at } : {}) });
+            destination_ack_observed_at: policy.destination_ack.observed_at } : {}),
+          ...(paymentInspectionPolicy(policy) && request.phase === 'inspect_payment_readiness' ? {
+            document_ref: request.document_ref, claim_sha256: request.claim_sha256 } : {}) });
         // Recheck revocation and an operator's same-job policy update after the
         // durable write, before returning any browser authorization.
         const current = await load();
@@ -203,7 +224,23 @@ async function createIssuer(policyPath, now, fixture) {
                 receipt.destination_ack_observed_at === fresh.destination_ack.observed_at);
           } catch { return false; }
         };
-        return Object.freeze({ schema: request.phase === 'prepare_guest_form' ? 'discogs_guest_prepare_authorization_v1' :
+        const paymentRevalidate = async ({ signal: laterSignal } = {}) => {
+          if (laterSignal?.aborted) return false;
+          try {
+            const fresh = await load();
+            if (!requestAllowed(request, fresh) || laterSignal?.aborted) return false;
+            const inspected = await privateJson(slot('inspect'), { optional: true });
+            const payment = await privateJson(slot('inspect_payment_readiness'), { optional: true });
+            return !laterSignal?.aborted && validReceipt(inspected) && inspected.phase === 'inspect' &&
+              validReceipt(payment) && payment.phase === 'inspect_payment_readiness' &&
+              payment.consumed_at >= inspected.consumed_at &&
+              payment.document_ref === request.document_ref && payment.claim_sha256 === request.claim_sha256;
+          } catch { return false; }
+        };
+        if (request.phase === 'inspect_payment_readiness' &&
+            !await paymentRevalidate({ signal })) return null;
+        return Object.freeze({ schema: request.phase === 'inspect_payment_readiness' ? 'discogs_guest_payment_inspection_authorization_v1' :
+          request.phase === 'prepare_guest_form' ? 'discogs_guest_prepare_authorization_v1' :
           request.phase === 'navigate_checkout_preflight' ? 'discogs_guest_preflight_authorization_v1' : 'discogs_guest_readonly_authorization_v1', job_id: policy.job_id,
           issued_at: policy.issued_at, expires_at: policy.expires_at, ...SCOPE,
           ...(capturePolicy(policy) ? { mode: 'capture_cart_structure' } : {}),
@@ -213,6 +250,10 @@ async function createIssuer(policyPath, now, fixture) {
             mode: 'prepare_guest_form', approval_ref: policy.approval_ref,
             ...Object.fromEntries(PREPARE_KEYS.map(key => [key, key === 'prior_failure' ?
               Object.freeze({ ...policy[key] }) : policy[key]])), revalidate: prepareRevalidate,
+          } : {}),
+          ...(request.phase === 'inspect_payment_readiness' ? {
+            mode: 'inspect_enhanced_payment', expected_ledger_head: policy.expected_ledger_head,
+            claim_sha256: policy.claim_sha256, revalidate: paymentRevalidate,
           } : {}),
           ...(policy.destination_ack ? { destination_ack: Object.freeze({ ...policy.destination_ack }) } : {}) });
       } catch { return null; }

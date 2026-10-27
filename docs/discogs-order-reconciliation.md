@@ -154,7 +154,38 @@ import, construct and report `enhanced_payment_disabled` with no browser, networ
 or file effects. Do not initialize or open the real ledger merely to smoke-test
 staging: opening an older ledger may migrate its schema, and reconciliation
 writes evidence. No live Page object is available in a separate import process;
-read-only browser use still requires reviewed wiring into the existing runtime.
-The current fixed IPC does not expose a coordinator action. Stage files only;
-do not introduce a debugging connection, reuse a spent grant or restart the
-browser to make the library callable.
+read-only browser use requires the scoped runtime path below. Do not introduce a
+debugging connection or reuse a spent grant to make the library callable.
+
+### Scoped read-only readiness IPC
+
+The source adds `inspect_enhanced_payment` to the existing owner-only guest bridge.
+It invokes only `coordinator.inspectPaymentReadiness` on the resident checkout Page;
+it exposes no Pay dispatcher, payment enable switch, navigation, initialization,
+card-entry method or real-order-ledger operation. Production Pay remains disabled
+in both the coordinator and adapter. No second browser or controller is created.
+
+The default-off `discogs_guest_payment_inspection_policy_v1` allows two ordered
+calls within five minutes for the exact KC scope. First, the existing read-only
+probe binds a fresh Page/Document reference. Second, `inspect_payment_readiness`
+consumes its distinct durable slot and must match that resident reference, the
+expected append-only ledger head and latest observed-form claim. Missing or
+changed identity, document or claim cannot be repaired by the caller. The shared
+context lease remains held until dispatched reads and handle cleanup settle, even
+when cancellation or a deadline returns earlier. The response is a bounded
+readiness report; unknown provider fields stay unqualified and grant no payment
+authority.
+
+After a valid non-null policy at startup enables the existing guest listener, its
+access and authorization functions reload the same local policy for each request.
+This supports a later separately reviewed inspection job without restarting a
+browser merely to replace the earlier preparation job. Missing, invalid, expired,
+revoked or mutated policies deny access; durable consumed receipts remain spent.
+The wrapper never creates a policy, grants a job or enables an absent startup
+listener.
+
+The currently running viewer predates this IPC addition. Loading the changed
+static socket/runner code requires an initial browser-service restart. That would
+discard the open initialized form, so activation is held pending a reviewed form
+preservation/disposition decision. A successful import or offline socket test is
+not live Page qualification. No restart, new job or payment is implied by staging.

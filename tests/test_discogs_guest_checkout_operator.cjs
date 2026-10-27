@@ -987,6 +987,28 @@ test('blank form observation preserves unknown outcome, blocks every retry path 
   assert.equal((await audits(directory)).length, 5);
 }, { now: 1_800_000_000_000 }));
 
+test('read-only inspection binds only the latest observed-form claim without releasing or changing its ledger', async () => stateFixture(async directory => {
+  const { at, observation, granted } = await unknownFormObservationFixture(directory);
+  const unknown = await operator.inspectGuestCheckoutLedger({ directory, expectedClaim: granted.claim_sha256 });
+  assert.equal(unknown.claim_verified, false); assert.equal(unknown.state, 'unknown_outcome');
+  assert.equal((await oneShot(directory, observation, { mode: 'observation', now: at + 3000 })).code, 0);
+  const before = await audits(directory);
+  const matched = await operator.inspectGuestCheckoutLedger({ directory, expectedClaim: granted.claim_sha256 });
+  assert.equal(matched.claim_verified, true); assert.equal(matched.state, 'guest_form_observed_repeat_blocked');
+  assert.equal(matched.init_allowed, false); assert.equal(matched.no_submit_init_allowed, false);
+  for (const expectedClaim of ['f'.repeat(64), 'not-a-claim']) {
+    const rejected = await operator.inspectGuestCheckoutLedger({ directory, expectedClaim });
+    assert.equal(rejected.claim_verified, false); assert.equal(rejected.init_allowed, false);
+    assert.equal(rejected.no_submit_init_allowed, false);
+  }
+  const restarted = spawnSync(process.execPath, ['--input-type=module', '-e',
+    `import {inspectGuestCheckoutLedger} from ${JSON.stringify(moduleURL)};
+     console.log(JSON.stringify(await inspectGuestCheckoutLedger({directory:process.argv[1],expectedClaim:process.argv[2]})));`,
+    directory, granted.claim_sha256], { encoding: 'utf8' });
+  assert.equal(restarted.status, 0); assert.equal(JSON.parse(restarted.stdout).claim_verified, true);
+  assert.deepEqual(await audits(directory), before);
+}, { now: 1_800_000_000_000 }));
+
 test('form observation rejects wrong claim, stale/replaced document, scope/amount mismatch and invented outcomes', async () => stateFixture(async directory => {
   const { at, observation } = await unknownFormObservationFixture(directory);
   for (const patch of [{ previous_claim_sha256: 'a'.repeat(64) }, { previous_outcome_sha256: 'b'.repeat(64) },

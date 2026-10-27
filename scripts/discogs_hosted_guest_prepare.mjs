@@ -9,6 +9,7 @@ import { collectListingDetailDom, collectListingReadinessDom } from './discogs_l
 import { collectCartDom } from './discogs_cart_inspector.mjs';
 import { inspectCurrentEnhancedCheckout } from './discogs_enhanced_checkout.mjs';
 import * as checkoutOperator from './discogs_guest_checkout_operator.mjs';
+import { createEnhancedCheckoutCoordinator, waitForEnhancedCheckoutCoordinatorSettlement } from './discogs_enhanced_checkout_coordinator.mjs';
 import { guestCardScopeDigest, validateGuestCardInspection, revalidateGuestCardClick,
   GUEST_CARD_URL, GUEST_CARD_SELECTOR } from './discogs_guest_card_prepare.mjs';
 
@@ -120,7 +121,7 @@ function selectedCartShippingLabel(snapshot) {
  * Only a match against the ephemeral server-local approved address digest leaves
  * the browser. No raw address is returned or logged.
  */
-export async function collectHostedGuestDom({ stage, approvedDestinationDigest, privateDestinationSnapshot = false }) {
+export async function collectHostedGuestDom({ stage, approvedDestinationDigest, privateDestinationSnapshot = false, publicCheckoutOnly = false }) {
   const cart = stage === 'cart';
   const rendered = element => {
     if (!element?.isConnected) return false;
@@ -296,10 +297,12 @@ export async function collectHostedGuestDom({ stage, approvedDestinationDigest, 
   }
   // The observed cart sentence supplies the explicit quantity and seller count.
   // The enhanced Items (1) heading is continuity evidence only, never an ID.
-  const declarations = [...document.querySelectorAll('h1,h2,p,span')].filter(visible).map(text);
+  const declarations = publicCheckoutOnly && !cart ? named(document, 'h2', '_checkout-summary__header_').map(text) :
+    [...document.querySelectorAll('h1,h2,p,span')].filter(visible).map(text);
   out.quantity = cart ? declarations.filter(value => /^You have [0-9]+ items? in your cart from [0-9]+ sellers?\.$/u.test(value)).length === 1 &&
     declarations.includes('You have 1 item in your cart from 1 seller.') :
     declarations.filter(value => /^Items \([0-9]+\)$/u.test(value)).length === 1 && declarations.includes('Items (1)');
+  if (publicCheckoutOnly && !cart) return out; // Fixed public row/header projection: never traverse shipping/address text.
   let addresses;
   if (cart) addresses = initialCartBinding ? [...document.querySelectorAll('[id^="shipping_address_"]')].filter(visible) : [];
   else {
@@ -1390,6 +1393,14 @@ export async function probeCurrentGuestPreparationEvidence(context, request, { a
       job.reference_created_at = Date.now() / 1000;
       job.reference_expires_at = Math.min(authorization.expires_at, job.reference_created_at + 300);
       job.private_destination_snapshot = dom.private_destination_snapshot || null;
+      const paymentIdentity = ['seller_matches', 'exact_preparation_amounts', 'quantity_declaration', 'listing_detail_supported',
+        'title_continuity', 'condition_continuity', 'item_price_continuity'];
+      job.payment_inspection_snapshot = !cart && detail?.complete === true && paymentIdentity.every(key => observed[key] === true) ? {
+        detail_page: detailPages[0], detail_url: detailPages[0].url(), detail_title_digest: title.title_digest,
+        merchant_title_digest: dom.title_digest, merchant_artist: dom.title_artist, merchant_formats: [...(dom.title_formats || [])],
+        media: detail.media, sleeve: detail.sleeve, item: detail.item, cart_state: detail.cart_state,
+        selected_shipping_label: summary.selected_shipping_label,
+      } : null;
     } else {
       const bindingAt = Date.now() / 1000;
       if (bindingAt >= job.reference_expires_at) fail('probe_reference_expired');
@@ -1592,4 +1603,172 @@ export const preflightCurrentGuestCheckout = preflightHostedGuestCheckout;
 export function createHostedGuestPreflightFixture({ context, directory, authorization, signal } = {}) {
   if (process.env.NODE_TEST_CONTEXT === undefined || !directory?.startsWith('/')) throw new Error('test_context_required');
   return request => preflightHostedGuestCheckout(context, request, { authorization, signal, [fixtureDirectory]: directory });
+}
+
+
+/** Fixed read-only payment inspection of the current resident checkout. The
+ * existing observed-form claim stays fenced; this neither initializes a payment
+ * form nor calls a committing adapter, reconciliation or the real-order DB.
+ */
+export async function inspectHostedEnhancedPaymentReadiness(context, request, options = {}) {
+  const authorization = options.authorization;
+  const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).sort().join('|') === [...keys].sort().join('|');
+  const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value);
+  const hash = value => typeof value === 'string' && /^[0-9a-f]{64}$/u.test(value);
+  const now = Date.now() / 1000;
+  if (!context || typeof context !== 'object' ||
+      !exact(request, ['schema', 'job_id', 'phase', 'document_ref', 'claim_sha256']) ||
+      request.schema !== 'discogs_guest_payment_inspection_v1' || request.phase !== 'inspect_payment_readiness' ||
+      !uuid(request.job_id) || !uuid(request.document_ref) || !hash(request.claim_sha256) ||
+      !exact(authorization, ['schema', 'job_id', 'issued_at', 'expires_at', 'release_id', 'listing_id', 'seller',
+        'quantity', 'currency', 'max_total', 'approved_destination_ref', 'mode', 'expected_ledger_head', 'claim_sha256', 'revalidate']) ||
+      authorization.schema !== 'discogs_guest_payment_inspection_authorization_v1' || authorization.mode !== 'inspect_enhanced_payment' ||
+      authorization.job_id !== request.job_id || authorization.claim_sha256 !== request.claim_sha256 ||
+      authorization.release_id !== '3422100' || authorization.listing_id !== '1366950910' || authorization.seller !== 'Mailman21842' ||
+      authorization.quantity !== 1 || authorization.currency !== 'USD' || authorization.max_total !== '5.05' ||
+      authorization.approved_destination_ref !== 'saved_shipping_address' || !hash(authorization.expected_ledger_head) ||
+      typeof authorization.revalidate !== 'function' || !Number.isFinite(authorization.issued_at) || !Number.isFinite(authorization.expires_at) ||
+      !(0 <= authorization.issued_at && authorization.issued_at <= now && now < authorization.expires_at &&
+        authorization.expires_at - authorization.issued_at <= 300)) return stopped('payment_inspection_authorization_required');
+  request = Object.freeze({ ...request });
+  const auth = Object.freeze({ ...authorization }), signal = options.signal;
+  const job = readonlyProbeJobs.get(request.job_id);
+  if (!job || job.context !== context || job.url !== GUEST_CARD_URL || !job.page ||
+      job.document_ref !== request.document_ref || !job.document_handle) return stopped('payment_inspection_reference_unverified');
+  if (!job.payment_inspection_snapshot) return stopped('payment_inspection_scope_unverified');
+  if (now >= job.reference_expires_at) return stopped('payment_inspection_expired');
+  if (job.payment_inspection_consumed) return stopped('payment_inspection_replayed');
+  job.payment_inspection_consumed = true; // One reservation before the first await.
+  if (active.has(context) || pendingByContext.has(context)) return stopped('payment_inspection_busy');
+  const directory = options[fixtureDirectory] || HOSTED_GUEST_LEDGER;
+  if (options.ledgerDirectory && options.ledgerDirectory !== HOSTED_GUEST_LEDGER) return stopped('fixed_ledger_required');
+  active.add(context);
+  const coordinatorController = new AbortController();
+  const cancelCoordinator = () => coordinatorController.abort('payment_inspection_cancelled');
+  signal?.addEventListener('abort', cancelCoordinator, { once: true });
+  if (signal?.aborted) cancelCoordinator();
+  const deadline = Math.min(Date.now() + 5000, auth.expires_at * 1000, job.reference_expires_at * 1000);
+  let finished = false, inFlight = 0;
+  const release = () => { if (finished && inFlight === 0) active.delete(context); };
+  const check = () => {
+    if (signal?.aborted) fail('payment_inspection_cancelled');
+    if (Date.now() >= deadline) { coordinatorController.abort('payment_inspection_timeout'); fail('payment_inspection_timeout'); }
+    if (coordinatorController.signal.aborted) fail(coordinatorController.signal.reason === 'payment_inspection_timeout' ? 'payment_inspection_timeout' : 'payment_inspection_cancelled');
+  };
+  const tracked = operation => {
+    const task = retainContextTask(context, Promise.resolve().then(() => { check(); return operation(); }));
+    inFlight++; const settled = () => { inFlight--; release(); }; task.then(settled, settled); return task;
+  };
+  const read = async operation => {
+    check(); let timer, onAbort;
+    const task = tracked(operation);
+    try {
+      const value = await Promise.race([task, new Promise((_, reject) => {
+        timer = setTimeout(() => { coordinatorController.abort('payment_inspection_timeout');
+          reject(Object.assign(new Error('payment_inspection_timeout'), { [STOP]: 'payment_inspection_timeout' })); }, deadline - Date.now());
+        if (signal) { onAbort = () => reject(Object.assign(new Error('payment_inspection_cancelled'), { [STOP]: 'payment_inspection_cancelled' })); signal.addEventListener('abort', onAbort, { once: true }); }
+      })]);
+      check(); return value;
+    } finally { clearTimeout(timer); if (onAbort) signal.removeEventListener('abort', onAbort); }
+  };
+  const ledgerCurrent = async () => {
+    const state = await read(() => checkoutOperator.inspectGuestCheckoutLedger({ directory, expectedClaim: request.claim_sha256 }));
+    if (state.claim_verified !== true || state.current_head !== auth.expected_ledger_head ||
+        state.state !== 'guest_form_observed_repeat_blocked') fail('payment_inspection_ledger_unverified');
+  };
+  const pageCurrent = async () => {
+    const pages = await read(() => context.pages());
+    if (!Array.isArray(pages) || pages.filter(page => page.url() === GUEST_CARD_URL).length !== 1 ||
+        !pages.includes(job.page) || job.page.url() !== GUEST_CARD_URL ||
+        await read(() => job.page.evaluate(expected => document === expected, job.document_handle)) !== true) fail('payment_inspection_document_changed');
+  };
+  const scopeCurrent = async () => {
+    await pageCurrent();
+    const snapshot = job.payment_inspection_snapshot;
+    const dom = await read(() => job.page.evaluate(collectHostedGuestDom, { stage: 'checkout', publicCheckoutOnly: true }));
+    const pages = await read(() => context.pages());
+    const details = pages.filter(page => ['https://www.discogs.com/sell/item/1366950910', 'https://www.discogs.com/shop/item/1366950910'].includes(page.url()));
+    if (details.length !== 1 || details[0] !== snapshot.detail_page || details[0].url() !== snapshot.detail_url) fail('payment_inspection_scope_unverified');
+    const detail = await read(() => details[0].evaluate(collectListingDetailDom, { release_id: '3422100', listing_id: '1366950910' }));
+    const title = await read(() => details[0].evaluate(collectHostedGuestDom, { stage: 'detail' }));
+    if (dom.access !== 'normal' || title.access !== 'normal') fail('access_restricted');
+    if (!dom.ready || !title.ready || !dom.quantity || dom.item_row_count !== 1 || dom.item !== '0.10' ||
+        dom.title_digest !== snapshot.merchant_title_digest || dom.title_artist !== snapshot.merchant_artist ||
+        stable(dom.title_formats) !== stable(snapshot.merchant_formats) || dom.media !== snapshot.media || dom.sleeve !== snapshot.sleeve ||
+        detail.status !== 'observed' || detail.complete !== true || detail.release_id !== 3422100 || detail.listing_id !== '1366950910' ||
+        detail.seller_handle !== 'Mailman21842' || detail.item !== snapshot.item || detail.cart_state !== snapshot.cart_state ||
+        detail.media !== snapshot.media || detail.sleeve !== snapshot.sleeve || title.title_digest !== snapshot.detail_title_digest) fail('payment_inspection_scope_unverified');
+    const inspectorPage = { url: () => tracked(() => job.page.url()), evaluate: (...args) => tracked(() => job.page.evaluate(...args)) };
+    const summary = await read(() => inspectCurrentEnhancedCheckout(inspectorPage, { signal: coordinatorController.signal }));
+    if (summary.status !== 'observed' || summary.seller_handle !== 'Mailman21842' || summary.visible_row_count !== 1 ||
+        summary.displayed.subtotal.amount !== '0.10' || summary.displayed.shipping.amount !== '4.95' || summary.displayed.total.amount !== '5.05' ||
+        summary.selected_shipping_label !== snapshot.selected_shipping_label) fail('payment_inspection_scope_unverified');
+  };
+  try {
+    if (await read(() => auth.revalidate({ signal })) !== true) fail('payment_inspection_authorization_required');
+    await ledgerCurrent(); await scopeCurrent();
+    const coordinator = createEnhancedCheckoutCoordinator();
+    // Retain the actual coordinator main promise AND its lower-level raw read
+    // drainage. A returned cancellation may not release the common context
+    // lease over pending work. The real resident Page, not a CUA proxy, is used.
+    const report = await read(() => {
+      const inspected = Promise.resolve().then(() => { check(); return coordinator.inspectPaymentReadiness(job.page, { signal: coordinatorController.signal }); });
+      return inspected.then(async value => { await waitForEnhancedCheckoutCoordinatorSettlement(job.page); return value; },
+        async error => { await waitForEnhancedCheckoutCoordinatorSettlement(job.page); throw error; });
+    });
+    if (await read(() => auth.revalidate({ signal })) !== true) fail('payment_inspection_authorization_required');
+    await scopeCurrent(); await ledgerCurrent(); await pageCurrent(); check();
+    const quote = report?.quote, displayed = quote?.merchant_displayed;
+    const money = value => value && value.currency === 'USD' && typeof value.amount === 'string' &&
+      /^(?:0|[1-9][0-9]{0,6})\.[0-9]{2}$/u.test(value.amount);
+    if (report?.status !== 'observed' || report.payment?.code !== 'enhanced_payment_disabled' ||
+        quote?.schema !== 'discogs_enhanced_payment_quote_v1' || !['unverified', 'observed'].includes(quote.status) ||
+        !['subtotal', 'shipping', 'total'].every(key => money(displayed?.[key])) ||
+        displayed.subtotal.amount !== '0.10' || displayed.shipping.amount !== '4.95' || displayed.total.amount !== auth.max_total ||
+        displayed.selected_shipping_label !== job.payment_inspection_snapshot.selected_shipping_label) fail('payment_inspection_unverified');
+    const gateNames = ['provider_dom_qualification', 'provider_frame_and_document', 'provider_explicit_currency',
+      'provider_amount_matches_merchant', 'provider_final_all_in_total', 'final_tax_treatment', 'mandatory_charges_finality',
+      'provider_shipping_selection', 'provider_delivery_binding', 'provider_terms'];
+    const profileNames = ['provider_final_quote_dom', 'provider_quote_frame_association', 'provider_delivery_destination',
+      'provider_terms', 'verified_pay_control', 'verified_selected_payment_method', 'merchant_positive_order_dom'];
+    const frames = quote.provenance?.frame_association;
+    const allGates = gateNames.every(key => quote.gates?.[key] === true);
+    const expectedMissing = gateNames.filter(key => quote.gates?.[key] !== true);
+    const expectedProfiles = [...(!quote.gates?.provider_dom_qualification ? ['provider_final_quote_dom'] : []),
+      ...(!quote.gates?.provider_frame_and_document ? ['provider_quote_frame_association'] : []),
+      ...(!quote.gates?.provider_delivery_binding ? ['provider_delivery_destination'] : []),
+      ...(!quote.gates?.provider_terms ? ['provider_terms'] : []), 'verified_pay_control', 'verified_selected_payment_method', 'merchant_positive_order_dom'];
+    const sameSet = (values, expected) => Array.isArray(values) && values.length === expected.length &&
+      new Set(values).size === values.length && values.every(key => expected.includes(key));
+    if (!quote.gates || Object.keys(quote.gates).length !== gateNames.length || gateNames.some(key => typeof quote.gates[key] !== 'boolean') ||
+        quote.final_quote_verified !== allGates || quote.status !== (allGates ? 'observed' : 'unverified') ||
+        quote.destination_verified !== (allGates && quote.gates.provider_delivery_binding) ||
+        quote.provider_terms_verified !== (allGates && quote.gates.provider_terms) ||
+        !sameSet(quote.missing_evidence, expectedMissing) || !sameSet(report.missing_profiles, expectedProfiles) ||
+        !frames || ![0, 1, 2].includes(frames.known_buttons_count) || typeof frames.known_buttons_associated !== 'boolean' ||
+        typeof frames.payment_quote_frame_qualified !== 'boolean' || frames.known_buttons_associated && frames.known_buttons_count !== 1) fail('payment_inspection_unverified');
+    return { ...stopped('enhanced_payment_readiness_observed'), status: 'observed',
+      initialization_allowed: false, checkout_navigation_issued: false, card_initialization_issued: false,
+      inspection: { schema: 'enhanced_payment_readiness_v1', document_bound: true, claim_verified: true, ledger_head_verified: true,
+        ledger_state: 'guest_form_observed_repeat_blocked', quote_status: quote.status,
+        merchant_subtotal: { ...displayed.subtotal }, merchant_shipping: { ...displayed.shipping }, merchant_total: { ...displayed.total },
+        selected_shipping_label: displayed.selected_shipping_label, merchant_destination_match: quote.merchant_destination_match ?? null,
+        final_quote_verified: quote.final_quote_verified === true, provider_destination_verified: quote.destination_verified === true,
+        provider_terms_verified: quote.provider_terms_verified === true, payment_enabled: false,
+        gates: Object.fromEntries(gateNames.map(key => [key, quote.gates?.[key] === true])),
+        missing_evidence: (quote.missing_evidence || []).filter(key => gateNames.includes(key)),
+        missing_profiles: (report.missing_profiles || []).filter(key => profileNames.includes(key)),
+        frame_association: { known_buttons_count: frames.known_buttons_count,
+          known_buttons_associated: frames.known_buttons_associated, payment_quote_frame_qualified: frames.payment_quote_frame_qualified } } };
+  } catch (error) { return stopped(error?.[STOP] || 'payment_inspection_unavailable'); }
+  finally {
+    coordinatorController.abort('payment_inspection_finished'); signal?.removeEventListener('abort', cancelCoordinator);
+    finished = true; release();
+  }
+}
+/** Isolated ledger path only; production has no path/controller override. */
+export function createHostedPaymentInspectionFixture({ context, directory, authorization, signal } = {}) {
+  if (process.env.NODE_TEST_CONTEXT === undefined || !directory?.startsWith('/')) throw new Error('test_context_required');
+  return request => inspectHostedEnhancedPaymentReadiness(context, request, { authorization, signal, [fixtureDirectory]: directory });
 }

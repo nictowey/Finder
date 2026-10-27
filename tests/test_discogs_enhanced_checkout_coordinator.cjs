@@ -196,6 +196,8 @@ test('packaged-layout non-test subprocess imports the exact dependency closure a
   const copiedFiles = [...modules.map(name => `scripts/${name}`),
     'scripts/discogs_order_ledger_port.py', 'src/finder/discogs_order_reconciliation.py'];
   assert.equal(modules.length, 10);
+  const dockerfile = await readFile(join(__dirname, '../deployment/HostedBrowserBridge.Dockerfile'), 'utf8');
+  for (const relative of copiedFiles) assert.ok(dockerfile.includes(`COPY ${relative} /app/${relative}\n`), relative);
   for (const relative of copiedFiles) {
     const target = join(directory, relative);
     await mkdir(join(target, '..'), { recursive: true });
