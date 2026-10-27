@@ -207,7 +207,8 @@ export async function observeCurrentHostedPage(context, request) {
         url: () => page.url(),
         evaluate: (fn, id) => {
           if (fn !== collectCartDom || id !== input.id) throw new TypeError('unsupported_collector');
-          return page.evaluate(fn, id);
+          // Track the raw read: the cart inspector has its own shorter race.
+          return beforeDeadline(() => page.evaluate(fn, id));
         },
       });
       const cart = await beforeDeadline(() => inspectCurrentCartDom(restrictedPage, { expectedListingId: input.id }));
@@ -367,7 +368,7 @@ async function observeOperatorCurrentCart(context) {
       url: () => page.url(),
       evaluate: (fn, id) => {
         if (fn !== collectCartDom || id !== OPERATOR_CART_LISTING) throw new TypeError('unsupported_collector');
-        return page.evaluate(fn, id);
+        return beforeDeadline(() => page.evaluate(fn, id));
       },
     });
     const result = await beforeDeadline(() => inspectCurrentCartDom(restrictedPage,

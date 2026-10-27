@@ -1028,6 +1028,52 @@ test('one-use current cart recovery reads exact visible row and preserves global
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+for (const operator of [false, true]) for (const rejected of [false, true]) {
+  test(`${operator ? 'operator' : 'ordinary'} cart timeout retains shared lease until raw DOM ${rejected ? 'rejects' : 'resolves'}`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'sniper-cart-drain-'));
+    let settle, held = false, releases = 0;
+    const raw = new Promise((resolve, reject) => { settle = () => rejected ?
+      reject(new Error('fixture_read_failed')) : resolve(cartSnapshot()); });
+    const acquireContextLease = () => {
+      if (held) return null;
+      held = true;
+      return () => { held = false; releases++; };
+    };
+    const page = { url: () => cartUrl, title: async () => 'Shopping Cart',
+      evaluate: (fn, id) => {
+        assert.equal(fn, collectCartDom);
+        assert.equal(id, operator ? '3526572746' : '222');
+        return raw;
+      } };
+    const context = { pages: () => [page] };
+    let socket;
+    try {
+      if (operator) {
+        socket = await operatorSocket(context, directory, { acquireContextLease });
+        await writeCartAck(socket);
+      } else {
+        const path = `/tmp/sniper-test-${randomUUID().replaceAll('-', '')}.sock`;
+        socket = { path, close: await listenHostedReadOnly(context, path, { acquireContextLease }) };
+      }
+      const request = operator ? { action: 'operator_current_cart', listing_id: '3526572746' } : cartRequest;
+      stopped(await sendSocket(socket.path, JSON.stringify(request) + '\n'), 'cart_read_timeout');
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(acquireContextLease(), null, 'entry cannot acquire while timed-out DOM read is still pending');
+      assert.equal(releases, 0);
+      settle();
+      for (let spin = 0; held && spin < 100; spin++) await new Promise(resolve => setImmediate(resolve));
+      assert.equal(held, false);
+      assert.equal(releases, 1, 'raw settlement releases exactly once');
+      const entryRelease = acquireContextLease();
+      assert.equal(typeof entryRelease, 'function'); entryRelease();
+    } finally {
+      settle();
+      if (socket) await socket.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
+
 test('a scoped cart grant is single-use and never clears the consumed legacy grant', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'sniper-operator-'));
   const fixture = operatorCartFixture();

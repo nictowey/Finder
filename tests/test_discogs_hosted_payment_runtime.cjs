@@ -2,7 +2,7 @@
 // No live site or payment. Files and SQLite are isolated in a private temp dir.
 const assert = require('node:assert/strict');
 const { test, before } = require('node:test');
-const { mkdtemp, writeFile, readFile, copyFile, rm } = require('node:fs/promises');
+const { mkdtemp, writeFile, readFile, copyFile, lstat, rm } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
@@ -297,6 +297,67 @@ test('isolated launcher and fixed payment IPC hand off one public guest form wit
   assert.equal(browser.reads, readsAtEntry); assert.equal(f.browserCalls, inventoryAtEntry);
   await assert.rejects(readFile(f.policyPath), { code: 'ENOENT' });
   await assert.rejects(readFile(join(f.directory, 'enhanced-payment-confirmation.json')), { code: 'ENOENT' });
+});
+
+test('expired entry scope cannot complete a suspended secure-entry handoff', async t => {
+  const f = await fixture(t), browser = interceptedCheckout(f.context, t);
+  f.setPages([browser.page]); await rm(f.policyPath);
+  const acquireContextLease = leaseApi.createHostedContextLease();
+  const runtime = runtimeApi.createHostedPaymentRuntimeFixture({ context: f.context,
+    acquireContextLease, entryGate: true, liveGate: false, policyPath: f.policyPath,
+    confirmationPath: join(f.directory, 'enhanced-payment-confirmation.json'),
+    guestLedgerDirectory: f.directory, accessStopPath: join(f.directory, 'access-stopped'),
+    orderLedgerPort: { status: () => { throw new Error('entry_must_not_read_order_ledger'); } } });
+  t.after(() => runtime.close());
+  const entryScope = { schema: 'discogs_secure_entry_scope_v1', release_id: 3422100,
+    listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD', max_total: '5.05',
+    expected_guest_head: f.policy.expected_guest_head,
+    expected_claim_sha256: f.policy.expected_claim_sha256, expires_at: Date.now() / 1000 + 2.5 };
+  const begun = await runtime.beginSecureEntry(entryScope);
+  assert.equal(begun.status, 'entry_ready', begun.code);
+  const reads = browser.reads, inventory = f.browserCalls;
+  await new Promise(resolve => setTimeout(resolve, Math.max(1,
+    Math.ceil((entryScope.expires_at - Date.now() / 1000) * 1000) + 25)));
+  assert.equal((await runtime.completeSecureEntry({ entry_ref: begun.entry_ref,
+    completed_at: Date.now() / 1000 })).status, 'blocked');
+  assert.equal((await runtime.resumeAfterEntry(f.scope)).status, 'blocked');
+  assert.equal((await runtime.attemptPayment(f.scope)).status, 'blocked');
+  assert.equal(browser.reads, reads); assert.equal(f.browserCalls, inventory);
+  assert.equal(browser.clicks, 0);
+  assert.equal(acquireContextLease(), null, 'expired in-memory handoff stays leased until explicit shutdown');
+  await runtime.close();
+  const released = acquireContextLease(); assert.equal(typeof released, 'function'); released();
+});
+
+test('browser disconnect while entry reads are suspended closes control and invalidates its token', async t => {
+  const f = await fixture(t), browser = interceptedCheckout(f.context, t);
+  f.setPages([browser.page]); await rm(f.policyPath);
+  const close = await launcherApi.launchHostedPaymentRuntimeFixtureBrowser(
+    { launchPersistentContext: async () => f.context }, '/profile', '/tmp/sniper-read-only.sock',
+    { entryGate: true, liveGate: false, controlEnabled: true,
+      fixture: { policyPath: f.policyPath,
+        confirmationPath: join(f.directory, 'enhanced-payment-confirmation.json'),
+        guestLedgerDirectory: f.directory, accessStopPath: join(f.directory, 'access-stopped'),
+        orderLedgerPort: { status: () => { throw new Error('entry_must_not_read_order_ledger'); } } } });
+  t.after(() => close());
+  const socket = join(f.directory, 'payment-control.sock');
+  const scope = { schema: 'discogs_secure_entry_scope_v1', release_id: 3422100,
+    listing_id: '1366950910', seller: 'Mailman21842', quantity: 1, currency: 'USD', max_total: '5.05',
+    expected_guest_head: f.policy.expected_guest_head,
+    expected_claim_sha256: f.policy.expected_claim_sha256, expires_at: Date.now() / 1000 + 180 };
+  const begun = await socketExchange(socket, { schema: 'discogs_hosted_payment_control_request_v1',
+    command: 'begin_secure_entry', request: { scope } });
+  assert.equal(begun.status, 'entry_ready', begun.code);
+  const reads = browser.reads, inventory = f.browserCalls;
+  f.context.browser().emit('disconnected');
+  assert.equal(await close.unavailable, 'browser_unavailable');
+  await close();
+  assert.equal((await close.payment.completeSecureEntry({ entry_ref: begun.entry_ref,
+    completed_at: Date.now() / 1000 })).status, 'blocked');
+  assert.equal((await close.payment.attemptPayment(f.scope)).status, 'blocked');
+  await assert.rejects(lstat(socket), { code: 'ENOENT' });
+  assert.equal(browser.reads, reads); assert.equal(f.browserCalls, inventory);
+  assert.equal(browser.clicks, 0);
 });
 
 test('entry-only completion later binds the original token and document to independently authorized Pay', async t => {
