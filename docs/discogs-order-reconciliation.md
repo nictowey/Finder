@@ -184,8 +184,52 @@ revoked or mutated policies deny access; durable consumed receipts remain spent.
 The wrapper never creates a policy, grants a job or enables an absent startup
 listener.
 
-The currently running viewer predates this IPC addition. Loading the changed
-static socket/runner code requires an initial browser-service restart. That would
-discard the open initialized form, so activation is held pending a reviewed form
-preservation/disposition decision. A successful import or offline socket test is
-not live Page qualification. No restart, new job or payment is implied by staging.
+The IPC addition was activated on October 27 after normal blank-form dismissal,
+fresh complete All/All zero-order history and an append-only disposition. The
+initial upgrade used one browser-service restart with the same profile; later
+policy changes used the existing listener without another restart. The original
+access stop, consumed receipts and paused monitoring were preserved. Zero merchant
+orders do not establish the absence or cancellation of a provider draft.
+
+### Actual read-only IPC verification
+
+A new bounded server preparation completed saved-destination confirmation in
+0.348 seconds and normal Cart-to-Checkout/blank-form preparation in 5.997 seconds.
+The saved-address approval was an actual operator visual check; the program then
+bound and revalidated its private snapshot. This step is **operator-assisted**,
+not autonomous owner-address approval. The original unknown initialization outcome
+was retained and a truthful blank-form observation appended. No card data entry
+or Pay action occurred.
+
+The subsequent read-only batch reached the actual resident Page and returned
+`enhanced_payment_readiness_observed`. Phase one took 0.439 seconds, phase two
+0.482 seconds; policy installation and both reads finished in 2.379 seconds.
+Current identity, conditions, quantity, title and item price matched. The current
+document, observed-form claim and ledger head were verified. The merchant showed
+USD 0.10 subtotal, USD 4.95 shipping and USD 5.05 total. One known buttons frame
+was associated with the merchant Page. It was **not** qualification of the
+provider's Pay/quote document.
+
+All provider quote/finality, currency, tax/charge treatment, delivery, selected
+method, full terms and positive receipt profiles remain unqualified. The runtime
+reported payment disabled. These live reads prove the scoped read-only wiring;
+they do not prove a final payable quote, order creation, payment or an unattended
+buyer.
+
+### Phase-specific probe response contract
+
+An ordinary `current_dom_evidence_only` response explicitly reports
+`card_entry_allowed`, `payment_allowed` and `final_submission_allowed` as false;
+it omits `initialization_allowed`. That omission is not initialization authority.
+The enhanced readiness response explicitly adds `initialization_allowed: false`.
+Consumers must recognize the known phase, require its explicit false permissions
+and stop on any reported effect. They must not demand a phase-two field from an
+ordinary probe or treat absence as true.
+
+A local operator helper initially confused these envelopes and stopped before
+phase two. Its consumed first phase was preserved. The reviewed recovery used a
+distinct read-only policy, unchanged historical form-observation timestamps and
+fresh current-form/document evidence. It persisted the returned opaque reference
+before later checks. The socket regression retains the actual minimal response
+shape with a clearly synthetic replacement UUID; no payment or address values are
+part of that fixture.

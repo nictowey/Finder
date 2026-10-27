@@ -129,6 +129,54 @@ test('readonly qualification exposes only opaque reference and bounded public st
   } finally { await close(); }
 });
 
+test('observed phase-one enhanced checkout probe omits initialization authority', async () => {
+  // Minimal projection of the actual c10 phase-one response. The reference is
+  // replaced with a synthetic UUID; this is not a captured full DOM payload.
+  const socket = path(), ref = randomUUID(), config = options();
+  config.fixtureOperations.probe_guest_evidence = async () => ({
+    status: 'observed', code: 'current_dom_evidence_only',
+    merchant_route: 'enhanced_checkout', document_ref: ref,
+    destination_match: null,
+    observed: { page_ready: true, summary_supported: true, seller_matches: true,
+      exact_preparation_amounts: true, quantity_declaration: true,
+      listing_detail_supported: true, title_continuity: true,
+      condition_continuity: true, item_price_continuity: true,
+      destination_match: null, existing_guest_form: true },
+    card_entry_allowed: false, payment_allowed: false, final_submission_allowed: false,
+    // The observed response had no initialization_allowed field.
+  });
+  const close = await listenHostedGuestPreparation({}, socket, config);
+  try {
+    const result = await exchange(socket, request('probe_guest_evidence'));
+    assert.equal(result.status, 'observed');
+    assert.equal(result.code, 'current_dom_evidence_only');
+    assert.equal(result.merchant_route, 'enhanced_checkout');
+    assert.equal(result.document_ref, ref);
+    assert.equal(result.observed.destination_match, null);
+    assert.equal(result.observed.existing_guest_form, true);
+    assert.equal(result.observed.page_ready, true);
+    assert.equal(result.observed.item_price_continuity, true);
+    assert.equal(result.card_entry_allowed, false);
+    assert.equal(result.payment_allowed, false);
+    assert.equal(result.final_submission_allowed, false);
+    assert.equal(Object.hasOwn(result, 'initialization_allowed'), false);
+    assert.equal(Object.hasOwn(result, 'checkout_navigation_issued'), false);
+    assert.equal(Object.hasOwn(result, 'card_initialization_issued'), false);
+    // Even a forged result capability cannot turn this read-only probe into
+    // initialization authority through the socket serializer.
+    config.fixtureOperations.probe_guest_evidence = async () => ({
+      status: 'observed', code: 'current_dom_evidence_only', document_ref: ref,
+      merchant_route: 'enhanced_checkout', initialization_allowed: true,
+      card_entry_allowed: true, payment_allowed: true, final_submission_allowed: true,
+    });
+    const forged = await exchange(socket, request('probe_guest_evidence'));
+    assert.equal(Object.hasOwn(forged, 'initialization_allowed'), false);
+    assert.equal(forged.card_entry_allowed, false);
+    assert.equal(forged.payment_allowed, false);
+    assert.equal(forged.final_submission_allowed, false);
+  } finally { await close(); }
+});
+
 test('shared context lease blocks reader while preparation owns context, then releases after completion', async () => {
   const guest = path(), reader = `/tmp/guest-reader-${randomUUID().slice(0, 8)}.sock`;
   const acquireContextLease = createHostedContextLease(), entered = deferred(), finish = deferred();
