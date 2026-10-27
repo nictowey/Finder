@@ -14,6 +14,17 @@ clearance, a resolved cloud transaction fence or an identified failure cause.
 None of the hosted tests resolved access. The exact
 cause remains unknown; these observations do not establish successful clearance.
 
+At 17:35:05 UTC the owner reported clearing cookies and history in noVNC and
+said that it did not resolve the challenge. This is a user-reported reset,
+not an independently observed clearing operation or confirmed current browser
+state. The earlier verified blank tab and preserved login must not be assumed
+to describe the browser after that activity. No agent performed additional
+clearing, cookie restoration/export, sign-in or browser inspection in response.
+The next separately authorized diagnostic must first observe the actual page
+and whether normal signed-in access exists; login or a challenge may remain a
+human-dependent prerequisite. Do not treat this reset as successful clearance
+or repeat it automatically.
+
 Read-only checks on October 27, 2026 found Firefox 157.0 / Playwright 1.64.1, a healthy
 2 GiB container with no current OOM/restart, synchronized clock, no JavaScript
 disable override, no explicit proxy/UA override, and only bundled active addons.
@@ -93,6 +104,18 @@ hook and whether it needs one profile-preserving service activation; do not
 launch another controller or transfer cookies. Upload/build/restart scope, if
 needed, must be explicitly included in that activation review, using only the
 already established private host and preserving its stop and audit records.
+
+An offline source review confirmed that `sniper-browser-bridge-runner.mjs`
+does not import the collector, `HostedBrowserBridge.Dockerfile` does not copy it,
+and the existing read-only, guest and payment-control sockets expose no request
+observer operation. Qualification reload changes policy only; it is not code
+hot reload. Thus the deployed tooling cannot presently run this categorized
+collector against its resident context without a reviewed fixed hook and code
+activation. A separate process, debug-port attachment or second browser is not
+an equivalent supported path and is not proposed. No credential, cookie,
+network, permission or browser-security setting change is needed by the proposed
+hook, but a fresh ordinary sign-in may be required after the reported reset.
+That user-dependent state has not been checked.
 
 The eventual separately approved diagnostic is one ordinary same-profile access
 check, with this observer attached only outside secure entry and under the
