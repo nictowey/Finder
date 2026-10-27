@@ -1211,3 +1211,31 @@ revocation fix and last-callback expiry/cancellation guards. These results do
 not authorize a live job or establish provider form/payment success. The code
 remains default off pending a separately reviewed fresh reconciliation/binding
 policy for the one exact no-submit initialization.
+
+### October 27: first scoped preparation and stale document handle
+
+The owner completed the displayed Discogs challenge. A fresh normal Purchases
+view with Archived All and Status All showed zero total orders. Job
+`790d8e7e-32df-42a5-b685-5c9a61710659` then consumed inspect, same-document saved
+destination confirmation and its sole prepare phase. The actual server navigated
+the exact KC cart to checkout, but returned `unknown_internal_stop` after 4.04
+seconds, with `card_initialization_issued:false` and `initialization:not_dispatched`.
+The 78-file baseline and 11-record ledger head were unchanged. The job remains
+spent; no new live initialization or payment was attempted to diagnose it.
+
+The preparation path attempted to compare checkout with a document ElementHandle
+from the cart after full navigation. An isolated Firefox container using the same
+installed browser/Playwright build, no network and only two synthetic `data:`
+documents reproduced `Page.adoptNode: Cannot find object with id`. A handle
+created in the new document compared successfully. The previous jsdom mock passed
+raw Document objects across windows and therefore hid this production API error.
+The original live exception stack was not retained, so this is a reproduced
+failure of that exact code branch rather than a recovered live stack trace.
+
+The fix retains the required full navigation response and exact checkout URL,
+then binds subsequent checks to the fresh checkout document. It never submits
+the destroyed cart handle to checkout. Same-document URL changes still fail the
+required navigation response, and later checkout document replacement remains
+blocked. A strict document-handle fixture reproduces the old live-shaped stop
+before the fix and reaches the intercepted no-submit boundary after it. This is
+offline regression evidence; corrected live form initialization is not yet proven.

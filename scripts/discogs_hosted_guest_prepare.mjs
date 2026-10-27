@@ -701,8 +701,11 @@ export async function prepareHostedGuestForm(context, request, options = {}) {
     const response = await navigation;
     if (!response || response.url() !== GUEST_CARD_URL) fail('fresh_checkout_required');
     if (await bounded(() => page.url()) !== GUEST_CARD_URL) fail('checkout_redirected');
+    // The navigation response above proves a full document navigation (a
+    // same-document URL change has no response). Bind all subsequent reads to
+    // its fresh document. Firefox cannot adopt cartDocument from the destroyed
+    // cart execution context into checkout; evaluating it here throws Page.adoptNode.
     const checkoutDocument = await bounded(() => page.evaluateHandle(() => document));
-    if (await bounded(() => page.evaluate(expected => document === expected, cartDocument))) fail('fresh_checkout_required');
     try {
       await bounded(() => page.waitForFunction(hostedCheckoutDataSettledDom, null,
         { timeout: Math.max(1, deadline - Date.now()), polling: 'raf' }));

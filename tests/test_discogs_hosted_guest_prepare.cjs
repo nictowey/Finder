@@ -64,13 +64,19 @@ function dom(html, url) {
   return d;
 }
 function browser({ cart = cartMarkup, checkout = summary, detail = detailMarkup, provider = providerMarkup,
-  beforeEvaluate, beforeGo, beforeCardClick, afterGo, onWaitPoll, duplicateFrames = false, frameUrl = PROVIDER } = {}) {
+  beforeEvaluate, beforeGo, beforeCardClick, afterGo, onWaitPoll, strictDocumentHandles = false,
+  navigationResponse, duplicateFrames = false, frameUrl = PROVIDER } = {}) {
   const all = [], effects = { go: 0, card: 0, goIssued: 0, cardIssued: 0, pay: 0, pages: 0, evaluate: 0 };
   let navigationResolve = null;
   const main = {}, state = { merchant: dom(cart, CART), detail: dom(detail, DETAIL), provider: dom(provider, frameUrl) };
   all.push(...Object.values(state));
   const evaluate = async (which, fn, arg) => {
     effects.evaluate++; if (beforeEvaluate) await beforeEvaluate({ which, fn, arg, state, effects });
+    // Real Firefox rejects a document ElementHandle from a destroyed execution
+    // context instead of comparing it with a new document and returning false.
+    if (strictDocumentHandles && arg?.nodeType === 9 && arg !== state[which].window.document) {
+      throw new Error('page.evaluate: Protocol error (Page.adoptNode): Cannot find object with id');
+    }
     return state[which].window.eval(`(${fn.toString()})`)(arg);
   };
   const visible = element => element?.isConnected && !element.hidden && element.style.display !== 'none';
@@ -85,7 +91,7 @@ function browser({ cart = cartMarkup, checkout = summary, detail = detailMarkup,
         effects.goIssued++; if (beforeGo) await beforeGo(state);
         effects.go++; assert.equal(element.getAttribute('name'), 'Action.ProceedCommerceCheckout');
         state.merchant = dom(checkout, CHECKOUT); all.push(state.merchant); if (afterGo) await afterGo(state);
-        if (navigationResolve) { const url = state.merchant.window.location.href; navigationResolve({ url: () => url }); navigationResolve = null; }
+        if (navigationResolve) { const url = state.merchant.window.location.href; navigationResolve(navigationResponse === undefined ? { url: () => url } : navigationResponse); navigationResolve = null; }
       } else {
         effects.cardIssued++;
         if (beforeCardClick) await beforeCardClick(state);
@@ -161,6 +167,26 @@ async function ledgerFixture(run) {
 }
 const execute = (f, b, signal) => port.createHostedGuestPrepareFixture({ context: b.context, directory: f.directory, authorization: f.authorization, signal })(f.request);
 const records = async directory => Promise.all((await readdir(directory)).filter(name => /^guest-checkout-[0-9]{6}\.json$/u.test(name)).sort().map(async name => JSON.parse(await readFile(join(directory, name), 'utf8'))));
+
+test('fresh checkout never adopts the destroyed cart document handle across navigation', async () => ledgerFixture(async f => {
+  const b = browser({ strictDocumentHandles: true });
+  try {
+    const result = await execute(f, b);
+    assert.equal(result.code, 'guest_form_observation_required', JSON.stringify(result));
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 1, 0]);
+    assert.equal((await records(f.directory)).at(-1).payload.outcome, 'unknown');
+  } finally { b.close(); }
+}));
+
+test('fresh checkout still requires a full navigation response before any initialization', async () => ledgerFixture(async f => {
+  const b = browser({ strictDocumentHandles: true, navigationResponse: null });
+  try {
+    const result = await execute(f, b);
+    assert.equal(result.code, 'fresh_checkout_required');
+    assert.deepEqual([b.effects.go, b.effects.card, b.effects.pay], [1, 0, 0]);
+    assert.equal((await records(f.directory)).length, 0);
+  } finally { b.close(); }
+}));
 
 test('concrete positive SYNTHETIC EXTENSION navigates once, initializes once, records unknown and never Pay', async () => ledgerFixture(async f => {
   const b = browser();
