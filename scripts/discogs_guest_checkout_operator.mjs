@@ -129,6 +129,10 @@ const FORM_DISPOSITION_KEYS = ['type', 'source', 'previous_claim_sha256', 'previ
   'dismissal_kind', 'sdk_close_verified', 'dismissal_observed_at', 'current_form_present', 'current_url',
   'normal_route_verified', 'current_observed_at', 'order_history_url', 'order_history_archived', 'order_history_status',
   'order_history_count', 'order_history_complete', 'order_history_observed_at', 'reviewed_at', 'expires_at'];
+const OBSERVED_FORM_DISPOSITION_KEYS = FORM_DISPOSITION_KEYS.concat('previous_observation_sha256',
+  'merchant_order_status', 'payment_status', 'provider_draft_status');
+const dispositionKeys = value => value && typeof value === 'object' && Object.hasOwn(value, 'previous_observation_sha256') ?
+  OBSERVED_FORM_DISPOSITION_KEYS : FORM_DISPOSITION_KEYS;
 const FORM_OBSERVATION_KEYS = ['type', 'source', 'previous_claim_sha256', 'previous_outcome_sha256',
   'intent_id', 'ready_ref', 'scope_digest', 'release_id', 'listing_id', 'seller', 'quantity', 'max_total',
   'checkout_document_ref', 'current_document_ref',
@@ -161,6 +165,11 @@ function requireResolvedPreviousAttempt(state, definitiveNoDispatch = false, rev
   const index = state.records.findLastIndex(item => item.value.kind === 'attempt');
   if (index < 0) return;
   const outcome = state.records[index + 1]?.value;
+  if (state.records[index + 2]?.value.kind === 'form_observation') {
+    if (outcome?.payload.outcome !== 'unknown' || !reviewedFormDisposition ||
+        state.records.at(-1)?.value.kind !== 'disposition') throw new Error('prior_attempt_unresolved');
+    return;
+  }
   if (outcome?.kind !== 'outcome' || !(outcome.payload.outcome === 'SESSION_EXPIRED' ||
       definitiveNoDispatch && outcome.payload.outcome === 'unknown' || reviewedFormDisposition && outcome.payload.outcome === 'guest_form_visible')) {
     throw new Error('prior_attempt_unresolved');
@@ -171,10 +180,16 @@ function validateFormDisposition(value, state, now = Date.now() / 1000) {
   // expires_at bounds the recording/review freshness. The retained disposition
   // is a historical fact, never authority for a later job without new auth and reconciliation.
   const index = state.records.findLastIndex(item => item.value.kind === 'attempt');
-  const attempt = state.records[index], outcome = state.records[index + 1];
-  if (!metadataOnly(value) || !shape(value, FORM_DISPOSITION_KEYS) || value.type !== 'record_form_disposition' ||
+  const attempt = state.records[index], outcome = state.records[index + 1], observation = state.records[index + 2];
+  const observed = observation?.value.kind === 'form_observation';
+  if (!metadataOnly(value) || !shape(value, dispositionKeys(value)) || value.type !== 'record_form_disposition' ||
       value.source !== 'operator_reviewed_normal_sdk_dismissal' || attempt?.value.payload.mode !== 'current_checkout_claim' ||
-      outcome?.value.kind !== 'outcome' || outcome.value.payload.outcome !== 'guest_form_visible' || state.head !== outcome.hash ||
+      outcome?.value.kind !== 'outcome' ||
+      (observed ? outcome.value.payload.outcome !== 'unknown' || state.head !== observation.hash ||
+        value.previous_observation_sha256 !== observation.hash ||
+        ['merchant_order_status', 'payment_status', 'provider_draft_status'].some(key => value[key] !== 'unverified') :
+        outcome.value.payload.outcome !== 'guest_form_visible' || state.head !== outcome.hash ||
+        Object.hasOwn(value, 'previous_observation_sha256')) ||
       value.previous_claim_sha256 !== attempt.hash || value.previous_outcome_sha256 !== outcome.hash ||
       ['intent_id', 'ready_ref', 'scope_digest'].some(key => value[key] !== attempt.value.payload[key]) ||
       value.release_id !== 3422100 || value.listing_id !== '1366950910' || value.seller !== 'Mailman21842' ||
@@ -188,7 +203,8 @@ function validateFormDisposition(value, state, now = Date.now() / 1000) {
       value.order_history_complete !== true ||
       !['blank_form_observed_at', 'dismissal_observed_at', 'current_observed_at', 'order_history_observed_at', 'reviewed_at', 'expires_at']
         .every(key => num(value[key])) || !num(outcome.value.payload.observed_at) ||
-      !(Math.max(outcome.value.recorded_at, outcome.value.payload.observed_at) <= value.blank_form_observed_at &&
+      !(Math.max(outcome.value.recorded_at, outcome.value.payload.observed_at,
+          observed ? observation.value.recorded_at : 0) <= value.blank_form_observed_at &&
         value.blank_form_observed_at <= value.dismissal_observed_at && value.dismissal_observed_at <= value.current_observed_at &&
         value.current_observed_at <= value.order_history_observed_at && value.dismissal_observed_at < value.order_history_observed_at &&
         outcome.value.recorded_at < value.order_history_observed_at && value.order_history_observed_at <= value.reviewed_at &&
@@ -226,9 +242,12 @@ function validateFormObservation(value, state, now = Date.now() / 1000) {
 }
 
 function validatePriorFormDisposition(reference, state, prior, scope) {
+  if (['ready', 'review'].includes(state.records.at(-1)?.value.kind)) throw new Error('incomplete_claim');
   const index = state.records.findLastIndex(item => item.value.kind === 'attempt');
-  const record = state.records[index + 2], value = record?.value;
+  const offset = state.records[index + 2]?.value.kind === 'form_observation' ? 3 : 2;
+  const record = state.records[index + offset], value = record?.value;
   if (!hash(reference) || record?.hash !== reference || value?.kind !== 'disposition' ||
+      state.head !== record.hash ||
       ['release_id', 'listing_id', 'seller', 'quantity', 'currency', 'max_total'].some(key => value.payload[key] !== scope[key]) ||
       prior.order_history_observed_at <= state.records.at(-1).value.recorded_at ||
       prior.order_history_observed_at <= value.payload.order_history_observed_at) throw new Error('form_disposition_unverified');
@@ -353,15 +372,16 @@ export async function runCurrentCheckoutClaim({ mode = 'claim', directory = '/st
     }
     if (mode === 'disposition') {
       const last = state.records.at(-1);
-      if (last?.value.kind === 'disposition' && shape(value, FORM_DISPOSITION_KEYS) &&
-          FORM_DISPOSITION_KEYS.every(key => Object.is(last.value.payload[key], value[key]))) {
+      if (last?.value.kind === 'disposition' && shape(value, dispositionKeys(value)) &&
+          shape(last.value.payload, dispositionKeys(value)) &&
+          dispositionKeys(value).every(key => Object.is(last.value.payload[key], value[key]))) {
         await emit({ type: 'form_disposition_recorded', disposition_sha256: last.hash, duplicate: true,
-          merchant_order_status: 'unverified' }); return 0;
+          merchant_order_status: 'unverified', payment_status: 'unverified', provider_draft_status: 'unverified' }); return 0;
       }
       validateFormDisposition(value, state);
       const dispositionHash = await append(directory, state, anchor, 'disposition', { ...value });
       await emit({ type: 'form_disposition_recorded', disposition_sha256: dispositionHash, duplicate: false,
-        merchant_order_status: 'unverified' }); return 0;
+        merchant_order_status: 'unverified', payment_status: 'unverified', provider_draft_status: 'unverified' }); return 0;
     }
     if (mode === 'outcome') {
       if (!shape(value, ['type', 'intent_id', 'ready_ref', 'scope_digest', 'claim_sha256', 'outcome', 'observed_at']) ||
@@ -495,8 +515,10 @@ async function ledger(directory, anchor) {
         !['ready', 'review', 'attempt', 'outcome', 'disposition', 'form_observation'].includes(value.kind)) throw new Error('invalid_ledger');
     if (value.kind === 'ready') group = { intent: p.intent_id, ready: p.ready_ref, scope: p.scope_digest, kind: 'ready' };
     else {
+      const previousKinds = { review: ['ready'], attempt: ['review'], outcome: ['attempt'],
+        disposition: ['outcome', 'form_observation'], form_observation: ['outcome'] };
       if (!group || group.intent !== p.intent_id || group.ready !== p.ready_ref || group.scope !== p.scope_digest ||
-          ({ review: 'ready', attempt: 'review', outcome: 'attempt', disposition: 'outcome', form_observation: 'outcome' })[value.kind] !== group.kind ||
+          !previousKinds[value.kind]?.includes(group.kind) ||
           value.kind === 'attempt' && p.review_sha256 !== head ||
           value.kind === 'outcome' && p.attempt_sha256 !== head) throw new Error('invalid_ledger_transition');
       group.kind = value.kind;
@@ -515,7 +537,9 @@ export async function inspectGuestCheckoutLedger({ directory = '/state' } = {}) 
     await privateDirectory(directory); lock = await lockDirectory(directory);
     const anchor = await anchors(directory), state = await ledger(directory, anchor);
     const index = state.records.findLastIndex(item => item.value.kind === 'attempt');
-    const outcome = state.records[index + 1]?.value, disposition = state.records[index + 2]?.value;
+    const outcome = state.records[index + 1]?.value, next = state.records[index + 2]?.value;
+    const observed = next?.kind === 'form_observation';
+    const disposition = observed ? state.records[index + 3]?.value : next;
     let status = 'no_prior_attempt', allowed = true, noSubmitAllowed = true;
     if (['ready', 'review'].includes(state.records.at(-1)?.value.kind)) {
       status = 'incomplete_claim'; allowed = false; noSubmitAllowed = false;
@@ -523,8 +547,11 @@ export async function inspectGuestCheckoutLedger({ directory = '/state' } = {}) 
       allowed = false; noSubmitAllowed = false;
       if (outcome?.kind !== 'outcome') status = 'pending_attempt';
       else if (outcome.payload.outcome === 'SESSION_EXPIRED') { status = 'known_session_expired'; allowed = true; noSubmitAllowed = true; }
-      else if (outcome.payload.outcome === 'unknown') status = disposition?.kind === 'form_observation' ?
-        'guest_form_observed_repeat_blocked' : 'unknown_outcome';
+      else if (outcome.payload.outcome === 'unknown') {
+        status = observed ? disposition?.kind === 'disposition' ? 'reviewed_form_disposition' :
+          'guest_form_observed_repeat_blocked' : 'unknown_outcome';
+        noSubmitAllowed = observed && disposition?.kind === 'disposition';
+      }
       else if (outcome.payload.outcome === 'access_restricted') status = 'access_restricted';
       else if (outcome.payload.outcome === 'guest_form_visible') {
         status = disposition?.kind === 'disposition' ? 'reviewed_form_disposition' : 'guest_form_visible';

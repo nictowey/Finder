@@ -1336,11 +1336,39 @@ is an idempotent acknowledgement of the existing record even after expiry, never
 fresh evidence. Process restart rereads and validates the full immutable chain.
 The resulting status is `guest_form_observed_repeat_blocked`; both initialization
 flags remain false, including when an older no-dispatch override is supplied.
-This transition does not support dismissal, authorize another initialization or
-resolve provider/merchant transaction state. Those require separately reviewed
-evidence and any necessary additional transition.
+The observation alone does not authorize another initialization or resolve
+provider/merchant transaction state. A disposition requires the separately
+verified evidence described below.
 
 A standalone reviewed helper can append this record without restarting or
 changing the browser. A running older helper that does not recognize the new
 kind fails closed as an unverified ledger. Do not restart an open payment form
 merely to make the old reader recognize observational evidence.
+
+### Existing disposition after an appended form observation
+
+The existing `--record-form-disposition` command also accepts the strict linked
+sequence `attempt → unknown outcome → form_observation → disposition`.
+The disposition must reference the exact original claim, unknown outcome and
+latest observation hashes. It does not replace any of them. The operator must
+observe the still-blank form after the observation record, use its normal visible
+SDK Close control without entering data or invoking Pay, verify the form is
+absent on a normal merchant route, then inspect fresh complete Purchases with
+Archived All / Status All and zero visible orders. Timeout, missing form,
+navigation loss, partial history or an uncertain action is not normal dismissal.
+
+This factual sequence is not proof that no provider draft exists or that a
+merchant order can never appear later. The new variant therefore requires
+merchant-order, payment and provider-draft statuses to remain `unverified`.
+Existing freshness, locking, exclusive writes and immutable historical validation
+are reused. Exact replay acknowledges the same historical disposition; it does
+not update reconciliation time or create a new attempt.
+
+The resulting `reviewed_form_disposition` state retains `init_allowed=false`.
+Its `no_submit_init_allowed=true` indicates eligibility for a separately scoped
+no-submit test only. A later claim must still carry a new explicit bounded test
+authorization, current exact-item quote/destination checks, this precise latest
+disposition reference and another complete order-history observation newer than
+the disposition recording. Human/legacy initialization, no-dispatch overrides
+and missing/stale disposition references cannot bypass these gates. Recording
+this disposition itself neither initializes nor submits anything.
