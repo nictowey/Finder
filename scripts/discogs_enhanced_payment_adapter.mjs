@@ -92,33 +92,56 @@ function evidenceValid(scope, evidence, now, intentState) {
       !Number.isFinite(control.observed_at) || !Number.isFinite(control.expires_at) ||
       control.observed_at > now || now >= control.expires_at || now - control.observed_at > 20 ||
       control.expires_at > quote.expires_at) return false;
-  // A verified complete final quote may establish that there is no separate
-  // buyer-fee line. Missing/unknown fees without that explicit evidence stop.
+  // The itemized branch retains exact component arithmetic. The aggregate
+  // branch requires independent final-quote evidence that tax and fees are
+  // INCLUDED in the displayed payable total. An absent component is never
+  // converted to a claimed zero amount.
+  const amount = part => record(part, ['amount', 'currency']) &&
+    part.currency === scope.currency ? cents(part.amount) : null;
+  const item = amount(quote.item), shipping = amount(quote.shipping), total = amount(quote.total);
+  if ([item, shipping, total].some(value => value === null) || total > cents(scope.max_total)) return false;
+  if (quote.charge_basis === 'aggregate_inclusive') {
+    return quote.tax === null && quote.fees === null &&
+      (quote.fees_absent_verified === undefined || quote.fees_absent_verified === false) &&
+      quote.tax_treatment === 'included_in_final_total' &&
+      quote.fees_treatment === 'included_in_final_total' &&
+      quote.deferred_charges === false && quote.aggregate_total_verified === true &&
+      item + shipping <= total;
+  }
+  if (quote.charge_basis !== 'itemized' ||
+      (quote.deferred_charges !== undefined && quote.deferred_charges !== false)) return false;
   const feeAbsent = quote.fees === null && quote.fees_absent_verified === true;
-  const parts = [quote.item, quote.shipping, quote.tax, quote.total,
-    ...(feeAbsent ? [] : [quote.fees])];
-  if (parts.some(part => !record(part, ['amount', 'currency']) ||
-      part.currency !== scope.currency || cents(part.amount) === null)) return false;
-  const amounts = [cents(quote.item.amount), cents(quote.shipping.amount),
-    cents(quote.tax.amount), feeAbsent ? 0n : cents(quote.fees.amount), cents(quote.total.amount)];
-  return amounts[0] + amounts[1] + amounts[2] + amounts[3] === amounts[4] &&
-    amounts[4] <= cents(scope.max_total);
+  const tax = amount(quote.tax), fee = feeAbsent ? 0n : amount(quote.fees);
+  return tax !== null && fee !== null && item + shipping + tax + fee === total;
 }
 
-/** A future trusted port must qualify the actual observed Pay control and must
+/** The fixed production port must qualify the actual observed Pay control and
  * dispatch ONLY that bound control. No selector or payment method is inferred
- * here. The installed service supplies no such port; even enablePay:true is
- * test-only until the actual final-quote and control producers are verified.
+ * here. The installed service does not wire this port or the explicit live gate.
+ * Intercepted synthetic ports are accepted only by Node's test runner.
  * fencePossibleSubmit must map to the durable DiscogsOrderLedger transition.
  */
 export async function attemptEnhancedPayment(scope, ports, {
-  enablePay = false, signal = null, clock = () => Date.now(), timeoutMs = MAX_MS,
+  enablePay = false, liveGate = false, signal = null, clock = () => Date.now(), timeoutMs = MAX_MS,
 } = {}) {
-  if (enablePay !== true || process.env.NODE_TEST_CONTEXT === undefined) {
+  const fixtureContext = process.env.NODE_TEST_CONTEXT !== undefined;
+  if (enablePay !== true || (!fixtureContext && liveGate !== true)) {
     return stopped('enhanced_payment_disabled');
   }
   if (!scopeValid(scope, clock() / 1000)) return stopped('exact_payment_scope_required');
-  if (!ports || ports.kind !== 'trusted_production_enhanced_payment_v1' ||
+  // The fixed port is loaded only for an explicit production attempt. A
+  // missing/unconfigured production module cannot affect the disabled service.
+  let fixedPort = false, finishFixedAttempt = null;
+  try {
+    const fixed = await import('./discogs_enhanced_fixed_pay_port.mjs');
+    fixedPort = fixed.isFixedEnhancedPayPort(ports);
+    finishFixedAttempt = fixed.finishFixedEnhancedPayPortAttempt;
+  } catch {
+    if (!fixtureContext) return stopped('trusted_payment_ports_unavailable');
+  }
+  if (!ports || !(fixedPort || (fixtureContext &&
+      ports.kind === 'trusted_production_enhanced_payment_v1')) ||
+      (fixedPort && typeof finishFixedAttempt !== 'function') ||
       PORTS.some(name => typeof ports[name] !== 'function') ||
       !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_MS) {
     return stopped('trusted_payment_ports_unavailable');
@@ -226,5 +249,6 @@ export async function attemptEnhancedPayment(scope, ports, {
   } finally {
     finished = true;
     releaseIfSettled();
+    if (fixedPort) await finishFixedAttempt(ports);
   }
 }

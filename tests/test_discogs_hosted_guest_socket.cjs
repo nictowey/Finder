@@ -562,7 +562,7 @@ test('blocked preflight retains bounded predicate diagnostics without leaking de
   } finally { await close(); }
 });
 
-function paymentInspectionPayload() {
+function paymentInspectionPayload(metadata = null) {
   const keys = ['provider_dom_qualification', 'provider_frame_and_document', 'provider_explicit_currency',
     'provider_amount_matches_merchant', 'provider_final_all_in_total', 'final_tax_treatment', 'mandatory_charges_finality',
     'provider_shipping_selection', 'provider_delivery_binding', 'provider_terms'];
@@ -573,7 +573,13 @@ function paymentInspectionPayload() {
     final_quote_verified: false, provider_destination_verified: false, provider_terms_verified: false, payment_enabled: false,
     gates: Object.fromEntries(keys.map(key => [key, false])), missing_evidence: keys,
     missing_profiles: ['provider_final_quote_dom', 'provider_quote_frame_association', 'provider_delivery_destination', 'provider_terms',
-      'verified_pay_control', 'verified_selected_payment_method', 'merchant_positive_order_dom'],
+      ...(metadata?.status === 'observed' && metadata.submit_enabled === true ? [] : ['verified_pay_control']),
+      'bound_pay_dispatch_port', 'verified_selected_payment_method'],
+    public_pay_control: { metadata_status: metadata?.status === 'observed' ? 'observed' : 'unverified',
+      enabled: metadata?.status === 'observed' ? metadata.submit_enabled : null, dispatch_binding: 'unconfigured' },
+    post_submit_verification: { phase: 'after_possible_submission', current_order_status: 'not_checked', current_payment_status: 'not_checked',
+      receipt_source_qualification: 'unqualified', missing_profiles: ['merchant_positive_order_dom'],
+      uncertain_outcome_policy: 'retain_submission_unknown_no_retry', automatic_retry_allowed: false },
     frame_association: { known_buttons_count: 1, known_buttons_associated: true, payment_quote_frame_qualified: false } };
 }
 const paymentInspectionRequest = () => JSON.stringify({ action: 'inspect_enhanced_payment', request: {
@@ -606,7 +612,7 @@ test('guest public Pay metadata is bounded observation only and cannot qualify t
   const socket = path(), config = options(); let metadata;
   config.authorize = async () => ({ schema: 'discogs_guest_payment_inspection_authorization_v1', mode: 'inspect_enhanced_payment' });
   config.fixtureOperations.inspect_enhanced_payment = async () => ({ status: 'observed', code: 'enhanced_payment_readiness_observed',
-    inspection: { ...paymentInspectionPayload(), guest_pay_metadata: metadata } });
+    inspection: { ...paymentInspectionPayload(metadata), guest_pay_metadata: metadata } });
   const close = await listenHostedGuestPreparation({}, socket, config);
   try {
     metadata = { schema: 'discogs_guest_pay_metadata_v1', status: 'observed', paypal_origin_count: 1,
@@ -620,6 +626,11 @@ test('guest public Pay metadata is bounded observation only and cannot qualify t
     assert.equal(result.inspection.final_quote_verified, false);
     assert.equal(result.inspection.frame_association.payment_quote_frame_qualified, false);
     assert.equal(result.inspection.payment_enabled, false);
+    assert.equal(result.inspection.public_pay_control.metadata_status, 'observed');
+    assert.equal(result.inspection.missing_profiles.includes('verified_pay_control'), false);
+    assert.equal(result.inspection.missing_profiles.includes('merchant_positive_order_dom'), false);
+    assert.deepEqual(result.inspection.post_submit_verification.missing_profiles, ['merchant_positive_order_dom']);
+    assert.equal(result.inspection.post_submit_verification.automatic_retry_allowed, false);
     assert.equal(result.payment_allowed, false);
     for (const mutate of [value => { value.card_value = 'NEVER_EXPORT'; },
       value => { value.source_url = 'https://www.paypal.com/form?token=NEVER_EXPORT'; },
@@ -657,7 +668,7 @@ test('guest frame selection diagnostics cross IPC only as bounded counts and fix
   const socket = path(), config = options(); let metadata;
   config.authorize = async () => ({ schema: 'discogs_guest_payment_inspection_authorization_v1', mode: 'inspect_enhanced_payment' });
   config.fixtureOperations.inspect_enhanced_payment = async () => ({ status: 'observed', code: 'enhanced_payment_readiness_observed',
-    inspection: { ...paymentInspectionPayload(), guest_pay_metadata: metadata } });
+    inspection: { ...paymentInspectionPayload(metadata), guest_pay_metadata: metadata } });
   const close = await listenHostedGuestPreparation({}, socket, config);
   try {
     metadata = { schema: 'discogs_guest_pay_metadata_v1', status: 'observed', paypal_origin_count: 2,
@@ -691,7 +702,7 @@ test('bounded nested ancestry crosses read-only IPC without making a nested Pay 
   const socket = path(), config = options(); let metadata;
   config.authorize = async () => ({ schema: 'discogs_guest_payment_inspection_authorization_v1', mode: 'inspect_enhanced_payment' });
   config.fixtureOperations.inspect_enhanced_payment = async () => ({ status: 'observed', code: 'enhanced_payment_readiness_observed',
-    inspection: { ...paymentInspectionPayload(), guest_pay_metadata: metadata } });
+    inspection: { ...paymentInspectionPayload(metadata), guest_pay_metadata: metadata } });
   const close = await listenHostedGuestPreparation({}, socket, config);
   try {
     // Synthetic ancestry proves transport sanitization, never a live provider profile.
@@ -734,9 +745,14 @@ test('payment inspection sanitizer rejects malformed, private, contradictory or 
     value => { value.missing_evidence = []; }, value => { value.missing_profiles = []; },
     value => { value.quote_status = 'unverified'; value.final_quote_verified = true;
       for (const key of Object.keys(value.gates)) value.gates[key] = true;
-      value.missing_evidence = []; value.missing_profiles = ['verified_pay_control', 'verified_selected_payment_method', 'merchant_positive_order_dom'];
+      value.missing_evidence = []; value.missing_profiles = ['verified_pay_control', 'bound_pay_dispatch_port', 'verified_selected_payment_method'];
       value.provider_destination_verified = true; value.provider_terms_verified = true; },
     value => { value.provider_destination_verified = true; }, value => { value.selected_shipping_label = 'Private\nAddress'; },
+    value => { value.post_submit_verification.automatic_retry_allowed = true; },
+    value => { value.post_submit_verification.current_payment_status = 'paid'; },
+    value => { value.public_pay_control.dispatch_binding = 'enabled'; },
+    value => { value.post_submit_verification.secret = 'NEVER_EXPORT_PRIVATE'; },
+    value => { delete value.public_pay_control; },
   ];
   try { for (const mutate of mutations) { payload = paymentInspectionPayload(); mutate(payload);
     const result = await exchange(socket, paymentInspectionRequest()); assert.equal(result.code, 'payment_inspection_unverified');

@@ -7,6 +7,7 @@ import { chmod, lstat, stat, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import * as guestPreparation from './discogs_hosted_guest_prepare.mjs';
 import { sanitizeGuestPayMetadata } from './discogs_enhanced_payment_quote.mjs';
+import { describeEnhancedCheckoutReadiness } from './discogs_enhanced_checkout_coordinator.mjs';
 
 export const HOSTED_GUEST_SOCKET = '/bridge/sniper-guest-prepare.sock';
 const MAX_REQUEST_BYTES = 16384;
@@ -234,14 +235,16 @@ const PAYMENT_INSPECTION_GATES = ['provider_dom_qualification', 'provider_frame_
   'provider_amount_matches_merchant', 'provider_final_all_in_total', 'final_tax_treatment', 'mandatory_charges_finality',
   'provider_shipping_selection', 'provider_delivery_binding', 'provider_terms'];
 const PAYMENT_INSPECTION_PROFILES = ['provider_final_quote_dom', 'provider_quote_frame_association', 'provider_delivery_destination',
-  'provider_terms', 'verified_pay_control', 'verified_selected_payment_method', 'merchant_positive_order_dom'];
+  'provider_terms', 'verified_pay_control', 'bound_pay_dispatch_port', 'verified_selected_payment_method'];
 const READONLY_EFFECTS = ['checkout_navigation_issued', 'navigation_issued', 'card_initialization_issued', 'card_data_entered',
   'payment_issued', 'pay_issued', 'payment_invoked', 'pay_invoked', 'approval_invoked', 'capture_invoked', 'dispatch_issued'];
 function sanitizedPaymentInspection(value) {
   const booleans = ['document_bound', 'claim_verified', 'ledger_head_verified', 'final_quote_verified', 'provider_destination_verified', 'provider_terms_verified', 'payment_enabled'];
   const fields = ['schema', ...booleans, 'ledger_state', 'quote_status', 'merchant_subtotal', 'merchant_shipping',
     'merchant_total', 'selected_shipping_label', 'merchant_destination_match', 'gates', 'missing_evidence', 'missing_profiles', 'frame_association'];
-  if (!(fixedKeys(value, fields) || fixedKeys(value, [...fields, 'guest_pay_metadata'])) ||
+  const stages = ['public_pay_control', 'post_submit_verification'];
+  const withStages = stages.some(key => Object.hasOwn(value || {}, key));
+  if (!(fixedKeys(value, [...fields, ...(withStages ? stages : [])]) || fixedKeys(value, [...fields, 'guest_pay_metadata', ...(withStages ? stages : [])])) ||
       value.schema !== 'enhanced_payment_readiness_v1' || value.ledger_state !== 'guest_form_observed_repeat_blocked' ||
       !['unverified', 'observed'].includes(value.quote_status) || booleans.some(key => typeof value[key] !== 'boolean') ||
       value.document_bound !== true || value.claim_verified !== true || value.ledger_head_verified !== true || value.payment_enabled !== false ||
@@ -266,10 +269,15 @@ function sanitizedPaymentInspection(value) {
       value.provider_destination_verified && !value.gates.provider_delivery_binding || value.provider_terms_verified && !value.gates.provider_terms) return null;
   const allGates = PAYMENT_INSPECTION_GATES.every(key => value.gates[key]);
   const expectedMissing = PAYMENT_INSPECTION_GATES.filter(key => !value.gates[key]);
-  const expectedProfiles = [...(!value.gates.provider_dom_qualification ? ['provider_final_quote_dom'] : []),
-    ...(!value.gates.provider_frame_and_document ? ['provider_quote_frame_association'] : []),
-    ...(!value.gates.provider_delivery_binding ? ['provider_delivery_destination'] : []),
-    ...(!value.gates.provider_terms ? ['provider_terms'] : []), 'verified_pay_control', 'verified_selected_payment_method', 'merchant_positive_order_dom'];
+  const readiness = describeEnhancedCheckoutReadiness({ gates: value.gates, guest_pay_metadata: guestPayMetadata });
+  const expectedProfiles = readiness.missing_profiles;
+  // Stage facts are fixed enumerations/booleans, never an arbitrary report or
+  // payment capability. Older private responses may omit both stage objects.
+  const sameStage = (actual, expected) => fixedKeys(actual, Object.keys(expected)) && Object.keys(expected).every(key =>
+    Array.isArray(expected[key]) ? Array.isArray(actual[key]) && actual[key].length === expected[key].length &&
+      actual[key].every((item, index) => item === expected[key][index]) : actual[key] === expected[key]);
+  if (withStages && (!sameStage(value.public_pay_control, readiness.public_pay_control) ||
+      !sameStage(value.post_submit_verification, readiness.post_submit_verification))) return null;
   if (value.final_quote_verified !== allGates || value.quote_status !== (allGates ? 'observed' : 'unverified') ||
       value.provider_destination_verified !== (allGates && value.gates.provider_delivery_binding) ||
       value.provider_terms_verified !== (allGates && value.gates.provider_terms) ||
@@ -281,6 +289,7 @@ function sanitizedPaymentInspection(value) {
     merchant_subtotal: { ...value.merchant_subtotal }, merchant_shipping: { ...value.merchant_shipping }, merchant_total: { ...value.merchant_total },
     selected_shipping_label: value.selected_shipping_label, merchant_destination_match: value.merchant_destination_match,
     gates: { ...value.gates }, missing_evidence: [...value.missing_evidence], missing_profiles: [...value.missing_profiles],
+    public_pay_control: readiness.public_pay_control, post_submit_verification: readiness.post_submit_verification,
     frame_association: { ...frame }, guest_pay_metadata: guestPayMetadata };
 }
 function safeResult(value, { captureAllowed = false, preflightAllowed = false, paymentInspectionAllowed = false, probeAllowed = false } = {}) {

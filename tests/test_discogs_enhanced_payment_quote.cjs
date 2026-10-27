@@ -6,9 +6,9 @@ const { test, before } = require('node:test');
 const { JSDOM } = require('jsdom');
 const { randomUUID } = require('node:crypto');
 let collectEnhancedPaymentQuoteDom, inspectCurrentEnhancedPaymentQuote,
-  parseEnhancedPaymentQuoteEvidence, waitForEnhancedPaymentQuoteSettlement, collectGuestPayControlMetadataDom, sanitizeGuestPayMetadata;
+  parseEnhancedPaymentQuoteEvidence, waitForEnhancedPaymentQuoteSettlement, collectGuestPayControlMetadataDom, sanitizeGuestPayMetadata, isVerifiedCurrentEnhancedPaymentQuote;
 before(async () => ({ collectEnhancedPaymentQuoteDom, inspectCurrentEnhancedPaymentQuote,
-  parseEnhancedPaymentQuoteEvidence, waitForEnhancedPaymentQuoteSettlement, collectGuestPayControlMetadataDom, sanitizeGuestPayMetadata } = await import('../scripts/discogs_enhanced_payment_quote.mjs')));
+  parseEnhancedPaymentQuoteEvidence, waitForEnhancedPaymentQuoteSettlement, collectGuestPayControlMetadataDom, sanitizeGuestPayMetadata, isVerifiedCurrentEnhancedPaymentQuote } = await import('../scripts/discogs_enhanced_payment_quote.mjs')));
 const URL = 'https://www.discogs.com/marketplace/checkout';
 const HTML = `<!doctype html><html><head><title>Checkout</title></head><body>
   <h1>Checkout from ExampleSeller</h1><div class="_checkout-summary__content_fixture">
@@ -148,7 +148,6 @@ function observedNestedGuestFixture() {
 function assertNoPaymentQualification(result) {
   assert.equal(result.payment_allowed, false); assert.equal(result.final_submission_allowed, false); assert.equal(result.final_quote_verified, false);
   assert.equal(result.destination_verified, false); assert.equal(result.provider_terms_verified, false);
-  if (result.provenance) assert.equal(result.provenance.frame_association.payment_quote_frame_qualified, false);
   assert.equal(JSON.stringify(result).includes('TOP_SECRET'), false);
 }
 
@@ -165,8 +164,180 @@ test('actual fourteen-frame observed relationship admits one public nested smart
     assert.equal(positive.category, 'paypal_smart_other'); assert.equal(positive.depth, 2); assert.equal(positive.buttons_ancestor_verified, true);
     assert.deepEqual(metadata.ancestry_diagnostic.candidates.filter(value => value.public_submit_count === null).map(value => value.hops[0].parent_category),
       ['paypal_smart_other', 'paypal_smart_other']);
-    assert.equal(f.guestLabelReads, 2); assert.deepEqual(sanitizeGuestPayMetadata(metadata), metadata); assertNoPaymentQualification(result);
+    assert.equal(f.guestLabelReads, 3); assert.deepEqual(sanitizeGuestPayMetadata(metadata), metadata); assertNoPaymentQualification(result);
   } finally { await f.close(); }
+});
+
+function postEntryConfirmation(request, changes = {}) {
+  // Explicitly synthetic trusted port fixture. No card fields are inspected.
+  const now = Date.now() / 1000;
+  return { schema: 'discogs_guest_post_entry_confirmation_v1', source: 'trusted_same_document_post_entry_confirmation',
+    merchant_document_ref: request.merchant_document_ref, provider_document_ref: request.provider_document_ref,
+    observed_at: now, expires_at: Math.min(now + 20, request.expires_at), entry_confirmed_at: now - 1, entry_complete: true,
+    final_total: { amount: '5.05', currency: 'USD' }, all_payable_charges_included: true,
+    tax_treatment: 'included_in_final_total', fees_treatment: 'included_in_final_total', deferred_charges: false,
+    competing_currency: false, conversion_notice: false, new_notice: false,
+    destination_ref: request.approved_destination_ref, destination_match: true, shipping_selection_verified: true,
+    terms_verified: true, terms_fingerprint: 'a'.repeat(64), ...changes };
+}
+
+test('observed nested layout qualifies current DOM and explicit merchant USD context without pretending pre-entry finality', async () => {
+  const f = observedNestedGuestFixture();
+  try {
+    const report = await inspectCurrentEnhancedPaymentQuote(f.f.page);
+    assert.equal(report.gates.provider_dom_qualification, true); assert.equal(report.gates.provider_frame_and_document, true);
+    assert.equal(report.gates.provider_explicit_currency, true); assert.equal(report.gates.provider_amount_matches_merchant, true);
+    assert.equal(report.current_layout_qualifications.post_entry_confirmation_verified, false);
+    assert.equal(report.effective_currency.currency, 'USD'); assert.equal(report.effective_currency.source, 'explicit_merchant_usd_matching_bound_pay');
+    assert.equal(report.effective_currency.notice_review_verified, false); assert.equal(report.provider_displayed.currency, null);
+    assert.equal(report.guest_pay_metadata.currency, null); assert.equal(Object.hasOwn(report.final_quote, 'aggregate_total_verified'), false);
+    assert.equal(isVerifiedCurrentEnhancedPaymentQuote(report), false); assertNoPaymentQualification(report);
+  } finally { await f.close(); }
+});
+
+test('fresh opaque post-entry confirmation can verify an aggregate final quote without reading or exporting card/billing values', async () => {
+  const f = observedNestedGuestFixture(); let callbacks = 0;
+  try {
+    const report = await inspectCurrentEnhancedPaymentQuote(f.f.page, { finalQuoteMatcher: async request => {
+      callbacks++; assert.equal(Object.isFrozen(request), true); assert.equal(Object.isFrozen(request.merchant_total), true);
+      assert.deepEqual(Object.keys(request).sort(), ['schema','merchant_document_ref','provider_document_ref','observed_at','expires_at',
+        'merchant_total','pay_amount','raw_pay_currency','selected_shipping_label','approved_destination_ref'].sort());
+      assert.equal(request.raw_pay_currency, null); assert.equal(request.merchant_total.currency, 'USD');
+      assert.equal(request.pay_amount, '5.05'); assert.equal(JSON.stringify(request).includes('TOP_SECRET'), false);
+      return postEntryConfirmation(request);
+    } });
+    assert.equal(callbacks, 1); assert.equal(report.final_quote_verified, true); assert.equal(report.destination_verified, true);
+    assert.equal(report.provider_terms_verified, true); assert.equal(report.current_layout_qualifications.post_entry_confirmation_verified, true);
+    assert.equal(report.guest_pay_metadata.currency, null); assert.equal(report.provider_displayed.currency, null);
+    assert.equal(report.effective_currency.currency, 'USD'); assert.equal(report.effective_currency.notice_review_verified, true);
+    assert.deepEqual(report.final_quote, { amount: '5.05', currency: 'USD', tax: null, fees: null, charge_basis: 'aggregate_inclusive',
+      total: { amount: '5.05', currency: 'USD' }, tax_treatment: 'included_in_final_total', fees_treatment: 'included_in_final_total',
+      deferred_charges: false, aggregate_total_verified: true, all_payable_charges_included: true });
+    assert.equal(Object.values(report.gates).every(Boolean), true); assert.equal(isVerifiedCurrentEnhancedPaymentQuote(report), true);
+    assert.equal(isVerifiedCurrentEnhancedPaymentQuote(report, { page: f.f.page }), true);
+    assert.equal(isVerifiedCurrentEnhancedPaymentQuote(report, { page: f.f.page, destinationRef: 'saved_shipping_address', termsFingerprint: 'a'.repeat(64) }), true);
+    assert.equal(isVerifiedCurrentEnhancedPaymentQuote(report, { destinationRef: randomUUID() }), false);
+    assert.equal(isVerifiedCurrentEnhancedPaymentQuote(report, { termsFingerprint: 'b'.repeat(64) }), false);
+    assert.equal(report.merchant_displayed.seller_handle, 'ExampleSeller');
+    assert.equal(isVerifiedCurrentEnhancedPaymentQuote(report, { page: {} }), false);
+    assert.equal(isVerifiedCurrentEnhancedPaymentQuote(structuredClone(report)), false);
+    assert.equal(isVerifiedCurrentEnhancedPaymentQuote(report, { now: report.provenance.expires_at }), false);
+    assert.equal(Object.isFrozen(report), true); assert.equal(Object.isFrozen(report.final_quote.total), true);
+    assert.equal(report.payment_allowed, false); assert.equal(report.final_submission_allowed, false); assert.equal(report.purchase_allowed, false);
+    assert.equal(JSON.stringify(report).includes('TOP_SECRET'), false);
+  } finally { await f.close(); }
+});
+
+test('final producer brand expires at the earlier trusted confirmation deadline', async () => {
+  const f = observedNestedGuestFixture(); let expires = null;
+  try {
+    const report = await inspectCurrentEnhancedPaymentQuote(f.f.page, { finalQuoteMatcher: async request => {
+      expires = Date.now() / 1000 + 0.5; return postEntryConfirmation(request, { expires_at: expires });
+    } });
+    assert.equal(report.final_quote_verified, true); assert.equal(report.provenance.expires_at, expires);
+    assert.equal(isVerifiedCurrentEnhancedPaymentQuote(report, { now: expires + 0.001 }), false);
+  } finally { await f.close(); }
+});
+
+test('final quote confirmation rejects changed amount/currency, notices, wrong destination, unaccepted terms and stale or injected facts', async () => {
+  const changes = [ { final_total: { amount: '5.06', currency: 'USD' } }, { final_total: { amount: '5.05', currency: 'CAD' } },
+    { competing_currency: true }, { conversion_notice: true }, { new_notice: true }, { deferred_charges: true },
+    { destination_match: false }, { destination_ref: randomUUID() }, { shipping_selection_verified: false },
+    { terms_verified: false }, { terms_fingerprint: null }, { tax_treatment: 'unverified' }, { fees_treatment: 'unverified' },
+    { all_payable_charges_included: false }, { entry_complete: false }, { entry_confirmed_at: Date.now() / 1000 - 61 },
+    { merchant_document_ref: randomUUID() }, { provider_document_ref: randomUUID() }, { private_card: 'TOP_SECRET_CARD' } ];
+  for (const change of changes) {
+    const f = observedNestedGuestFixture();
+    try {
+      const report = await inspectCurrentEnhancedPaymentQuote(f.f.page, { finalQuoteMatcher: async request => postEntryConfirmation(request, change) });
+      assert.equal(report.final_quote_verified, false, JSON.stringify(change)); assert.equal(isVerifiedCurrentEnhancedPaymentQuote(report), false);
+      assert.equal(Object.hasOwn(report.final_quote, 'aggregate_total_verified'), false); assertNoPaymentQualification(report);
+      if (change.competing_currency || change.conversion_notice || change.new_notice || change.deferred_charges || change.final_total?.currency === 'CAD')
+        assert.equal(report.gates.provider_explicit_currency, false);
+    } finally { await f.close(); }
+  }
+});
+
+test('post-entry callback cannot qualify changed merchant/guest/buttons documents or a changed displayed amount', async () => {
+  for (const mode of ['merchant-document', 'guest-document', 'buttons-document', 'hidden-visible', 'pay-amount', 'merchant-amount']) {
+    const f = observedNestedGuestFixture();
+    try {
+      const report = await inspectCurrentEnhancedPaymentQuote(f.f.page, { finalQuoteMatcher: async request => {
+        if (mode === 'merchant-document') f.f.changeDocument();
+        if (mode === 'guest-document') f.guest.replaceDocument();
+        if (mode === 'buttons-document') f.buttons.replaceDocument();
+        if (mode === 'hidden-visible') f.hiddenOther.setVisible(true);
+        if (mode === 'pay-amount') f.guest.dom.window.document.querySelector('#submit-button').textContent = 'Pay $5.06';
+        if (mode === 'merchant-amount') f.f.dom.window.document.querySelector('[class*="_checkout-summary__total--"]').querySelector('dd').textContent = '$5.06 USD';
+        return postEntryConfirmation(request);
+      } });
+      assert.equal(report.final_quote_verified, false, mode); assert.equal(isVerifiedCurrentEnhancedPaymentQuote(report), false); assertNoPaymentQualification(report);
+    } finally { await f.close(); }
+  }
+});
+
+test('final merchant document proof cannot mint a stale guest quote after late guest replacement, amount change or detach', async () => {
+  for (const mode of ['document', 'amount', 'detach']) {
+    const f = observedNestedGuestFixture(); let callbackDone = false, proofs = 0, mutated = false;
+    const evaluate = f.f.page.evaluate;
+    f.f.page.evaluate = async (fn, arg) => {
+      const value = await evaluate(fn, arg);
+      if (callbackDone && arg === f.f.documentHandle && ++proofs === 4) {
+        mutated = true;
+        if (mode === 'document') f.guest.replaceDocument();
+        if (mode === 'amount') f.guest.dom.window.document.querySelector('#submit-button').textContent = 'Pay $6.05';
+        if (mode === 'detach') f.guest.setAttached(false);
+      }
+      return value;
+    };
+    try {
+      const report = await inspectCurrentEnhancedPaymentQuote(f.f.page, { finalQuoteMatcher: async request => {
+        callbackDone = true; return postEntryConfirmation(request);
+      } });
+      assert.equal(mutated, true, mode); assert.equal(report.final_quote_verified, false, mode);
+      assert.equal(isVerifiedCurrentEnhancedPaymentQuote(report), false, mode); assertNoPaymentQualification(report);
+    } finally { await f.close(); }
+  }
+});
+
+test('same-document Pay amount mutation during the last leaf proof is checked by the final public read', async () => {
+  const f = observedNestedGuestFixture(); let callbackDone = false, leafProofs = 0, mutated = false;
+  const evaluate = f.guest.frame.evaluate;
+  f.guest.frame.evaluate = async (fn, arg) => {
+    const value = await evaluate(fn, arg);
+    if (callbackDone && fn.toString().includes('document === expected') && ++leafProofs === 4) {
+      mutated = true; f.guest.dom.window.document.querySelector('#submit-button').textContent = 'Pay $6.05';
+    }
+    return value;
+  };
+  try {
+    const report = await inspectCurrentEnhancedPaymentQuote(f.f.page, { finalQuoteMatcher: async request => {
+      callbackDone = true; return postEntryConfirmation(request);
+    } });
+    assert.equal(mutated, true); assert.equal(report.final_quote_verified, false);
+    assert.equal(isVerifiedCurrentEnhancedPaymentQuote(report), false);
+    assert.equal(report.guest_pay_metadata.status, 'unsupported_collection'); assertNoPaymentQualification(report);
+  } finally { await f.close(); }
+});
+
+test('cancelled post-entry confirmation retains pending work and never mints a late final quote', async () => {
+  const f = observedNestedGuestFixture(), entered = deferred(), finish = deferred(), controller = new AbortController();
+  try {
+    const task = inspectCurrentEnhancedPaymentQuote(f.f.page, { signal: controller.signal, finalQuoteMatcher: async request => {
+      entered.resolve(); await finish.promise; return postEntryConfirmation(request);
+    } });
+    await entered.promise; controller.abort(); const report = await task; assert.equal(report.code, 'read_cancelled');
+    let settled = false; const drain = waitForEnhancedPaymentQuoteSettlement(f.f.page).then(() => { settled = true; });
+    await new Promise(resolve => setImmediate(resolve)); assert.equal(settled, false); finish.resolve(); await drain;
+    assert.equal(isVerifiedCurrentEnhancedPaymentQuote(report), false); assertNoPaymentQualification(report);
+  } finally { finish.resolve(); await f.close(); }
+});
+
+test('copied observed-layout provider booleans cannot mint the actual producer brand', () => {
+  const value = syntheticProvider(input()); value.provider.layout_id = 'paypal_smart_nested_guest_v1';
+  const report = parseEnhancedPaymentQuoteEvidence(value, { now: 1000 });
+  assert.equal(report.gates.provider_dom_qualification, false); assert.equal(report.final_quote_verified, false);
+  assert.equal(isVerifiedCurrentEnhancedPaymentQuote(report, { now: 1000 }), false);
 });
 
 test('nested public metadata rejects wrong leaf category, deeper ancestry, unrelated or multiple buttons and visible unknown peers', async () => {

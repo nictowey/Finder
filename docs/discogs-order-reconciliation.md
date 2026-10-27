@@ -468,3 +468,40 @@ metadata schema includes this explicitly verified descendant; the ancestry
 diagnostic records the two-hop relationship. A bare Pay $5.05 label still has
 `currency: null`. Public control eligibility never enables Pay or qualifies a
 provider final quote, destination, payment method, terms or merchant receipt.
+
+### Disabled payment integration and secure-entry boundary
+
+The next implementation separates observed layout evidence from final payment
+confirmation. The actual bound merchant USD summary and matching guest Pay
+amount establish a currency context; the raw button currency remains unknown.
+A competing currency, conversion choice or new notice prevents final
+qualification. A final quote additionally needs a fresh, trusted confirmation
+after secure entry, bound to the current opaque merchant/provider document
+references, final amount, delivery choice, shipping and visible notices. The
+confirmation callback receives only public facts and opaque references, never
+Page/Frame/Document handles or any payment input value. Copied JSON evidence
+cannot acquire the actual producer's private current-Page qualification.
+
+An authoritative all-in aggregate uses `charge_basis: aggregate_inclusive` and
+retains `tax: null` and `fees: null`; it does not fabricate a zero component or
+assert that an included fee is absent. Explicit inclusion, finality, no deferred
+charges, current currency/destination bindings and the all-in cap remain
+mandatory. The existing itemized branch retains its numeric arithmetic rules.
+
+The fixed-control port is disabled by default and is not exposed by the
+read-only IPC. It uses the existing shared context lease and durable order
+fence. Secure-entry handoff first drains outstanding reads and holds the lease;
+no further inspection is allowed during entry. Resumption requires fresh
+post-entry amount, delivery, payment-method and notice confirmation, with card
+field reads still forbidden. The only dispatch target is the retained verified
+public Pay button; no caller selector or dispatcher is accepted. Explicit live
+gates and an actual branded port are required outside isolated test fixtures.
+Neither a click return nor a timeout can establish success or permit a retry.
+
+Readiness now reports public control observation, pending dispatch/method
+bindings, and post-submit receipt verification as separate facts. A positive
+receipt cannot precede the same first order. Submission is durably marked
+unknown before the committing action, followed by ordinary merchant order/status
+reconciliation; absent or unqualified receipt evidence retains unknown and the
+one-copy fence. This batch is offline implementation and intercepted testing,
+not live payment qualification, activation or permission for another item.

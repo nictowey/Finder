@@ -27,7 +27,7 @@ function syntheticFixture() {
     release_id: scope.release_id, listing_id: scope.listing_id, seller: scope.seller,
     rules_revision: scope.rules_revision, quantity: 1, currency: 'USD',
     quote_fingerprint: scope.quote_fingerprint, destination_ref: scope.destination_ref,
-    payment_ref: scope.payment_ref, final_quote_verified: true,
+    payment_ref: scope.payment_ref, final_quote_verified: true, charge_basis: 'itemized',
     all_payable_charges_included: true, payment_action: 'none',
     shipping_selection_verified: true, selected_shipping_ref: selectedShipping,
     selected_shipping_label: 'Synthetic selected shipping',
@@ -80,18 +80,21 @@ test('installed default is disabled even with complete intercepted synthetic por
   assert.equal(f.effects.dispatches, 0);
 });
 
-test('a non-test subprocess cannot turn on Pay by passing enablePay and arbitrary ports', () => {
+test('a non-test subprocess cannot turn on Pay without the explicit gate or with forged ports', () => {
   const f = syntheticFixture();
   const script = `import { attemptEnhancedPayment } from './scripts/discogs_enhanced_payment_adapter.mjs';
     const scope = ${JSON.stringify(f.scope)};
     const ports = new Proxy({}, { get() { throw new Error('production port was touched'); } });
-    const result = await attemptEnhancedPayment(scope, ports, { enablePay: true });
-    process.stdout.write(result.code);`;
+    const disabled = await attemptEnhancedPayment(scope, ports, { enablePay: true });
+    const forged = await attemptEnhancedPayment(scope,
+      { kind: 'trusted_production_enhanced_payment_v1' },
+      { enablePay: true, liveGate: true, clock: () => ${f.nowMs} });
+    process.stdout.write(JSON.stringify([disabled.code, forged.code]));`;
   const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', script],
     { cwd: process.cwd(), env, encoding: 'utf8', timeout: 5000 });
   assert.equal(child.status, 0, child.stderr);
-  assert.equal(child.stdout, 'enhanced_payment_disabled');
+  assert.deepEqual(JSON.parse(child.stdout), ['enhanced_payment_disabled', 'trusted_payment_ports_unavailable']);
 });
 
 test('intercepted synthetic complete evidence fences once before a possible dispatch and never claims payment success', async () => {
@@ -135,6 +138,69 @@ test('absent separate buyer-fee line needs explicit verified absence; it is neve
   verified.quote.fees = null; verified.quote.fees_absent_verified = true;
   assert.equal((await verified.run()).code, 'submission_unknown');
   assert.equal(verified.effects.fences, 1);
+});
+
+test('synthetic post-entry aggregate final total fences with tax and fees explicitly included but unitemized', async () => {
+  const f = syntheticFixture();
+  Object.assign(f.quote, { charge_basis: 'aggregate_inclusive', tax: null, fees: null,
+    tax_treatment: 'included_in_final_total', fees_treatment: 'included_in_final_total',
+    deferred_charges: false, aggregate_total_verified: true });
+  assert.equal((await f.run()).code, 'submission_unknown');
+  assert.equal(f.effects.fences, 1); assert.equal(f.effects.dispatches, 1);
+  assert.equal(f.quote.tax, null); assert.equal(f.quote.fees, null);
+  assert.equal((await f.run()).code, 'payment_preflight_unverified');
+  assert.equal(f.effects.dispatches, 1);
+});
+
+test('unknown, deferred, partial, over-cap, or wrong-destination aggregate evidence never reaches fence', async () => {
+  const aggregate = f => Object.assign(f.quote, { charge_basis: 'aggregate_inclusive',
+    tax: null, fees: null, tax_treatment: 'included_in_final_total',
+    fees_treatment: 'included_in_final_total', deferred_charges: false,
+    aggregate_total_verified: true });
+  for (const change of [
+    f => { f.quote.tax_treatment = 'unverified'; },
+    f => { f.quote.fees_treatment = 'unverified'; },
+    f => { f.quote.deferred_charges = true; },
+    f => { f.quote.fees_absent_verified = 'unverified'; },
+    f => { f.quote.fees_absent_verified = null; },
+    f => { f.quote.aggregate_total_verified = false; },
+    f => { f.quote.all_payable_charges_included = false; },
+    f => { f.quote.total.amount = '5.06'; },
+    f => { f.quote.shipping.amount = '5.00'; },
+    f => { f.quote.total.currency = 'CAD'; },
+    f => { f.destination.destination_ref = randomUUID(); },
+    f => { f.quote.destination_ref = randomUUID(); },
+    f => { f.quote.tax = { amount: '0.00', currency: 'USD' }; },
+  ]) {
+    const f = syntheticFixture(); aggregate(f); change(f);
+    assert.equal((await f.run()).code, 'payment_preflight_unverified');
+    assert.equal(f.effects.fences, 0); assert.equal(f.effects.dispatches, 0);
+  }
+});
+
+test('itemized charge status accepts only absent or explicit false deferred marker', async () => {
+  for (const marker of [null, 'unverified', 'true', 0]) {
+    const f = syntheticFixture(); f.quote.deferred_charges = marker;
+    assert.equal((await f.run()).code, 'payment_preflight_unverified');
+    assert.equal(f.effects.fences, 0); assert.equal(f.effects.dispatches, 0);
+  }
+  const explicitFalse = syntheticFixture(); explicitFalse.quote.deferred_charges = false;
+  assert.equal((await explicitFalse.run()).code, 'submission_unknown');
+});
+
+test('changed aggregate quote treatment after durable fence stays unknown without dispatch', async () => {
+  const f = syntheticFixture();
+  Object.assign(f.quote, { charge_basis: 'aggregate_inclusive', tax: null, fees: null,
+    tax_treatment: 'included_in_final_total', fees_treatment: 'included_in_final_total',
+    deferred_charges: false, aggregate_total_verified: true });
+  const original = f.ports.fencePossibleSubmit;
+  f.ports.fencePossibleSubmit = async intentId => {
+    const result = await original(intentId);
+    f.quote.tax_treatment = 'unverified';
+    return result;
+  };
+  assert.equal((await f.run()).code, 'submission_unknown');
+  assert.equal(f.effects.fences, 1); assert.equal(f.effects.dispatches, 0);
 });
 
 test('changed quote or revoked owner grant after the durable fence leaves uncertainty and does not dispatch', async () => {

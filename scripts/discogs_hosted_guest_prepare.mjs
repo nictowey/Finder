@@ -9,7 +9,7 @@ import { collectListingDetailDom, collectListingReadinessDom } from './discogs_l
 import { collectCartDom } from './discogs_cart_inspector.mjs';
 import { inspectCurrentEnhancedCheckout } from './discogs_enhanced_checkout.mjs';
 import * as checkoutOperator from './discogs_guest_checkout_operator.mjs';
-import { createEnhancedCheckoutCoordinator, waitForEnhancedCheckoutCoordinatorSettlement } from './discogs_enhanced_checkout_coordinator.mjs';
+import { createEnhancedCheckoutCoordinator, describeEnhancedCheckoutReadiness, waitForEnhancedCheckoutCoordinatorSettlement } from './discogs_enhanced_checkout_coordinator.mjs';
 import { sanitizeGuestPayMetadata } from './discogs_enhanced_payment_quote.mjs';
 import { guestCardScopeDigest, validateGuestCardInspection, revalidateGuestCardClick,
   GUEST_CARD_URL, GUEST_CARD_SELECTOR } from './discogs_guest_card_prepare.mjs';
@@ -1773,15 +1773,13 @@ export async function inspectHostedEnhancedPaymentReadiness(context, request, op
       'provider_amount_matches_merchant', 'provider_final_all_in_total', 'final_tax_treatment', 'mandatory_charges_finality',
       'provider_shipping_selection', 'provider_delivery_binding', 'provider_terms'];
     const profileNames = ['provider_final_quote_dom', 'provider_quote_frame_association', 'provider_delivery_destination',
-      'provider_terms', 'verified_pay_control', 'verified_selected_payment_method', 'merchant_positive_order_dom'];
+      'provider_terms', 'verified_pay_control', 'bound_pay_dispatch_port', 'verified_selected_payment_method'];
     const frames = quote.provenance?.frame_association;
     const guestPayMetadata = sanitizeGuestPayMetadata(quote.guest_pay_metadata);
     const allGates = gateNames.every(key => quote.gates?.[key] === true);
     const expectedMissing = gateNames.filter(key => quote.gates?.[key] !== true);
-    const expectedProfiles = [...(!quote.gates?.provider_dom_qualification ? ['provider_final_quote_dom'] : []),
-      ...(!quote.gates?.provider_frame_and_document ? ['provider_quote_frame_association'] : []),
-      ...(!quote.gates?.provider_delivery_binding ? ['provider_delivery_destination'] : []),
-      ...(!quote.gates?.provider_terms ? ['provider_terms'] : []), 'verified_pay_control', 'verified_selected_payment_method', 'merchant_positive_order_dom'];
+    const readiness = describeEnhancedCheckoutReadiness(quote);
+    const expectedProfiles = readiness.missing_profiles;
     const sameSet = (values, expected) => Array.isArray(values) && values.length === expected.length &&
       new Set(values).size === values.length && values.every(key => expected.includes(key));
     if (!quote.gates || Object.keys(quote.gates).length !== gateNames.length || gateNames.some(key => typeof quote.gates[key] !== 'boolean') ||
@@ -1789,6 +1787,8 @@ export async function inspectHostedEnhancedPaymentReadiness(context, request, op
         quote.destination_verified !== (allGates && quote.gates.provider_delivery_binding) ||
         quote.provider_terms_verified !== (allGates && quote.gates.provider_terms) ||
         !sameSet(quote.missing_evidence, expectedMissing) || !sameSet(report.missing_profiles, expectedProfiles) ||
+        stable(report.public_pay_control) !== stable(readiness.public_pay_control) ||
+        stable(report.post_submit_verification) !== stable(readiness.post_submit_verification) ||
         !guestPayMetadata || !frames || ![0, 1, 2].includes(frames.known_buttons_count) || typeof frames.known_buttons_associated !== 'boolean' ||
         typeof frames.payment_quote_frame_qualified !== 'boolean' || frames.known_buttons_associated && frames.known_buttons_count !== 1) fail('payment_inspection_unverified');
     return { ...stopped('enhanced_payment_readiness_observed'), status: 'observed',
@@ -1802,6 +1802,8 @@ export async function inspectHostedEnhancedPaymentReadiness(context, request, op
         gates: Object.fromEntries(gateNames.map(key => [key, quote.gates?.[key] === true])),
         missing_evidence: (quote.missing_evidence || []).filter(key => gateNames.includes(key)),
         missing_profiles: (report.missing_profiles || []).filter(key => profileNames.includes(key)),
+        public_pay_control: readiness.public_pay_control,
+        post_submit_verification: readiness.post_submit_verification,
         guest_pay_metadata: guestPayMetadata,
         frame_association: { known_buttons_count: frames.known_buttons_count,
           known_buttons_associated: frames.known_buttons_associated, payment_quote_frame_qualified: frames.payment_quote_frame_qualified } } };

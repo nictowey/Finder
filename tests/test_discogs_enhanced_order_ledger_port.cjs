@@ -30,7 +30,7 @@ async function fixture(t) {
     release_id: scope.release_id, listing_id: scope.listing_id, seller: scope.seller,
     rules_revision: scope.rules_revision, quantity: 1, currency: 'USD',
     quote_fingerprint: scope.quote_fingerprint, destination_ref: scope.destination_ref,
-    payment_ref: scope.payment_ref, final_quote_verified: true,
+    payment_ref: scope.payment_ref, final_quote_verified: true, charge_basis: 'itemized',
     all_payable_charges_included: true, payment_action: 'none',
     shipping_selection_verified: true, selected_shipping_ref: shippingRef,
     selected_shipping_label: 'Synthetic selected shipping', observed_at: now,
@@ -65,10 +65,67 @@ test('same real SQLite file permits only one competing fence, including after ne
 
 test('unknown charges or changed exact scope cannot create or fence a slot', async t => {
   const f = await fixture(t); assert.equal((await f.port.initialize()).status, 'initialized');
-  const unknownFee = { ...f.quote, fees_absent_verified: false };
-  assert.equal((await f.port.fencePossibleSubmit(f.scope.intent_id, unknownFee, f.scope)).status, 'blocked');
+  for (const quote of [
+    { ...f.quote, fees_absent_verified: false },
+    { ...f.quote, tax: null },
+    { ...f.quote, total: { amount: '5.04', currency: 'USD' } },
+    { ...f.quote, charge_basis: 'unknown' },
+  ]) {
+    assert.equal((await f.port.fencePossibleSubmit(f.scope.intent_id, quote, f.scope)).status, 'blocked');
+  }
   const changed = { ...f.scope, payment_ref: randomUUID() };
   assert.equal((await f.port.fencePossibleSubmit(changed.intent_id, f.quote, changed)).status, 'blocked');
+  assert.equal((await f.port.status()).ledger, null);
+});
+
+test('authoritative synthetic aggregate total fences once across SQLite process and port restart', async t => {
+  const f = await fixture(t); assert.equal((await f.port.initialize()).status, 'initialized');
+  Object.assign(f.quote, { charge_basis: 'aggregate_inclusive', tax: null, fees: null,
+    tax_treatment: 'included_in_final_total', fees_treatment: 'included_in_final_total',
+    deferred_charges: false, aggregate_total_verified: true,
+    fees_absent_verified: false });
+  assert.equal((await f.port.prepare(f.scope, f.quote)).ledger.state, 'prepared');
+  const another = createEnhancedOrderLedgerFixturePort(f.path);
+  const outcomes = await Promise.all([
+    f.port.fencePossibleSubmit(f.scope.intent_id, f.quote, f.scope),
+    another.fencePossibleSubmit(f.scope.intent_id, f.quote, f.scope),
+  ]);
+  assert.equal(outcomes.filter(value => value.durable === true).length, 1);
+  assert.equal((await another.status()).ledger.state, 'submission_unknown');
+  assert.equal((await another.fencePossibleSubmit(f.scope.intent_id, f.quote, f.scope)).status, 'blocked');
+});
+
+test('aggregate unknown tax treatment, incomplete charges, lower bound, or changed scope never creates ledger row', async t => {
+  const f = await fixture(t); assert.equal((await f.port.initialize()).status, 'initialized');
+  const aggregate = { ...f.quote, charge_basis: 'aggregate_inclusive', tax: null, fees: null,
+    tax_treatment: 'included_in_final_total', fees_treatment: 'included_in_final_total',
+    deferred_charges: false, aggregate_total_verified: true,
+    fees_absent_verified: false };
+  for (const quote of [
+    { ...aggregate, tax_treatment: 'unknown' },
+    { ...aggregate, fees_treatment: 'deferred' },
+    { ...aggregate, deferred_charges: true },
+    { ...aggregate, fees_absent_verified: 'unverified' },
+    { ...aggregate, fees_absent_verified: null },
+    { ...aggregate, aggregate_total_verified: false },
+    { ...aggregate, all_payable_charges_included: false },
+    { ...aggregate, total: { amount: '5.06', currency: 'USD' } },
+    { ...aggregate, shipping: { amount: '5.00', currency: 'USD' } },
+    { ...aggregate, total: { amount: '5.05', currency: 'CAD' } },
+    { ...aggregate, destination_ref: randomUUID() },
+    { ...aggregate, tax: { amount: '0.00', currency: 'USD' } },
+  ]) {
+    assert.equal((await f.port.prepare(f.scope, quote)).status, 'blocked');
+  }
+  assert.equal((await f.port.status()).ledger, null);
+});
+
+test('itemized ledger quote rejects ambiguous deferred-charge markers', async t => {
+  const f = await fixture(t); assert.equal((await f.port.initialize()).status, 'initialized');
+  for (const marker of [null, 'unverified', 'true', 0]) {
+    assert.equal((await f.port.prepare(f.scope,
+      { ...f.quote, deferred_charges: marker })).status, 'blocked');
+  }
   assert.equal((await f.port.status()).ledger, null);
 });
 

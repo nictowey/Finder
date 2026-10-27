@@ -1,6 +1,7 @@
 /** Fixed read-only payment-evidence producer for the already-open enhanced
  * checkout. Merchant summary and narrowly public guest Pay-control metadata may
- * be observed; no provider final-quote profile is qualified. Never reads payment
+ * be observed. Final quote evidence also requires fresh trusted post-entry
+ * amount/delivery/terms confirmation. Never reads payment
  * inputs, addresses, account data or values.
  */
 import { randomUUID } from 'node:crypto';
@@ -13,10 +14,12 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const MONEY = /^(?:0|[1-9][0-9]{0,6})\.[0-9]{2}$/u;
 const HASH = /^[0-9a-f]{64}$/u;
 const STOP = Symbol('payment_quote_stop');
-// No provider form/quote layout has yet been qualified from observed DOM.
-// Add a fixed collector/profile here only after actual selector, currency,
-// finality, frame and delivery qualification; never from a caller's boolean.
-const VERIFIED_PROVIDER_LAYOUTS = Object.freeze([]);
+// This layout was observed through the exact retained two-edge relationship.
+// Its public control alone never establishes finality or the delivery address.
+const OBSERVED_GUEST_LAYOUT = 'paypal_smart_nested_guest_v1';
+const observedProviders = new WeakMap();
+const actualGuestBindings = new WeakMap();
+const verifiedFinalReports = new WeakMap();
 const pending = new WeakMap();
 const active = new WeakSet();
 const finished = new WeakSet();
@@ -273,6 +276,18 @@ async function inspectGuestPayMetadata(page, frames, mainDocument, { read, readH
   result.truncated = children.length > 2;
   const eligibleControls = []; let selectedPayEntry = null;
   let unsupported = 0;
+  const stableLeafEntry = async entry => {
+    if (await read(() => entry.target === main ? page.url() : entry.target.url()) !== entry.url) return false;
+    if (['other_origin', 'merchant_main'].includes(entry.kind) || entry.kind === 'buttons' && !entry.element) return true;
+    if (entry.kind === 'error') return false;
+    if (await read(() => entry.target.parentFrame()) !== entry.parent) return false;
+    // A non-direct frame cannot become eligible without changing its parent.
+    if (entry.kind === 'non_direct') return true;
+    if (await read(() => entry.element.isVisible()) !== entry.visible ||
+        await read(() => entry.element.contentFrame()) !== entry.content ||
+        await read(() => entry.element.ownerFrame()) !== entry.owner) return false;
+    return !entry.document || await read(() => entry.target.evaluate(expected => document === expected, entry.document)) === true;
+  };
   const stableEntry = async entry => {
     // Prove ancestors first. No awaited ancestor proof may follow the leaf's
     // final URL/parent/element/Document checks and hide a late leaf mutation.
@@ -286,16 +301,7 @@ async function inspectGuestPayMetadata(page, frames, mainDocument, { read, readH
       } else if (await read(() => entry.nestedParent.target.url()) !== entry.nestedParent.url ||
           await read(() => entry.nestedParent.target.evaluate(expected => document === expected, entry.nestedParent.document)) !== true) return false;
     }
-    if (await read(() => entry.target === main ? page.url() : entry.target.url()) !== entry.url) return false;
-    if (['other_origin', 'merchant_main'].includes(entry.kind) || entry.kind === 'buttons' && !entry.element) return true;
-    if (entry.kind === 'error') return false;
-    if (await read(() => entry.target.parentFrame()) !== entry.parent) return false;
-    // A non-direct frame cannot become eligible without changing its parent.
-    if (entry.kind === 'non_direct') return true;
-    if (await read(() => entry.element.isVisible()) !== entry.visible ||
-        await read(() => entry.element.contentFrame()) !== entry.content ||
-        await read(() => entry.element.ownerFrame()) !== entry.owner) return false;
-    return !entry.document || await read(() => entry.target.evaluate(expected => document === expected, entry.document)) === true;
+    return stableLeafEntry(entry);
   };
   const candidates = [{ target: page, location: 'merchant_main', document: mainDocument },
     ...(result.truncated || errors.size ? [] : children.map(entry => ({ ...entry, location: 'paypal_child', entry })))];
@@ -367,6 +373,21 @@ async function inspectGuestPayMetadata(page, frames, mainDocument, { read, readH
       try { if (!await stableEntry(selectedPayEntry)) changed = true; }
       catch (error) { if (error?.[STOP]) throw error; errors.add(selectedPayEntry); }
     }
+    // The fixed public collector is LAST after all ancestor and leaf awaits.
+    // Its single DOM call checks the captured Document/origin and public facts;
+    // no later browser proof may hide a same-document Pay-amount change.
+    if (nestedSelected && selectedPayEntry === nestedSelected && !changed && !errors.size) {
+      try {
+        if (!await stableLeafEntry(nestedSelected)) changed = true;
+        else {
+          const candidate = candidates.find(value => value.entry === nestedSelected);
+          const current = await read(() => nestedSelected.target.evaluate(collectGuestPayControlMetadataDom,
+            { role: 'paypal_child', expectedDocument: nestedSelected.document, nested: true, expectedUrl: nestedSelected.url }));
+          const keys = ['schema', 'status', 'submit_count', 'submit_visible', 'submit_enabled', 'button_type_matches', 'label', 'amount', 'currency'];
+          if (!record(current, keys) || !candidate?.publicObservation || keys.some(key => current[key] !== candidate.publicObservation[key])) changed = true;
+        }
+      } catch (error) { if (error?.[STOP]) throw error; errors.add(nestedSelected); }
+    }
     if (nestedSelected && changed && result.ancestry_diagnostic?.candidates.length) result.ancestry_diagnostic = {
       ...result.ancestry_diagnostic, status: 'changed', reason: 'inventory_changed', candidates: result.ancestry_diagnostic.candidates.map(candidate => ({
         ...candidate, stop: 'document_changed', chain_complete: false, buttons_ancestor_verified: false, public_submit_count: null })) };
@@ -378,8 +399,12 @@ async function inspectGuestPayMetadata(page, frames, mainDocument, { read, readH
     if (diagnostic.reason !== 'complete') return result;
     if (eligibleControls.length > 1) return { ...result, status: 'ambiguous' };
     if (eligibleControls.length === 0) return { ...result, status: 'no_eligible_frame' };
-    return { ...eligibleControls[0], paypal_origin_count: result.paypal_origin_count, associated_count: result.associated_count,
+    const metadata = { ...eligibleControls[0], paypal_origin_count: result.paypal_origin_count, associated_count: result.associated_count,
       selection_diagnostic: diagnostic, ...(result.ancestry_diagnostic ? { ancestry_diagnostic: result.ancestry_diagnostic } : {}) };
+    if (nestedSelected && selectedPayEntry === nestedSelected) actualGuestBindings.set(metadata, {
+      guestFrame: nestedSelected.target, guestDocument: nestedSelected.document,
+      buttonsFrame: nestedButton.target, buttonsDocument: nestedButton.document, merchantDocument: mainDocument });
+    return metadata;
   };
 }
 function merchantEvidence(value) {
@@ -392,7 +417,7 @@ function merchantEvidence(value) {
       !record(value.displayed, ['subtotal', 'shipping', 'total']) ||
       !['subtotal', 'shipping', 'total'].every(key => money(value.displayed[key])) ||
       cents(value.displayed.subtotal.amount) + cents(value.displayed.shipping.amount) !== cents(value.displayed.total.amount)) return null;
-  return { subtotal: { ...value.displayed.subtotal }, shipping: { ...value.displayed.shipping },
+  return { seller_handle: value.seller_handle, subtotal: { ...value.displayed.subtotal }, shipping: { ...value.displayed.shipping },
     total: { ...value.displayed.total }, tax: null, fees: null,
     selected_shipping_label: value.selected_shipping_label };
 }
@@ -413,24 +438,67 @@ function destinationEvidence(value, documentRef) {
   return { destination_ref: value.destination_ref, match: value.match };
 }
 
-/** Typed future-provider input contract. It is not DOM qualification or payment
- * authorization. Current production supplies provider:null. Public Pay-control
- * metadata has no qualified final quote, currency inference or delivery binding.
- * @typedef {object} ProviderDisplayEvidence
- * @property {'discogs_provider_display_evidence_v1'} schema
- * @property {string} layout_id Fixed, reviewed collector profile (none yet).
- * @property {string|null} amount Decimal displayed amount, not a card value.
- * @property {string|null} currency Explicit displayed ISO currency.
- * @property {boolean} final_total_verified Explicit all-in finality evidence.
- * @property {'included_in_total'|'not_applicable_verified'|'unverified'} tax_finality
- * @property {'included_in_total'|'none_applicable_verified'|'unverified'} mandatory_charges_finality
- * @property {boolean} shipping_selection_verified
- * @property {'approved_saved_destination'|'billing_address'|'unverified'} destination_mode
- * @property {boolean|null} destination_match Opaque actual provider destination match.
- * @property {boolean} terms_verified
- * @property {string|null} terms_fingerprint Non-sensitive terms fingerprint.
- * @property {object} provenance Actual provider/merchant document binding.
- */
+const CONFIRMATION_KEYS = ['schema', 'source', 'merchant_document_ref', 'provider_document_ref', 'observed_at', 'expires_at',
+  'entry_confirmed_at', 'entry_complete', 'final_total', 'all_payable_charges_included', 'tax_treatment', 'fees_treatment',
+  'deferred_charges', 'competing_currency', 'conversion_notice', 'new_notice', 'destination_ref', 'destination_match',
+  'shipping_selection_verified', 'terms_verified', 'terms_fingerprint'];
+function postEntryConfirmation(value, request, now) {
+  if (!record(value, CONFIRMATION_KEYS) || value.schema !== 'discogs_guest_post_entry_confirmation_v1' ||
+      value.source !== 'trusted_same_document_post_entry_confirmation' || value.merchant_document_ref !== request.merchant_document_ref ||
+      value.provider_document_ref !== request.provider_document_ref || !number(value.observed_at) || !number(value.expires_at) ||
+      value.observed_at < request.observed_at || value.observed_at > now || now - value.observed_at >= 20 ||
+      now >= value.expires_at || value.expires_at > Math.min(request.expires_at, value.observed_at + 20) ||
+      !number(value.entry_confirmed_at) || value.entry_confirmed_at > value.observed_at || value.entry_confirmed_at > now ||
+      now - value.entry_confirmed_at >= 60 || !money(value.final_total) ||
+      ['entry_complete', 'all_payable_charges_included', 'deferred_charges', 'competing_currency', 'conversion_notice', 'new_notice',
+        'destination_match', 'shipping_selection_verified', 'terms_verified'].some(key => typeof value[key] !== 'boolean') ||
+      !['included_in_final_total', 'unverified'].includes(value.tax_treatment) || !['included_in_final_total', 'unverified'].includes(value.fees_treatment) ||
+      value.destination_ref !== request.approved_destination_ref ||
+      !(value.terms_fingerprint === null || typeof value.terms_fingerprint === 'string' && HASH.test(value.terms_fingerprint))) return null;
+  return { ...value, final_total: { ...value.final_total } };
+}
+function observedProvider(metadata, merchant, request, confirmation, callbackSupplied) {
+  if (!actualGuestBindings.has(metadata) || metadata.status !== 'observed' || metadata.amount !== merchant.total.amount ||
+      merchant.total.currency !== 'USD' || ![null, 'USD'].includes(metadata.currency)) return null;
+  const noNotices = confirmation !== null && ['competing_currency', 'conversion_notice', 'new_notice', 'deferred_charges']
+    .every(key => confirmation[key] === false);
+  const inclusive = noNotices && confirmation.entry_complete === true && confirmation.all_payable_charges_included === true &&
+    confirmation.tax_treatment === 'included_in_final_total' && confirmation.fees_treatment === 'included_in_final_total' &&
+    confirmation.final_total.amount === metadata.amount;
+  const currencyVerified = !callbackSupplied || confirmation !== null && noNotices;
+  const provider = { schema: 'discogs_provider_display_evidence_v1', layout_id: OBSERVED_GUEST_LAYOUT,
+    amount: metadata.amount, currency: currencyVerified ? 'USD' : null, final_total_verified: inclusive,
+    tax_finality: inclusive ? 'included_in_total' : 'unverified', mandatory_charges_finality: inclusive ? 'included_in_total' : 'unverified',
+    shipping_selection_verified: inclusive && confirmation.shipping_selection_verified,
+    destination_mode: inclusive && confirmation.destination_match ? 'approved_saved_destination' : 'unverified',
+    destination_match: inclusive ? confirmation.destination_match : null,
+    terms_verified: inclusive && confirmation.terms_verified && confirmation.terms_fingerprint !== null,
+    terms_fingerprint: inclusive ? confirmation.terms_fingerprint : null,
+    provenance: { source: 'qualified_visible_provider_dom', merchant_document_ref: request.merchant_document_ref,
+      provider_document_ref: request.provider_document_ref, observed_at: request.observed_at,
+      expires_at: Math.min(request.expires_at, confirmation?.expires_at ?? request.expires_at), same_document_verified: true, frame_associated: true } };
+  observedProviders.set(provider, { raw_currency: metadata.currency, currency_verified: currencyVerified,
+    notices_verified: noNotices, confirmation_verified: inclusive && confirmation.destination_match && confirmation.shipping_selection_verified &&
+      confirmation.terms_verified && confirmation.terms_fingerprint !== null,
+    destination_ref: confirmation?.destination_ref ?? null, terms_fingerprint: provider.terms_fingerprint });
+  return provider;
+}
+function freezeEvidence(value) {
+  if (value && typeof value === 'object') { for (const child of Object.values(value)) freezeEvidence(child); Object.freeze(value); }
+  return value;
+}
+/** Does not mint authority. Only a fresh actual producer result can pass; caller
+ * booleans or a copied JSON report never acquire the private production brand. */
+export function isVerifiedCurrentEnhancedPaymentQuote(value, { now = Date.now() / 1000, page = null, destinationRef = null, termsFingerprint = null } = {}) {
+  const binding = value && verifiedFinalReports.get(value);
+  return !!binding && (page === null || binding.page === page) &&
+    (destinationRef === null || binding.destinationRef === destinationRef) &&
+    (termsFingerprint === null || binding.termsFingerprint === termsFingerprint) && number(now) && value.final_quote_verified === true &&
+    provenanceValid(value.provenance, now) && now < value.provenance.expires_at;
+}
+
+/** Pure parser. The observed-layout gate additionally requires the private
+ * actual-DOM producer brand; shaped provider data cannot register a layout. */
 export function parseEnhancedPaymentQuoteEvidence(input, { now = Date.now() / 1000 } = {}) {
   if (!number(now) || !record(input, ['merchant', 'provider', 'destination', 'provenance']) || !provenanceValid(input.provenance, now)) {
     return base('same_document_freshness_unverified');
@@ -442,6 +510,7 @@ export function parseEnhancedPaymentQuoteEvidence(input, { now = Date.now() / 10
   const providerShape = record(provider, ['schema', 'layout_id', 'amount', 'currency', 'final_total_verified', 'tax_finality',
     'mandatory_charges_finality', 'shipping_selection_verified', 'destination_mode', 'destination_match', 'terms_verified', 'terms_fingerprint', 'provenance']) &&
     provider.schema === 'discogs_provider_display_evidence_v1' && typeof provider.layout_id === 'string' && provider.layout_id.length <= 80;
+  const layout = providerShape ? observedProviders.get(provider) : null;
   const pp = providerShape ? provider.provenance : null;
   const frameBound = record(pp, ['source', 'merchant_document_ref', 'provider_document_ref', 'observed_at', 'expires_at', 'same_document_verified', 'frame_associated']) &&
     pp.source === 'qualified_visible_provider_dom' && pp.merchant_document_ref === input.provenance.document_ref &&
@@ -451,7 +520,7 @@ export function parseEnhancedPaymentQuoteEvidence(input, { now = Date.now() / 10
   const amount = providerShape && typeof provider.amount === 'string' && MONEY.test(provider.amount) ? provider.amount : null;
   const currency = providerShape && typeof provider.currency === 'string' && /^[A-Z]{3}$/u.test(provider.currency) ? provider.currency : null;
   const gates = {
-    provider_dom_qualification: providerShape && VERIFIED_PROVIDER_LAYOUTS.includes(provider.layout_id),
+    provider_dom_qualification: !!layout && provider.layout_id === OBSERVED_GUEST_LAYOUT,
     provider_frame_and_document: !!frameBound && input.provenance.frame_association.payment_quote_frame_qualified === true,
     provider_explicit_currency: currency === 'USD',
     provider_amount_matches_merchant: amount !== null && currency === 'USD' && amount === merchant.total.amount,
@@ -466,8 +535,17 @@ export function parseEnhancedPaymentQuoteEvidence(input, { now = Date.now() / 10
   const final = Object.values(gates).every(value => value === true);
   return { ...base(final ? 'final_quote_evidence_verified' : 'provider_final_quote_unverified'), status: final ? 'observed' : 'unverified',
     amount_basis: final ? 'qualified_provider_final_total' : 'merchant_aggregate_preparation_only', merchant_displayed: merchant,
-    provider_displayed: { amount, currency }, final_quote_verified: final,
-    final_quote: { amount: final ? amount : null, currency: final ? currency : null, tax: null, fees: null },
+    provider_displayed: { amount, currency: layout ? layout.raw_currency : currency }, final_quote_verified: final,
+    final_quote: { amount: final ? amount : null, currency: final ? currency : null, tax: null, fees: null,
+      ...(final && layout ? { charge_basis: 'aggregate_inclusive', total: { amount, currency }, tax_treatment: 'included_in_final_total',
+        fees_treatment: 'included_in_final_total', deferred_charges: false, aggregate_total_verified: true, all_payable_charges_included: true } : {}) },
+    ...(layout ? { current_layout_qualifications: { schema: 'discogs_guest_layout_qualification_v1', layout_id: OBSERVED_GUEST_LAYOUT,
+      dom_verified: true, frame_document_verified: !!frameBound, public_pay_control_verified: true,
+      merchant_currency_explicit: true, amount_matches_merchant: amount === merchant.total.amount,
+      currency_notice_review_verified: layout.notices_verified, post_entry_confirmation_verified: layout.confirmation_verified },
+    effective_currency: { currency: layout.currency_verified ? 'USD' : null, source: 'explicit_merchant_usd_matching_bound_pay',
+      raw_pay_currency: layout.raw_currency, merchant_currency: 'USD', merchant_document_ref: input.provenance.document_ref,
+      provider_document_ref: pp.provider_document_ref, notice_review_verified: layout.notices_verified } } : {}),
     merchant_destination_match: destination?.match ?? null,
     destination_verified: final && gates.provider_delivery_binding, provider_terms_verified: final && gates.provider_terms,
     gates, missing_evidence: Object.keys(gates).filter(key => gates[key] !== true),
@@ -495,14 +573,15 @@ export async function waitForEnhancedPaymentQuoteSettlement(page) {
 }
 
 /** Existing-page production path. The fixed merchant summary and narrowly
- * public #submit-button metadata are inspected; no provider quote is qualified. Optional
+ * public #submit-button metadata are inspected. An actual observed nested layout
+ * still needs a trusted fresh post-entry final amount/delivery/terms confirmation. Optional
  * destinationMatcher is a trusted same-process opaque binding port, not input
  * data: it receives the actual Page/Document handle and must never return PII.
  */
-export async function inspectCurrentEnhancedPaymentQuote(page, { signal = null, timeoutMs = 1500, destinationMatcher = null } = {}) {
+export async function inspectCurrentEnhancedPaymentQuote(page, { signal = null, timeoutMs = 1500, destinationMatcher = null, finalQuoteMatcher = null } = {}) {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 1500 || !page || typeof page !== 'object' ||
       !['url', 'evaluate', 'evaluateHandle', 'frames', 'mainFrame'].every(key => typeof page[key] === 'function') ||
-      destinationMatcher !== null && typeof destinationMatcher !== 'function') return base('read_unavailable');
+      destinationMatcher !== null && typeof destinationMatcher !== 'function' || finalQuoteMatcher !== null && typeof finalQuoteMatcher !== 'function') return base('read_unavailable');
   if (signal?.aborted) return base('read_cancelled');
   if (active.has(page) || pending.get(page)?.size) return base('quote_read_in_progress');
   active.add(page); finished.delete(page);
@@ -571,14 +650,49 @@ export async function inspectCurrentEnhancedPaymentQuote(page, { signal = null, 
       page, documentHandle, document_ref: documentRef, observed_at: observedAt, expires_at: observedAt + 20 }));
     if (await read(() => page.url()) !== ENHANCED_PAYMENT_QUOTE_URL ||
         await read(() => page.evaluate(expected => document === expected, documentHandle)) !== true) return base('document_changed');
-    const guestPayMetadata = await finalizeGuestPayMetadata();
-    if (await read(() => page.url()) !== ENHANCED_PAYMENT_QUOTE_URL ||
-        await read(() => page.evaluate(expected => document === expected, documentHandle)) !== true) return base('document_changed');
-    return { ...parseEnhancedPaymentQuoteEvidence({ merchant, provider: null, destination, provenance: {
+    let guestPayMetadata = await finalizeGuestPayMetadata();
+    const originalBinding = actualGuestBindings.get(guestPayMetadata), merchantDisplayed = merchantEvidence(merchant);
+    let provider = null, finalDestination = destination;
+    if (originalBinding && guestPayMetadata.amount === merchantDisplayed.total.amount) {
+      const request = Object.freeze({ schema: 'discogs_guest_post_entry_request_v1', merchant_document_ref: documentRef,
+        provider_document_ref: randomUUID(), observed_at: observedAt, expires_at: observedAt + 20,
+        merchant_total: Object.freeze({ ...merchantDisplayed.total }), pay_amount: guestPayMetadata.amount,
+        raw_pay_currency: guestPayMetadata.currency, selected_shipping_label: merchantDisplayed.selected_shipping_label,
+        approved_destination_ref: destinationEvidence(destination, documentRef)?.destination_ref ?? 'saved_shipping_address' });
+      const response = finalQuoteMatcher === null ? null : await read(() => finalQuoteMatcher(request));
+      const confirmation = postEntryConfirmation(response, request, Date.now() / 1000);
+      // The callback receives no browser capability. Its observations confer no
+      // finality if the actual private document/control relationship changed.
+      if (finalQuoteMatcher !== null) {
+        const latestMerchant = merchantEvidence(await read(() => page.evaluate(collectEnhancedCheckoutDom)));
+        if (JSON.stringify(latestMerchant) !== JSON.stringify(merchantDisplayed)) return base('merchant_summary_changed');
+        if (await read(() => page.url()) !== ENHANCED_PAYMENT_QUOTE_URL ||
+            await read(() => page.evaluate(expected => document === expected, documentHandle)) !== true) return base('document_changed');
+        // All final merchant/callback awaits precede this final private guest
+        // check. Provider/report branding below is synchronous from its result.
+        guestPayMetadata = await finalizeGuestPayMetadata();
+      }
+      const after = actualGuestBindings.get(guestPayMetadata);
+      if (after && ['guestFrame', 'guestDocument', 'buttonsFrame', 'buttonsDocument', 'merchantDocument'].every(key => after[key] === originalBinding[key])) {
+        provider = observedProvider(guestPayMetadata, merchantDisplayed, request, confirmation, finalQuoteMatcher !== null);
+        if (destination === null && confirmation?.destination_match === true) finalDestination = {
+          source: 'trusted_same_document_destination_binding', document_ref: documentRef,
+          destination_ref: confirmation.destination_ref, match: true };
+      }
+    }
+    if ((finalQuoteMatcher === null || !originalBinding) && (await read(() => page.url()) !== ENHANCED_PAYMENT_QUOTE_URL ||
+        await read(() => page.evaluate(expected => document === expected, documentHandle)) !== true)) return base('document_changed');
+    const report = { ...parseEnhancedPaymentQuoteEvidence({ merchant, provider, destination: finalDestination, provenance: {
       schema: 'discogs_payment_quote_provenance_v1', source: 'current_enhanced_checkout', document_ref: documentRef,
-      observed_at: observedAt, expires_at: observedAt + 20, same_document_verified: true,
-      frame_association: { known_buttons_count: Math.min(buttons.length, 2), known_buttons_associated: buttonsAssociation.value, payment_quote_frame_qualified: false } } }),
+      observed_at: observedAt, expires_at: Math.min(observedAt + 20, provider?.provenance.expires_at ?? observedAt + 20), same_document_verified: true,
+      frame_association: { known_buttons_count: Math.min(buttons.length, 2), known_buttons_associated: buttonsAssociation.value,
+        payment_quote_frame_qualified: provider !== null } } }),
     guest_pay_metadata: sanitizeGuestPayMetadata(guestPayMetadata) || emptyPayMetadata('unsupported_collection') };
+    if (report.final_quote_verified) {
+      const layout = observedProviders.get(provider); freezeEvidence(report);
+      verifiedFinalReports.set(report, { page, destinationRef: layout.destination_ref, termsFingerprint: layout.terms_fingerprint });
+    }
+    return report;
   } catch (error) { return base(error?.[STOP] || 'read_failed'); }
   finally {
     for (const handle of handles) dispose(handle);

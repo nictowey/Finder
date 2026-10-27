@@ -33,11 +33,22 @@ function expectedOrder(scope, quote, now) {
       !Number.isFinite(quote.expires_at) || !Number.isFinite(scope.expires_at) ||
       !(now < quote.expires_at && quote.expires_at <= scope.expires_at && quote.expires_at <= now + 300)) return null;
   const amount = key => quote[key] && quote[key].currency === 'USD' ? cents(quote[key].amount) : null;
-  const item = amount('item'), shipping = amount('shipping'), tax = amount('tax'),
-    fee = quote.fees === null && quote.fees_absent_verified === true ? 0n : amount('fees'),
-    total = amount('total');
-  if ([item, shipping, tax, fee, total].some(value => value === null) ||
-      item + shipping + tax + fee !== total || total > cents('5.05')) return null;
+  const item = amount('item'), shipping = amount('shipping'), total = amount('total');
+  if ([item, shipping, total].some(value => value === null) || total > cents('5.05')) return null;
+  if (quote.charge_basis === 'aggregate_inclusive') {
+    if (quote.tax !== null || quote.fees !== null ||
+        (quote.fees_absent_verified !== undefined && quote.fees_absent_verified !== false) ||
+        quote.tax_treatment !== 'included_in_final_total' ||
+        quote.fees_treatment !== 'included_in_final_total' ||
+        quote.deferred_charges !== false || quote.aggregate_total_verified !== true ||
+        item + shipping > total) return null;
+  } else if (quote.charge_basis === 'itemized') {
+    const tax = amount('tax'),
+      fee = quote.fees === null && quote.fees_absent_verified === true ? 0n : amount('fees');
+    if ((quote.deferred_charges !== undefined && quote.deferred_charges !== false) ||
+        tax === null || fee === null ||
+        item + shipping + tax + fee !== total) return null;
+  } else return null;
   return Object.freeze({ intent_id: scope.intent_id, approval_ref: scope.approval_ref,
     release_id: 3422100, listing_id: '1366950910', seller: 'Mailman21842',
     quoted_total: quote.total.amount, currency: 'USD', quote_fingerprint: scope.quote_fingerprint,

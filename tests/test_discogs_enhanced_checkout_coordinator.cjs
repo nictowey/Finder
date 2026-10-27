@@ -13,11 +13,11 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { pathToFileURL } = require('node:url');
 let createEnhancedCheckoutCoordinator, createEnhancedCheckoutCoordinatorFixture,
-  createBoundEnhancedOrderFencePort, createEnhancedOrderLedgerFixturePort,
+  createBoundEnhancedOrderFencePort, describeEnhancedCheckoutReadiness, createEnhancedOrderLedgerFixturePort,
   attemptEnhancedPayment, KC_ORDER_SCOPE;
 before(async () => {
   ({ createEnhancedCheckoutCoordinator, createEnhancedCheckoutCoordinatorFixture,
-    createBoundEnhancedOrderFencePort } = await import('../scripts/discogs_enhanced_checkout_coordinator.mjs'));
+    createBoundEnhancedOrderFencePort, describeEnhancedCheckoutReadiness } = await import('../scripts/discogs_enhanced_checkout_coordinator.mjs'));
   ({ createEnhancedOrderLedgerFixturePort } = await import('../scripts/discogs_enhanced_order_ledger_port.mjs'));
   ({ attemptEnhancedPayment } = await import('../scripts/discogs_enhanced_payment_adapter.mjs'));
   ({ KC_ORDER_SCOPE } = await import('../scripts/discogs_merchant_order_evidence.mjs'));
@@ -35,7 +35,7 @@ async function fixture(t) {
     quote_fingerprint: scope.quote_fingerprint, destination_ref: scope.destination_ref, payment_ref: scope.payment_ref,
     final_quote_verified: true, all_payable_charges_included: true, payment_action: 'none', shipping_selection_verified: true,
     selected_shipping_ref: shippingRef, selected_shipping_label: 'Synthetic selected shipping', observed_at: now, expires_at: now + 120,
-    item: money('0.10'), shipping: money('4.95'), tax: money('0.00'), fees: null, fees_absent_verified: true, total: money('5.05') };
+    charge_basis: 'itemized', item: money('0.10'), shipping: money('4.95'), tax: money('0.00'), fees: null, fees_absent_verified: true, total: money('5.05') };
   const fence = createBoundEnhancedOrderFencePort(scope, quote, { ledgerPort: port });
   return { port, path, scope, quote, fence, now, shippingRef };
 }
@@ -79,7 +79,11 @@ test('current quote reader is composed into truthful missing-profile readiness; 
       missing_evidence: ['provider_dom_qualification', 'provider_delivery_binding'] }) });
   const result = await coordinator.inspectPaymentReadiness({});
   assert.equal(result.payment_allowed, false); assert.equal(result.payment.code, 'enhanced_payment_disabled');
-  assert.ok(result.missing_profiles.includes('provider_final_quote_dom')); assert.ok(result.missing_profiles.includes('merchant_positive_order_dom'));
+  assert.ok(result.missing_profiles.includes('provider_final_quote_dom'));
+  assert.equal(result.missing_profiles.includes('merchant_positive_order_dom'), false);
+  assert.ok(result.post_submit_verification.missing_profiles.includes('merchant_positive_order_dom'));
+  assert.equal(result.post_submit_verification.current_order_status, 'not_checked');
+  assert.equal(result.post_submit_verification.automatic_retry_allowed, false);
   assert.equal(fences, 0); assert.equal((await f.port.status()).status, 'blocked');
 });
 
@@ -190,13 +194,14 @@ test('packaged-layout non-test subprocess imports the exact dependency closure a
     'discogs_enhanced_checkout_coordinator.mjs', 'discogs_enhanced_payment_quote.mjs',
     'discogs_guest_pay_ancestry.mjs',
     'discogs_enhanced_payment_adapter.mjs', 'discogs_enhanced_order_ledger_port.mjs',
+    'discogs_enhanced_fixed_pay_port.mjs',
     'discogs_merchant_order_evidence.mjs', 'discogs_enhanced_checkout.mjs',
     'discogs_hosted_readonly.mjs', 'discogs_cart_inspector.mjs',
     'discogs_release_snapshot.mjs', 'discogs_listing_detail_snapshot.mjs',
   ];
   const copiedFiles = [...modules.map(name => `scripts/${name}`),
     'scripts/discogs_order_ledger_port.py', 'src/finder/discogs_order_reconciliation.py'];
-  assert.equal(modules.length, 11);
+  assert.equal(modules.length, 12);
   const dockerfile = await readFile(join(__dirname, '../deployment/HostedBrowserBridge.Dockerfile'), 'utf8');
   for (const relative of copiedFiles) assert.ok(dockerfile.includes(`COPY ${relative} /app/${relative}\n`), relative);
   for (const relative of copiedFiles) {
@@ -252,4 +257,93 @@ test('packaged-layout non-test subprocess imports the exact dependency closure a
   assert.equal(stderr, '');
   assert.deepEqual(JSON.parse(stdout), { payment_code: 'enhanced_payment_disabled', payment_enabled: false, external_effects: 0 });
   assert.deepEqual(await snapshot(), before); // No ledger/journal/runtime/config or source mutation.
+});
+
+function observedPayMetadata(changes = {}) {
+  return { schema: 'discogs_guest_pay_metadata_v1', status: 'observed', paypal_origin_count: 1,
+    candidate_count: 1, associated_count: 1, eligible_count: 1, unsupported_count: 0, truncated: false,
+    submit_count: 1, submit_visible: true, submit_enabled: true, button_type_matches: true,
+    label: 'Pay $5.05', amount: '5.05', currency: null, location: 'paypal_child',
+    same_document_verified: true, frame_associated: true, ...changes };
+}
+
+test('observed public Pay metadata is independent of missing final quote, delivery and dispatch bindings', async () => {
+  let effects = 0;
+  const coordinator = createEnhancedCheckoutCoordinatorFixture({ ledgerPort: {
+    reconcile: async () => { effects++; throw Error('must not reconcile during readiness'); } },
+  readMerchant: async () => { effects++; throw Error('no pre-submit receipt requirement'); },
+  readQuote: async () => ({ schema: 'discogs_enhanced_payment_quote_v1', final_quote_verified: false,
+    gates: { provider_dom_qualification: false, provider_frame_and_document: false,
+      provider_delivery_binding: false, provider_terms: false }, guest_pay_metadata: observedPayMetadata() }) });
+  const report = await coordinator.inspectPaymentReadiness({});
+  assert.deepEqual(report.public_pay_control, { metadata_status: 'observed', enabled: true,
+    dispatch_binding: 'unconfigured' });
+  assert.equal(report.quote.guest_pay_metadata.currency, null);
+  assert.equal(report.quote.final_quote_verified, false);
+  assert.equal(report.missing_profiles.includes('verified_pay_control'), false);
+  for (const key of ['provider_final_quote_dom', 'provider_delivery_destination',
+    'bound_pay_dispatch_port', 'verified_selected_payment_method']) assert.ok(report.missing_profiles.includes(key));
+  assert.equal(report.missing_profiles.includes('merchant_positive_order_dom'), false);
+  assert.deepEqual(report.post_submit_verification, {
+    phase: 'after_possible_submission', current_order_status: 'not_checked', current_payment_status: 'not_checked',
+    receipt_source_qualification: 'unqualified', missing_profiles: ['merchant_positive_order_dom'],
+    uncertain_outcome_policy: 'retain_submission_unknown_no_retry', automatic_retry_allowed: false });
+  assert.equal(report.payment_allowed, false); assert.equal(report.final_submission_allowed, false);
+  assert.equal(report.payment.code, 'enhanced_payment_disabled'); assert.equal(effects, 0);
+});
+
+test('disabled or malformed Pay metadata never satisfies the pre-submit control evidence gap', () => {
+  const disabled = describeEnhancedCheckoutReadiness({ guest_pay_metadata: observedPayMetadata({ submit_enabled: false }) });
+  assert.deepEqual(disabled.public_pay_control, { metadata_status: 'observed', enabled: false,
+    dispatch_binding: 'unconfigured' });
+  assert.ok(disabled.missing_profiles.includes('verified_pay_control'));
+  for (const metadata of [undefined, null,
+    observedPayMetadata({ submit_count: 2 }), observedPayMetadata({ frame_associated: false }),
+    observedPayMetadata({ amount: '5.06' }), observedPayMetadata({ currency: 'USD' }),
+    observedPayMetadata({ address: 'PRIVATE UNEXPECTED FIELD' })]) {
+    const report = describeEnhancedCheckoutReadiness({ guest_pay_metadata: metadata });
+    assert.equal(report.public_pay_control.metadata_status, 'unverified');
+    assert.equal(report.public_pay_control.enabled, null);
+    assert.ok(report.missing_profiles.includes('verified_pay_control'));
+    assert.ok(report.missing_profiles.includes('bound_pay_dispatch_port'));
+    assert.equal(JSON.stringify(report).includes('PRIVATE'), false);
+  }
+});
+
+test('even asserted complete quote gates do not require a prior positive receipt or configure dispatch', () => {
+  const gates = Object.fromEntries(['provider_dom_qualification', 'provider_frame_and_document', 'provider_explicit_currency',
+    'provider_amount_matches_merchant', 'provider_final_all_in_total', 'final_tax_treatment', 'mandatory_charges_finality',
+    'provider_shipping_selection', 'provider_delivery_binding', 'provider_terms'].map(key => [key, true]));
+  const report = describeEnhancedCheckoutReadiness({ gates, final_quote_verified: true,
+    guest_pay_metadata: observedPayMetadata() });
+  assert.deepEqual(report.missing_evidence, []);
+  assert.deepEqual(report.missing_profiles, ['bound_pay_dispatch_port', 'verified_selected_payment_method']);
+  assert.deepEqual(report.post_submit_verification.missing_profiles, ['merchant_positive_order_dom']);
+  assert.equal(report.public_pay_control.dispatch_binding, 'unconfigured');
+  assert.equal(report.post_submit_verification.automatic_retry_allowed, false);
+});
+
+test('readiness derives missing evidence from strict gates, never from a claimed empty missing list', () => {
+  const report = describeEnhancedCheckoutReadiness({ gates: { provider_dom_qualification: 'true' }, missing_evidence: [] });
+  assert.ok(report.missing_evidence.includes('provider_dom_qualification'));
+  assert.ok(report.missing_profiles.includes('provider_final_quote_dom'));
+  assert.equal(report.missing_profiles.includes('merchant_positive_order_dom'), false);
+});
+
+test('aggregate-inclusive metadata remains immutable through the existing authoritative ledger fence', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.port.initialize()).status, 'initialized');
+  const quote = { ...f.quote, charge_basis: 'aggregate_inclusive', tax: null, fees: null, fees_absent_verified: false,
+    tax_treatment: 'included_in_final_total', fees_treatment: 'included_in_final_total',
+    deferred_charges: false, aggregate_total_verified: true };
+  const fence = createBoundEnhancedOrderFencePort(f.scope, quote, { ledgerPort: f.port });
+  for (const patch of [{ tax_treatment: 'unknown' }, { fees_treatment: 'unknown' },
+    { deferred_charges: true }, { aggregate_total_verified: false }]) {
+    const result = await fence.fencePossibleSubmit(f.scope.intent_id, { ...quote, ...patch }, f.scope);
+    assert.equal(result.code, 'immutable_order_binding_changed');
+  }
+  assert.equal((await f.port.status()).ledger, null);
+  const accepted = await fence.fencePossibleSubmit(f.scope.intent_id, quote, f.scope);
+  assert.equal(accepted.state, 'submission_unknown'); assert.equal(accepted.durable, true);
+  assert.equal((await f.port.status()).ledger.payment_state, 'unknown');
 });

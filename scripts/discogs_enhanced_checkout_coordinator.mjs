@@ -2,7 +2,8 @@
  * existing real-order ledger. No browser/runtime route, payment dispatcher,
  * new ledger, initialization or configuration switch is installed here.
  */
-import { inspectCurrentEnhancedPaymentQuote, waitForEnhancedPaymentQuoteSettlement } from './discogs_enhanced_payment_quote.mjs';
+import { inspectCurrentEnhancedPaymentQuote, waitForEnhancedPaymentQuoteSettlement,
+  sanitizeGuestPayMetadata } from './discogs_enhanced_payment_quote.mjs';
 import { attemptEnhancedPayment } from './discogs_enhanced_payment_adapter.mjs';
 import { createEnhancedOrderLedgerPort } from './discogs_enhanced_order_ledger_port.mjs';
 import * as merchantEvidence from './discogs_merchant_order_evidence.mjs';
@@ -19,7 +20,8 @@ const SCOPE_KEYS = ['intent_id', 'approval_ref', 'release_id', 'listing_id', 'se
 const QUOTE_KEYS = new Set(['source', 'intent_id', 'release_id', 'listing_id', 'seller', 'rules_revision', 'quantity', 'currency',
   'quote_fingerprint', 'destination_ref', 'payment_ref', 'final_quote_verified', 'all_payable_charges_included', 'payment_action',
   'shipping_selection_verified', 'selected_shipping_ref', 'selected_shipping_label', 'observed_at', 'expires_at',
-  'item', 'shipping', 'tax', 'fees', 'fees_absent_verified', 'total']);
+  'item', 'shipping', 'tax', 'fees', 'fees_absent_verified', 'total', 'charge_basis',
+  'tax_treatment', 'fees_treatment', 'deferred_charges', 'aggregate_total_verified']);
 const PAGE_KEYS = ['order_id', 'release_id', 'listing_id', 'seller', 'total', 'currency', 'displayed_status', 'observed_at', 'source'];
 const PAYMENT_STATUSES = new Set(['Invoice Sent', 'Payment Pending', 'Payment Received', 'In Progress', 'Shipped']);
 const QUOTE_GAPS = new Set(['provider_dom_qualification', 'provider_frame_and_document', 'provider_explicit_currency',
@@ -41,6 +43,37 @@ const immutable = value => {
   if (value && typeof value === 'object') { for (const item of Object.values(value)) immutable(item); Object.freeze(value); }
   return value;
 };
+
+/** Report separate stages, not authority to execute. The known public control
+ * can be observed while quote/method/delivery remain unverified. A qualified
+ * dispatch port is distinct from that metadata. Positive merchant receipt
+ * evidence belongs after a possible submission, never before that same order.
+ */
+export function describeEnhancedCheckoutReadiness(quote) {
+  const metadata = sanitizeGuestPayMetadata(quote?.guest_pay_metadata);
+  const observed = metadata?.status === 'observed';
+  const enabled = observed && metadata.submit_enabled === true;
+  const missingEvidence = [...QUOTE_GAPS].filter(key => quote?.gates?.[key] !== true);
+  const missingProfiles = [
+    ...(quote?.gates?.provider_dom_qualification === true ? [] : ['provider_final_quote_dom']),
+    ...(quote?.gates?.provider_frame_and_document === true ? [] : ['provider_quote_frame_association']),
+    ...(quote?.gates?.provider_delivery_binding === true ? [] : ['provider_delivery_destination']),
+    ...(quote?.gates?.provider_terms === true ? [] : ['provider_terms']),
+    ...(enabled ? [] : ['verified_pay_control']),
+    'bound_pay_dispatch_port', 'verified_selected_payment_method',
+  ];
+  return {
+    missing_evidence: missingEvidence, missing_profiles: missingProfiles,
+    public_pay_control: { metadata_status: observed ? 'observed' : 'unverified',
+      enabled: observed ? metadata.submit_enabled : null, dispatch_binding: 'unconfigured' },
+    post_submit_verification: { phase: 'after_possible_submission',
+      current_order_status: 'not_checked', current_payment_status: 'not_checked',
+      receipt_source_qualification: 'unqualified',
+      missing_profiles: ['merchant_positive_order_dom'],
+      uncertain_outcome_policy: 'retain_submission_unknown_no_retry',
+      automatic_retry_allowed: false },
+  };
+}
 function expectedValid(value) {
   return record(value, EXPECTED_KEYS) && [value.intent_id, value.approval_ref, value.destination_ref, value.payment_ref].every(id => UUID.test(id || '')) &&
     value.release_id === 3422100 && value.listing_id === '1366950910' && value.seller === 'Mailman21842' && value.currency === 'USD' &&
@@ -122,14 +155,8 @@ function buildCoordinator({ expectedOrder = null, ledgerPort, readQuote, readMer
       try {
         const quote = await readQuote(page, { signal, destinationMatcher });
         if (signal?.aborted) return stopped('enhanced_checkout_inspection_cancelled');
-        const missingEvidence = Array.isArray(quote?.missing_evidence) ? quote.missing_evidence.filter(key => QUOTE_GAPS.has(key)) : [];
         return { ...stopped('enhanced_checkout_readiness_report'), status: 'observed', quote,
-          missing_evidence: missingEvidence, missing_profiles: [
-            ...(!quote?.gates?.provider_dom_qualification ? ['provider_final_quote_dom'] : []),
-            ...(!quote?.gates?.provider_frame_and_document ? ['provider_quote_frame_association'] : []),
-            ...(!quote?.gates?.provider_delivery_binding ? ['provider_delivery_destination'] : []),
-            ...(!quote?.gates?.provider_terms ? ['provider_terms'] : []),
-            'verified_pay_control', 'verified_selected_payment_method', 'merchant_positive_order_dom'],
+          ...describeEnhancedCheckoutReadiness(quote),
           payment: await attemptEnhancedPayment(null, null, { enablePay: false, signal }) };
       } catch { return stopped('enhanced_checkout_inspection_unavailable'); }
     },
