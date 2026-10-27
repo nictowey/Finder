@@ -1396,3 +1396,95 @@ disposition reference and another complete order-history observation newer than
 the disposition recording. Human/legacy initialization, no-dispatch overrides
 and missing/stale disposition references cannot bypass these gates. Recording
 this disposition itself neither initializes nor submits anything.
+
+### Local Chrome compatibility observation — 2026-10-27 17:22 UTC
+
+This was an owner-authorized read-only comparison in the owner's existing local
+Chrome session, not execution of the hosted buyer or a replacement for its
+transaction ledger. The OVH browser remained at `about:blank` throughout.
+
+The current local tab was `1329047630`; the older Cart tab `1329047606` timed out
+during Chrome attachment. Selecting the freshly enumerated current tab resolved
+that local control issue. Before checkout navigation, the current cart contained
+one item, listing `1366950910`, from `Mailman21842`: Poor media, Generic sleeve,
+USD 0.10 item plus USD 4.95 Economy / Media Mail shipping, displayed Total USD
+5.05. Its saved destination was visible; no address details are retained here.
+No item was added, removed or edited.
+
+The cart control had accessibility name `Enhanced Checkout!`, visible text
+`Go to Checkout`, type `submit`, and an enabled same-origin POST form targeting
+`/sell/cart`. One activation navigated normally to
+`https://www.discogs.com/marketplace/checkout`. The first state was `Loading your
+checkout details`. A broad settled-page read was initially denied because it
+could expose populated payment fields. The owner then confirmed `Nothing
+filled in`; the one authorized retry succeeded. No input values were deliberately
+retrieved or retained, and no payment control was activated.
+
+The settled local page showed `Checkout from Mailman21842`, `My Shipping Address`,
+`Items (1)`, the KC title with `7", 45 RPM, Single, Stereo`, Poor / Generic,
+Subtotal USD 0.10, `Shipping via Economy - Media Mail` USD 4.95 and Total USD
+5.05. The provider Payment Button accessibility subtree exposed separate
+`PayPal` and `Debit or Credit Card` links. No guest-card form or Pay control was
+opened in this pass. The currency/total are the merchant's displayed aggregate;
+there was no separate tax row, so no zero-tax or provider-final-charge inference
+is made.
+
+These visible labels and the route agree with the existing enhanced checkout
+collector's seller-heading, shipping-label and USD-money contracts. The local
+cart accessibility name differs from its visible button text; the hosted
+preparation code correctly binds the visible `Go to Checkout` label rather than
+assuming that accessibility name. This inspection did not execute those
+collectors or verify their full DOM selectors, provider frame origins/ancestry,
+guest initialization, final payment method/amount, receipt parsing or payment.
+A bounded public iframe-metadata read did not establish the provider origin;
+it must not be presented as qualified frame provenance.
+
+Immediately before this cart pass, local Purchases at
+`/sell/purchases?archived=A&status=All&limit=50` showed Archived All / Status All,
+`0–0 of 0` and `No orders found` at 17:11:34 UTC. No post-navigation history read
+was made. Local history alone does not resolve the original cloud unknown
+transaction or authorize disposition 65; its existing records remain unchanged.
+Only non-order-creating navigation was exercised. Order creation, payment and
+end-to-end checkout success remain unverified.
+
+#### Authorized local guest-form inspection — 2026-10-27 17:26 UTC
+
+The owner subsequently authorized one continuation to the blank guest-card form,
+without entry or payment. The visible PayPal buttons iframe was owned by the
+merchant checkout's `zoid-paypal-buttons-…` container. Within it, exactly one
+visible `DIV` had `role="link"`, `data-funding-source="card"`,
+`aria-label="Debit or Credit Card"` and `aria-disabled="false"`. One click on
+that control opened a visible nested iframe titled `paypal_card_form`, owned
+by a `zoid-paypal-card-form-…` container inside the buttons frame. This establishes
+the observed DOM containment and fixed-control association, not independent
+origin verification: the outer provider iframe had no `src` attribute, and the
+supported document-metadata projection did not yield a qualified origin. No
+hidden application state, provider endpoint or query token was inspected to
+fill that gap.
+
+The guest-frame collection was restricted to public labels, control IDs/types,
+autocomplete categories, visibility and button text. It never read input values
+or selected billing/address values. A CSS autofill-state check ran before each
+public metadata collection; it detected no autofill state. That is not an
+assertion that every field was empty or that no payment data existed in browser
+storage. No full guest-frame accessibility dump or screenshot was taken.
+
+Public field labels were Email, Card number, Expires, CSC, country, First name,
+Last name, Street address, Apt./suite/building, City, State, ZIP code, Mobile and
+Ship to billing address. The fixed controls were an enabled
+`button#submit-button[type="button"]` with text `Pay $5.05`, and a separate
+button labelled `Cancel and go back`. Neither was clicked. The bounded public
+notice query returned only `Billing address`; this does not establish absence
+of other terms or notices. Shipping-checkbox state, selected destination,
+funding method, provider currency/conversion, final-charge treatment and new
+terms remain unverified.
+
+This agrees with the previously observed hosted two-hop guest → buttons →
+merchant structure and fixed Pay control. It is local browser compatibility
+evidence, not a live exercise of the hosted execution adapter or its durable
+fence. The provider initialization may have created a provider draft; that state
+was not inspected. No post-initialization merchant history check was made and
+no merchant order or payment outcome is asserted. No card information was
+entered or requested, Pay/Place order was not invoked, and the local form was
+left open. The OVH blank tab and its original ledger/unknown outcome remain
+untouched.
