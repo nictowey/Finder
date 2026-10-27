@@ -129,6 +129,11 @@ const FORM_DISPOSITION_KEYS = ['type', 'source', 'previous_claim_sha256', 'previ
   'dismissal_kind', 'sdk_close_verified', 'dismissal_observed_at', 'current_form_present', 'current_url',
   'normal_route_verified', 'current_observed_at', 'order_history_url', 'order_history_archived', 'order_history_status',
   'order_history_count', 'order_history_complete', 'order_history_observed_at', 'reviewed_at', 'expires_at'];
+const FORM_OBSERVATION_KEYS = ['type', 'source', 'previous_claim_sha256', 'previous_outcome_sha256',
+  'intent_id', 'ready_ref', 'scope_digest', 'scope', 'checkout_document_ref', 'current_document_ref',
+  'document_continuity_verified', 'current_url', 'access', 'blank_form_visible', 'card_fields_blank',
+  'payment_controls_untouched', 'displayed_pay_amount', 'displayed_merchant_total', 'currency',
+  'observed_at', 'expires_at', 'merchant_order_status', 'payment_status', 'provider_draft_status'];
 const CLAIM_PROVENANCE_KEYS = ['source', 'navigation', 'scope_digest', 'cart_document_ref', 'checkout_document_ref',
   'cart_observed_at', 'checkout_observed_at', 'cart_scope_verified', 'go_to_checkout_verified',
   'history_restore', 'resubmission_prompt', 'extra_agreement_required'];
@@ -140,6 +145,7 @@ const OUTCOMES = ['guest_form_visible', 'SESSION_EXPIRED', 'unknown', 'access_re
 const CLAIM_STOP_REASONS = new Map([
   ...['authorization_unverified', 'test_authorization_unverified', 'scope_or_quote_unverified', 'provenance_unverified',
     'reconciliation_required', 'prior_attempt_unresolved', 'prior_no_dispatch_unverified', 'form_disposition_unverified',
+    'form_observation_unverified',
     'ready_replayed', 'incomplete_claim', 'claim_expired', 'claim_changed',
     'legacy_changed', 'operator_ledger_changed'].map(value => [value, value]),
   ['invalid_legacy_chain', 'legacy_changed'],
@@ -150,6 +156,7 @@ const CLAIM_STOP_REASONS = new Map([
 
 function requireResolvedPreviousAttempt(state, definitiveNoDispatch = false, reviewedFormDisposition = false) {
   if (['ready', 'review'].includes(state.records.at(-1)?.value.kind)) throw new Error('incomplete_claim');
+  if (state.records.at(-1)?.value.kind === 'form_observation') throw new Error('prior_attempt_unresolved');
   const index = state.records.findLastIndex(item => item.value.kind === 'attempt');
   if (index < 0) return;
   const outcome = state.records[index + 1]?.value;
@@ -186,6 +193,37 @@ function validateFormDisposition(value, state, now = Date.now() / 1000) {
         outcome.value.recorded_at < value.order_history_observed_at && value.order_history_observed_at <= value.reviewed_at &&
         value.reviewed_at <= now && now - value.order_history_observed_at < 300 && now < value.expires_at &&
         value.expires_at - value.reviewed_at <= 300)) throw new Error('form_disposition_unverified');
+}
+
+/** A fresh operator observation, never an order receipt, payment result or retry permit.
+ * document refs are existing claim provenance; continuity must be observed by the
+ * trusted operator, not inferred from matching URLs or copied fixture metadata.
+ */
+function validateFormObservation(value, state, now = Date.now() / 1000) {
+  const index = state.records.findLastIndex(item => item.value.kind === 'attempt');
+  const attempt = state.records[index], outcome = state.records[index + 1], review = state.records[index - 1];
+  const scope = value?.scope;
+  if (!metadataOnly(value) || !shape(value, FORM_OBSERVATION_KEYS) ||
+      value.type !== 'record_form_observation' || value.source !== 'operator_verified_current_blank_form' ||
+      attempt?.value.payload.mode !== 'current_checkout_claim' || review?.value.kind !== 'review' ||
+      outcome?.value.kind !== 'outcome' || outcome.value.payload.outcome !== 'unknown' || state.head !== outcome.hash ||
+      value.previous_claim_sha256 !== attempt.hash || value.previous_outcome_sha256 !== outcome.hash ||
+      ['intent_id', 'ready_ref', 'scope_digest'].some(key => value[key] !== attempt.value.payload[key]) ||
+      guestCardScopeDigest(scope, { now: scope?.issued_at }) !== value.scope_digest ||
+      scope?.intent_id !== value.intent_id || scope?.release_id !== 3422100 || scope?.listing_id !== '1366950910' ||
+      scope?.seller !== 'Mailman21842' || scope?.quantity !== 1 || scope?.currency !== 'USD' || scope?.max_total !== '5.05' ||
+      !uuid(value.checkout_document_ref) || value.checkout_document_ref !== review.value.payload.provenance?.checkout_document_ref ||
+      value.current_document_ref !== value.checkout_document_ref || value.document_continuity_verified !== true ||
+      value.current_url !== GUEST_CARD_URL || value.access !== 'normal' || value.blank_form_visible !== true ||
+      value.card_fields_blank !== true || value.payment_controls_untouched !== true ||
+      value.displayed_pay_amount !== '5.05' || value.displayed_merchant_total !== '5.05' || value.currency !== 'USD' ||
+      ['merchant_order_status', 'payment_status', 'provider_draft_status'].some(key => value[key] !== 'unverified') ||
+      !num(value.observed_at) || !num(value.expires_at) || !num(outcome.value.payload.observed_at) ||
+      !(Math.max(outcome.value.recorded_at, outcome.value.payload.observed_at) <= value.observed_at &&
+        value.observed_at <= now && now - value.observed_at < 60 && now < value.expires_at &&
+        value.expires_at > value.observed_at && value.expires_at - value.observed_at <= 60)) {
+    throw new Error('form_observation_unverified');
+  }
 }
 
 function validatePriorFormDisposition(reference, state, prior, scope) {
@@ -291,7 +329,7 @@ export async function runCurrentCheckoutClaim({ mode = 'claim', directory = '/st
   let lock;
   const emit = value => new Promise((resolve, reject) => output.write(encoded(value), error => error ? reject(error) : resolve()));
   try {
-    if (!['claim', 'outcome', 'disposition'].includes(mode)) throw new Error('invalid_mode');
+    if (!['claim', 'outcome', 'disposition', 'observation'].includes(mode)) throw new Error('invalid_mode');
     let text = '';
     for await (const chunk of input) {
       text += chunk.toString(); if (Buffer.byteLength(text) > 16_384) throw new Error('invalid_input');
@@ -300,6 +338,20 @@ export async function runCurrentCheckoutClaim({ mode = 'claim', directory = '/st
     if (!metadataOnly(value)) throw new Error('invalid_input');
     await privateDirectory(directory); lock = await lockDirectory(directory);
     const anchor = await anchors(directory), state = await ledger(directory, anchor);
+    if (mode === 'observation') {
+      const last = state.records.at(-1);
+      if (last?.value.kind === 'form_observation' && shape(value, FORM_OBSERVATION_KEYS) &&
+          encoded(last.value.payload) === encoded(value)) {
+        await emit({ type: 'form_observation_recorded', observation_sha256: last.hash, duplicate: true,
+          init_allowed: false, no_submit_init_allowed: false, merchant_order_status: 'unverified',
+          payment_status: 'unverified', provider_draft_status: 'unverified' }); return 0;
+      }
+      validateFormObservation(value, state);
+      const observationHash = await append(directory, state, anchor, 'form_observation', { ...value });
+      await emit({ type: 'form_observation_recorded', observation_sha256: observationHash, duplicate: false,
+        init_allowed: false, no_submit_init_allowed: false, merchant_order_status: 'unverified',
+        payment_status: 'unverified', provider_draft_status: 'unverified' }); return 0;
+    }
     if (mode === 'disposition') {
       const last = state.records.at(-1);
       if (last?.value.kind === 'disposition' && shape(value, FORM_DISPOSITION_KEYS) &&
@@ -441,16 +493,17 @@ async function ledger(directory, anchor) {
         value.schema !== 'discogs_guest_operator_record_v1' || value.sequence !== i + 1 ||
         value.previous_sha256 !== head || value.legacy_anchor_sha256 !== anchor.hash || !num(value.recorded_at) ||
         !p || !uuid(p.intent_id) || !uuid(p.ready_ref) || !hash(p.scope_digest) ||
-        !['ready', 'review', 'attempt', 'outcome', 'disposition'].includes(value.kind)) throw new Error('invalid_ledger');
+        !['ready', 'review', 'attempt', 'outcome', 'disposition', 'form_observation'].includes(value.kind)) throw new Error('invalid_ledger');
     if (value.kind === 'ready') group = { intent: p.intent_id, ready: p.ready_ref, scope: p.scope_digest, kind: 'ready' };
     else {
       if (!group || group.intent !== p.intent_id || group.ready !== p.ready_ref || group.scope !== p.scope_digest ||
-          ({ review: 'ready', attempt: 'review', outcome: 'attempt', disposition: 'outcome' })[value.kind] !== group.kind ||
+          ({ review: 'ready', attempt: 'review', outcome: 'attempt', disposition: 'outcome', form_observation: 'outcome' })[value.kind] !== group.kind ||
           value.kind === 'attempt' && p.review_sha256 !== head ||
           value.kind === 'outcome' && p.attempt_sha256 !== head) throw new Error('invalid_ledger_transition');
       group.kind = value.kind;
     }
     if (value.kind === 'disposition') validateFormDisposition(p, { records, head }, value.recorded_at);
+    if (value.kind === 'form_observation') validateFormObservation(p, { records, head }, value.recorded_at);
     records.push(item); head = item.hash;
   }
   return { records, head };
@@ -471,7 +524,8 @@ export async function inspectGuestCheckoutLedger({ directory = '/state' } = {}) 
       allowed = false; noSubmitAllowed = false;
       if (outcome?.kind !== 'outcome') status = 'pending_attempt';
       else if (outcome.payload.outcome === 'SESSION_EXPIRED') { status = 'known_session_expired'; allowed = true; noSubmitAllowed = true; }
-      else if (outcome.payload.outcome === 'unknown') status = 'unknown_outcome';
+      else if (outcome.payload.outcome === 'unknown') status = disposition?.kind === 'form_observation' ?
+        'guest_form_observed_repeat_blocked' : 'unknown_outcome';
       else if (outcome.payload.outcome === 'access_restricted') status = 'access_restricted';
       else if (outcome.payload.outcome === 'guest_form_visible') {
         status = disposition?.kind === 'disposition' ? 'reviewed_form_disposition' : 'guest_form_visible';
@@ -497,6 +551,7 @@ async function append(directory, state, anchor, kind, payload) {
   const value = { schema: 'discogs_guest_operator_record_v1', sequence, kind,
     previous_sha256: state.head, legacy_anchor_sha256: anchor.hash, recorded_at: Date.now() / 1000, payload };
   if (kind === 'disposition') validateFormDisposition(payload, state, value.recorded_at);
+  if (kind === 'form_observation') validateFormObservation(payload, state, value.recorded_at);
   const bytes = encoded(value), name = `guest-checkout-${String(sequence).padStart(6, '0')}.json`;
   const parent = await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try {
@@ -684,9 +739,10 @@ export async function checkOperatorTransport(input = process.stdin, output = pro
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  if (process.argv.length === 3 && ['--claim-current-checkout', '--record-claim-outcome', '--record-form-disposition'].includes(process.argv[2])) {
+  if (process.argv.length === 3 && ['--claim-current-checkout', '--record-claim-outcome', '--record-form-disposition', '--record-form-observation'].includes(process.argv[2])) {
     process.exit(await runCurrentCheckoutClaim({ mode: process.argv[2] === '--claim-current-checkout' ? 'claim' :
-      process.argv[2] === '--record-form-disposition' ? 'disposition' : 'outcome' }));
+      process.argv[2] === '--record-form-disposition' ? 'disposition' :
+        process.argv[2] === '--record-form-observation' ? 'observation' : 'outcome' }));
   }
   if (process.argv.length === 3 && process.argv[2] === '--transport-check') {
     process.exit(await checkOperatorTransport());

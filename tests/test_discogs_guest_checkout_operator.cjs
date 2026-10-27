@@ -825,6 +825,110 @@ async function visibleFormDispositionFixture(directory) {
   return { at, claim, disposition };
 }
 
+async function unknownFormObservationFixture(directory, outcomeDelayMs = 1000) {
+  const at = 1_800_000_000_000;
+  const claim = noSubmitAuthorization(await currentClaim(directory, { now: at / 1000 }), at / 1000);
+  const granted = await oneShot(directory, claim, { now: at });
+  assert.equal(granted.message.type, 'checkout_claim_granted');
+  const outcome = { ...outcomeFor(claim, granted.message, 'unknown'), observed_at: (at + outcomeDelayMs) / 1000 };
+  assert.equal((await oneShot(directory, outcome, { mode: 'outcome', now: at + outcomeDelayMs })).code, 0);
+  const observation = { type: 'record_form_observation', source: 'operator_verified_current_blank_form',
+    previous_claim_sha256: granted.message.claim_sha256,
+    previous_outcome_sha256: hash(await readFile(join(directory, 'guest-checkout-000004.json'))),
+    intent_id: claim.scope.intent_id, ready_ref: claim.ready_ref, scope_digest: claim.provenance.scope_digest,
+    scope: { ...claim.scope }, checkout_document_ref: claim.provenance.checkout_document_ref,
+    current_document_ref: claim.provenance.checkout_document_ref, document_continuity_verified: true,
+    current_url: helper.GUEST_CARD_URL, access: 'normal', blank_form_visible: true, card_fields_blank: true,
+    payment_controls_untouched: true, displayed_pay_amount: '5.05', displayed_merchant_total: '5.05', currency: 'USD',
+    observed_at: (at + outcomeDelayMs + 1000) / 1000, expires_at: (at + outcomeDelayMs + 61000) / 1000,
+    merchant_order_status: 'unverified', payment_status: 'unverified', provider_draft_status: 'unverified' };
+  return { at, claim, granted: granted.message, observation };
+}
+
+test('a visible-form observation blocks even an otherwise matching prior-no-dispatch override', async () => stateFixture(async directory => {
+  const { at, claim, granted, observation } = await unknownFormObservationFixture(directory, 301000);
+  assert.equal((await oneShot(directory, observation, { mode: 'observation', now: at + 303000 })).code, 0);
+  const next = noSubmitAuthorization(await currentClaim(directory, { now: (at + 304000) / 1000 }), (at + 304000) / 1000);
+  next.priorNoDispatch = { source: 'operator_reviewed_supported_cua_no_dispatch',
+    previous_claim_sha256: granted.claim_sha256, previous_outcome_sha256: observation.previous_outcome_sha256,
+    request_id: granted.permit.request_id, actor_result: 'expired_before_effect', clicked: false,
+    observed_at: granted.permit.deadline / 1000 + 0.001, card_data_entered: false,
+    pay_invoked: false, approval_invoked: false, capture_invoked: false };
+  next.priorFailure.failure_observed_at = claim.priorFailure.failure_observed_at;
+  assert.equal((await oneShot(directory, next, { now: at + 304000 })).message.stop_reason, 'prior_attempt_unresolved');
+  assert.equal((await audits(directory)).length, 5);
+}, { now: 1_800_000_000_000 }));
+
+test('blank form observation preserves unknown outcome, blocks every retry path and survives fresh process inspection', async () => stateFixture(async directory => {
+  const { at, observation } = await unknownFormObservationFixture(directory);
+  const before = await audits(directory);
+  const recorded = await oneShot(directory, observation, { mode: 'observation', now: at + 3000 });
+  assert.equal(recorded.message.type, 'form_observation_recorded');
+  assert.equal(recorded.message.duplicate, false); assert.equal(recorded.message.init_allowed, false);
+  assert.equal(recorded.message.no_submit_init_allowed, false);
+  const after = await audits(directory);
+  assert.deepEqual(after.slice(0, 4), before); assert.equal(after[3].payload.outcome, 'unknown');
+  assert.equal(after[4].kind, 'form_observation');
+  const restarted = spawnSync(process.execPath, ['--input-type=module', '-e',
+    `import {inspectGuestCheckoutLedger} from ${JSON.stringify(moduleURL)};
+     console.log(JSON.stringify(await inspectGuestCheckoutLedger({directory:process.argv[1]})));`, directory], { encoding: 'utf8' });
+  assert.equal(restarted.status, 0);
+  const gate = JSON.parse(restarted.stdout);
+  assert.equal(gate.state, 'guest_form_observed_repeat_blocked'); assert.equal(gate.record_count, 5);
+  assert.equal(gate.init_allowed, false); assert.equal(gate.no_submit_init_allowed, false);
+  const next = noSubmitAuthorization(await currentClaim(directory, { now: (at + 7000) / 1000 }), (at + 7000) / 1000);
+  assert.equal((await oneShot(directory, next, { now: at + 7000 })).message.stop_reason, 'prior_attempt_unresolved');
+  const legacy = client(directory);
+  try {
+    const start = startFor(await legacy.next()); legacy.send(start);
+    assert.equal((await legacy.next()).type, 'stopped'); await legacy.exited;
+    assert.ok(!legacy.output.join('').includes('operator_action'));
+  } finally { await legacy.close(); }
+  assert.equal((await audits(directory)).length, 5);
+}, { now: 1_800_000_000_000 }));
+
+test('form observation rejects wrong claim, stale/replaced document, scope/amount mismatch and invented outcomes', async () => stateFixture(async directory => {
+  const { at, observation } = await unknownFormObservationFixture(directory);
+  for (const patch of [{ previous_claim_sha256: 'a'.repeat(64) }, { previous_outcome_sha256: 'b'.repeat(64) },
+    { current_document_ref: randomUUID() }, { checkout_document_ref: randomUUID() }, { document_continuity_verified: false },
+    { scope: { ...observation.scope, listing_id: '1366950911' } }, { displayed_pay_amount: '5.06' },
+    { displayed_merchant_total: '5.06' }, { currency: 'CAD' }, { card_fields_blank: false },
+    { payment_controls_untouched: false }, { access: 'challenge' }, { blank_form_visible: false },
+    { merchant_order_status: 'none' }, { payment_status: 'unpaid' }, { provider_draft_status: 'none' },
+    { observed_at: (at - 1000) / 1000 }, { observed_at: (at + 4000) / 1000 },
+    { expires_at: (at + 63000) / 1000 }, { secret_card_number: 'SYNTHETIC_NEVER_LOG' }]) {
+    const result = await oneShot(directory, { ...observation, ...patch }, { mode: 'observation', now: at + 3000 });
+    assert.equal(result.message.stop_reason, 'form_observation_unverified');
+    assert.ok(!result.output.includes('SYNTHETIC_NEVER_LOG'));
+    assert.equal((await audits(directory)).length, 4);
+  }
+  assert.equal((await oneShot(directory, observation, { mode: 'observation', now: at + 62000 })).message.stop_reason,
+    'form_observation_unverified');
+}, { now: 1_800_000_000_000 }));
+
+test('form observation exact replay is idempotent after restart/expiry, changed replay cannot append', async () => stateFixture(async directory => {
+  const { at, observation } = await unknownFormObservationFixture(directory);
+  const recorded = await oneShot(directory, observation, { mode: 'observation', now: at + 3000 });
+  const replay = await oneShot(directory, observation, { mode: 'observation', now: at + 120000 });
+  assert.equal(replay.message.duplicate, true);
+  assert.equal(replay.message.observation_sha256, recorded.message.observation_sha256);
+  assert.equal((await oneShot(directory, { ...observation, observed_at: (at + 3000) / 1000 },
+    { mode: 'observation', now: at + 4000 })).message.stop_reason, 'form_observation_unverified');
+  assert.equal((await audits(directory)).length, 5);
+}, { now: 1_800_000_000_000 }));
+
+test('concurrent observations append at most once and tampered history remains blocked', async () => stateFixture(async directory => {
+  const { at, observation } = await unknownFormObservationFixture(directory);
+  const results = await Promise.all([oneShot(directory, observation, { mode: 'observation', now: at + 3000 }),
+    oneShot(directory, observation, { mode: 'observation', now: at + 3000 })]);
+  assert.equal(results.filter(result => result.message.type === 'form_observation_recorded' && !result.message.duplicate).length, 1);
+  assert.equal((await audits(directory)).length, 5);
+  const name = join(directory, 'guest-checkout-000005.json'), item = JSON.parse(await readFile(name, 'utf8'));
+  item.payload.current_document_ref = randomUUID(); await writeFile(name, encoded(item));
+  const gate = await operator.inspectGuestCheckoutLedger({ directory });
+  assert.equal(gate.state, 'unverified'); assert.equal(gate.init_allowed, false); assert.equal(gate.no_submit_init_allowed, false);
+}, { now: 1_800_000_000_000 }));
+
 test('reviewed visible SDK dismissal appends disposition, preserves history and requires explicit new no-submit reconciliation', async () => stateFixture(async directory => {
   const { at, claim: originalClaim, disposition } = await visibleFormDispositionFixture(directory);
   const names = (await readdir(directory)).sort(), before = await Promise.all(names.map(name => readFile(join(directory, name))));

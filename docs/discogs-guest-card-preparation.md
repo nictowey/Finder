@@ -1301,3 +1301,43 @@ checkout/control/authorization revalidation before dispatch remain mandatory.
 This is a narrow timing mitigation with offline regressions, not proof of the
 historical timing cause or a completed payment. A fresh reviewed one-use no-submit
 test, with complete order reconciliation, is still required for live proof.
+
+### Append-only blank-form observation after a dispatched initialization
+
+The `dd25f0e` fixed server path subsequently reached a blank guest form in a
+bounded no-submit test. Batched destination confirmation and preparation removed
+operator round trips inside the original freshness window: confirmation took
+0.325 seconds and preparation took 5.835 seconds, beginning with 50.264 seconds
+of destination freshness and 34.011 seconds of policy validity remaining.
+The visible merchant aggregate was USD 5.05 and the provider button read
+`Pay $5.05`. No card data was entered and Pay was not clicked. A separate normal
+Purchases tab showed Archived All / Status All, 0–0 of 0 orders. This is one
+live server preparation result, not a payment test, proof of a missing provider
+draft or a repeatability claim.
+
+The server deliberately records `unknown` after initialization until the form
+has been separately observed. `--record-form-observation` adds a metadata-only
+`form_observation` record after that exact unknown outcome; neither earlier
+record is replaced. It binds original claim/outcome hashes, the original scope
+digest, and the checkout document reference retained in claim provenance. A
+trusted operator must freshly attest same-document continuity without navigation
+or reload, a normal visible blank form, untouched payment controls and matching
+merchant/pay aggregates. A URL match alone cannot establish document continuity.
+The USD binding comes from the merchant aggregate; the bare Pay label does not
+independently verify provider currency, final tax treatment or a payable quote.
+No card values or address details belong in this record. Merchant order,
+payment and provider draft statuses must remain `unverified`.
+
+The observation expires for new recording after at most 60 seconds. Exact replay
+is an idempotent acknowledgement of the existing record even after expiry, never
+fresh evidence. Process restart rereads and validates the full immutable chain.
+The resulting status is `guest_form_observed_repeat_blocked`; both initialization
+flags remain false, including when an older no-dispatch override is supplied.
+This transition does not support dismissal, authorize another initialization or
+resolve provider/merchant transaction state. Those require separately reviewed
+evidence and any necessary additional transition.
+
+A standalone reviewed helper can append this record without restarting or
+changing the browser. A running older helper that does not recognize the new
+kind fails closed as an unverified ledger. Do not restart an open payment form
+merely to make the old reader recognize observational evidence.
