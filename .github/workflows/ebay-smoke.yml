@@ -24,6 +24,10 @@ on:
       - "tests/**"
       - "config/monitors.toml"
       - "pyproject.toml"
+      - "deployment/Dockerfile"
+      - ".dockerignore"
+      - "scripts/check_cloud_container.sh"
+      - "scripts/discogs_*.mjs"
 
 permissions:
   contents: read
@@ -82,6 +86,18 @@ jobs:
           python scripts/prepare_local_ui_check.py "$RUNNER_TEMP/finder-local-ui"
           node tests/test_local_ui.cjs "$RUNNER_TEMP/finder-local-ui/index.html" "$RUNNER_TEMP/finder-local-ui/snapshot.json"
           python scripts/check_local_review_flow.py
+
+      - name: Exercise private Discogs rules and UI without providers
+        env:
+          EBAY_ENVIRONMENT: ''
+          PYTHONPATH: src
+        run: |
+          python -m pytest -q tests/test_discogs_listing.py tests/test_discogs_rules.py tests/test_discogs_web.py tests/test_cloud_app.py tests/test_discogs_monitor.py tests/test_execution_guard.py tests/test_discogs_cart_claims.py tests/test_discogs_candidate_pipeline.py
+          python scripts/check_cloud_owner_flow.py
+          node --test --test-concurrency=1 tests/test_discogs_cart_inspector.cjs tests/test_discogs_cart_prepare.cjs tests/test_discogs_cart_browser_adapter.cjs tests/test_discogs_listing_release_dom.cjs tests/test_discogs_listing_detail_dom.cjs tests/test_discogs_rule_cart_gate.cjs tests/test_discogs_no_order_rehearsal.cjs tests/test_discogs_hosted_readonly.cjs tests/test_discogs_hosted_browser_runtime.cjs tests/test_discogs_hosted_payment_runtime.cjs tests/test_discogs_hosted_payment_control.cjs tests/test_discogs_hosted_guest_prepare.cjs tests/test_discogs_hosted_guest_socket.cjs tests/test_discogs_hosted_guest_qualification.cjs tests/test_discogs_browser_memory.cjs tests/test_discogs_browser_request_diagnostics.cjs tests/test_discogs_release_snapshot.cjs tests/test_discogs_hosted_cart_helper.cjs tests/test_discogs_empty_cart.cjs tests/test_discogs_hosted_order_commit.cjs tests/test_discogs_enhanced_checkout.cjs tests/test_discogs_guest_card_prepare.cjs tests/test_discogs_guest_cua_operator.cjs tests/test_discogs_guest_checkout_operator.cjs tests/test_operator_stdio_transport.cjs tests/test_discogs_enhanced_payment_quote.cjs tests/test_discogs_guest_pay_ancestry.cjs tests/test_discogs_enhanced_payment_adapter.cjs tests/test_discogs_enhanced_fixed_pay_port.cjs tests/test_discogs_enhanced_order_ledger_port.cjs tests/test_discogs_merchant_order_evidence.cjs tests/test_discogs_enhanced_checkout_coordinator.cjs
+
+      - name: Build and smoke-test isolated non-root cloud container
+        run: bash scripts/check_cloud_container.sh
 
       - name: Verify ${{ env.EBAY_ENVIRONMENT }} secrets are configured
         if: ${{ false }}

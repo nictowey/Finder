@@ -1,0 +1,13 @@
+<!doctype html><meta charset="utf-8"><title>Synthetic operator timing fixture</title>
+<style>body{font:22px system-ui;padding:35px;max-width:850px}button{padding:20px;margin:20px;font-size:22px}aside{background:#fff0b5;padding:15px}.hidden{display:none}</style>
+<aside>SYNTHETIC LOCAL FIXTURE — no Discogs requests, account, card data or payment.</aside>
+<h1 id="heading">Orders fixture</h1><p>Exact test identity / one copy / total $5.05 USD / synthetic destination matched.</p>
+<p id="state">No orders (synthetic)</p><button id="cart">Cart 1</button>
+<button id="checkout" class="hidden">Go to Checkout</button><button id="guest" class="hidden">Debit or Credit Card</button>
+<section id="form" class="hidden"><h2>Blank guest form fixture</h2><p>Pay $5.05 (synthetic label only; no submit control)</p></section>
+<script>
+const marks=[];function step(name){marks.push({stage:name,at:Date.now()});document.body.dataset.stage=name;document.querySelector('#state').textContent=JSON.stringify(marks);}
+document.querySelector('#cart').onclick=()=>{step('cart');document.querySelector('#heading').textContent='Cart fixture';document.querySelector('#cart').classList.add('hidden');document.querySelector('#checkout').classList.remove('hidden');};
+document.querySelector('#checkout').onclick=()=>{step('checkout');document.querySelector('#heading').textContent='Fresh checkout fixture';document.querySelector('#checkout').classList.add('hidden');document.querySelector('#guest').classList.remove('hidden');};
+document.querySelector('#guest').onclick=()=>{step('guest');document.querySelector('#guest').classList.add('hidden');document.querySelector('#form').classList.remove('hidden');};
+</script>

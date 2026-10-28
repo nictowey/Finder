@@ -1,0 +1,647 @@
+"""Opt-in exact-release observation scheduler. No checkout or background thread.
+
+The caller supplies a private fixed-action reader and explicitly calls ``tick``. This
+module does not mount a browser socket or start polling when imported. A durable
+reservation is made before each read, including across worker restarts.
+"""
+
+import json
+import os
+import socket
+import stat
+import time
+import uuid
+from pathlib import Path
+
+from finder.discogs_candidate_pipeline import CandidateStopped
+from finder.discogs_change_outbox import InAppChangeOutbox
+from finder.discogs_release_snapshots import (
+    ReleaseSnapshots,
+    RenderedReleaseSnapshot,
+    assemble_release_pages,
+)
+from finder.discogs_rules import RulesStore
+
+MIN_INTERVAL = 15 * 60
+LEASE_SECONDS = 120
+MAX_BACKOFF = 24 * 60 * 60
+MAX_RESPONSE = 262_144
+SHARED_SOCKET = Path("/var/lib/sniper/browser-bridge/sniper-read-only.sock")
+SHARED_OWNER = 10001
+WORKER_HEARTBEAT_STALE_SECONDS = 150
+# The reviewed bounded browser-lease code accepts only these IDs. This is not
+# evidence that a lease exists now, has remaining reads, or has not expired.
+REVIEWED_BROWSER_LEASE_RELEASES = frozenset({28720177, 5520534, 13053315})
+
+
+def _cloud_control(store):
+    if not store.db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cloud_control'"
+    ).fetchone():
+        return None
+    return store.db.execute("SELECT killed,revision FROM cloud_control WHERE id=1").fetchone()
+
+
+class HostedReadError(Exception):
+    def __init__(self, code, cooldown=0, *, stop=False):
+        super().__init__(code)
+        self.code, self.cooldown, self.stop = code, cooldown, stop
+
+
+class HostedSocketReader:
+    """Send only the fixed observe_release action over an owner-only local socket."""
+
+    def __init__(self, path, *, lease_read=False):
+        if type(lease_read) is not bool:
+            raise ValueError("Lease read mode must be explicit.")
+        self.path = Path(path)
+        self.lease_read = lease_read
+
+    def ready(self):
+        try:
+            info = self.path.lstat()
+            if not stat.S_ISSOCK(info.st_mode):
+                return False
+            if info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o600:
+                return True
+            if self.path != SHARED_SOCKET:
+                return False
+            parent = self.path.parent.lstat()
+            return (
+                stat.S_ISDIR(parent.st_mode)
+                and parent.st_uid == info.st_uid == SHARED_OWNER
+                and parent.st_gid == info.st_gid == os.getgid()
+                and stat.S_IMODE(parent.st_mode) == 0o2710
+                and stat.S_IMODE(info.st_mode) == 0o660
+            )
+        except OSError:
+            return False
+
+    def __call__(self, release):
+        if type(release) is not int or not 0 < release <= 9007199254740991:
+            raise ValueError("Invalid exact release ID.")
+        if not self.ready():
+            raise HostedReadError("socket_not_private", stop=True)
+        action = "operator_monitor_lease_read" if self.lease_read else "observe_release"
+        request = json.dumps({"action": action, "release_id": str(release)}) + "\n"
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(95)
+            connection.connect(str(self.path))
+            connection.sendall(request.encode())
+            with connection.makefile("rb") as stream:
+                raw = stream.readline(MAX_RESPONSE + 2)
+        if not raw.endswith(b"\n") or len(raw) > MAX_RESPONSE + 1:
+            raise HostedReadError("invalid_reader_response", stop=True)
+        try:
+            response = json.loads(raw)
+        except (ValueError, UnicodeDecodeError):
+            raise HostedReadError("invalid_reader_response", stop=True) from None
+        if (
+            not isinstance(response, dict)
+            or response.get("source") != "hosted_browser_read_only"
+            or response.get("purchase_allowed") is not False
+            or response.get("stop_required") is not True
+        ):
+            raise HostedReadError("invalid_reader_response", stop=True)
+        if response.get("status") != "observed":
+            code = response.get("code", "reader_incomplete")
+            if not isinstance(code, str) or not code.isidentifier() or len(code) > 48:
+                code = "reader_incomplete"
+            cooldown = response.get("cooldown_seconds", 0)
+            cooldown = cooldown if type(cooldown) is int and 0 <= cooldown <= MAX_BACKOFF else 0
+            raise HostedReadError(
+                code,
+                cooldown,
+                stop=code
+                in {
+                    "auth_required",
+                    "access_restricted",
+                    "unsupported_read_request",
+                    "request_timed_out",
+                    "request_disconnected",
+                    "read_cancelled",
+                    "monitor_lease_unavailable",
+                    "monitor_lease_exhausted",
+                    "monitor_lease_stopped",
+                    "unsupported_monitor_lease",
+                },
+            )
+        if self.lease_read and (
+            type(response.get("monitor_lease_remaining")) is not int
+            or not 0 <= response["monitor_lease_remaining"] < 6
+        ):
+            raise HostedReadError("invalid_monitor_lease_response", stop=True)
+        if "pages" in response:
+            if "observation" in response or not isinstance(response["pages"], list):
+                raise HostedReadError("ambiguous_page_response", stop=True)
+            try:
+                observation = RenderedReleaseSnapshot.model_validate(
+                    assemble_release_pages(release, response["pages"])
+                )
+            except ValueError:
+                raise HostedReadError("unverified_page_coverage", stop=True) from None
+        else:
+            observation = RenderedReleaseSnapshot.model_validate(response.get("observation"))
+        if observation.release_id != release or not observation.complete:
+            raise HostedReadError("incomplete_or_wrong_release", stop=True)
+        return observation.model_dump()
+
+
+class HostedReleaseScheduler:
+    """One serialized read per tick; disabled until explicitly resumed and wired."""
+
+    def __init__(
+        self,
+        database,
+        reader,
+        *,
+        clock=time.time,
+        snapshots=None,
+        candidates=None,
+        allowed_releases=None,
+    ):
+        self.database, self.reader, self.clock = database, reader, clock
+        if allowed_releases is not None:
+            allowed_releases = frozenset(allowed_releases)
+            if not allowed_releases or any(
+                type(release) is not int or not 0 < release <= 9007199254740991
+                for release in allowed_releases
+            ):
+                raise ValueError("Worker scope requires exact release IDs.")
+        self.allowed_releases = allowed_releases
+        self.snapshots = snapshots or ReleaseSnapshots(database, clock=clock)
+        self.outbox = InAppChangeOutbox(database, clock=clock)
+        self.candidates = candidates
+        store = RulesStore(database)
+        try:
+            with store.db:
+                store.db.executescript("""
+                    CREATE TABLE IF NOT EXISTS discogs_hosted_schedule (
+                        id INTEGER PRIMARY KEY CHECK(id=1), paused INTEGER NOT NULL DEFAULT 1,
+                        revision INTEGER NOT NULL DEFAULT 0, next_request REAL NOT NULL DEFAULT 0,
+                        lease_token TEXT, lease_until REAL NOT NULL DEFAULT 0,
+                        last_error TEXT);
+                    INSERT OR IGNORE INTO discogs_hosted_schedule(id) VALUES(1);
+                    CREATE TABLE IF NOT EXISTS discogs_hosted_due (
+                        release_id INTEGER PRIMARY KEY, next_due REAL NOT NULL DEFAULT 0,
+                        failures INTEGER NOT NULL DEFAULT 0,
+                        last_status TEXT NOT NULL DEFAULT 'waiting',
+                        last_attempt REAL);
+                    CREATE TABLE IF NOT EXISTS discogs_monitor_releases (
+                        release_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL
+                        CHECK(enabled IN (0,1)));
+                    CREATE TABLE IF NOT EXISTS discogs_hosted_worker_status (
+                        id INTEGER PRIMARY KEY CHECK(id=1),
+                        run_id TEXT NOT NULL,
+                        scope_json TEXT NOT NULL,
+                        started_at REAL NOT NULL,
+                        heartbeat_at REAL NOT NULL,
+                        last_tick_at REAL,
+                        last_tick_status TEXT,
+                        stopped_at REAL,
+                        stop_reason TEXT);
+                    CREATE TABLE IF NOT EXISTS cloud_control (
+                        id INTEGER PRIMARY KEY CHECK(id=1),
+                        killed INTEGER NOT NULL CHECK(killed IN(0,1)),
+                        revision INTEGER NOT NULL DEFAULT 0);
+                    INSERT OR IGNORE INTO cloud_control VALUES(1,1,0);
+                """)
+        finally:
+            store.close()
+
+    def set_monitor_release(self, release_id, enabled, *, expected_rules_revision):
+        """Save an ID-only read target; never create an implicit buying rule."""
+        if (
+            type(release_id) is not int
+            or not 0 < release_id <= 9007199254740991
+            or type(enabled) is not bool
+            or type(expected_rules_revision) is not int
+        ):
+            raise ValueError("An exact release, enabled flag and rules revision are required.")
+        store = RulesStore(self.database)
+        try:
+            with store.db:
+                store.db.execute("BEGIN IMMEDIATE")
+                if store.snapshot()["revision"] != expected_rules_revision:
+                    raise RuntimeError("Saved state changed.")
+                paused = store.db.execute(
+                    "SELECT paused FROM discogs_hosted_schedule WHERE id=1"
+                ).fetchone()
+                if not paused or paused[0] != 1:
+                    raise RuntimeError("Pause monitoring before editing read targets.")
+                store.db.execute(
+                    "INSERT INTO discogs_monitor_releases(release_id,enabled) VALUES(?,?) "
+                    "ON CONFLICT(release_id) DO UPDATE SET enabled=excluded.enabled",
+                    (release_id, int(enabled)),
+                )
+                store.db.execute("UPDATE state SET revision=revision+1")
+            return store.snapshot()["revision"]
+        finally:
+            store.close()
+
+    def set_paused(self, paused, *, expected_revision):
+        if type(paused) is not bool or type(expected_revision) is not int:
+            raise ValueError("Explicit pause and revision required.")
+        store = RulesStore(self.database)
+        try:
+            with store.db:
+                store.db.execute("BEGIN IMMEDIATE")
+                result = store.db.execute(
+                    "UPDATE discogs_hosted_schedule SET paused=?,revision=revision+1 "
+                    "WHERE id=1 AND revision=?",
+                    (int(paused), expected_revision),
+                )
+                if result.rowcount != 1:
+                    raise RuntimeError("Scheduler state changed.")
+            return self.health()
+        finally:
+            store.close()
+
+    def reconcile_outbox(self):
+        """Requeue retained changes after a crash without sending a notification."""
+        store = RulesStore(self.database)
+        try:
+            rules_revision = store.snapshot()["revision"]
+            control = _cloud_control(store)
+            if control is None:
+                raise RuntimeError("Stopped control state is unavailable.")
+            return self.outbox.materialize(
+                expected_rules_revision=rules_revision,
+                expected_control_revision=control[1],
+            )
+        finally:
+            store.close()
+
+    def worker_started(self, run_id, releases):
+        """Record a separately managed worker run, never start or resume it."""
+        if (
+            not isinstance(run_id, str)
+            or len(run_id) != 32
+            or any(char not in "0123456789abcdef" for char in run_id)
+            or not isinstance(releases, (list, tuple))
+            or not releases
+            or any(type(value) is not int or value < 1 for value in releases)
+        ):
+            raise ValueError("A worker run and exact scope are required.")
+        now = self.clock()
+        store = RulesStore(self.database)
+        try:
+            with store.db:
+                store.db.execute("BEGIN IMMEDIATE")
+                previous = store.db.execute(
+                    "SELECT heartbeat_at,stopped_at FROM discogs_hosted_worker_status WHERE id=1"
+                ).fetchone()
+                if (
+                    previous
+                    and previous[1] is None
+                    and (0 <= now - previous[0] <= WORKER_HEARTBEAT_STALE_SECONDS)
+                ):
+                    raise RuntimeError("Another worker has a recent heartbeat.")
+                store.db.execute(
+                    "INSERT INTO discogs_hosted_worker_status"
+                    "(id,run_id,scope_json,started_at,heartbeat_at) VALUES(1,?,?,?,?) "
+                    "ON CONFLICT(id) DO UPDATE SET run_id=excluded.run_id,"
+                    "scope_json=excluded.scope_json,started_at=excluded.started_at,"
+                    "heartbeat_at=excluded.heartbeat_at,last_tick_at=NULL,"
+                    "last_tick_status=NULL,stopped_at=NULL,stop_reason=NULL",
+                    (run_id, json.dumps(sorted(set(releases))), now, now),
+                )
+        finally:
+            store.close()
+
+    def worker_heartbeat(self, run_id, *, tick_status=None):
+        if tick_status is not None and tick_status not in {
+            "idle",
+            "baseline",
+            "changed",
+            "unchanged",
+            "blocked",
+        }:
+            raise ValueError("Invalid worker tick status.")
+        now = self.clock()
+        store = RulesStore(self.database)
+        try:
+            with store.db:
+                store.db.execute("BEGIN IMMEDIATE")
+                changed = store.db.execute(
+                    "UPDATE discogs_hosted_worker_status SET heartbeat_at=?,"
+                    "last_tick_at=CASE WHEN ? IS NULL THEN last_tick_at ELSE ? END,"
+                    "last_tick_status=COALESCE(?,last_tick_status) "
+                    "WHERE id=1 AND run_id=? AND stopped_at IS NULL",
+                    (now, tick_status, now, tick_status, run_id),
+                ).rowcount
+                if changed != 1:
+                    raise RuntimeError("Worker status ownership changed.")
+        finally:
+            store.close()
+
+    def worker_stopped(self, run_id, reason):
+        if not isinstance(reason, str) or not reason.isidentifier() or len(reason) > 48:
+            raise ValueError("A bounded worker stop reason is required.")
+        now = self.clock()
+        store = RulesStore(self.database)
+        try:
+            with store.db:
+                store.db.execute("BEGIN IMMEDIATE")
+                changed = store.db.execute(
+                    "UPDATE discogs_hosted_worker_status SET heartbeat_at=?,stopped_at=?,"
+                    "stop_reason=? WHERE id=1 AND run_id=? AND stopped_at IS NULL",
+                    (now, now, reason, run_id),
+                ).rowcount
+                if changed != 1:
+                    raise RuntimeError("Worker status ownership changed.")
+        finally:
+            store.close()
+
+    def health(self):
+        store = RulesStore(self.database)
+        try:
+            row = store.db.execute(
+                "SELECT paused,revision,next_request,lease_until,last_error "
+                "FROM discogs_hosted_schedule WHERE id=1"
+            ).fetchone()
+            due = store.db.execute(
+                "SELECT release_id,next_due,failures,last_status,last_attempt "
+                "FROM discogs_hosted_due ORDER BY release_id"
+            ).fetchall()
+            monitor_releases = [
+                {"release_id": row[0], "enabled": bool(row[1])}
+                for row in store.db.execute(
+                    "SELECT release_id,enabled FROM discogs_monitor_releases ORDER BY release_id"
+                )
+            ]
+            control = _cloud_control(store)
+            worker = store.db.execute(
+                "SELECT scope_json,started_at,heartbeat_at,last_tick_at,"
+                "last_tick_status,stopped_at,stop_reason "
+                "FROM discogs_hosted_worker_status WHERE id=1"
+            ).fetchone()
+            if worker is None:
+                worker_health = {
+                    "status": "never_started",
+                    "scope": [],
+                    "started_at": None,
+                    "last_heartbeat_at": None,
+                    "last_tick_at": None,
+                    "last_tick_status": None,
+                    "stopped_at": None,
+                    "stop_reason": None,
+                }
+            else:
+                try:
+                    scope = json.loads(worker[0])
+                    if not isinstance(scope, list) or any(
+                        type(value) is not int or value < 1 for value in scope
+                    ):
+                        scope = []
+                except (TypeError, ValueError):
+                    scope = []
+                age = self.clock() - worker[2]
+                status = (
+                    "stopped"
+                    if worker[5] is not None
+                    else "recent_heartbeat"
+                    if 0 <= age <= WORKER_HEARTBEAT_STALE_SECONDS
+                    else "heartbeat_stale"
+                )
+                worker_health = {
+                    "status": status,
+                    "scope": scope,
+                    "started_at": worker[1],
+                    "last_heartbeat_at": worker[2],
+                    "last_tick_at": worker[3],
+                    "last_tick_status": worker[4],
+                    "stopped_at": worker[5],
+                    "stop_reason": worker[6],
+                }
+            return {
+                "paused": bool(row[0]),
+                "revision": row[1],
+                "next_request": row[2],
+                "lease_until": row[3],
+                "last_error": row[4],
+                "kill_switch": not control or bool(control[0]),
+                "reader_ready": bool(getattr(self.reader, "ready", lambda: False)()),
+                "worker_scope": sorted(self.allowed_releases) if self.allowed_releases else None,
+                "monitor_releases": monitor_releases,
+                "reviewed_lease_release_ids": sorted(REVIEWED_BROWSER_LEASE_RELEASES),
+                "worker": worker_health,
+                "targets": [
+                    dict(
+                        zip(
+                            ("release_id", "next_due", "failures", "last_status", "last_attempt"),
+                            item,
+                            strict=True,
+                        )
+                    )
+                    for item in due
+                ],
+                "purchase_allowed": False,
+            }
+        finally:
+            store.close()
+
+    def _claim(self, *, expected_worker_run_id=None):
+        now = self.clock()
+        store = RulesStore(self.database)
+        try:
+            with store.db:
+                store.db.execute("BEGIN IMMEDIATE")
+                if expected_worker_run_id is not None:
+                    owner = store.db.execute(
+                        "SELECT run_id,heartbeat_at,stopped_at "
+                        "FROM discogs_hosted_worker_status WHERE id=1"
+                    ).fetchone()
+                    if (
+                        not owner
+                        or owner[0] != expected_worker_run_id
+                        or owner[2] is not None
+                        or not 0 <= now - owner[1] <= WORKER_HEARTBEAT_STALE_SECONDS
+                    ):
+                        return None
+                state = store.db.execute(
+                    "SELECT paused,revision,next_request,lease_until "
+                    "FROM discogs_hosted_schedule WHERE id=1"
+                ).fetchone()
+                control = _cloud_control(store)
+                if state[0] or not control or control[0] or now < max(state[2], state[3]):
+                    return None
+                rules = store.snapshot()
+                enabled = sorted(
+                    {
+                        *(
+                            t["release_id"]
+                            for t in rules["targets"]
+                            if t["enabled"] and t["release_id"] not in rules["owned"]
+                        ),
+                        *(
+                            row[0]
+                            for row in store.db.execute(
+                                "SELECT release_id FROM discogs_monitor_releases WHERE enabled=1"
+                            )
+                        ),
+                    }
+                )
+                if self.allowed_releases is not None:
+                    enabled = [release for release in enabled if release in self.allowed_releases]
+                store.db.execute(
+                    "DELETE FROM discogs_hosted_due WHERE release_id NOT IN "
+                    "(SELECT release_id FROM targets UNION SELECT release_id "
+                    "FROM discogs_monitor_releases)"
+                )
+                for release in enabled:
+                    store.db.execute(
+                        "INSERT OR IGNORE INTO discogs_hosted_due(release_id) VALUES(?)", (release,)
+                    )
+                enabled_set = set(enabled)
+                selected = next(
+                    (
+                        row[0]
+                        for row in store.db.execute(
+                            "SELECT release_id FROM discogs_hosted_due WHERE next_due<=? "
+                            "ORDER BY next_due,release_id",
+                            (now,),
+                        )
+                        if row[0] in enabled_set
+                    ),
+                    None,
+                )
+                if selected is None:
+                    return None
+                release = selected
+                baseline = store.db.execute(
+                    "SELECT revision FROM discogs_release_baselines WHERE release_id=?", (release,)
+                ).fetchone()
+                token = uuid.uuid4().hex
+                store.db.execute(
+                    "UPDATE discogs_hosted_schedule SET lease_token=?,lease_until=?,"
+                    "next_request=? WHERE id=1",
+                    (token, now + LEASE_SECONDS, now + MIN_INTERVAL),
+                )
+                store.db.execute(
+                    "UPDATE discogs_hosted_due SET next_due=?,last_attempt=? WHERE release_id=?",
+                    (now + MIN_INTERVAL, now, release),
+                )
+                return (
+                    release,
+                    token,
+                    state[1],
+                    rules["revision"],
+                    control[1],
+                    baseline[0] if baseline else 0,
+                    any(
+                        t["release_id"] == release
+                        and t["enabled"]
+                        and release not in rules["owned"]
+                        for t in rules["targets"]
+                    ),
+                )
+        finally:
+            store.close()
+
+    def tick(self, *, expected_worker_run_id=None):
+        """Perform at most one due read; never return purchase eligibility."""
+        claim = self._claim(expected_worker_run_id=expected_worker_run_id)
+        if claim is None:
+            return {"status": "idle", "purchase_allowed": False}
+        (
+            release,
+            token,
+            schedule_revision,
+            rules_revision,
+            control_revision,
+            baseline_revision,
+            buying_rule,
+        ) = claim
+        error = None
+        result = None
+        try:
+            if self.reader is None:
+                raise HostedReadError("reader_unavailable", stop=True)
+            observation = self.reader(release)
+            parsed = RenderedReleaseSnapshot.model_validate(observation)
+            if not parsed.complete or parsed.status != "observed" or parsed.release_id != release:
+                raise HostedReadError("incomplete_or_wrong_release")
+            result = self.snapshots.ingest(
+                parsed.model_dump(),
+                expected_rules_revision=rules_revision,
+                expected_control_revision=control_revision,
+                expected_baseline_revision=baseline_revision,
+                expected_schedule_revision=schedule_revision,
+                expected_schedule_token=token,
+            )
+            self.outbox.materialize(
+                expected_rules_revision=rules_revision,
+                expected_control_revision=control_revision,
+            )
+            if self.candidates is not None and buying_rule:
+                self.candidates.capture(
+                    release,
+                    rules_revision=rules_revision,
+                    control_revision=control_revision,
+                    schedule_revision=schedule_revision,
+                    lease_token=token,
+                )
+        except HostedReadError as exc:
+            error = exc
+        except CandidateStopped:
+            error = HostedReadError("candidate_capture_stopped", stop=True)
+        except (OSError, TimeoutError):
+            error = HostedReadError("uncertain_reader_outcome", stop=True)
+        except (ValueError, RuntimeError):
+            error = HostedReadError("read_or_revision_failed")
+        except Exception:
+            # Unknown reader failures must stop, without logging the session or payload.
+            error = HostedReadError("unexpected_reader_failure", stop=True)
+        finally:
+            store = RulesStore(self.database)
+            try:
+                with store.db:
+                    store.db.execute("BEGIN IMMEDIATE")
+                    state = store.db.execute(
+                        "SELECT lease_token FROM discogs_hosted_schedule WHERE id=1"
+                    ).fetchone()
+                    if state and state[0] == token:
+                        now = self.clock()
+                        if error:
+                            row = store.db.execute(
+                                "SELECT failures FROM discogs_hosted_due WHERE release_id=?",
+                                (release,),
+                            ).fetchone()
+                            failures = min((row[0] if row else 0) + 1, 8)
+                            delay = max(
+                                MIN_INTERVAL,
+                                error.cooldown,
+                                min(MAX_BACKOFF, MIN_INTERVAL * 2**failures),
+                            )
+                            store.db.execute(
+                                "UPDATE discogs_hosted_due SET failures=?,next_due=?,"
+                                "last_status=? WHERE release_id=?",
+                                (failures, now + delay, error.code, release),
+                            )
+                            store.db.execute(
+                                "UPDATE discogs_hosted_schedule SET last_error=?,"
+                                "paused=max(paused,?) WHERE id=1",
+                                (error.code, int(error.stop)),
+                            )
+                        else:
+                            store.db.execute(
+                                "UPDATE discogs_hosted_due SET failures=0,last_status=?,"
+                                "next_due=? WHERE release_id=?",
+                                (result["status"], now + MIN_INTERVAL, release),
+                            )
+                            store.db.execute(
+                                "UPDATE discogs_hosted_schedule SET last_error=NULL WHERE id=1"
+                            )
+                        store.db.execute(
+                            "UPDATE discogs_hosted_schedule SET lease_token=NULL,"
+                            "lease_until=0 WHERE id=1"
+                        )
+            finally:
+                store.close()
+        return {
+            "status": "blocked" if error else result["status"],
+            "release_id": release,
+            "code": error.code if error else None,
+            "purchase_allowed": False,
+        }

@@ -1,0 +1,60 @@
+{
+  "provenance": {
+    "kind": "actual_hosted_redacted_binding_predicates",
+    "source_commit": "8447cc2343dc4f66dc248ffebd10831c6df0c8de",
+    "date": "2026-10-26",
+    "raw_button_value": "not_captured",
+    "private_address_values": "not_captured",
+    "scope": "single exact authorized cart diagnostic; no navigation or initialization"
+  },
+  "cart_binding_diagnostic": {
+    "schema": "cart_binding_predicates_v1",
+    "first_failed": "go_value_matches",
+    "go_count": 1,
+    "container_count": 1,
+    "row_count": 1,
+    "select_count": 1,
+    "scoped_summary_count": 1,
+    "legacy_count": 0,
+    "visible_address_wrapper_count": 1,
+    "discovery_attempted": false,
+    "go_type_submit": true,
+    "go_value_matches": false,
+    "go_text_matches": true,
+    "go_visible": true,
+    "go_enabled": true,
+    "go_not_disabled_property": true,
+    "go_not_disabled_selector": true,
+    "go_not_aria_disabled": true,
+    "form_present": true,
+    "form_current_document": true,
+    "form_connected": true,
+    "container_closest_form_matches": true,
+    "select_form_matches": true,
+    "form_contains_container": true,
+    "form_contains_row": true,
+    "form_contains_go": true,
+    "form_contains_select": true,
+    "form_contains_summary": true,
+    "container_contains_row": true,
+    "container_contains_go": true,
+    "container_contains_select": true,
+    "container_visible": true,
+    "row_visible": true,
+    "select_visible": true,
+    "summary_count_one": true
+  },
+  "cart_reader_diagnostic": {
+    "schema": "cart_reader_predicates_v1",
+    "code": "observed",
+    "first_failed": "control_binding_mismatch",
+    "counts": {
+      "legacy_count": 0,
+      "go_count": 1,
+      "select_count": 1,
+      "container_count": 1,
+      "global_row_count": 1,
+      "global_summary_count": 1
+    }
+  }
+}

@@ -1,0 +1,262 @@
+"""Offline worker and page-coverage tests; no browser or provider access."""
+
+import copy
+import threading
+
+import pytest
+from test_discogs_hosted_scheduler import page, resume, scheduler
+from test_discogs_hosted_scheduler import setup as hosted_setup
+from test_discogs_release_snapshots import listing
+
+from finder.discogs_hosted_scheduler import (
+    MIN_INTERVAL,
+    WORKER_HEARTBEAT_STALE_SECONDS,
+    HostedReadError,
+    HostedReleaseScheduler,
+)
+from finder.discogs_hosted_worker import run
+from finder.discogs_release_snapshots import assemble_release_pages
+from finder.discogs_rules import RulesStore, release_id
+
+
+@pytest.fixture
+def setup(tmp_path):
+    return hosted_setup.__wrapped__(tmp_path)
+
+
+def captured_page(now, index, start, end, total, ids):
+    return {
+        "source": "discogs_rendered_release",
+        "purchase_allowed": False,
+        "release_id": 123,
+        "url": "https://www.discogs.com/sell/release/123" + (f"?page={index}" if index > 1 else ""),
+        "observed_at": page(now)["observed_at"],
+        "page": index,
+        "range_start": start,
+        "range_end": end,
+        "total": total,
+        "has_next": end < total,
+        "rows": [listing(value) for value in ids],
+        "assertions": page(now)["assertions"],
+    }
+
+
+def test_page_assembly_requires_full_contiguous_unique_coverage(setup):
+    _, clock = setup
+    pages = [
+        captured_page(clock[0], 1, 1, 2, 3, (1001, 1002)),
+        captured_page(clock[0], 2, 3, 3, 3, (1003,)),
+    ]
+    complete = assemble_release_pages(123, pages)
+    assert complete["complete"] is True
+    assert complete["coverage_pages"] == 2
+    assert [row["listing_id"] for row in complete["rows"]] == ["1001", "1002", "1003"]
+    for broken in (
+        pages[:1],
+        [pages[0], {**pages[1], "range_start": 4}],
+        [pages[0], {**pages[1], "release_id": 124}],
+        [pages[0], {**pages[1], "rows": [listing(1002)]}],
+        [pages[0], {**pages[1], "url": "https://other.example/sell/release/123?page=2"}],
+    ):
+        with pytest.raises(ValueError):
+            assemble_release_pages(123, copy.deepcopy(broken))
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://www.discogs.com/release/28720177-DJ-Esco-Hosted-By-Future-4-56-Nights", 28720177),
+        ("https://www.discogs.com/release/5520534-Schoolboy-Q-Oxymoron", 5520534),
+        (
+            "https://www.discogs.com/release/13053315-Metro-Boomin-Not-All-Heroes-Wear-Capes",
+            13053315,
+        ),
+    ],
+)
+def test_user_supplied_release_ids_remain_independent_read_only_inputs(url, expected, setup):
+    _, clock = setup
+    assert release_id(url) == expected
+    item = captured_page(clock[0], 1, 1, 1, 1, (1001,))
+    item["release_id"] = expected
+    item["url"] = f"https://www.discogs.com/sell/release/{expected}"
+    complete = assemble_release_pages(expected, [item])
+    assert complete["release_id"] == expected
+    assert complete["purchase_allowed"] is False
+    with pytest.raises(ValueError):
+        assemble_release_pages(123, [item])
+
+
+def test_worker_exits_without_reader_when_paused_or_stopped(setup, tmp_path):
+    database, clock = setup
+    assert (
+        run(database, tmp_path / "absent.sock", threading.Event(), allowed_releases=[123])["reason"]
+        == "schedule_paused"
+    )
+    resume(scheduler(database, clock, lambda _: page(clock[0])))
+    assert (
+        run(database, tmp_path / "absent.sock", threading.Event(), allowed_releases=[123])["reason"]
+        == "reader_unavailable"
+    )
+
+
+def test_worker_does_not_repeat_after_restart(setup, monkeypatch, tmp_path):
+    database, clock = setup
+    reads = []
+
+    class Reader:
+        def ready(self):
+            return True
+
+        def __call__(self, release):
+            reads.append(release)
+            return page(clock[0])
+
+    monkeypatch.setattr("finder.discogs_hosted_worker.HostedSocketReader", lambda *a, **k: Reader())
+    resume(scheduler(database, clock, Reader()))
+
+    class StopAfterWait:
+        def __init__(self):
+            self.stopped = False
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, _):
+            self.stopped = True
+
+    assert (
+        run(database, tmp_path / "socket", StopAfterWait(), allowed_releases=[123])["reason"]
+        == "signal"
+    )
+    assert (
+        run(database, tmp_path / "socket", StopAfterWait(), allowed_releases=[123])["reason"]
+        == "signal"
+    )
+    assert reads == [123]
+    state = scheduler(database, clock, Reader()).health()["worker"]
+    assert state["status"] == "stopped"
+    assert state["last_tick_status"] == "idle"
+    assert state["stop_reason"] == "signal"
+
+
+def test_separate_worker_heartbeat_is_durable_and_never_claims_process_liveness(setup):
+    database, clock = setup
+    worker = scheduler(database, clock, lambda _: page(clock[0]))
+    assert worker.health()["worker"]["status"] == "never_started"
+    run_id = "a" * 32
+    worker.worker_started(run_id, [123])
+    assert worker.health()["worker"]["status"] == "recent_heartbeat"
+    assert worker.health()["worker"]["scope"] == [123]
+    clock[0] += WORKER_HEARTBEAT_STALE_SECONDS + 1
+    assert (
+        scheduler(database, clock, lambda _: page(clock[0])).health()["worker"]["status"]
+        == "heartbeat_stale"
+    )
+    worker.worker_heartbeat(run_id, tick_status="changed")
+    assert worker.health()["worker"]["last_tick_status"] == "changed"
+    worker.worker_stopped(run_id, "signal")
+    recorded = scheduler(database, clock, lambda _: page(clock[0])).health()["worker"]
+    assert recorded["status"] == "stopped"
+    assert recorded["stop_reason"] == "signal"
+    assert recorded["last_tick_status"] == "changed"
+    with pytest.raises(RuntimeError):
+        worker.worker_heartbeat(run_id)
+
+
+def test_replaced_worker_cannot_claim_a_read_after_its_heartbeat_stales(setup):
+    database, clock = setup
+    reads = []
+
+    def read(release):
+        reads.append(release)
+        return page(clock[0])
+
+    worker = scheduler(database, clock, read)
+    old_run, new_run = "a" * 32, "b" * 32
+    worker.worker_started(old_run, [123])
+    with pytest.raises(RuntimeError):
+        worker.worker_started(new_run, [123])
+    clock[0] += WORKER_HEARTBEAT_STALE_SECONDS + 1
+    worker.worker_started(new_run, [123])
+    resume(worker)
+    assert worker.tick(expected_worker_run_id=old_run)["status"] == "idle"
+    assert reads == []
+    assert worker.tick(expected_worker_run_id=new_run)["status"] == "baseline"
+    assert reads == [123]
+    with pytest.raises(RuntimeError):
+        worker.worker_heartbeat(old_run)
+
+
+def test_multiple_exact_release_targets_have_independent_due_slots(setup):
+    database, clock = setup
+    store = RulesStore(database)
+    current = store.snapshot()
+    second = copy.deepcopy(current["targets"][0])
+    second["release_id"] = 456
+    store.save(second, current["revision"])
+    store.close()
+    seen = []
+
+    def read(release):
+        seen.append(release)
+        return {
+            **page(clock[0]),
+            "release_id": release,
+            "url": f"https://www.discogs.com/sell/release/{release}",
+        }
+
+    worker = scheduler(database, clock, read)
+    resume(worker)
+    assert worker.tick()["status"] == "baseline"
+    assert worker.tick()["status"] == "idle"
+    clock[0] += MIN_INTERVAL + 1
+    assert scheduler(database, clock, read).tick()["status"] == "baseline"
+    assert seen == [123, 456]
+
+
+def test_running_worker_scope_excludes_unrelated_saved_target(setup):
+    database, clock = setup
+    store = RulesStore(database)
+    second = copy.deepcopy(store.snapshot()["targets"][0])
+    second["release_id"] = 456
+    store.save(second, 1)
+    store.close()
+    seen = []
+
+    def read(release):
+        seen.append(release)
+        return {
+            **page(clock[0]),
+            "release_id": release,
+            "url": f"https://www.discogs.com/sell/release/{release}",
+        }
+
+    worker = HostedReleaseScheduler(database, read, clock=lambda: clock[0], allowed_releases=[456])
+    resume(worker)
+    assert worker.tick()["status"] == "baseline"
+    assert seen == [456]
+    with pytest.raises(ValueError):
+        run(database, database, threading.Event(), allowed_releases=[])
+
+
+def test_access_restriction_pauses_worker_with_explicit_code(setup, monkeypatch, tmp_path):
+    database, clock = setup
+
+    class RestrictedReader:
+        def ready(self):
+            return True
+
+        def __call__(self, _release):
+            raise HostedReadError("access_restricted", stop=True)
+
+    monkeypatch.setattr(
+        "finder.discogs_hosted_worker.HostedSocketReader", lambda *a, **k: RestrictedReader()
+    )
+    resume(scheduler(database, clock, RestrictedReader()))
+    result = run(database, tmp_path / "socket", threading.Event(), allowed_releases=[123])
+    assert result == {"status": "stopped", "reason": "access_restricted", "purchase_allowed": False}
+    assert scheduler(database, clock, RestrictedReader()).health()["paused"] is True
+    assert (
+        scheduler(database, clock, RestrictedReader()).health()["worker"]["stop_reason"]
+        == "access_restricted"
+    )

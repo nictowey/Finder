@@ -17,13 +17,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<10", "ruff>=0.9,<1"]
+cloud = ["waitress>=3.0.2,<4"]
+dev = ["pytest>=8,<10", "ruff>=0.9,<1", "waitress>=3.0.2,<4"]
 
 [project.scripts]
 finder = "finder.cli:main"
 finder-offline = "finder.offline:main"
-finder-local = "finder.local_web:main"
+finder-local = "finder.discogs_web:main"
+finder-review = "finder.local_web:main"
 finder-evaluate = "finder.local_evaluation:main"
+finder-monitor = "finder.discogs_hosted_worker:main"
+finder-price-leads = "finder.discogs_price_worker:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

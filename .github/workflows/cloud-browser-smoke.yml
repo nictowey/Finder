@@ -1,0 +1,41 @@
+name: Isolated cloud browser pipeline
+on:
+  push:
+    paths:
+      - '.github/workflows/cloud-browser-smoke.yml'
+      - 'deployment/BrowserSmoke.Dockerfile*'
+      - 'scripts/check_cloud_browser.sh'
+      - 'scripts/discogs_release_snapshot.mjs'
+      - 'tests/cloud_browser/**'
+      - 'tests/test_cloud_browser_pipeline.py'
+      - 'src/finder/**'
+      - 'pyproject.toml'
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Resource profile (micro is an optional unsupported-runner diagnostic)"
+        required: true
+        type: choice
+        default: standard
+        options: [standard, micro]
+permissions:
+  contents: read
+concurrency:
+  group: cloud-browser-smoke-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  isolated-browser:
+    name: isolated-browser (${{ inputs.profile || 'standard' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      FINDER_BROWSER_PROFILE: ${{ inputs.profile || 'standard' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Test process evidence validation
+        run: node --test tests/cloud_browser/process_security.test.mjs tests/cloud_browser/resource_profile.test.mjs
+      - name: Build and run non-root network-isolated browser pipeline
+        run: bash scripts/check_cloud_browser.sh
