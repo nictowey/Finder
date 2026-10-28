@@ -35,10 +35,11 @@ GRADE_NAMES = {
 class ListingReadError(ValueError):
     """Sanitized failure; never contains provider payloads or credentials."""
 
-    def __init__(self, message, *, retry_after=60, rate_limited=False):
+    def __init__(self, message, *, retry_after=60, rate_limited=False, access_restricted=False):
         super().__init__(message)
         self.retry_after = retry_after
         self.rate_limited = rate_limited
+        self.access_restricted = access_restricted
 
 
 def listing_id(value):
@@ -331,7 +332,8 @@ class ListingReader:
                         )
                     if response.status_code != 200:
                         raise ListingReadError(
-                            f"Discogs returned HTTP {response.status_code}. No listing verified."
+                            f"Discogs returned HTTP {response.status_code}. No listing verified.",
+                            access_restricted=response.status_code in {401, 403},
                         )
                     data = bytearray()
                     for chunk in response.iter_bytes():

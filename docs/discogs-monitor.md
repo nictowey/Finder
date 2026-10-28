@@ -1,5 +1,9 @@
 # Read-only Discogs cloud monitoring
 
+For the newer separate, default-off official API **low item-price lead** worker and
+optional ntfy adapter, see [aggregate price leads](discogs-price-alerts.md). That
+implementation does not activate this older shared-rule monitor or qualify buying.
+
 Continuation of PR #107 from `a4a3768458fdebc3436427303db9d94ba5e4c13a`.
 This is **not yet a working release-link-only sniper**. A permitted, reliable source of
 individual listings by release is still missing. No live provider calls from the new worker,
