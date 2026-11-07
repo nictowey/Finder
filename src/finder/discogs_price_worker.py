@@ -9,6 +9,7 @@ import stat
 import threading
 from pathlib import Path
 
+from finder.discogs_app_auth import AppCredentials, AuthenticatedReleaseStatsReader
 from finder.discogs_listing import ReleaseStatsReader
 from finder.discogs_ntfy import NtfySender, deliver_one
 from finder.discogs_price_alerts import (
@@ -54,6 +55,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Opt-in aggregate item-price leads; buying unavailable"
     )
+    parser.add_argument(
+        "--discogs-app-file",
+        type=Path,
+        help="Existing owner-only app key/secret JSON file; never put secrets in argv or env",
+    )
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--poll", action="store_true", help="Permit one public stats GET per tick")
     parser.add_argument(
@@ -77,6 +83,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not MIN_POLL_SECONDS <= args.poll_seconds <= MAX_POLL_SECONDS:
         parser.error("--poll-seconds must be between 300 and 86400")
+    if args.discogs_app_file is not None and not args.poll:
+        parser.error("--discogs-app-file requires --poll")
     if args.deliver and args.topic_file is None:
         parser.error("--deliver requires an existing private --topic-file")
     if args.run and not (args.poll or args.deliver):
@@ -84,8 +92,15 @@ def main(argv=None):
     stop = threading.Event()
     previous = {}
     try:
+        credentials = AppCredentials(args.discogs_app_file) if args.discogs_app_file else None
         alerts = AggregatePriceAlerts(args.database, poll_seconds=args.poll_seconds)
-        reader = ReleaseStatsReader() if args.poll else None
+        reader = (
+            AuthenticatedReleaseStatsReader(credentials)
+            if credentials
+            else ReleaseStatsReader()
+            if args.poll
+            else None
+        )
         sender = NtfySender(private_topic(args.topic_file), enabled=True) if args.deliver else None
         if args.run:
             for name in (signal.SIGTERM, signal.SIGINT):

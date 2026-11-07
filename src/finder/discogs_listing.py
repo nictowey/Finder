@@ -214,6 +214,8 @@ class PublicReadBudget:
 
 
 class ListingReader:
+    _trust_env = True
+
     def __init__(
         self,
         *,
@@ -295,8 +297,15 @@ class ListingReader:
             now=self._now(),
         )
 
+    def _request_headers(self, path, params):
+        return {
+            "User-Agent": "Finder/0.2 +https://github.com/nictowey/Finder",
+            "Accept": "application/json",
+        }
+
     def _request(self, path, *, params=None, budget=None, wait=False):
         """Only callers construct fixed public GET routes; never accept an input URL."""
+        headers = self._request_headers(path, params)
         active_budget = budget or self.budget
         active_budget.reserve(wait=wait)
         if active_budget is not self.budget:
@@ -308,10 +317,8 @@ class ListingReader:
                 transport=self.transport,
                 timeout=8,
                 follow_redirects=False,
-                headers={
-                    "User-Agent": "Finder/0.2 +https://github.com/nictowey/Finder",
-                    "Accept": "application/json",
-                },
+                trust_env=self._trust_env,
+                headers=headers,
             ) as client:
                 with client.stream(
                     "GET", f"https://api.discogs.com{path}", params=params
