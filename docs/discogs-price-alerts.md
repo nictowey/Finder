@@ -53,7 +53,13 @@ Additive tables are `discogs_price_control`, `discogs_price_rules`,
 `discogs_price_samples` and `discogs_price_outbox`. The existing
 `discogs_monitor_control.next_request` coordinates the minimum three-second API
 spacing with the older API poller in the **same database**. Nominal per-release
-poll interval is600seconds. Claims and due times are durable. Failed reads back
+poll interval defaults to 600 seconds. Explicit `--poll-seconds 300` selects five
+minutes; integer intervals from 300 through 86400 seconds are accepted. The option
+alone never enables polling, delivery or stored alert controls. Claims and due times
+are durable: changing the interval on restart does not shorten an existing due time,
+claim or provider cooldown; it applies when the next read is reserved. Failed-read
+backoff is never shorter than the selected interval. Use one worker per database
+with one consistent interval. Failed reads back
 off,429 honors a bounded Retry-After, and HTTP401/403 durably stops the alert
 control until a separately approved explicit restart. There is no same-tick retry or browser
 fallback. The last good sample/episode is retained through failures. A changed
@@ -104,8 +110,8 @@ The owner must still provide/approve:
    is missing.56 Nights28720177 has a saved USD10 **all-in** ceiling and VG+/VG+
    rules, but its independent alert rule must be explicitly approved, not silently
    enabled from the buying rule. Decide whether to alert initially low stock.
-2. Nominal10minute API cadence and the exact aggregate-only deployment on the
-   existing VPS. No additional hosting, browser route or paid resource is needed.
+2. An explicit API cadence (default 10 minutes; minimum 5 minutes) and the exact
+   aggregate-only deployment on the existing VPS. No additional hosting, browser route or paid resource is needed.
 3. A securely entered private topic file and subscription in the official phone
    app to that same topic, with OS notification permission. No signup, access token
    or card is required by this adapter. Review the current free limits/terms at
@@ -163,7 +169,7 @@ entry point is:
 
 ```sh
 python -m finder.discogs_price_worker --database /path/to/existing/rules.db \
-  --poll --deliver --topic-file /run/secrets/sniper-ntfy-topic --run
+  --poll --poll-seconds 300 --deliver --topic-file /run/secrets/sniper-ntfy-topic --run
 ```
 
 The topic file must already be an owner-only0600 regular file, not a symlink or

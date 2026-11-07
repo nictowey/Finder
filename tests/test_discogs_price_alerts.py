@@ -580,3 +580,108 @@ def test_fresh_low_cannot_resurrect_expired_same_episode_without_prior_status_re
     observe(setup, "12")
     observe(setup)
     assert rows(database)[-1] == ("pending", 2, "8.00", 0)
+
+
+@pytest.mark.parametrize("interval", [300, 600, 86400])
+def test_configured_interval_is_durable_and_does_not_repeat_early(setup, interval):
+    database, now, _, _ = setup
+    alerts = AggregatePriceAlerts(database, clock=lambda: now[0], poll_seconds=interval)
+    enable(alerts)
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(
+            200, json={"num_for_sale": 17, "lowest_price": {"value": 8, "currency": "USD"}}
+        )
+
+    reader = ReleaseStatsReader(transport=httpx.MockTransport(handle), clock=lambda: now[0])
+    assert alerts.poll_once(reader)["requests"] == 1
+    now[0] += interval - 1
+    # Restart with a shorter interval must not erase the persisted reservation.
+    reopened = AggregatePriceAlerts(database, clock=lambda: now[0], poll_seconds=300)
+    assert reopened.poll_once(reader)["requests"] == 0
+    now[0] += 1
+    assert reopened.poll_once(reader)["requests"] == 1
+    assert len(calls) == 2
+    assert reopened.status()["purchase_allowed"] is False
+
+
+@pytest.mark.parametrize("interval", [0, -1, 299, 86401, True, 300.0, "300", None])
+def test_invalid_interval_rejected_before_database_access(tmp_path, interval):
+    database = tmp_path / "absent.db"
+    with pytest.raises(ValueError, match="Poll interval"):
+        AggregatePriceAlerts(database, poll_seconds=interval)
+    assert not database.exists()
+
+
+@pytest.mark.parametrize("retry_after,delay", [(0, 300), (1800, 1800)])
+def test_five_minute_error_backoff_and_provider_cooldown_survive_restart(setup, retry_after, delay):
+    database, now, _, _ = setup
+    alerts = AggregatePriceAlerts(database, clock=lambda: now[0], poll_seconds=300)
+    enable(alerts)
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(429, headers={"Retry-After": str(retry_after)})
+
+    reader = ReleaseStatsReader(transport=httpx.MockTransport(handle), clock=lambda: now[0])
+    assert alerts.poll_once(reader)["status"] == "unavailable"
+    reopened = AggregatePriceAlerts(database, clock=lambda: now[0], poll_seconds=300)
+    now[0] += delay - 1
+    assert reopened.poll_once(reader)["requests"] == 0
+    now[0] += 1
+    assert reopened.poll_once(reader)["requests"] == 1
+    assert len(calls) == 2
+
+
+def test_five_minute_interval_preserves_shared_provider_spacing(setup):
+    database, now, _, rule = setup
+    alerts = AggregatePriceAlerts(database, clock=lambda: now[0], poll_seconds=300)
+    alerts.save_rule(rule.model_copy(update={"release_id": 123}).model_dump(), expected_revision=0)
+    enable(alerts)
+
+    class Reader:
+        def read(self, release, currency):
+            return {
+                "release_id": release,
+                "currency": currency,
+                "num_for_sale": 17,
+                "lowest_item_price": "8.00",
+            }
+
+    assert alerts.poll_once(Reader())["requests"] == 1
+    now[0] += 2
+    assert alerts.poll_once(Reader()) == {"status": "cooldown", "requests": 0}
+    now[0] += 1
+    assert alerts.poll_once(Reader())["requests"] == 1
+
+
+@pytest.mark.parametrize("interval", ["299", "86401", "nan", "300.5"])
+def test_worker_rejects_invalid_intervals_before_startup(tmp_path, interval):
+    from finder.discogs_price_worker import main
+
+    database = tmp_path / "absent.db"
+    with pytest.raises(SystemExit) as error:
+        main(["--database", str(database), "--poll-seconds", interval])
+    assert error.value.code == 2
+    assert not database.exists()
+
+
+@pytest.mark.parametrize("options,expected", [([], 600), (["--poll-seconds", "300"], 300)])
+def test_worker_passes_interval_without_enabling_poll_or_delivery(
+    setup, monkeypatch, options, expected
+):
+    from finder import discogs_price_worker as worker
+
+    database, _, _, _ = setup
+    captured = []
+
+    def capture(alerts, *, reader, sender, stop):
+        captured.append((alerts.poll_seconds, reader, sender, alerts.status()["enabled"]))
+        return {"purchase_allowed": False}
+
+    monkeypatch.setattr(worker, "tick", capture)
+    assert worker.main(["--database", str(database), *options]) == 0
+    assert captured == [(expected, None, None, False)]

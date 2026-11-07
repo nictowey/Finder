@@ -11,7 +11,12 @@ from pathlib import Path
 
 from finder.discogs_listing import ReleaseStatsReader
 from finder.discogs_ntfy import NtfySender, deliver_one
-from finder.discogs_price_alerts import AggregatePriceAlerts
+from finder.discogs_price_alerts import (
+    MAX_POLL_SECONDS,
+    MIN_POLL_SECONDS,
+    POLL_SECONDS,
+    AggregatePriceAlerts,
+)
 
 
 def private_topic(path):
@@ -60,7 +65,18 @@ def main(argv=None):
     parser.add_argument(
         "--run", action="store_true", help="Repeat until stopped; default is one tick"
     )
+    parser.add_argument(
+        "--poll-seconds",
+        type=int,
+        default=POLL_SECONDS,
+        help=(
+            "Per-release stats interval in seconds (300–86400; default 600); "
+            "does not enable polling"
+        ),
+    )
     args = parser.parse_args(argv)
+    if not MIN_POLL_SECONDS <= args.poll_seconds <= MAX_POLL_SECONDS:
+        parser.error("--poll-seconds must be between 300 and 86400")
     if args.deliver and args.topic_file is None:
         parser.error("--deliver requires an existing private --topic-file")
     if args.run and not (args.poll or args.deliver):
@@ -68,7 +84,7 @@ def main(argv=None):
     stop = threading.Event()
     previous = {}
     try:
-        alerts = AggregatePriceAlerts(args.database)
+        alerts = AggregatePriceAlerts(args.database, poll_seconds=args.poll_seconds)
         reader = ReleaseStatsReader() if args.poll else None
         sender = NtfySender(private_topic(args.topic_file), enabled=True) if args.deliver else None
         if args.run:

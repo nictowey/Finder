@@ -19,6 +19,8 @@ from finder.discogs_notification_outbox import (
 from finder.discogs_rules import CURRENCIES, RulesStore, StrictInput, amount, release_id
 
 POLL_SECONDS = 600
+MIN_POLL_SECONDS = 300
+MAX_POLL_SECONDS = 86400
 FRESH_SECONDS = 1200
 DAILY_SEND_CAP = 200  # Below the reviewed anonymous free allowance; no paid fallback.
 
@@ -100,7 +102,13 @@ class AggregatePriceAlerts:
     Topic values are never accepted here. Claims bind an opaque destination once.
     """
 
-    def __init__(self, database, *, clock=time.time):
+    def __init__(self, database, *, clock=time.time, poll_seconds=POLL_SECONDS):
+        if (
+            type(poll_seconds) is not int
+            or not MIN_POLL_SECONDS <= poll_seconds <= MAX_POLL_SECONDS
+        ):
+            raise ValueError("Poll interval must be an integer from 300 to 86400 seconds.")
+        self.poll_seconds = poll_seconds
         self.database, self.clock = database, clock
         store = RulesStore(database)
         try:
@@ -334,7 +342,7 @@ class AggregatePriceAlerts:
                 db.execute(
                     "UPDATE discogs_price_samples SET claim=?,claim_until=?,next_check=? "
                     "WHERE release_id=?",
-                    (token, now + 30, now + POLL_SECONDS, release),
+                    (token, now + 30, now + self.poll_seconds, release),
                 )
                 db.execute("UPDATE discogs_monitor_control SET next_request=?", (now + 3,))
             try:
@@ -343,7 +351,7 @@ class AggregatePriceAlerts:
                 with db:
                     db.execute("BEGIN IMMEDIATE")
                     delay = max(
-                        POLL_SECONDS,
+                        self.poll_seconds,
                         min(MAX_BACKOFF, error.retry_after),
                         min(MAX_BACKOFF, 60 * 2 ** min(failures, 10)),
                     )
