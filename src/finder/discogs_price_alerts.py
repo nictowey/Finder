@@ -6,7 +6,7 @@ import time
 import uuid
 from decimal import Decimal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from finder.discogs_listing import ListingReadError
 from finder.discogs_notification_outbox import (
@@ -31,12 +31,12 @@ class PriceLeadRule(StrictInput):
     release_id: int
     public_title: str = Field(min_length=1, max_length=120)
     currency: str
-    item_price_ceiling: str
+    item_price_ceiling: str | None = None
+    any_price: bool = False
     enabled: bool = False
     alert_initial_low: bool = True
 
     _release = field_validator("release_id", mode="before")(release_id)
-    _amount = field_validator("item_price_ceiling", mode="before")(amount)
 
     @field_validator("public_title")
     @classmethod
@@ -52,12 +52,21 @@ class PriceLeadRule(StrictInput):
             raise ValueError("Unsupported currency; no conversion.")
         return value
 
-    @field_validator("item_price_ceiling")
+    @field_validator("item_price_ceiling", mode="before")
     @classmethod
     def positive(cls, value):
+        if value is None:
+            return None
+        value = amount(value)
         if Decimal(value) <= 0:
             raise ValueError("Use a positive item-price prefilter.")
         return value
+
+    @model_validator(mode="after")
+    def price_mode(self):
+        if self.any_price == (self.item_price_ceiling is not None):
+            raise ValueError("Choose either any_price:true or a positive item-price ceiling.")
+        return self
 
 
 def _sample(rule, value):
@@ -74,6 +83,11 @@ def _sample(rule, value):
         return None
     if count == 0:
         return (False, None, 0) if price is None else None
+    if rule.any_price:
+        # Availability depends only on a valid positive aggregate count. The empty
+        # price marker fits existing NOT NULL outboxes without inventing a ceiling
+        # or monetary value; availability messages never display a price.
+        return True, "", count
     try:
         price = amount(price)
     except ValueError:
@@ -93,6 +107,27 @@ def lead_message(title, release, currency, price):
         ),
         "click": f"https://www.discogs.com/sell/release/{release}",
     }
+
+
+def availability_message(title, release):
+    """Aggregate stock, never a new-listing or price-qualification claim."""
+    return {
+        "title": "Discogs availability lead",
+        "message": (
+            f"{title}\nRelease {release}: copies reported for sale (any price). "
+            "This is aggregate availability, not an individual new-listing alert. "
+            "Condition and delivered total are unverified. "
+            "This is a manual-review lead, not a qualified purchase.\n"
+            f"https://www.discogs.com/sell/release/{release}\nData provided by Discogs."
+        ),
+        "click": f"https://www.discogs.com/sell/release/{release}",
+    }
+
+
+def rule_message(rule, price):
+    if rule.any_price:
+        return availability_message(rule.public_title, rule.release_id)
+    return lead_message(rule.public_title, rule.release_id, rule.currency, price)
 
 
 class AggregatePriceAlerts:
@@ -145,7 +180,9 @@ class AggregatePriceAlerts:
             store.close()
 
     def save_rule(self, rule, *, expected_revision):
-        rule = PriceLeadRule.model_validate(rule)
+        rule = PriceLeadRule.model_validate(
+            rule.model_dump() if isinstance(rule, PriceLeadRule) else rule
+        )
         if type(expected_revision) is not int:
             raise ValueError("Use a current rule revision.")
         store = RulesStore(self.database)
@@ -303,6 +340,8 @@ class AggregatePriceAlerts:
                     "WHERE release_id=?",
                     (episode, low, observed_at, observed_at, price, count, release),
                 )
+                if rule.any_price:
+                    return "available" if low else "unavailable"
                 return "low" if low else "outside"
         finally:
             store.close()
@@ -445,7 +484,7 @@ class AggregatePriceAlerts:
                         "token": token,
                         "provider_id": binding.provider_id,
                         "destination_ref": binding.destination_ref,
-                        "payload": lead_message(rule.public_title, row[1], rule.currency, row[4]),
+                        "payload": rule_message(rule, row[4]),
                     }
                 return None
         finally:
@@ -528,12 +567,7 @@ class AggregatePriceAlerts:
                 and 0 <= now - row[11] < FRESH_SECONDS
                 and PriceLeadRule.model_validate_json(row[7]).enabled
                 and reservation.get("payload")
-                == lead_message(
-                    PriceLeadRule.model_validate_json(row[7]).public_title,
-                    PriceLeadRule.model_validate_json(row[7]).release_id,
-                    PriceLeadRule.model_validate_json(row[7]).currency,
-                    row[5],
-                )
+                == rule_message(PriceLeadRule.model_validate_json(row[7]), row[5])
             )
         finally:
             store.close()

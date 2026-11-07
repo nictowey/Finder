@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import httpx
 
 from finder.discogs_notification_outbox import NotificationBinding
-from finder.discogs_price_alerts import PriceLeadRule, lead_message
+from finder.discogs_price_alerts import PriceLeadRule, availability_message, lead_message
 
 
 @dataclass(frozen=True)
@@ -51,16 +51,29 @@ class NtfySender:
             r"([A-Z]{3}) (\d{1,7}\.\d{2})\. ",
             payload["message"],
         )
-        if not match or not details or match[1] != details[2]:
+        availability = re.match(
+            r"([^\x00-\x1f\x7f]{1,120})\nRelease ([1-9]\d{0,15}): "
+            r"copies reported for sale \(any price\)\. ",
+            payload["message"],
+        )
+        if not match or not (details or availability):
             raise ValueError("Only the fixed public price-lead message is supported.")
-        # Reuse the strict public-title/currency/amount validation, including zero prices.
+        fields = details or availability
+        if match[1] != fields[2]:
+            raise ValueError("Only the fixed public price-lead message is supported.")
+        # Strict public-title/currency validation; no arbitrary price ceiling.
         rule = PriceLeadRule(
             release_id=int(match[1]),
-            public_title=details[1],
-            currency=details[3],
-            item_price_ceiling="9999999.99",
+            public_title=fields[1],
+            currency=details[3] if details else "USD",
+            any_price=True,
         )
-        if payload != lead_message(rule.public_title, rule.release_id, rule.currency, details[4]):
+        expected = (
+            lead_message(rule.public_title, rule.release_id, rule.currency, details[4])
+            if details
+            else availability_message(rule.public_title, rule.release_id)
+        )
+        if payload != expected:
             raise ValueError("Only the fixed public price-lead message is supported.")
         # JSON publishing to the fixed root keeps the topic out of HTTP URL logs.
         # Never log request bodies, response bodies or exception strings.

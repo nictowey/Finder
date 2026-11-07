@@ -210,3 +210,49 @@ price changes, initial policy, repeated/changed data, exit/re-entry, null curren
 price, zero stock versus errors, stale ordering, restart/claim competition,
 revocation, safe retry, ambiguous delivery and topic redaction. These are code
 checks, not live notification delivery or condition/all-in qualification.
+
+## Any-price availability rules
+
+For an explicitly requested availability watch, use `any_price:true` and omit
+`item_price_ceiling` (or set it to JSON `null`). A ceiling and `any_price:true`
+are mutually exclusive. Existing saved rules without `any_price` keep the original
+ceiling behavior; omitting both modes is rejected rather than silently enabling
+unlimited-price alerts. Currency is still required for the official stats request.
+For example, the rule shape below is inert until separately saved and enabled:
+
+```json
+{
+  "release_id": 31475657,
+  "public_title": "Lil Uzi Vert - Pink Tape",
+  "currency": "USD",
+  "any_price": true,
+  "item_price_ceiling": null,
+  "enabled": false,
+  "alert_initial_low": true
+}
+```
+
+A valid positive aggregate count establishes availability even when the reported
+minimum price is missing. No arbitrary ceiling is substituted. The compatibility
+field `alert_initial_low` also controls the initial availability alert. Changes in
+count or price while copies remain available do not create new episodes. A verified
+zero count with no price ends the episode; later availability creates another.
+Invalid counts, mismatched observation currency and stale/failed reads never rearm
+an episode. These alerts cannot detect every individual listing or offers that
+appear and disappear between polls.
+
+Notifications use the title **Discogs availability lead** and say copies are
+reported for sale **(any price)**, explicitly describing aggregate availability,
+not an individual new-listing alert. No price or price qualification is asserted.
+The existing condition/delivered-total warning, manual-review limitation, public
+release link and Discogs attribution remain. The sender permits only this exact
+canonical message or the existing canonical low-price message; delivery rechecks
+the saved rule's mode and payload before dispatch.
+
+No SQL migration is required. Rules are validated JSON; existing outbox and sample
+price fields use an empty internal marker for availability episodes, never a
+monetary value. Existing revision, pause, freshness, retry, uncertain-send and
+purchase-stop safeguards are unchanged. A mode change is a rule revision and
+revokes pending events or quarantines claimed events as usual. Downgrading to code
+without `any_price` support requires disabling the worker and restoring compatible
+rule configuration first; never reset outboxes to force delivery.

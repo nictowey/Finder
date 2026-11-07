@@ -685,3 +685,139 @@ def test_worker_passes_interval_without_enabling_poll_or_delivery(
     monkeypatch.setattr(worker, "tick", capture)
     assert worker.main(["--database", str(database), *options]) == 0
     assert captured == [(expected, None, None, False)]
+
+
+@pytest.fixture
+def any_price_setup(setup):
+    database, now, alerts, rule = setup
+    rule = PriceLeadRule(
+        release_id=rule.release_id,
+        public_title=rule.public_title,
+        currency=rule.currency,
+        any_price=True,
+        enabled=True,
+    )
+    alerts.save_rule(rule.model_dump(), expected_revision=1)
+    enable(alerts)
+    return database, now, alerts, rule
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {},
+        {"item_price_ceiling": None},
+        {"any_price": True, "item_price_ceiling": "10"},
+        {"any_price": "true"},
+        {"any_price": 1},
+        {"item_price_ceiling": "0"},
+        {"item_price_ceiling": "NaN"},
+    ],
+)
+def test_price_mode_requires_explicit_unambiguous_choice(options):
+    with pytest.raises(ValueError):
+        PriceLeadRule(release_id=123, public_title="Record", currency="USD", **options)
+
+
+def test_legacy_price_rule_and_explicit_any_price_round_trip(setup):
+    rule = setup[3]
+    old = rule.model_dump(exclude={"any_price"})
+    assert PriceLeadRule.model_validate(old) == rule
+    available = PriceLeadRule(release_id=123, public_title="Record", currency="USD", any_price=True)
+    assert available.item_price_ceiling is None
+    assert PriceLeadRule.model_validate_json(available.model_dump_json()) == available
+    assert not available.enabled
+
+
+def test_any_price_initial_changes_restart_and_reappearance(any_price_setup):
+    database, now, alerts, rule = any_price_setup
+    assert observe(any_price_setup, "9999999.99", revision=2) == "available"
+    assert observe(any_price_setup, None, count=1, revision=2) == "available"
+    assert rows(database) == [("pending", 1, "", 0)]
+    requests = []
+    destination = sender(lambda r: requests.append(json.loads(r.content)) or httpx.Response(200))
+    assert deliver_one(alerts, destination)["state"] == "accepted"
+    payload = requests[0]
+    assert payload["title"] == "Discogs availability lead"
+    assert "any price" in payload["message"]
+    assert "not an individual new-listing alert" in payload["message"]
+    assert "minimum item price" not in payload["message"]
+    assert "not a qualified purchase" in payload["message"]
+    alerts = AggregatePriceAlerts(database, clock=lambda: now[0])
+    reopened = database, now, alerts, rule
+    assert observe(reopened, "1", count=99, revision=2) == "available"
+    assert len(rows(database)) == 1
+    assert observe(reopened, None, count=0, revision=2) == "unavailable"
+    assert observe(reopened, None, count=1, revision=2) == "available"
+    assert rows(database)[-1] == ("pending", 2, "", 0)
+    assert alerts.status()["purchase_allowed"] is False
+
+
+def test_any_price_silent_initial_and_unknown_never_rearm(any_price_setup):
+    database, _, alerts, rule = any_price_setup
+    alerts.save_rule(rule.model_copy(update={"alert_initial_low": False}), expected_revision=2)
+    assert observe(any_price_setup, None, revision=3) == "available"
+    assert rows(database) == []
+    assert observe(any_price_setup, None, count=True, revision=3) == "unknown"
+    assert observe(any_price_setup, "8", count=0, revision=3) == "unknown"
+    assert observe(any_price_setup, None, currency="EUR", revision=3) == "unknown"
+    assert observe(any_price_setup, None, revision=3) == "available"
+    assert rows(database) == []
+    assert observe(any_price_setup, None, count=0, revision=3) == "unavailable"
+    assert observe(any_price_setup, None, revision=3) == "available"
+    assert rows(database) == [("pending", 2, "", 0)]
+
+
+def test_any_price_sender_rejects_tampering_and_mode_change_revokes(any_price_setup):
+    from finder.discogs_price_alerts import availability_message, lead_message
+
+    _, _, alerts, rule = any_price_setup
+    observe(any_price_setup, None, revision=2)
+    destination = sender(lambda r: httpx.Response(200))
+    reservation = alerts.claim(destination.binding)
+    assert alerts.delivery_current(reservation)
+    reservation["payload"] = lead_message(rule.public_title, rule.release_id, "USD", "1.00")
+    assert not alerts.delivery_current(reservation)
+    payload = availability_message(rule.public_title, rule.release_id)
+    for changed in [
+        {**payload, "title": "New listing"},
+        {**payload, "message": payload["message"] + " Buy now!"},
+        {**payload, "click": "https://www.discogs.com/sell/release/123"},
+    ]:
+        with pytest.raises(ValueError):
+            destination.send(changed)
+    reservation["payload"] = payload
+    alerts.save_rule(
+        rule.model_copy(update={"any_price": False, "item_price_ceiling": "10.00"}),
+        expected_revision=2,
+    )
+    assert not alerts.delivery_current(reservation)
+    assert alerts.status()["states"] == {"uncertain": 1}
+
+
+def test_any_price_real_stats_reader_missing_price_and_zero_stock(any_price_setup):
+    from finder.discogs_price_worker import tick
+
+    database, now, alerts, _ = any_price_setup
+    responses = [
+        {"num_for_sale": 1, "lowest_price": None},
+        {"num_for_sale": 0, "lowest_price": None},
+        {"num_for_sale": 2, "lowest_price": {"currency": "USD", "value": 9999999}},
+    ]
+    reader = ReleaseStatsReader(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json=responses.pop(0))),
+        clock=lambda: now[0],
+    )
+    destination = sender(lambda r: httpx.Response(200))
+    for status in ["available", "unavailable", "available"]:
+        result = tick(alerts, reader=reader, sender=destination)
+        assert result["poll"]["status"] == status
+        assert result["delivery"]["state"] == ("accepted" if status == "available" else "idle")
+        now[0] += POLL_SECONDS
+    assert [row[:2] for row in rows(database)] == [("accepted", 1), ("accepted", 2)]
+
+
+def test_save_revalidates_copied_rule_fields(setup):
+    _, _, alerts, rule = setup
+    with pytest.warns(UserWarning, match="Pydantic serializer"), pytest.raises(ValueError):
+        alerts.save_rule(rule.model_copy(update={"any_price": "true"}), expected_revision=1)
