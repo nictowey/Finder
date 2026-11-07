@@ -11,7 +11,7 @@ from pathlib import Path
 
 from finder.discogs_app_auth import AppCredentials, AuthenticatedReleaseStatsReader
 from finder.discogs_listing import ReleaseStatsReader
-from finder.discogs_ntfy import NtfySender, deliver_one
+from finder.discogs_ntfy import NtfySender, PrivateNtfyConfig, deliver_one
 from finder.discogs_price_alerts import (
     MAX_POLL_SECONDS,
     MIN_POLL_SECONDS,
@@ -65,7 +65,13 @@ def main(argv=None):
     parser.add_argument(
         "--deliver", action="store_true", help="Permit ntfy attempts for configured alerts"
     )
-    parser.add_argument(
+    destinations = parser.add_mutually_exclusive_group()
+    destinations.add_argument(
+        "--ntfy-config-file",
+        type=Path,
+        help="Existing owner-only private ntfy JSON configuration; never put secrets in argv",
+    )
+    destinations.add_argument(
         "--topic-file", type=Path, help="Existing owner-only topic file; never put topic in argv"
     )
     parser.add_argument(
@@ -85,8 +91,10 @@ def main(argv=None):
         parser.error("--poll-seconds must be between 300 and 86400")
     if args.discogs_app_file is not None and not args.poll:
         parser.error("--discogs-app-file requires --poll")
-    if args.deliver and args.topic_file is None:
-        parser.error("--deliver requires an existing private --topic-file")
+    if args.deliver and args.topic_file is None and args.ntfy_config_file is None:
+        parser.error("--deliver requires --topic-file or --ntfy-config-file")
+    if args.ntfy_config_file is not None and not args.deliver:
+        parser.error("--ntfy-config-file requires --deliver")
     if args.run and not (args.poll or args.deliver):
         parser.error("--run requires explicit --poll or --deliver")
     stop = threading.Event()
@@ -101,7 +109,13 @@ def main(argv=None):
             if args.poll
             else None
         )
-        sender = NtfySender(private_topic(args.topic_file), enabled=True) if args.deliver else None
+        sender = None
+        if args.deliver:
+            sender = (
+                NtfySender(private_config=PrivateNtfyConfig(args.ntfy_config_file), enabled=True)
+                if args.ntfy_config_file
+                else NtfySender(private_topic(args.topic_file), enabled=True)
+            )
         if args.run:
             for name in (signal.SIGTERM, signal.SIGINT):
                 previous[name] = signal.signal(name, lambda *_: stop.set())

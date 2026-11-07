@@ -821,3 +821,34 @@ def test_save_revalidates_copied_rule_fields(setup):
     _, _, alerts, rule = setup
     with pytest.warns(UserWarning, match="Pydantic serializer"), pytest.raises(ValueError):
         alerts.save_rule(rule.model_copy(update={"any_price": "true"}), expected_revision=1)
+
+
+def test_legacy_retry_cannot_move_to_private_endpoint(setup, tmp_path):
+    from finder.discogs_ntfy import PRIVATE_NTFY_ORIGIN, PrivateNtfyConfig
+
+    _, now, alerts, _ = setup
+    enable(alerts)
+    observe(setup)
+    legacy = sender(lambda r: httpx.Response(429))
+    assert deliver_one(alerts, legacy)["state"] == "retry_wait"
+    now[0] += 901
+    observe(setup)
+    path = tmp_path / "private-ntfy.json"
+    path.write_text(
+        json.dumps(
+            {
+                "origin": PRIVATE_NTFY_ORIGIN,
+                "topic": "offline_fixture_destination_not_live",
+                "token": "tk_" + "offlinefixture" * 3,
+            }
+        )
+    )
+    path.chmod(0o600)
+    calls = []
+    private = NtfySender(
+        private_config=PrivateNtfyConfig(path),
+        enabled=True,
+        transport=httpx.MockTransport(lambda r: calls.append(r) or httpx.Response(429)),
+    )
+    assert deliver_one(alerts, private)["state"] == "idle"
+    assert not calls

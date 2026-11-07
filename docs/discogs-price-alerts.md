@@ -256,3 +256,35 @@ purchase-stop safeguards are unchanged. A mode change is a rule revision and
 revokes pending events or quarantines claimed events as usual. Downgrading to code
 without `any_price` support requires disabling the worker and restoring compatible
 rule configuration first; never reset outboxes to force delivery.
+
+## Prepared private ntfy transport (not activation)
+
+The optional `--ntfy-config-file /run/secrets/sniper-ntfy.json` replaces
+`--topic-file`; the two flags are mutually exclusive and the private configuration
+requires explicit `--deliver`. The existing topic-file route remains fixed to
+`https://ntfy.sh/` with its existing destination binding.
+
+The private file must be a current-user-owned, single-link regular file with exact
+0600 permissions, at most 4096 bytes. It contains exactly three JSON string keys:
+`origin`, `topic`, and `token`. The only permitted origin is
+`https://vps-a0c5b746.vps.ovh.us` (no trailing slash, alternate port, path, query or
+credentials). `topic` must be 24–64 ASCII letters, digits, underscores or hyphens.
+`token` must be an ntfy bearer token (`tk_` followed by 16–128 ASCII alphanumerics).
+Provision real values only through a separately approved secure setup process,
+never command arguments, environment, fixtures, documentation or logs. This code
+does not create credentials, change permissions, install a server or activate sends.
+
+Publishing uses the fixed HTTPS root, JSON body and Authorization header. TLS
+verification remains enabled; redirects and environment proxies remain disabled.
+Payload validation, local limits, backoff and uncertain-send behavior are unchanged.
+The private destination hash includes origin, topic and credential identity (token);
+token rotation deliberately changes this binding. Old pending/retry/uncertain
+messages are never implicitly moved or replayed to the new destination. Review any
+existing destination-bound work during an approved migration; do not clear claims,
+reset episodes or delete the database to force re-notification.
+
+Self-hosted ntfy native iOS delivery may still rely on its upstream push service.
+For an approved independent Web Push setup, verify HTTPS, ntfy Web Push server
+configuration and an iOS 16.4+ Safari Home Screen installation. Server acceptance
+is not proof of a device notification. Credential provisioning, Web Push setup,
+server deployment and actual phone delivery remain separate verification gates.

@@ -1,13 +1,60 @@
-"""Disabled-by-default ntfy.sh sender. No accounts, paid tiers or topic creation UI."""
+"""Opt-in ntfy sender with fixed public and explicitly configured private roots."""
 
 import hashlib
+import json
+import os
 import re
+import stat
 from dataclasses import dataclass
 
 import httpx
 
 from finder.discogs_notification_outbox import NotificationBinding
 from finder.discogs_price_alerts import PriceLeadRule, availability_message, lead_message
+
+PRIVATE_NTFY_ORIGIN = "https://vps-a0c5b746.vps.ovh.us"
+
+
+class PrivateNtfyConfig:
+    """Existing owner-only configuration, never created or repaired by the worker."""
+
+    def __init__(self, path):
+        error = "Private notification configuration unavailable."
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as source:
+                info = os.fstat(source.fileno())
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.getuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_nlink != 1
+                ):
+                    raise ValueError(error)
+                raw = source.read(4097)
+            if len(raw) > 4096:
+                raise ValueError(error)
+            config = json.loads(raw)
+            if (
+                not isinstance(config, dict)
+                or set(config) != {"origin", "topic", "token"}
+                or config["origin"] != PRIVATE_NTFY_ORIGIN
+                or not isinstance(config["topic"], str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", config["topic"])
+                or not isinstance(config["token"], str)
+                or not re.fullmatch(r"tk_[A-Za-z0-9]{16,128}", config["token"])
+            ):
+                raise ValueError(error)
+            self._origin, self._topic, self._token = (
+                config["origin"],
+                config["topic"],
+                config["token"],
+            )
+        except (OSError, ValueError, UnicodeError):
+            raise ValueError(error) from None
+
+    def __repr__(self):
+        return "PrivateNtfyConfig(<redacted>)"
 
 
 @dataclass(frozen=True)
@@ -17,16 +64,31 @@ class DeliveryResult:
 
 
 class NtfySender:
-    def __init__(self, topic=None, *, enabled=False, transport=None):
+    def __init__(self, topic=None, *, enabled=False, transport=None, private_config=None):
         if type(enabled) is not bool:
             raise ValueError("An explicit delivery opt-in is required.")
+        if private_config is not None:
+            if not isinstance(private_config, PrivateNtfyConfig) or topic is not None:
+                raise ValueError("Use one notification destination configuration.")
+            topic = private_config._topic
+        self._origin = private_config._origin if private_config else "https://ntfy.sh"
+        self._token = private_config._token if private_config else None
         if enabled and (
             not isinstance(topic, str) or not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", topic)
         ):
             raise ValueError("Provide a private high-entropy topic through secure configuration.")
         self.enabled, self._topic, self._transport = enabled, topic, transport
+        # Preserve the legacy binding; private credentials conservatively define identity.
+        # A token rotation requires explicit destination rebinding, never implicit replay.
+        identity = (
+            json.dumps([self._origin, topic, self._token], separators=(",", ":"))
+            if private_config
+            else "ntfy:" + topic
+            if enabled
+            else ""
+        )
         self.binding = (
-            NotificationBinding("ntfy", hashlib.sha256(("ntfy:" + topic).encode()).hexdigest())
+            NotificationBinding("ntfy", hashlib.sha256(identity.encode()).hexdigest())
             if enabled
             else None
         )
@@ -82,7 +144,10 @@ class NtfySender:
                 transport=self._transport, timeout=8, follow_redirects=False, trust_env=False
             ) as client:
                 with client.stream(
-                    "POST", "https://ntfy.sh/", json={"topic": self._topic, **payload}
+                    "POST",
+                    self._origin + "/",
+                    json={"topic": self._topic, **payload},
+                    headers={"Authorization": "Bearer " + self._token} if self._token else {},
                 ) as response:
                     if 200 <= response.status_code < 300:
                         return DeliveryResult("accepted")
