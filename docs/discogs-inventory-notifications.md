@@ -74,3 +74,42 @@ part of this artifact.
   a full-suite pass or a live integration gate. No permission workaround was attempted.
 - Repository Ruff lint and 228-file format check passed. npm tests: 110 passed. TypeScript
   typecheck and diff whitespace check passed. Publication and deployment remain separate.
+
+## Explicit TEST proof from fresh snapshot evidence
+
+A separate operator-selected proof mode can exercise the same matcher checks, durable
+outbox, budget, lock and private sender using an existing **snapshot** result. It does not
+convert that result into a newly observed event or require/establish a discovery baseline.
+The snapshot, seen IDs, pending queue and aggregate watches remain untouched.
+
+```sh
+PYTHONPATH=src python -m finder.discogs_inventory_notifications \
+  --database /private/existing-rules.db --config /private/inventory.json \
+  --private-notify-config /private/existing-notify.json --deliver-one \
+  --test-snapshot-listing 100 --test-key synthetic-proof-01
+```
+
+The listing and proof key above are synthetic. Both options are required together. This
+mode remains explicit, private-only and default-off. It selects only that exact configured
+snapshot listing; newly observed records cannot satisfy a snapshot proof. The canonical
+notification title starts `TEST:` and its body states `TEST ONLY: Existing snapshot listing;
+this is not a newly observed listing alert.` There is no option to remove those labels.
+
+All ordinary identity, criteria, source-stop and 120-second detail-freshness checks still
+apply. A retained old snapshot is insufficient: separately perform an authorized fresh
+snapshot detail observation before attempting the proof. This sender never refreshes it.
+A shared pacing/cooldown hold can prevent delivery; it must not be bypassed for a test.
+
+Proof reservations use a separate `test:` delivery-key namespace. The original source event
+key and snapshot origin remain intact. A stable proof key is bound to the configuration and
+consumed once across restarts, even if its snapshot is later refreshed. Never change a proof
+key to replay an uncertain result. Provider acceptance still does not confirm phone receipt.
+The shared abandoned-send recovery also quarantines proof reservations. Tests consume the
+same daily allowance and pacing as ordinary notifications. No alternate table, credentials,
+provider stack, production baseline or automatic test scheduler is created.
+
+TEST extension verification: 44 proof/bridge tests and 364 focused regressions passed.
+Independent review found no blockers; 202 focused tests and five extra replay/selection
+probes passed. Full Python: 4,836 passed, one skipped, 41 subtests passed, with the same 18
+sandbox socket permission failures (not a full-suite pass). Ruff, 229-file format check,
+npm's 110 tests, TypeScript and whitespace checks passed. No live TEST was sent.

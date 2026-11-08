@@ -143,7 +143,7 @@ class NtfySender:
             raise ValueError("Health notifications require the existing private configuration.")
         return self._publish(health_message(kind, reasons, test=test))
 
-    def send_inventory(self, listing, release, checked_at):
+    def send_inventory(self, listing, release, checked_at, *, test=False):
         """Canonical private inventory copy; caller reserves the shared budget."""
         if not self.enabled:
             return DeliveryResult("disabled")
@@ -151,7 +151,7 @@ class NtfySender:
             raise ValueError("Inventory notifications require existing private configuration.")
         from finder.discogs_inventory_notifications import inventory_message
 
-        return self._publish(inventory_message(listing, release, checked_at))
+        return self._publish(inventory_message(listing, release, checked_at, test=test))
 
     def _publish(self, payload):
         # Validated message paths share this transport and outcome classification.

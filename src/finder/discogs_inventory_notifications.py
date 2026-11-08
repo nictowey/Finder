@@ -6,6 +6,7 @@ Provider acceptance is not device delivery. Provision explicitly before opting i
 
 import hashlib
 import math
+import re
 import time
 import uuid
 from contextlib import closing
@@ -32,19 +33,28 @@ CHECKS = {
 }
 
 
-def inventory_message(listing, release, checked_at):
+def inventory_message(listing, release, checked_at, *, test=False):
     """Canonical inert copy; no provider text, arbitrary URLs or price promises."""
+    if type(test) is not bool:
+        raise ValueError("Use an explicit test mode.")
     if any(type(v) is not int or not 0 < v <= 9007199254740991 for v in (listing, release)):
         raise ValueError("Invalid inventory identity.")
     if type(checked_at) not in (int, float) or not math.isfinite(checked_at) or checked_at < 0:
         raise ValueError("Invalid observation time.")
     stamp = datetime.fromtimestamp(checked_at, UTC).isoformat()
     link = f"https://www.discogs.com/sell/item/{listing}"
+    introduction = (
+        "TEST ONLY: Existing snapshot listing; this is not a newly observed listing alert. "
+        if test
+        else "Newly observed in your monitored seller's inventory, not proven newly listed. "
+    )
     return {
-        "title": "Newly observed inventory review lead",
+        "title": "TEST: snapshot listing review"
+        if test
+        else "Newly observed inventory review lead",
         "message": (
             f"Listing {listing}; release {release}. Reported item criteria matched at {stamp}.\n"
-            "Newly observed in your monitored seller's inventory, not proven newly listed. "
+            f"{introduction}"
             "Coverage is one explicitly monitored seller only. Availability may change. "
             "Shipping, tax, fees, physical pressing and full contents remain unverified. "
             "Manual review required; not a qualified purchase.\n"
@@ -71,9 +81,21 @@ def initialize_notifications(database, config):
 
 
 class InventoryNotifications:
-    def __init__(self, database, config, *, enabled=False, clock=time.time):
+    def __init__(
+        self, database, config, *, enabled=False, clock=time.time, test_listing=None, test_key=None
+    ):
         if type(enabled) is not bool:
             raise ValueError("Explicit delivery opt-in required.")
+        if (test_listing is None) != (test_key is None):
+            raise ValueError("A test requires both an exact snapshot listing and a proof key.")
+        if test_key is not None and (
+            not isinstance(test_key, str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", test_key)
+            or type(test_listing) is not int
+            or not 0 < test_listing <= 9007199254740991
+        ):
+            raise ValueError("Use a bounded explicit proof key and exact snapshot listing.")
+        self.test_listing, self.test_key = test_listing, test_key
         self.database, self.config, self.enabled, self.clock = database, config, enabled, clock
 
     def _eligible(self, db, now):
@@ -82,21 +104,23 @@ class InventoryNotifications:
         if (
             state["denied"]
             or state["in_progress"]
-            or not state["baseline"]
+            or (self.test_key is None and not state["baseline"])
             or state["seed_verified_at"] is None
             or state["seed_verified_at"] > now
         ):
             return []
+        origin = "snapshot" if self.test_key is not None else "newly_observed"
         targets = {t.release_id: t for t in self.config.targets}
         valid = []
         for row in state["results"]:
             detail = row.get("result")
             target = targets[row["release_id"]]
             key = hashlib.sha256(
-                f"{self.config.fingerprint}:newly_observed:{row['listing_id']}".encode()
+                f"{self.config.fingerprint}:{origin}:{row['listing_id']}".encode()
             ).hexdigest()
             if (
-                row["origin"] != "newly_observed"
+                row["origin"] != origin
+                or (self.test_listing is not None and row["listing_id"] != self.test_listing)
                 or row["state"] != "review_ready"
                 or row.get("event_key") != key
                 or not 0 <= now - row["checked_at"] < FRESH_SECONDS
@@ -137,6 +161,15 @@ class InventoryNotifications:
                     continue
             except (KeyError, TypeError, ValueError, ArithmeticError):
                 continue
+            if self.test_key is not None:
+                proof_key = (
+                    "test:"
+                    + hashlib.sha256(
+                        f"inventory-proof-v1:{self.config.fingerprint}:{self.test_key}".encode()
+                    ).hexdigest()
+                )
+                # Preserve source origin and identity; only the separate delivery key changes.
+                row = dict(row, event_key=proof_key, source_event_key=row["event_key"])
             valid.append(row)
         return valid
 
@@ -255,7 +288,10 @@ class InventoryNotifications:
 
                 return self.finish(claim, DeliveryResult("failed"))
             result = sender.send_inventory(
-                claim["listing_id"], claim["release_id"], claim["checked_at"]
+                claim["listing_id"],
+                claim["release_id"],
+                claim["checked_at"],
+                test=self.test_key is not None,
             )
             return self.finish(claim, result)
 
@@ -277,9 +313,15 @@ def main(argv=None):
     modes.add_argument("--init-state", action="store_true")
     modes.add_argument("--deliver-one", action="store_true")
     parser.add_argument("--private-notify-config")
+    parser.add_argument("--test-snapshot-listing", type=int)
+    parser.add_argument("--test-key")
     args = parser.parse_args(argv)
     if args.deliver_one and not args.private_notify_config:
         parser.error("--deliver-one requires --private-notify-config")
+    if (
+        args.test_snapshot_listing is not None or args.test_key is not None
+    ) and not args.deliver_one:
+        parser.error("Test selection requires --deliver-one")
     try:
         config = InventoryConfig.model_validate(read_json(args.config, 16384))
         result = {"state": "disabled", "delivered": False}
@@ -290,7 +332,13 @@ def main(argv=None):
             sender = NtfySender(
                 enabled=True, private_config=PrivateNtfyConfig(args.private_notify_config)
             )
-            result = InventoryNotifications(args.database, config, enabled=True).deliver(sender)
+            result = InventoryNotifications(
+                args.database,
+                config,
+                enabled=True,
+                test_listing=args.test_snapshot_listing,
+                test_key=args.test_key,
+            ).deliver(sender)
     except (
         ReadSafetyHalt,
         OSError,
