@@ -55,7 +55,7 @@ authentication, subscription, process arguments or push permission is tested.
 - `fresh` means less than the existing 1200-second delivery freshness bound.
   Stale begins at exactly 1200 seconds. Future timestamps are flagged. This is
   local observation age, not Discogs' inventory timestamp or proof of live stock.
-- `--poll-seconds` is the operator's expected interval, 300–86400 seconds (default
+- `--poll-seconds` is the operator's expected interval, 120–86400 seconds (default
   600). It does not change polling or infer the running worker's interval. A rule
   is `poll_overdue` when at least one expected interval past its stored due time,
   unless its current poll claim is still live. This grace avoids declaring normal
@@ -148,3 +148,36 @@ shows `notification_manual_attention:true`, `send_cooldown_seconds:null`, and
 `provider_manual_attention`; it never emits a nonfinite JSON number or resets the
 hold. Polling remains separately enabled. See the watcher documentation for
 provider deadline handling and downgrade-safe recovery requirements.
+
+### Offline 120-second candidate
+
+The opt-in aggregate worker accepts 120 seconds as its minimum requested per-rule
+interval. The default remains 600 seconds; this does not change a deployed worker.
+Configure the worker and health reporter with the same interval. Twenty enabled
+rules need about ten requests per minute at 120 seconds, before latency or failures.
+The SQLite shared API gate keeps at least three seconds between reservations and
+persists response-derived cooldowns across restarts. Response limit/used/remaining
+headers reserve 20% capacity; missing reset information assumes a conservative
+60-second window. Numeric and HTTP-date Retry-After deadlines are never shortened
+by the normal exponential-backoff cap, including on non-429 responses.
+
+The loop subtracts request duration from its three-second sleep, with a half-second
+minimum wait; provider pacing still comes from the shared gate.
+Slow responses, other callers sharing the API budget, low quota and backoff can make
+complete cycles longer than 120 seconds. Health reports actual last-success age,
+failures and overdue polls; its 1200-second sample freshness threshold and all alert
+send gates are unchanged. This is aggregate observation cadence, not individual
+listing discovery or evidence of faster upstream inventory refresh. Coordination is
+limited to callers using this database, not other hosts or applications using the
+same credentials. Live header validation and a separately authorized rollout remain
+necessary before claiming operational support.
+
+Provider holds are committed as soon as response headers arrive, before body reads,
+by both aggregate polling and the legacy release/listing monitor. The local reader
+also retains holds when an external budget is supplied. A known quota with missing
+or contradictory usage information waits a full minute rather than assuming spare
+capacity. Extremely large numeric Retry-After values never fall back to a minute:
+unrepresentable values produce a finite persistent manual hold. Health exposes
+`request_manual_attention` and `request_provider_manual_attention` for deadlines
+beyond the supported calendar horizon. This is separate from notification holds;
+no notification configuration or delivery permission changes.

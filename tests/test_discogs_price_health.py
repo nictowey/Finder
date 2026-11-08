@@ -510,7 +510,7 @@ def test_cli_json_text_exit_codes_and_no_reconciliation(workspace, monkeypatch, 
     assert "not proof of phone" in text
     assert health.main(args + ["--format", "json"]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "healthy"
-    assert health.main(args + ["--poll-seconds", "299", "--format", "json"]) == 2
+    assert health.main(args + ["--poll-seconds", "119", "--format", "json"]) == 2
     assert json.loads(capsys.readouterr().out)["status"] == "unavailable"
     assert database_fingerprint(path) == before
 

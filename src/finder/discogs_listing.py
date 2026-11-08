@@ -17,6 +17,7 @@ from finder.discogs_completeness import (
     normalize_comments,
     project_release_media,
 )
+from finder.discogs_read_quota import quota_delay, retry_seconds
 from finder.discogs_rules import CURRENCIES, Observation, release_id
 
 GRADE_NAMES = {
@@ -205,7 +206,7 @@ class PublicReadBudget:
             raise ListingReadError("Read cooldown active. Wait before explicitly trying again.")
 
     def defer(self, seconds):
-        seconds = max(60, min(seconds, 86400))
+        seconds = max(0, seconds)
         if self.defer_callback is not None:
             self.defer_callback(seconds)
         else:
@@ -229,6 +230,7 @@ class ListingReader:
         self.budget = budget or PublicReadBudget(clock=clock, sleep=sleep)
         self._media_cache = OrderedDict()
         self._cache_lock = threading.Lock()
+        self.provider_next_request = 0.0
 
     @property
     def next_read(self):
@@ -237,10 +239,12 @@ class ListingReader:
     def _now(self):
         return datetime.fromtimestamp(self.wall_clock(), UTC)
 
-    def read(self, value, *, budget=None):
+    def read(self, value, *, budget=None, defer=None):
         """One listing GET, including when called by the scheduled monitor."""
         ident = listing_id(value)
-        return normalize(self._request(f"/marketplace/listings/{ident}", budget=budget), ident)
+        return normalize(
+            self._request(f"/marketplace/listings/{ident}", budget=budget, defer=defer), ident
+        )
 
     def read_release_media(self, release, *, budget=None):
         """Read bounded, exact-release public catalog quantity or return None.
@@ -303,7 +307,7 @@ class ListingReader:
             "Accept": "application/json",
         }
 
-    def _request(self, path, *, params=None, budget=None, wait=False):
+    def _request(self, path, *, params=None, budget=None, wait=False, defer=None):
         """Only callers construct fixed public GET routes; never accept an input URL."""
         headers = self._request_headers(path, params)
         active_budget = budget or self.budget
@@ -312,6 +316,7 @@ class ListingReader:
             # Cloud's durable slot coordinates the stats worker; retain the reader's
             # local cooldown too, including when a caller also uses it directly.
             self.budget.reserve()
+        request_started = self.wall_clock()
         try:
             with httpx.Client(
                 transport=self.transport,
@@ -323,18 +328,31 @@ class ListingReader:
                 with client.stream(
                     "GET", f"https://api.discogs.com{path}", params=params
                 ) as response:
-                    if response.status_code == 429:
-                        seconds = 60
-                        retry = response.headers.get("Retry-After", "")
-                        if retry.isdigit() and len(retry) <= 6:
-                            seconds = max(60, min(int(retry), 86400))
-                        active_budget.defer(seconds)
+                    delay = quota_delay(response.headers, self.wall_clock())
+                    if response.status_code in {429, 503} or response.headers.get("Retry-After"):
+                        delay = max(
+                            delay,
+                            retry_seconds(
+                                response.headers.get("Retry-After", ""), self.wall_clock()
+                            ),
+                        )
+                    self.provider_next_request = max(
+                        self.provider_next_request,
+                        request_started + 3,
+                        self.wall_clock() + delay if delay > 3 else 0,
+                    )
+                    if delay > 3:
+                        # Durable callback runs at header receipt, before any body I/O.
+                        if defer is not None:
+                            defer(delay)
+                        active_budget.defer(delay)
                         if active_budget is not self.budget:
-                            self.budget.defer(seconds)
+                            self.budget.defer(delay)
+                    if response.status_code == 429:
                         raise ListingReadError(
                             "Discogs rate limit reached. No automatic retry; "
                             "wait before trying again.",
-                            retry_after=seconds,
+                            retry_after=delay,
                             rate_limited=True,
                         )
                     if response.status_code != 200:
@@ -359,11 +377,13 @@ class ListingReader:
 class ReleaseStatsReader(ListingReader):
     """Aggregate release availability only. This endpoint does not discover listing IDs."""
 
-    def read(self, value, currency):
+    def read(self, value, currency, *, defer=None):
         ident = release_id(value)
         if currency not in CURRENCIES:
             raise ListingReadError("Unsupported currency.")
-        data = self._request(f"/marketplace/stats/{ident}", params={"curr_abbr": currency})
+        data = self._request(
+            f"/marketplace/stats/{ident}", params={"curr_abbr": currency}, defer=defer
+        )
         if not isinstance(data, dict):
             raise ListingReadError("Discogs returned unreadable release availability.")
         count = data.get("num_for_sale")

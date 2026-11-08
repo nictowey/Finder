@@ -896,3 +896,91 @@ def test_service_template_explicitly_selects_candidate_source_tree(tmp_path):
         Path(result.stdout.strip()).resolve()
         == (root / "src/finder/discogs_health_watcher.py").resolve()
     )
+
+
+@pytest.mark.parametrize("action", ["inspect", "tick"])
+@pytest.mark.parametrize(
+    "options,expected",
+    [([], 300), (["--poll-seconds", "120"], 120), (["--poll-seconds", "86400"], 86400)],
+)
+def test_cli_expected_interval_is_independent_of_health_schedule(
+    rig, monkeypatch, capsys, action, options, expected
+):
+    calls = []
+
+    def report(database, **kwargs):
+        calls.append(kwargs["poll_seconds"])
+        return health_report(database, now=rig.now, **kwargs)
+
+    monkeypatch.setattr(module, "health_report", report)
+    monkeypatch.setattr(module, "HealthWatcher", lambda database: rig.watcher)
+    assert (
+        module.main(
+            [
+                action,
+                "--database",
+                str(rig.database),
+                "--discogs-app-file",
+                str(rig.app),
+                "--ntfy-config-file",
+                str(rig.ntfy),
+                *options,
+            ]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert calls == [expected]
+    if action == "inspect":
+        assert result["health"]["expected_poll_seconds"] == expected
+        assert result["health"]["sample_fresh_seconds"] == 1200
+    assert module.CHECK_SECONDS == 300
+    assert module.FRESH_SECONDS == 1200
+    assert not rig.requests
+
+
+@pytest.mark.parametrize("interval", ["119", "86401", "nan", "120.5", "0"])
+def test_watcher_invalid_poll_interval_fails_before_database_access(tmp_path, interval):
+    path = tmp_path / "absent.db"
+    with pytest.raises(SystemExit) as error:
+        module.main(["init", "--database", str(path), "--poll-seconds", interval])
+    assert error.value.code == 2
+    assert not path.exists()
+
+
+def test_fast_report_preserves_three_hundred_second_incident_debounce(rig):
+    rig.enable()
+    rig.sql("UPDATE discogs_price_samples SET next_check=?", (rig.now - 150,))
+
+    def report():
+        return health_report(
+            rig.database,
+            now=rig.now,
+            poll_seconds=120,
+            discogs_app_file=rig.app,
+            ntfy_config_file=rig.ntfy,
+        )
+
+    assert "poll_overdue" in report()["rules"][0]["issues"]
+    assert "poll_overdue" not in rig.report()["rules"][0]["issues"]
+    rig.watcher.observe(report())
+    assert rig.watcher.status()["bad_checks"] == 1
+    rig.now += 120
+    rig.watcher.observe(report())
+    assert rig.watcher.status()["bad_checks"] == 1
+    assert not rig.watcher.status()["incident_open"]
+    rig.now += 180
+    rig.watcher.observe(report())
+    assert rig.watcher.status()["bad_checks"] == 2
+    assert rig.watcher.status()["incident_open"]
+    assert report()["sample_fresh_seconds"] == 1200
+
+
+def test_service_expected_poll_interval_is_not_health_timer():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    service = (root / "deployment/sniper-health.service.example").read_text()
+    timer = (root / "deployment/sniper-health.timer.example").read_text()
+    assert "tick --poll-seconds 300 --database" in service
+    assert "OnUnitInactiveSec=5min" in timer

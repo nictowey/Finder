@@ -19,7 +19,7 @@ from finder.discogs_aggregate_signals import (
     observe_changes,
     pause_changes,
 )
-from finder.discogs_listing import ListingReadError
+from finder.discogs_listing import ListingReadError, ReleaseStatsReader
 from finder.discogs_notification_outbox import (
     BASE_BACKOFF,
     LEASE_SECONDS,
@@ -27,10 +27,11 @@ from finder.discogs_notification_outbox import (
     MAX_BACKOFF,
     NotificationBinding,
 )
+from finder.discogs_read_quota import defer_shared_read
 from finder.discogs_rules import CURRENCIES, RulesStore, StrictInput, amount, release_id
 
 POLL_SECONDS = 600
-MIN_POLL_SECONDS = 300
+MIN_POLL_SECONDS = 120
 MAX_POLL_SECONDS = 86400
 FRESH_SECONDS = 1200
 DAILY_SEND_CAP = 200  # Below the reviewed anonymous free allowance; no paid fallback.
@@ -182,7 +183,7 @@ class AggregatePriceAlerts:
             type(poll_seconds) is not int
             or not MIN_POLL_SECONDS <= poll_seconds <= MAX_POLL_SECONDS
         ):
-            raise ValueError("Poll interval must be an integer from 300 to 86400 seconds.")
+            raise ValueError("Poll interval must be an integer from 120 to 86400 seconds.")
         self.poll_seconds = poll_seconds
         self.database, self.clock = database, clock
         store = RulesStore(database)
@@ -560,13 +561,21 @@ class AggregatePriceAlerts:
                 )
                 db.execute("UPDATE discogs_monitor_control SET next_request=?", (now + 3,))
             try:
-                value = reader.read(release, rule.currency)
+                value = reader.read(
+                    release,
+                    rule.currency,
+                    **(
+                        {"defer": lambda seconds: defer_shared_read(db, self.clock, seconds)}
+                        if isinstance(reader, ReleaseStatsReader)
+                        else {}
+                    ),
+                )
             except ListingReadError as error:
                 with db:
                     db.execute("BEGIN IMMEDIATE")
                     delay = max(
                         self.poll_seconds,
-                        min(MAX_BACKOFF, error.retry_after),
+                        error.retry_after,
                         min(MAX_BACKOFF, 60 * 2 ** min(failures, 10)),
                     )
                     db.execute(
@@ -586,9 +595,17 @@ class AggregatePriceAlerts:
                     if error.rate_limited:
                         db.execute(
                             "UPDATE discogs_monitor_control SET next_request=max(next_request,?)",
-                            (self.clock() + min(MAX_BACKOFF, error.retry_after),),
+                            (self.clock() + error.retry_after,),
                         )
                 return {"status": "unavailable", "requests": 1}
+            finally:
+                deadline = getattr(reader, "provider_next_request", 0)
+                if type(deadline) in (int, float) and math.isfinite(deadline) and deadline > 0:
+                    with db:
+                        db.execute(
+                            "UPDATE discogs_monitor_control SET next_request=max(next_request,?)",
+                            (deadline,),
+                        )
             return {
                 "status": self.observe(
                     release, revision, value, observed_at=self.clock(), claim=token, control=control

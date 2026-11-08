@@ -34,7 +34,11 @@ def setup(tmp_path):
     def handle(request):
         requests.append(request)
         data = returned["stats"] if "/stats/" in request.url.path else returned["listing"]
-        return httpx.Response(returned["status"], json=data, headers={"Retry-After": "1200"})
+        return httpx.Response(
+            returned["status"],
+            json=data,
+            headers={"Retry-After": "1200"} if returned["status"] == 429 else {},
+        )
 
     transport = httpx.MockTransport(handle)
     reader = ListingReader(
@@ -457,3 +461,52 @@ def test_monitor_loop_stops_without_external_scheduler_or_browser():
     loop.start()
     loop.thread.join(timeout=2)
     assert calls == ["tick"] and not loop.thread.is_alive()
+
+
+@pytest.mark.parametrize("status", [200, 429, 503])
+def test_legacy_monitor_persists_long_response_hold(setup, status):
+    from finder.discogs_price_alerts import AggregatePriceAlerts
+
+    app, clock, _, _ = setup
+    release(app)
+    app.monitor.stats_reader = ReleaseStatsReader(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                status,
+                headers={"Retry-After": "172800"},
+                json={"num_for_sale": 1, "lowest_price": {"value": 5, "currency": "USD"}},
+            )
+        ),
+        clock=lambda: clock[0],
+        wall_clock=lambda: clock[0],
+    )
+    assert tick(app)["requests"] == 1
+    alerts = AggregatePriceAlerts(app.database, clock=lambda: clock[0], poll_seconds=120)
+    alerts.set_enabled(True, expected_revision=alerts.status()["revision"])
+    clock[0] += 86401
+    assert alerts.poll_once(object()) == {"status": "cooldown", "requests": 0}
+    assert tick(app)["status"] == "cooldown"
+
+
+def test_legacy_headers_commit_hold_before_reading_body(setup):
+    from finder.discogs_price_alerts import AggregatePriceAlerts
+
+    app, clock, _, _ = setup
+    release(app)
+    alerts = AggregatePriceAlerts(app.database, clock=lambda: clock[0], poll_seconds=120)
+    alerts.set_enabled(True, expected_revision=alerts.status()["revision"])
+
+    class Body(httpx.SyncByteStream):
+        def __iter__(self):
+            clock[0] += 4
+            assert alerts.poll_once(object()) == {"status": "cooldown", "requests": 0}
+            yield b'{"num_for_sale":1,"lowest_price":{"value":5,"currency":"USD"}}'
+
+    app.monitor.stats_reader = ReleaseStatsReader(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, headers={"Retry-After": "180"}, stream=Body())
+        ),
+        clock=lambda: clock[0],
+        wall_clock=lambda: clock[0],
+    )
+    assert tick(app)["status"] == "ok"

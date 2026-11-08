@@ -582,7 +582,7 @@ def test_fresh_low_cannot_resurrect_expired_same_episode_without_prior_status_re
     assert rows(database)[-1] == ("pending", 2, "8.00", 0)
 
 
-@pytest.mark.parametrize("interval", [300, 600, 86400])
+@pytest.mark.parametrize("interval", [120, 300, 600, 86400])
 def test_configured_interval_is_durable_and_does_not_repeat_early(setup, interval):
     database, now, _, _ = setup
     alerts = AggregatePriceAlerts(database, clock=lambda: now[0], poll_seconds=interval)
@@ -607,7 +607,7 @@ def test_configured_interval_is_durable_and_does_not_repeat_early(setup, interva
     assert reopened.status()["purchase_allowed"] is False
 
 
-@pytest.mark.parametrize("interval", [0, -1, 299, 86401, True, 300.0, "300", None])
+@pytest.mark.parametrize("interval", [0, -1, 119, 86401, True, 300.0, "300", None])
 def test_invalid_interval_rejected_before_database_access(tmp_path, interval):
     database = tmp_path / "absent.db"
     with pytest.raises(ValueError, match="Poll interval"):
@@ -658,7 +658,7 @@ def test_five_minute_interval_preserves_shared_provider_spacing(setup):
     assert alerts.poll_once(Reader())["requests"] == 1
 
 
-@pytest.mark.parametrize("interval", ["299", "86401", "nan", "300.5"])
+@pytest.mark.parametrize("interval", ["119", "86401", "nan", "300.5"])
 def test_worker_rejects_invalid_intervals_before_startup(tmp_path, interval):
     from finder.discogs_price_worker import main
 

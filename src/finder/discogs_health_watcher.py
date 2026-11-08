@@ -25,10 +25,16 @@ from finder.discogs_notification_outbox import (
     MAX_BACKOFF,
 )
 from finder.discogs_ntfy import NtfySender, PrivateNtfyConfig
-from finder.discogs_price_alerts import DAILY_SEND_CAP, FRESH_SECONDS
+from finder.discogs_price_alerts import (
+    DAILY_SEND_CAP,
+    FRESH_SECONDS,
+    MAX_POLL_SECONDS,
+    MIN_POLL_SECONDS,
+)
 from finder.discogs_price_health import health_report
 
 CHECK_SECONDS = 300
+DEFAULT_EXPECTED_POLL_SECONDS = 300
 MAX_CHECK_GAP = 900
 HEALTH_SEND_SECONDS = 900
 HEALTH_DAILY_CAP = 4
@@ -638,6 +644,15 @@ def main(argv=None):
         "action", choices=("inspect", "init", "enable", "disable", "tick", "test", "recover")
     )
     parser.add_argument("--database", type=Path, required=True)
+    parser.add_argument(
+        "--poll-seconds",
+        type=int,
+        default=DEFAULT_EXPECTED_POLL_SECONDS,
+        help=(
+            "Expected worker per-rule interval (120–86400; default 300); "
+            "does not change the health check timer or debounce"
+        ),
+    )
     parser.add_argument("--expected-revision", type=int)
     parser.add_argument("--discogs-app-file", type=Path)
     parser.add_argument("--ntfy-config-file", type=Path)
@@ -645,6 +660,8 @@ def main(argv=None):
     parser.add_argument("--test-id")
     parser.add_argument("--phase", choices=("degraded", "recovered"))
     args = parser.parse_args(argv)
+    if not MIN_POLL_SECONDS <= args.poll_seconds <= MAX_POLL_SECONDS:
+        parser.error("--poll-seconds must be between 120 and 86400")
     if args.deliver and (args.action not in ("tick", "test") or not args.ntfy_config_file):
         parser.error("--deliver requires tick/test and --ntfy-config-file")
     if args.action in ("enable", "disable") and args.expected_revision is None:
@@ -683,7 +700,7 @@ def main(argv=None):
         else:
             report = health_report(
                 args.database,
-                poll_seconds=CHECK_SECONDS,
+                poll_seconds=args.poll_seconds,
                 discogs_app_file=args.discogs_app_file,
                 ntfy_config_file=args.ntfy_config_file,
             )

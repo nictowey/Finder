@@ -237,3 +237,23 @@ The [staged cutover checklist](discogs-health-cutover.md) gives the exact comman
 sequence for the isolated live canary, a non-sending `recover` operation, safe
 resumption of c365848, and the final coordinated switch. It explicitly prohibits
 restoring a pre-send database snapshot.
+
+
+### Expected polling interval during a faster-worker cutover
+
+The watcher’s `--poll-seconds` is the expected **per-rule aggregate worker interval**,
+not its health-check schedule. It accepts 120–86400 seconds and defaults to 300 for
+backward compatibility. Both `inspect` and `tick` pass that interval to the
+read-only health report. The service template explicitly uses `--poll-seconds 300`.
+
+Only after a separately authorized 120-second worker cutover is verified, render
+the service’s existing ExecStart with `--poll-seconds 120` instead of 300, preserving
+all existing paths, account, configuration and delivery flags. If using a systemd
+ExecStart override, first clear ExecStart and then repeat the complete verified
+command with this one argument changed. Use `inspect --poll-seconds 120` and verify
+`health.expected_poll_seconds` is 120 before restarting the authorized checker.
+When rolling the worker back to 300 seconds, restore the checker argument to 300
+as well. Do not change the timer: it stays at five minutes. CHECK_SECONDS and the
+300-second incident debounce remain unchanged, as does the 1200-second freshness
+threshold. Changing this argument alone does not enable polling, delivery or the
+watcher, and does not deploy or restart anything.

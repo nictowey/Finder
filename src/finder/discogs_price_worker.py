@@ -7,6 +7,7 @@ import signal
 import sqlite3
 import stat
 import threading
+import time
 from pathlib import Path
 
 from finder.discogs_app_auth import AppCredentials, AuthenticatedReleaseStatsReader
@@ -82,13 +83,13 @@ def main(argv=None):
         type=int,
         default=POLL_SECONDS,
         help=(
-            "Per-release stats interval in seconds (300–86400; default 600); "
+            "Per-release stats interval in seconds (120–86400; default 600); "
             "does not enable polling"
         ),
     )
     args = parser.parse_args(argv)
     if not MIN_POLL_SECONDS <= args.poll_seconds <= MAX_POLL_SECONDS:
-        parser.error("--poll-seconds must be between 300 and 86400")
+        parser.error("--poll-seconds must be between 120 and 86400")
     if args.discogs_app_file is not None and not args.poll:
         parser.error("--discogs-app-file requires --poll")
     if args.deliver and args.topic_file is None and args.ntfy_config_file is None:
@@ -120,11 +121,12 @@ def main(argv=None):
             for name in (signal.SIGTERM, signal.SIGINT):
                 previous[name] = signal.signal(name, lambda *_: stop.set())
         while not stop.is_set():
+            started = time.monotonic()
             result = tick(alerts, reader=reader, sender=sender, stop=stop)
             print(json.dumps(result, sort_keys=True), flush=True)
             if not args.run:
                 return 0
-            stop.wait(3)
+            stop.wait(max(0.5, 3 - (time.monotonic() - started)))
         return 0
     except (OSError, ValueError, RuntimeError, sqlite3.Error):
         # Exception text may include paths or secrets; emit only a fixed status.

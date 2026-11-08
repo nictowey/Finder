@@ -12,8 +12,9 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from finder.discogs_completeness import assess_media_completeness, current_release_media
-from finder.discogs_listing import ListingReadError, PublicReadBudget, listing_id
+from finder.discogs_listing import ListingReader, ListingReadError, PublicReadBudget, listing_id
 from finder.discogs_media_defects import assess_media_defects
+from finder.discogs_read_quota import defer_shared_read
 from finder.discogs_release_snapshots import ReleaseSnapshots
 from finder.discogs_rules import GRADES, RulesStore, Target
 
@@ -400,16 +401,22 @@ class ReleaseMonitor:
             self._audit(store, now, "intent")
         # No SQLite transaction spans network I/O. Stop/pause/edit remain available.
         payload, retry_after, global_pause = None, 0, 0
+        reader = self.stats_reader if kind == "release" else self.listing_reader
+        options = (
+            {"defer": lambda seconds: defer_shared_read(store.db, self.clock, seconds)}
+            if isinstance(reader, ListingReader)
+            else {}
+        )
         try:
             payload = (
-                self.stats_reader.read(release, ids[release].currency)
+                reader.read(release, ids[release].currency, **options)
                 if kind == "release"
-                else self.listing_reader.read(reference)
+                else reader.read(reference, **options)
             )
         except ListingReadError as error:
-            retry_after = max(interval, min(86400, error.retry_after), 60 * 2 ** min(failures, 6))
+            retry_after = max(interval, error.retry_after, 60 * 2 ** min(failures, 6))
             if error.rate_limited:
-                global_pause = min(86400, error.retry_after)
+                global_pause = error.retry_after
         now = self.clock()
         with store.db:
             store.db.execute("BEGIN IMMEDIATE")

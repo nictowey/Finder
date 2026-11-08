@@ -359,6 +359,7 @@ def health_report(
             "enabled": _flag(control["enabled"]),
             "revision": _number(control["revision"], integer=True),
             "request_cooldown_seconds": max(0, pacing - now),
+            "request_manual_attention": pacing > 253402300799,
             "send_cooldown_seconds": None
             if control["next_send"] == math.inf
             else max(0, _number(control["next_send"]) - now),
@@ -406,6 +407,8 @@ def health_report(
             issues.append("queue_backlog")
         if controls["daily_cap_reached"]:
             issues.append("daily_send_cap_reached")
+        if controls["request_manual_attention"]:
+            issues.append("request_provider_manual_attention")
         if controls["notification_manual_attention"]:
             issues.append("provider_manual_attention")
         status = (
