@@ -56,7 +56,7 @@ def setup(tmp_path):
         return httpx.Response(200, json=data)
 
     backend = DirectReviewBackend(
-        path, transport=httpx.MockTransport(provider), clock=lambda: now[0]
+        path, transport=httpx.MockTransport(provider), clock=lambda: now[0], sleep=lambda _: None
     )
     return BrokerService(backend, allowed_uid=1234), calls, data, now, path
 
@@ -688,3 +688,135 @@ def test_ipc_gate_connector_never_allows_inet_or_other_unix_paths():
         _connect_gate_socket(Socket(socket.AF_INET), "/tmp/fixture.sock", "/tmp/fixture.sock")
     with pytest.raises(AssertionError, match="exact disposable"):
         _connect_gate_socket(Socket(socket.AF_UNIX), "/tmp/other.sock", "/tmp/fixture.sock")
+
+
+def test_short_shared_slot_wait_then_exactly_one_read(setup):
+    service, calls, _, now, path = setup
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE discogs_monitor_control SET next_request=?", (now[0] + 2.4,))
+    waits = []
+
+    def sleep(seconds):
+        waits.append(seconds)
+        # The pre-read wait holds no database transaction or pending token.
+        with sqlite3.connect(path, timeout=0) as db:
+            db.execute("BEGIN IMMEDIATE")
+            assert guard_row(db)[0] is None
+        now[0] += seconds
+
+    service.backend.sleep = sleep
+    assert service.handle(read_request(), 1234)["ok"]
+    assert waits == pytest.approx([2.4]) and len(calls) == 1
+    assert service.handle(read_request(), 1234)["error"] == "replay"
+    assert len(calls) == 1 and len(waits) == 1
+
+
+@pytest.mark.parametrize("kind", ["pending", "long_cooldown", "stale_pending"])
+def test_wait_never_bypasses_guard_or_provider_delay(setup, kind):
+    service, calls, _, now, path = setup
+    with sqlite3.connect(path) as db:
+        if kind == "long_cooldown":
+            db.execute("UPDATE discogs_api_read_guard SET known_deadline=?", (now[0] + 60,))
+        else:
+            db.execute(
+                "UPDATE discogs_api_read_guard SET pending_token=?,pending_since=?",
+                ("c" * 32, now[0] - (31 if kind == "stale_pending" else 0)),
+            )
+    waits = []
+
+    def sleep(seconds):
+        waits.append(seconds)
+        now[0] += seconds
+
+    service.backend.sleep = sleep
+    with sqlite3.connect(path) as db:
+        before = guard_row(db)
+    result = service.handle(read_request(), 1234)
+    assert result["error"] == ("unavailable" if kind == "stale_pending" else "busy")
+    assert not calls
+    assert waits == ([3] if kind == "pending" else [])
+    with sqlite3.connect(path) as db:
+        assert guard_row(db) == before
+
+
+@pytest.mark.parametrize("change", ["competing_claim", "extended_cooldown", "stop", "denied"])
+def test_wait_rechecks_atomic_guard_controls_and_latch(setup, change):
+    service, calls, _, now, path = setup
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE discogs_monitor_control SET next_request=?", (now[0] + 1,))
+    waits = []
+
+    def sleep(seconds):
+        waits.append(seconds)
+        now[0] += seconds
+        with sqlite3.connect(path) as db:
+            if change == "competing_claim":
+                db.execute(
+                    "UPDATE discogs_api_read_guard SET pending_token=?,pending_since=?",
+                    ("d" * 32, now[0]),
+                )
+            elif change == "extended_cooldown":
+                db.execute("UPDATE discogs_api_read_guard SET known_deadline=?", (now[0] + 60,))
+            elif change == "stop":
+                db.execute("UPDATE discogs_price_control SET enabled=0,revision=revision+1")
+            else:
+                db.execute("UPDATE discogs_phone_review_state SET access_denied=1")
+
+    service.backend.sleep = sleep
+    result = service.handle(read_request(), 1234)
+    assert result["error"] == (
+        "busy" if change in {"competing_claim", "extended_cooldown"} else "unavailable"
+    )
+    assert waits == [1] and not calls
+    assert service.handle(read_request(), 1234)["error"] == "replay"
+
+
+def test_wait_does_not_retry_provider_failure(setup):
+    service, calls, _, now, path = setup
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE discogs_monitor_control SET next_request=?", (now[0] + 1,))
+    waits = []
+
+    def sleep(seconds):
+        waits.append(seconds)
+        now[0] += seconds
+
+    def provider(request):
+        calls.append(request)
+        return httpx.Response(429, headers={"Retry-After": "60"})
+
+    service.backend.sleep = sleep
+    service.backend.transport = httpx.MockTransport(provider)
+    assert service.handle(read_request(), 1234)["error"] == "provider"
+    assert len(calls) == 1 and waits == [1]
+    with sqlite3.connect(path) as db:
+        assert guard_row(db)[0] is None and guard_row(db)[2] >= now[0] + 60
+    assert service.handle(read_request("b" * 32), 1234)["error"] == "busy"
+    assert len(calls) == 1 and waits == [1]
+
+
+def test_wait_keeps_absolute_alarm_and_uncertain_request_state(setup, monkeypatch):
+    import signal
+
+    service, calls, _, now, path = setup
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE discogs_monitor_control SET next_request=?", (now[0] + 3,))
+    monkeypatch.setattr(signal, "alarm", lambda *_: pytest.fail("must not reset broker alarm"))
+    waits = []
+
+    def sleep(seconds):
+        waits.append(seconds)
+        now[0] += seconds
+
+    def provider(request):
+        calls.append(request)
+        raise httpx.ReadTimeout("fixture uncertain response")
+
+    service.backend.sleep = sleep
+    service.backend.transport = httpx.MockTransport(provider)
+    assert service.handle(read_request(), 1234)["error"] == "unavailable"
+    assert len(calls) == 1 and waits == [3]
+    with sqlite3.connect(path) as db:
+        assert guard_row(db)[0] is not None
+    assert service.handle(read_request(), 1234)["error"] == "replay"
+    assert len(calls) == 1 and waits == [3]

@@ -128,9 +128,9 @@ def _enabled_control(db):
 class DirectReviewBackend:
     """Only broker/operator fixtures may hold this backend in production."""
 
-    def __init__(self, database, *, transport=None, clock=time.time):
+    def __init__(self, database, *, transport=None, clock=time.time, sleep=time.sleep):
         self.database = Path(database).resolve()
-        self.transport, self.clock = transport, clock
+        self.transport, self.clock, self.sleep = transport, clock, sleep
 
     def status(self):
         with closing(sqlite3.connect(self.database.as_uri() + "?mode=ro", uri=True)) as db:
@@ -156,13 +156,16 @@ class DirectReviewBackend:
                 if _enabled_control(db) != control:
                     raise ReadSafetyHalt("review_control_changed")
 
-            budget = ReviewReadBudget(db, clock=self.clock, check=check)
+            budget = ReviewReadBudget(db, clock=self.clock, sleep=self.sleep, check=check)
             reader = PublicPreviewReader(
                 budget=budget, transport=DeadlineTransport(self.transport), wall_clock=self.clock
             )
             try:
                 payload = reader._request(
-                    f"/marketplace/listings/{ident}", params={"curr_abbr": "USD"}
+                    # One <=3s wait may precede the atomic slot recheck, never HTTP replay.
+                    f"/marketplace/listings/{ident}",
+                    params={"curr_abbr": "USD"},
+                    wait=True,
                 )
             except ListingReadError as error:
                 if error.access_restricted:
