@@ -66,6 +66,11 @@ PYTHONPATH=src python -m finder.discogs_inventory \
 PYTHONPATH=src python -m finder.discogs_inventory \
   --config /private/inventory.json --database /private/existing-rules.db --poll --snapshot
 
+# If a bounded snapshot/poll left pending detail work, wait for its persisted due
+# time and drain it without another seed/inventory GET. Same shared guards apply.
+PYTHONPATH=src python -m finder.discogs_inventory \
+  --config /private/inventory.json --database /private/existing-rules.db --drain-pending
+
 # Inspect retained private results and pending work, without HTTP.
 PYTHONPATH=src python -m finder.discogs_inventory \
   --config /private/inventory.json --database /private/existing-rules.db --results
@@ -83,9 +88,21 @@ bounded wait of up to three seconds may precede each request; longer shared cool
 work for later. Requests use the existing eight-second transport timeout plus the existing
 bounded streaming-deadline wrapper and 256 KiB response limit.
 
+`--drain-pending` is an explicit alternative to `--poll`, not a force/retry switch.
+It never verifies a seed or fetches inventory, even with an empty queue. It only reads
+already-retained candidate IDs, at most `max_detail_reads`, after the persisted due time
+and shared request guard allow it. An empty due queue returns `no_pending_details` with
+zero requests and no state change. Pending work must have existing verified seed evidence.
+The response has `inventory_refreshed: false` and no fresh pagination claim. Original
+snapshot/newly-observed event origin, baseline, seen IDs and seed verification remain intact.
+A completed first detail survives a rate limit on the second; unfinished items remain queued.
+Denial, uncertain outcomes, stopped controls and provider holds retain the same safety behavior.
+No configuration, schema, delivery capability or existing queue migration is required.
+
 Snapshot results are `origin: snapshot`, never new-listing alerts. Snapshot mode does not
 establish a baseline. It can queue more matches than the detail cap; unfinished work remains
-durable and is resumed by later due invocations. Another explicit snapshot may refresh an
+durable and is resumed by later due invocations. Use `--drain-pending` to avoid spending
+another inventory read before that retained detail work. Another explicit snapshot may refresh an
 existing snapshot result using the same event key. `--results` shows the retained result
 when the next poll is not yet due. Never pipe the output to public CI or public logs: it
 contains listing URLs, prices and seller comments intended for private review.
@@ -183,14 +200,18 @@ remain those in `AGENTS.md`; restricted UNIX-socket tests are not live API valid
 
 ### Local verification on November 8, 2026
 
-- Final inventory suite: 57 passed, including both zero/one-page empty baselines, the
-  120-second minimum and durable due time across an observer restart. Library defaults remain 600 seconds; tests are not a live
+- Final inventory suite: 70 passed, including both zero/one-page empty baselines, the
+  120-second minimum, explicit detail-only drain safety and durable due time across an observer
+  restart. Library defaults remain 600 seconds; tests are not a live
   polling-speed promise.
 - Independent review: 320 inventory/shared-guard/known-listing/phone/aggregate regressions
-  passed before the additional seven cadence/empty-baseline tests. Runtime module remained unchanged.
-- Full Python: 4,792 passed, one skipped, 41 subtests passed; 18 existing UNIX-socket tests
+  passed before the additional cadence/empty-baseline tests. The later drain review passed
+  97 inventory/shared-guard regressions and an independent cooldown-to-drain reproduction.
+- Full Python: 4,805 passed, one skipped, 41 subtests passed; 18 existing UNIX-socket tests
   failed with sandbox `PermissionError`. This is not a full-suite pass. No permission bypass
-  or live API call was attempted. All cadence and empty-baseline tests passed in this rerun.
+  or live API call was attempted. All cadence, empty-baseline and drain tests passed in this rerun.
+- A separate broader review batch hit an existing shared-guard contention timing assertion;
+  its immediate isolated rerun passed. The final full local run had only the socket failures above.
 - Ruff lint and 226-file format check passed. `npm test`: 110 passed. TypeScript typecheck
   and diff whitespace check passed. Exact remote-commit checks are a separate publication
   check, not implied by these local results.

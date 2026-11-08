@@ -403,7 +403,14 @@ class InventoryObserver:
                 "notifications_sent": 0,
             }
 
-    def poll(self, *, snapshot=False):
+    def poll(self, *, snapshot=False, drain_pending=False):
+        if (
+            type(snapshot) is not bool
+            or type(drain_pending) is not bool
+            or snapshot
+            and drain_pending
+        ):
+            raise ValueError("Use ordinary polling, snapshot polling, or pending-detail drain.")
         config = self.config
         with closing(_connect(self.database)) as db:
             with db:
@@ -414,6 +421,14 @@ class InventoryObserver:
                     raise ReadSafetyHalt("inventory_denied_or_manual_recovery_required")
                 if self.clock() < state["next_poll"]:
                     return {"status": "not_due", "requests": 0, "purchase_allowed": False}
+                if drain_pending and not state["pending"]:
+                    return {
+                        "status": "no_pending_details",
+                        "requests": 0,
+                        "purchase_allowed": False,
+                    }
+                if drain_pending and state["seed_verified_at"] is None:
+                    raise ReadSafetyHalt("inventory_pending_seed_evidence_missing")
                 state.update(in_progress=True, next_poll=self.clock() + config.poll_seconds)
                 _prune_results(state, self.clock())
                 _save(db, state)
@@ -457,84 +472,96 @@ class InventoryObserver:
             result = {"candidates": [], "purchase_allowed": False, "notifications_sent": 0}
             active_pending = None
             try:
-                if state["seed_verified_at"] is None:
-                    payload = request(lambda: reader.seed_payload(config, budget=budget))
-                    verify_seed(payload, config.seed)
+                if drain_pending:
+                    result.update(
+                        status="pending_details",
+                        inventory_refreshed=False,
+                        coverage="explicit_seed_seller_only",
+                        whole_market=False,
+                        candidate_semantics="retained_event_origin_preserved",
+                    )
+                else:
+                    if state["seed_verified_at"] is None:
+                        payload = request(lambda: reader.seed_payload(config, budget=budget))
+                        verify_seed(payload, config.seed)
+                        with db:
+                            db.execute("BEGIN IMMEDIATE")
+                            check()
+                            state = _state(db, config)
+                            state["seed_verified_at"] = self.clock()
+                            _save(db, state)
+                    result = scan_inventory(
+                        config,
+                        lambda page: request(
+                            lambda: reader.inventory_page(config, page, budget=budget)
+                        ),
+                    )
+                    # Commit discovery and pending detail work atomically BEFORE detail requests.
+                    # A temporary detail error cannot consume a candidate or lose it on restart.
                     with db:
                         db.execute("BEGIN IMMEDIATE")
                         check()
                         state = _state(db, config)
-                        state["seed_verified_at"] = self.clock()
-                        _save(db, state)
-                result = scan_inventory(
-                    config,
-                    lambda page: request(
-                        lambda: reader.inventory_page(config, page, budget=budget)
-                    ),
-                )
-                # Commit discovery and pending detail work atomically BEFORE detail requests.
-                # A temporary detail error cannot consume a candidate or lose it on restart.
-                with db:
-                    db.execute("BEGIN IMMEDIATE")
-                    check()
-                    state = _state(db, config)
-                    ids = result.pop("observed_ids")
-                    discovered = result.pop("candidates")
-                    result["inventory_matches"] = len(discovered)
-                    result["candidates"] = []
-                    complete = result["pagination"]["complete"]
-                    queued = []
-                    if snapshot:
-                        result["status"] = "snapshot_only"
-                        result["candidate_semantics"] = "currently_observed_not_new_listing"
-                        queued = discovered
-                    elif not complete:
-                        result["status"] = "incomplete_no_new_candidates"
-                    elif not state["baseline"]:
-                        state.update(seen=ids, baseline=True)
-                        result["status"] = "baseline"
-                        result["baseline_matches"] = len(discovered)
-                    else:
-                        previous = set(state["seen"])
-                        queued = [v for v in discovered if int(v["listing_id"]) not in previous]
-                        combined = previous | set(ids)
-                        if len(combined) > MAX_SEEN:
-                            raise ReadSafetyHalt("inventory_seen_capacity_manual_review_required")
-                        state["seen"] = sorted(combined)
-                        result["status"] = "observed"
-                        result["candidate_semantics"] = "newly_observed_not_proven_newly_listed"
-                    origin = "snapshot" if snapshot else "newly_observed"
-                    existing = {
-                        (v["origin"], v["listing_id"]) for v in state["pending"] + state["results"]
-                    }
-                    for value in queued:
-                        ident = int(value["listing_id"])
-                        # Explicit snapshots may refresh the same retained review event.
-                        # Keep its deterministic event key, never turn it into a new lead.
+                        ids = result.pop("observed_ids")
+                        discovered = result.pop("candidates")
+                        result["inventory_matches"] = len(discovered)
+                        result["candidates"] = []
+                        complete = result["pagination"]["complete"]
+                        queued = []
                         if snapshot:
-                            old = next(
-                                (
-                                    row
-                                    for row in state["results"]
-                                    if row["origin"] == origin and row["listing_id"] == ident
-                                ),
-                                None,
-                            )
-                            if old is not None:
-                                state["results"].remove(old)
-                                existing.discard((origin, ident))
-                        if (origin, ident) not in existing:
-                            state["pending"].append(
-                                dict(
-                                    listing_id=ident,
-                                    release_id=value["target_release_id"],
-                                    discovered_at=self.clock(),
-                                    origin=origin,
+                            result["status"] = "snapshot_only"
+                            result["candidate_semantics"] = "currently_observed_not_new_listing"
+                            queued = discovered
+                        elif not complete:
+                            result["status"] = "incomplete_no_new_candidates"
+                        elif not state["baseline"]:
+                            state.update(seen=ids, baseline=True)
+                            result["status"] = "baseline"
+                            result["baseline_matches"] = len(discovered)
+                        else:
+                            previous = set(state["seen"])
+                            queued = [v for v in discovered if int(v["listing_id"]) not in previous]
+                            combined = previous | set(ids)
+                            if len(combined) > MAX_SEEN:
+                                raise ReadSafetyHalt(
+                                    "inventory_seen_capacity_manual_review_required"
                                 )
-                            )
-                    if len(state["pending"]) + len(state["results"]) > MAX_SEEN:
-                        raise ReadSafetyHalt("inventory_queue_capacity_manual_review_required")
-                    _save(db, state)
+                            state["seen"] = sorted(combined)
+                            result["status"] = "observed"
+                            result["candidate_semantics"] = "newly_observed_not_proven_newly_listed"
+                        origin = "snapshot" if snapshot else "newly_observed"
+                        existing = {
+                            (v["origin"], v["listing_id"])
+                            for v in state["pending"] + state["results"]
+                        }
+                        for value in queued:
+                            ident = int(value["listing_id"])
+                            # Explicit snapshots may refresh the same retained review event.
+                            # Keep its deterministic event key, never turn it into a new lead.
+                            if snapshot:
+                                old = next(
+                                    (
+                                        row
+                                        for row in state["results"]
+                                        if row["origin"] == origin and row["listing_id"] == ident
+                                    ),
+                                    None,
+                                )
+                                if old is not None:
+                                    state["results"].remove(old)
+                                    existing.discard((origin, ident))
+                            if (origin, ident) not in existing:
+                                state["pending"].append(
+                                    dict(
+                                        listing_id=ident,
+                                        release_id=value["target_release_id"],
+                                        discovered_at=self.clock(),
+                                        origin=origin,
+                                    )
+                                )
+                        if len(state["pending"]) + len(state["results"]) > MAX_SEEN:
+                            raise ReadSafetyHalt("inventory_queue_capacity_manual_review_required")
+                        _save(db, state)
                 targets = {target.release_id: target for target in config.targets}
                 for pending in state["pending"][: config.max_detail_reads]:
                     active_pending = pending
@@ -611,7 +638,9 @@ class InventoryObserver:
                 _save(db, state)
             result.update(
                 requests=requests,
-                source="official_public_inventory_get",
+                source="official_public_listing_get"
+                if drain_pending
+                else "official_public_inventory_get",
                 pending_detail_count=len(state["pending"]),
                 pending_candidates=state["pending"],
                 retained_result_count=len(state["results"]),
@@ -631,14 +660,23 @@ def main(argv=None):
         "--init-state", action="store_true", help="Provision stopped observer state only"
     )
     mode.add_argument("--poll", action="store_true", help="Permit one bounded public observation")
+    mode.add_argument(
+        "--drain-pending",
+        action="store_true",
+        help="Permit bounded retained detail reads only; no seed or inventory GET",
+    )
     mode.add_argument("--fixture", type=Path, help="Offline {seed_listing, pages} JSON snapshot")
     mode.add_argument("--results", action="store_true", help="Read retained private review results")
     parser.add_argument(
         "--snapshot", action="store_true", help="Report existing copies, no baseline update"
     )
     args = parser.parse_args(argv)
-    if (args.poll or args.init_state or args.results) and args.database is None:
-        parser.error("--database is required with --poll, --init-state or --results")
+    if (
+        args.poll or args.drain_pending or args.init_state or args.results
+    ) and args.database is None:
+        parser.error(
+            "--database is required with --poll, --drain-pending, --init-state or --results"
+        )
     if args.snapshot and not args.poll:
         parser.error("--snapshot requires --poll")
     try:
@@ -646,8 +684,10 @@ def main(argv=None):
         if args.init_state:
             initialize_inventory(args.database, config)
             result = {"status": "state_initialized_no_poll", "purchase_allowed": False}
-        elif args.poll:
-            result = InventoryObserver(args.database, config).poll(snapshot=args.snapshot)
+        elif args.poll or args.drain_pending:
+            result = InventoryObserver(args.database, config).poll(
+                snapshot=args.snapshot, drain_pending=args.drain_pending
+            )
         elif args.results:
             result = InventoryObserver(args.database, config).results()
         elif args.fixture:
