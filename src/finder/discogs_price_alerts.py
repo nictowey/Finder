@@ -113,7 +113,8 @@ def _sample(rule, value):
     if rule.any_price:
         # Availability depends only on a valid positive aggregate count. The empty
         # price marker fits existing NOT NULL outboxes without inventing a ceiling
-        # or monetary value; availability messages never display a price.
+        # or monetary value; a retained known minimum may be displayed,
+        # while unknown minima remain absent.
         if rule.alert_price_drops:
             try:
                 return True, amount(price), count
