@@ -298,3 +298,13 @@ failed polls, controls, queue/retry/uncertain states, and supplied configuration
 validity without network calls or secrets. Provider acceptance remains distinct
 from phone delivery. See [aggregate monitor health](discogs-price-health.md) for
 arguments, exit codes, limitations and the offline/live verification gates.
+
+
+## Optional aggregate change signals
+
+Existing entry and availability defaults remain unchanged. The additive opt-ins
+`alert_price_drops:false` and `alert_count_increases:false` can report new observed
+price lows and offer-count highs within an eligible period. See
+[aggregate change leads](discogs-aggregate-changes.md) for exact semantics,
+no-flood activation, queue/recovery behavior, and mandatory legacy-code rollback
+preparation. These signals are aggregate changes, never individual new listings.

@@ -1,6 +1,7 @@
 """Opt-in aggregate item-price leads. No listing discovery or purchase authority."""
 
 import hashlib
+import json
 import math
 import time
 import uuid
@@ -8,6 +9,16 @@ from decimal import Decimal
 
 from pydantic import Field, field_validator, model_validator
 
+from finder.discogs_aggregate_signals import (
+    SCHEMA as CHANGE_SCHEMA,
+)
+from finder.discogs_aggregate_signals import (
+    change_details,
+    change_message,
+    change_supported,
+    observe_changes,
+    pause_changes,
+)
 from finder.discogs_listing import ListingReadError
 from finder.discogs_notification_outbox import (
     BASE_BACKOFF,
@@ -35,6 +46,8 @@ class PriceLeadRule(StrictInput):
     any_price: bool = False
     enabled: bool = False
     alert_initial_low: bool = True
+    alert_price_drops: bool = False
+    alert_count_increases: bool = False
 
     _release = field_validator("release_id", mode="before")(release_id)
 
@@ -69,6 +82,17 @@ class PriceLeadRule(StrictInput):
         return self
 
 
+def _rule_json(rule):
+    # A fully disabled rule stays readable by the preceding release.
+    return rule.model_dump_json(
+        exclude={
+            field
+            for field in ("alert_price_drops", "alert_count_increases")
+            if not getattr(rule, field)
+        }
+    )
+
+
 def _sample(rule, value):
     if (
         not isinstance(value, dict)
@@ -87,6 +111,11 @@ def _sample(rule, value):
         # Availability depends only on a valid positive aggregate count. The empty
         # price marker fits existing NOT NULL outboxes without inventing a ceiling
         # or monetary value; availability messages never display a price.
+        if rule.alert_price_drops:
+            try:
+                return True, amount(price), count
+            except ValueError:
+                pass  # Unknown price never erases a valid availability/count observation.
         return True, "", count
     try:
         price = amount(price)
@@ -124,7 +153,18 @@ def availability_message(title, release):
     }
 
 
-def rule_message(rule, price):
+def rule_message(rule, price, details=None):
+    if details is not None:
+        previous_price, previous_count, count = details
+        return change_message(
+            rule.public_title,
+            rule.release_id,
+            rule.currency,
+            price,
+            previous_price,
+            count,
+            previous_count,
+        )
     if rule.any_price:
         return availability_message(rule.public_title, rule.release_id)
     return lead_message(rule.public_title, rule.release_id, rule.currency, price)
@@ -176,6 +216,7 @@ class AggregatePriceAlerts:
                         next_request REAL NOT NULL);
                     INSERT OR IGNORE INTO discogs_monitor_control VALUES(1,0,0);
                 """)
+                store.db.executescript(CHANGE_SCHEMA)
         finally:
             store.close()
 
@@ -199,7 +240,7 @@ class AggregatePriceAlerts:
                 store.db.execute(
                     "INSERT INTO discogs_price_rules VALUES(?,?,?) ON CONFLICT(release_id) "
                     "DO UPDATE SET revision=excluded.revision,data=excluded.data",
-                    (rule.release_id, revision, rule.model_dump_json()),
+                    (rule.release_id, revision, _rule_json(rule)),
                 )
                 # Old claimed delivery might already have reached the provider.
                 store.db.execute(
@@ -209,12 +250,126 @@ class AggregatePriceAlerts:
                     (rule.release_id,),
                 )
                 store.db.execute(
+                    "DELETE FROM discogs_price_extrema WHERE release_id=?", (rule.release_id,)
+                )
+                store.db.execute(
                     "DELETE FROM discogs_price_samples WHERE release_id=?", (rule.release_id,)
                 )
                 store.db.execute(
                     "INSERT INTO discogs_price_samples(release_id) VALUES(?)", (rule.release_id,)
                 )
                 return revision
+        finally:
+            store.close()
+
+    def configure_change_alerts(
+        self, release, *, alert_price_drops, alert_count_increases, expected_revision
+    ):
+        """Opt in without resetting entry state or generating an initial-alert flood.
+
+        This narrow revision-checked update preserves prices, thresholds, sample
+        history and polling/backoff. A fresh observation silently establishes the
+        new comparison baseline. Unsent old-revision events are revoked; claimed
+        sends remain uncertain. Reapplying identical settings is a no-op.
+        """
+        release = release_id(release)
+        if (
+            type(alert_price_drops) is not bool
+            or type(alert_count_increases) is not bool
+            or type(expected_revision) is not int
+        ):
+            raise ValueError("Use explicit change-alert flags and a current rule revision.")
+        store = RulesStore(self.database)
+        try:
+            with store.db:
+                db = store.db
+                db.execute("BEGIN IMMEDIATE")
+                saved = db.execute(
+                    "SELECT revision,data FROM discogs_price_rules WHERE release_id=?", (release,)
+                ).fetchone()
+                if not saved or saved[0] != expected_revision:
+                    raise RuntimeError("Alert rule changed; reload before saving.")
+                rule = PriceLeadRule.model_validate_json(saved[1])
+                if (rule.alert_price_drops, rule.alert_count_increases) == (
+                    alert_price_drops,
+                    alert_count_increases,
+                ):
+                    return expected_revision
+                rule = rule.model_copy(
+                    update={
+                        "alert_price_drops": alert_price_drops,
+                        "alert_count_increases": alert_count_increases,
+                    }
+                )
+                revision = expected_revision + 1
+                db.execute(
+                    "UPDATE discogs_price_rules SET revision=?,data=? WHERE release_id=?",
+                    (revision, _rule_json(rule), release),
+                )
+                db.execute(
+                    "UPDATE discogs_price_outbox SET state=CASE WHEN state='leased' "
+                    "THEN 'uncertain' ELSE 'revoked' END WHERE release_id=? "
+                    "AND state IN ('pending','retry_wait','leased')",
+                    (release,),
+                )
+                db.execute(
+                    "UPDATE discogs_price_samples SET claim=NULL WHERE release_id=?", (release,)
+                )
+                db.execute(
+                    "UPDATE discogs_price_extrema SET continuous=0 WHERE release_id=?", (release,)
+                )
+                return revision
+        finally:
+            store.close()
+
+    def prepare_legacy_rollback(self, *, expected_control_revision):
+        """Prepare stopped alerts for the pre-change binary without replaying history.
+
+        Stop the worker and alert control first. Do not restore an old database
+        snapshot: accepted and uncertain sends must survive a code rollback.
+        """
+        if type(expected_control_revision) is not int:
+            raise ValueError("Use a current stopped alert-control revision.")
+        store = RulesStore(self.database)
+        try:
+            with store.db:
+                db = store.db
+                db.execute("BEGIN IMMEDIATE")
+                if self._control(db) != (0, expected_control_revision):
+                    raise RuntimeError(
+                        "Stop alert control and reload its revision before rollback."
+                    )
+                changed = 0
+                for release, revision, raw in db.execute(
+                    "SELECT release_id,revision,data FROM discogs_price_rules"
+                ).fetchall():
+                    PriceLeadRule.model_validate_json(raw)
+                    data = json.loads(raw)
+                    if not {"alert_price_drops", "alert_count_increases"}.intersection(data):
+                        continue
+                    data.pop("alert_price_drops", None)
+                    data.pop("alert_count_increases", None)
+                    db.execute(
+                        "UPDATE discogs_price_rules SET revision=?,data=? WHERE release_id=?",
+                        (revision + 1, json.dumps(data, separators=(",", ":")), release),
+                    )
+                    db.execute(
+                        "UPDATE discogs_price_outbox SET state=CASE WHEN state='leased' "
+                        "THEN 'uncertain' ELSE 'revoked' END WHERE release_id=? "
+                        "AND state IN ('pending','retry_wait','leased')",
+                        (release,),
+                    )
+                    changed += 1
+                # Defense in depth: no remaining change event may be interpreted
+                # as an ordinary entry message by the earlier binary.
+                db.execute(
+                    "UPDATE discogs_price_outbox SET state=CASE WHEN state='leased' "
+                    "THEN 'uncertain' ELSE 'revoked' END WHERE event_key IN "
+                    "(SELECT event_key FROM discogs_price_changes) "
+                    "AND state IN ('pending','retry_wait','leased')"
+                )
+                db.execute("UPDATE discogs_price_extrema SET continuous=0")
+                return {"rules_updated": changed, "enabled": False, "history_preserved": True}
         finally:
             store.close()
 
@@ -233,6 +388,7 @@ class AggregatePriceAlerts:
                 if not changed:
                     raise RuntimeError("Alert control changed.")
                 if not enabled:
+                    pause_changes(store.db)
                     store.db.execute(
                         "UPDATE discogs_price_outbox SET state='uncertain' WHERE state='leased'"
                     )
@@ -280,7 +436,8 @@ class AggregatePriceAlerts:
                     "SELECT revision,data FROM discogs_price_rules WHERE release_id=?", (release,)
                 ).fetchone()
                 sample = db.execute(
-                    "SELECT episode,low,seen,last_observed,claim FROM discogs_price_samples "
+                    "SELECT episode,low,seen,last_observed,claim,status,last_success,price "
+                    "FROM discogs_price_samples "
                     "WHERE release_id=?",
                     (release,),
                 ).fetchone()
@@ -311,6 +468,7 @@ class AggregatePriceAlerts:
                 low, price, count = normalized
                 episode = sample[0] + int(low and not sample[1])
                 if not low:
+                    db.execute("DELETE FROM discogs_price_extrema WHERE release_id=?", (release,))
                     db.execute(
                         "UPDATE discogs_price_outbox SET state=CASE WHEN state='leased' "
                         "THEN 'uncertain' ELSE 'revoked' END WHERE release_id=? "
@@ -328,6 +486,23 @@ class AggregatePriceAlerts:
                         (key, release, revision, episode, price, observed_at, now),
                     )
                 if low:
+                    episode = observe_changes(
+                        db,
+                        rule,
+                        revision,
+                        episode,
+                        was_low=bool(sample[1]),
+                        continuous=(
+                            sample[5] == "ok"
+                            and sample[6] is not None
+                            and 0 <= observed_at - sample[6] < FRESH_SECONDS
+                        ),
+                        previous_price=sample[7],
+                        price=price,
+                        count=count,
+                        observed_at=observed_at,
+                        now=now,
+                    )
                     # Queued messages describe the latest minimum, not an old lower price.
                     db.execute(
                         "UPDATE discogs_price_outbox SET price=?,observed_at=? WHERE release_id=? "
@@ -400,6 +575,7 @@ class AggregatePriceAlerts:
                         (self.clock() + delay, release, token),
                     )
                     if error.access_restricted:
+                        pause_changes(db)
                         db.execute(
                             "UPDATE discogs_price_control SET enabled=0,revision=revision+1 "
                             "WHERE enabled=1"
@@ -441,7 +617,8 @@ class AggregatePriceAlerts:
                 rows = db.execute(
                     "SELECT o.event_key,o.release_id,o.rule_revision,o.episode,o.price,"
                     "o.observed_at,"
-                    "o.attempts,r.revision,r.data,s.episode,s.low,s.last_success,s.status,s.price "
+                    "o.attempts,r.revision,r.data,s.episode,s.low,s.last_success,s.status,"
+                    "s.price,s.count "
                     "FROM discogs_price_outbox o JOIN discogs_price_rules r USING(release_id) "
                     "JOIN discogs_price_samples s USING(release_id) "
                     "WHERE o.state IN ('pending','retry_wait') AND o.next_attempt<=? "
@@ -452,6 +629,7 @@ class AggregatePriceAlerts:
                 ).fetchall()
                 for row in rows:
                     rule = PriceLeadRule.model_validate_json(row[8])
+                    details = change_details(db, row[0])
                     if (
                         not rule.enabled
                         or row[2] != row[7]
@@ -460,6 +638,7 @@ class AggregatePriceAlerts:
                         or row[12] != "ok"
                         or row[4] != row[13]
                         or not 0 <= now - row[11] < FRESH_SECONDS
+                        or not change_supported(rule, row[13], row[14], details)
                     ):
                         continue
                     token = uuid.uuid4().hex
@@ -484,7 +663,7 @@ class AggregatePriceAlerts:
                         "token": token,
                         "provider_id": binding.provider_id,
                         "destination_ref": binding.destination_ref,
-                        "payload": rule_message(rule, row[4]),
+                        "payload": rule_message(rule, row[4], details),
                     }
                 return None
         finally:
@@ -501,7 +680,8 @@ class AggregatePriceAlerts:
                 db.execute("BEGIN IMMEDIATE")
                 self._reconcile(db, now)
                 row = db.execute(
-                    "SELECT state,token,attempts FROM discogs_price_outbox WHERE event_key=? "
+                    "SELECT state,token,attempts,lease_until FROM discogs_price_outbox "
+                    "WHERE event_key=? "
                     "AND provider_id=? AND destination_ref=?",
                     (
                         reservation["event_key"],
@@ -511,7 +691,10 @@ class AggregatePriceAlerts:
                 ).fetchone()
                 if not row or row[1] != reservation["token"]:
                     raise RuntimeError("Delivery reservation changed; do not retry.")
-                if row[0] != "leased":
+                # An invalidated/expired lease may still receive its provider
+                # result. Its matching token and retained lease identify the
+                # unfinished attempt; consumed/terminal results stay idempotent.
+                if row[0] != "leased" and not (row[0] == "uncertain" and row[3] is not None):
                     return {"state": row[0], "delivered": False}
                 next_attempt = now
                 state = outcome
@@ -521,6 +704,22 @@ class AggregatePriceAlerts:
                         min(MAX_BACKOFF, BASE_BACKOFF * 2 ** (row[2] - 1)),
                         min(MAX_BACKOFF, max(0, retry_after)),
                     )
+                if outcome == "rejected":
+                    # Provider rejection is shared by this destination/worker. A
+                    # newly invalidated/replaced event must not bypass its cooldown.
+                    db.execute(
+                        "UPDATE discogs_price_control SET next_send=max(next_send,?)",
+                        (next_attempt,),
+                    )
+                if row[0] == "uncertain":
+                    # Preserve quarantine even after known rejection. Consume
+                    # this response once so duplicate finish calls cannot extend
+                    # the shared cooldown using an old completed reservation.
+                    db.execute(
+                        "UPDATE discogs_price_outbox SET lease_until=NULL WHERE event_key=?",
+                        (reservation["event_key"],),
+                    )
+                    return {"state": "uncertain", "delivered": False}
                 db.execute(
                     "UPDATE discogs_price_outbox SET state=?,next_attempt=?,lease_until=NULL,"
                     "last_error=? WHERE event_key=?",
@@ -543,7 +742,7 @@ class AggregatePriceAlerts:
             self._reconcile(db, now)
             row = db.execute(
                 "SELECT o.state,o.token,o.lease_until,o.rule_revision,o.episode,o.price,"
-                "r.revision,r.data,s.episode,s.low,s.price,s.last_success,s.status "
+                "r.revision,r.data,s.episode,s.low,s.price,s.last_success,s.status,s.count "
                 "FROM discogs_price_outbox o JOIN discogs_price_rules r USING(release_id) "
                 "JOIN discogs_price_samples s USING(release_id) WHERE o.event_key=? "
                 "AND o.provider_id=? AND o.destination_ref=?",
@@ -553,6 +752,7 @@ class AggregatePriceAlerts:
                     reservation["destination_ref"],
                 ),
             ).fetchone()
+            details = change_details(db, reservation["event_key"])
             return bool(
                 row
                 and self._control(db)[0]
@@ -566,8 +766,11 @@ class AggregatePriceAlerts:
                 and row[12] == "ok"
                 and 0 <= now - row[11] < FRESH_SECONDS
                 and PriceLeadRule.model_validate_json(row[7]).enabled
+                and change_supported(
+                    PriceLeadRule.model_validate_json(row[7]), row[10], row[13], details
+                )
                 and reservation.get("payload")
-                == rule_message(PriceLeadRule.model_validate_json(row[7]), row[5])
+                == rule_message(PriceLeadRule.model_validate_json(row[7]), row[5], details)
             )
         finally:
             store.close()

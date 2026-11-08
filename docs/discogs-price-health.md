@@ -126,3 +126,11 @@ and configuration are unchanged. That live read is separate evidence; passing
 mocked tests does not establish production access or phone delivery. No service
 restart, rule edits, notification test, scheduler installation or deployment is
 performed by this command.
+
+When the optional aggregate-change milestone is installed, health also reads the
+additive `discogs_price_changes` table when present. Waiting change events must
+pass the worker's shared `change_supported` predicate in addition to the original
+queue gates. A recovered count or price no longer supporting the queued change
+is `change_not_supported`; incompatible or malformed change evidence fails closed.
+Older databases need neither the new table nor the helper module. This inspection
+still makes no changes to extrema, episodes, metadata or outbox rows.

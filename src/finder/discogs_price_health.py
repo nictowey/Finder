@@ -149,6 +149,15 @@ def _snapshot(database):
                 for row in db.execute("SELECT * FROM discogs_price_samples")
             },
             [dict(row) for row in db.execute("SELECT * FROM discogs_price_outbox")],
+            {
+                row[0]: tuple(row)[1:]
+                for row in db.execute(
+                    "SELECT event_key,previous_price,previous_count,count "
+                    "FROM discogs_price_changes"
+                )
+            }
+            if "discogs_price_changes" in tables
+            else {},
         )
 
 
@@ -226,7 +235,7 @@ def _rule_report(row, sample, now, poll_seconds):
     return rule, result
 
 
-def _queue_report(rows, rules, samples, control, binding, now):
+def _queue_report(rows, rules, samples, control, binding, now, changes):
     stored, effective, blocks = [], [], Counter()
     per_rule = {}
     waiting_ages, retry_times = [], []
@@ -292,6 +301,17 @@ def _queue_report(rows, rules, samples, control, binding, now):
                 or report["freshness"] != "fresh"
             ):
                 reasons.append("sample_not_current")
+            if row["event_key"] in changes:
+                try:
+                    from finder.discogs_aggregate_signals import change_supported
+
+                    supported = change_supported(
+                        rule, sample["price"], sample["count"], changes[row["event_key"]]
+                    )
+                except (ImportError, AttributeError, ValueError, TypeError, ArithmeticError):
+                    raise HealthUnavailable("incompatible_change_evidence") from None
+                if not supported:
+                    reasons.append("change_not_supported")
         blocks.update(reasons)
         eligible += not reasons
     return {
@@ -327,7 +347,7 @@ def health_report(
         ):
             raise HealthUnavailable("invalid_poll_interval")
         configuration, binding = _configuration(discogs_app_file, ntfy_config_file, topic_file)
-        control, pacing, killed, rows, samples, outbox = _snapshot(database)
+        control, pacing, killed, rows, samples, outbox, changes = _snapshot(database)
         sends_today = (
             _number(control["sends"], integer=True)
             if _number(control["send_day"], integer=True) == int(now // 86400)
@@ -348,7 +368,7 @@ def health_report(
             row["release_id"]: _rule_report(row, samples.get(row["release_id"]), now, poll_seconds)
             for row in rows
         }
-        queue, by_rule = _queue_report(outbox, rules, samples, controls, binding, now)
+        queue, by_rule = _queue_report(outbox, rules, samples, controls, binding, now, changes)
         reports = [pair[1] for pair in rules.values()]
         for report in reports:
             report["queue_effective_states"] = _counts(by_rule.get(report["release_id"], []))
@@ -428,6 +448,7 @@ def health_report(
             "aggregate_schema_unavailable",
             "aggregate_control_unavailable",
             "invalid_poll_interval",
+            "incompatible_change_evidence",
         }:
             reason = "health_evidence_unavailable"
     except (OSError, sqlite3.Error, ValueError, TypeError, KeyError, OverflowError, RecursionError):
