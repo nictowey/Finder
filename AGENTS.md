@@ -1,5 +1,14 @@
 # Finder Agent Guide
 
+## November 8: offline inventory delivery bridge
+
+`discogs_inventory_notifications` adds a separate default-off private manual-review sender.
+Read `docs/discogs-inventory-notifications.md` before extending or operating it. Its offline
+implementation is an exception to the observer-only notification exclusion below, not
+authorization to deploy, activate, send live notifications or change credentials. Preserve
+the shared notification lock, pacing, daily budget and cross-publisher crash recovery.
+
+
 ## November 8: explicit seeded inventory observations
 
 `finder-inventory` is a separate, default-off observation supplement for one explicitly

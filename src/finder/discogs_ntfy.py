@@ -143,8 +143,18 @@ class NtfySender:
             raise ValueError("Health notifications require the existing private configuration.")
         return self._publish(health_message(kind, reasons, test=test))
 
+    def send_inventory(self, listing, release, checked_at):
+        """Canonical private inventory copy; caller reserves the shared budget."""
+        if not self.enabled:
+            return DeliveryResult("disabled")
+        if self._token is None or self._origin != PRIVATE_NTFY_ORIGIN:
+            raise ValueError("Inventory notifications require existing private configuration.")
+        from finder.discogs_inventory_notifications import inventory_message
+
+        return self._publish(inventory_message(listing, release, checked_at))
+
     def _publish(self, payload):
-        # Both validated message paths share this transport and outcome classification.
+        # Validated message paths share this transport and outcome classification.
         # JSON publishing to the fixed root keeps the topic out of HTTP URL logs.
         # Never log request bodies, response bodies or exception strings.
         try:

@@ -85,7 +85,14 @@ def recover_abandoned(database, now):
                     "UPDATE discogs_health_outbox SET state='uncertain',lease_until=NULL "
                     "WHERE state IN ('leased','uncertain') AND lease_until IS NOT NULL"
                 ).rowcount
-            if aggregate or health:
+            inventory = 0
+            if "discogs_inventory_notification_outbox" in tables:
+                inventory = db.execute(
+                    "UPDATE discogs_inventory_notification_outbox "
+                    "SET state='uncertain',lease_until=NULL,outcome='interrupted_unknown' "
+                    "WHERE state IN ('leased','uncertain') AND lease_until IS NOT NULL"
+                ).rowcount
+            if aggregate or health or inventory:
                 changed = db.execute(
                     "UPDATE discogs_price_control SET next_send=max(next_send,?) WHERE id=1",
                     (now + UNKNOWN_RECOVERY_SECONDS,),
@@ -97,6 +104,6 @@ def recover_abandoned(database, now):
                         "UPDATE discogs_health_control SET next_send=max(next_send,?) WHERE id=1",
                         (now + UNKNOWN_RECOVERY_SECONDS,),
                     )
-            return aggregate + health
+            return aggregate + health + inventory
     finally:
         db.close()
