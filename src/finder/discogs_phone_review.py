@@ -9,7 +9,6 @@ import secrets
 import sqlite3
 import threading
 import time
-from contextlib import closing
 from datetime import UTC, datetime
 from decimal import Decimal
 from html import escape
@@ -17,8 +16,17 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from finder.discogs_listing import ListingReadError, ReadBudgetBusy, listing_id, normalize
-from finder.discogs_listing_preview import PreviewReader, evaluate_preview
-from finder.discogs_read_guard import DatabaseReadBudget, ReadSafetyHalt, guard_row
+from finder.discogs_listing_preview import evaluate_preview
+from finder.discogs_read_guard import ReadSafetyHalt
+from finder.discogs_review_backend import (
+    DirectReviewBackend,
+)
+from finder.discogs_review_backend import (
+    _guard_authorizer as _guard_authorizer,
+)
+from finder.discogs_review_backend import (
+    initialize_review_state as initialize_review_state,
+)
 from finder.discogs_rules import GRADES, amount, release_id
 
 PATH = "/listing-review"
@@ -34,87 +42,6 @@ small{line-height:1.5;display:block}.comments{white-space:pre-wrap;overflow-wrap
 """
 
 
-class PublicPreviewReader(PreviewReader):
-    # Ignore proxy and netrc environment credentials. Never use DiscogsAppAuth.
-    _trust_env = False
-
-
-def _guard_authorizer(action, table, column, database, source):
-    """Restrict request connection writes, not a substitute for OS separation."""
-    if action in (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_TRANSACTION):
-        return sqlite3.SQLITE_OK
-    if action == sqlite3.SQLITE_FUNCTION and column == "max":
-        return sqlite3.SQLITE_OK
-    if action == sqlite3.SQLITE_PRAGMA and (
-        table == "busy_timeout"
-        or (table in {"application_id", "synchronous", "journal_mode"} and column is None)
-    ):
-        return sqlite3.SQLITE_OK
-    allowed = {
-        "discogs_api_read_guard": {"pending_token", "pending_since", "known_deadline"},
-        "discogs_monitor_control": {"next_request"},
-        "discogs_phone_review_state": {"access_denied"},
-    }
-    if action == sqlite3.SQLITE_UPDATE and column in allowed.get(table, set()):
-        return sqlite3.SQLITE_OK
-    return sqlite3.SQLITE_DENY
-
-
-class ReviewReadBudget(DatabaseReadBudget):
-    """Retain the durable guard until the response is classified.
-
-    Classify/persist an access refusal before releasing the shared request slot.
-    """
-
-    response_delay = None
-
-    def response(self, seconds):
-        self.response_delay = seconds
-
-    def finish(self):
-        if self.response_delay is not None:
-            super().response(self.response_delay)
-
-
-def initialize_review_state(db):
-    """Explicit operator provisioning only, never called by a web request.
-
-    Additive page-local stop state in the real shared DB. Never clears a latch.
-    """
-    if db.execute("PRAGMA application_id").fetchone()[0] != 1178882643:
-        raise ReadSafetyHalt("review_wrong_workspace")
-    guard_row(db)
-    with db:
-        db.execute("BEGIN IMMEDIATE")
-        exists = db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='discogs_phone_review_state'"
-        ).fetchone()
-        if not exists:
-            db.execute(
-                "CREATE TABLE discogs_phone_review_state ("
-                "id INTEGER PRIMARY KEY CHECK(id=1), schema_version INTEGER NOT NULL, "
-                "access_denied INTEGER NOT NULL CHECK(access_denied IN (0,1)))"
-            )
-            db.execute("INSERT INTO discogs_phone_review_state VALUES(1,1,0)")
-        _review_state(db)
-
-
-def _review_state(db):
-    rows = db.execute(
-        "SELECT id,schema_version,access_denied FROM discogs_phone_review_state"
-    ).fetchall()
-    if len(rows) != 1 or tuple(rows[0]) not in {(1, 1, 0), (1, 1, 1)}:
-        raise ReadSafetyHalt("review_state_invalid")
-    return rows[0][2]
-
-
-def _enabled_control(db):
-    rows = db.execute("SELECT enabled,revision FROM discogs_price_control WHERE id=1").fetchall()
-    if len(rows) != 1 or rows[0][0] != 1 or type(rows[0][1]) is not int or rows[0][1] < 0:
-        raise ReadSafetyHalt("review_stopped")
-    return tuple(rows[0])
-
-
 class PhoneReviewApp:
     """Single process, threaded WSGI app; tokens are bounded, one-use and principal-bound.
 
@@ -123,7 +50,16 @@ class PhoneReviewApp:
     transport is for offline tests only. Constructor does not open DB or make requests.
     """
 
-    def __init__(self, *, database, origin, authenticate=None, transport=None, clock=time.time):
+    def __init__(
+        self,
+        *,
+        database=None,
+        backend=None,
+        origin,
+        authenticate=None,
+        transport=None,
+        clock=time.time,
+    ):
         parsed = urlsplit(origin)
         if (
             parsed.scheme != "https"
@@ -136,11 +72,19 @@ class PhoneReviewApp:
             or origin != f"https://{parsed.netloc}"
         ):
             raise ValueError("Configure one canonical HTTPS origin without a path.")
-        self.database = Path(database).resolve()
+        if (database is None) == (backend is None):
+            raise ValueError("Use exactly one backend or isolated fixture database.")
+        self.database = Path(database).resolve() if database is not None else None
+        self.backend = backend
         self.origin, self.host = origin, parsed.netloc
         self.authenticate, self.transport, self.clock = authenticate, transport, clock
         self.tokens = {}
         self.lock = threading.Lock()
+
+    def _backend(self):
+        return self.backend or DirectReviewBackend(
+            self.database, transport=self.transport, clock=self.clock
+        )
 
     def _token(self, principal):
         with self.lock:
@@ -161,15 +105,12 @@ class PhoneReviewApp:
             return True
 
     def _form(self, principal):
-        with closing(sqlite3.connect(self.database.as_uri() + "?mode=ro", uri=True)) as db:
-            if _review_state(db):
-                return (
-                    "<p>Page reads stopped after Discogs denied public listing access. "
-                    "No retry or fallback. Operator review is required; "
-                    "this page cannot reset it.</p>"
-                )
-            _enabled_control(db)
-            guard_row(db)
+        if self._backend().status() == "denied":
+            return (
+                "<p>Page reads stopped after Discogs denied public listing access. "
+                "No retry or fallback. Operator review is required; "
+                "this page cannot reset it.</p>"
+            )
         token = self._token(principal)
         if token is None:
             return "<p>Too many open forms. Close old tabs and try again after ten minutes.</p>"
@@ -205,40 +146,7 @@ class PhoneReviewApp:
         limit = amount(fields["under"])
         if Decimal(limit) <= 0 or any(fields[key] not in GRADES for key in ("media", "sleeve")):
             raise ValueError()
-        # mode=rw never creates a replacement DB; no schema initialization or guard repair.
-        with closing(sqlite3.connect(self.database.as_uri() + "?mode=rw", uri=True)) as db:
-            db.execute("PRAGMA synchronous=FULL")
-            db.set_authorizer(_guard_authorizer)
-            guard_row(db)
-            control = _enabled_control(db)
-
-            def check():
-                if _review_state(db):
-                    raise ReadSafetyHalt("review_access_denied")
-                if _enabled_control(db) != control:
-                    raise ReadSafetyHalt("review_control_changed")
-
-            budget = ReviewReadBudget(db, clock=self.clock, check=check)
-            reader = PublicPreviewReader(
-                budget=budget, transport=self.transport, wall_clock=self.clock
-            )
-            try:
-                payload = reader._request(
-                    f"/marketplace/listings/{ident}", params={"curr_abbr": "USD"}
-                )
-            except ListingReadError as error:
-                if error.access_restricted:
-                    # Keep shared reservation until the page-only stop is durable.
-                    # If this write fails, leave pending intact: persistence is uncertain.
-                    with db:
-                        db.execute("BEGIN IMMEDIATE")
-                        db.execute(
-                            "UPDATE discogs_phone_review_state SET access_denied=1 WHERE id=1"
-                        )
-                budget.finish()
-                raise
-            budget.finish()
-            check()
+        payload = self._backend().read(ident)
         result = evaluate_preview(payload, ident, release, under=limit, currency="USD")
         listing = normalize(payload, ident)
         checks = result["checks"]

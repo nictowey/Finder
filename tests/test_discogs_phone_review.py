@@ -341,7 +341,7 @@ def test_cross_site_subresource_does_not_mint_and_tokens_bounded(setup):
 
 
 def test_latch_write_failure_retains_guard_and_blocks_future_reads(setup, monkeypatch):
-    from finder import discogs_phone_review as module
+    from finder import discogs_review_backend as module
 
     app, calls, _, now, path = setup
     original = module._guard_authorizer

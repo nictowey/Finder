@@ -1,0 +1,55 @@
+# GATED TEMPLATE. Inventory actual DB-owner UID and every secret path before use.
+# No DB relocation, new group access to its directory, or monitor configuration change.
+[Unit]
+Description=Private known-listing API broker
+After=network-online.target caddy.service
+Requires=caddy.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sniper
+Group=sniper-review-broker
+RuntimeDirectory=sniper-review-broker
+RuntimeDirectoryMode=0750
+UMask=0077
+WorkingDirectory=/opt/sniper-review
+ExecStart=/opt/sniper-review/venv/bin/python -I -m finder.discogs_review_broker --database /var/lib/sniper/rules.db --socket-directory /run/sniper-review-broker --review-user sniper-review
+Restart=no
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Defense in depth against signaling same-UID monitor services. Verify on this host.
+SystemCallFilter=~kill tkill tgkill pidfd_send_signal ptrace process_vm_readv process_vm_writev pidfd_getfd
+ReadWritePaths=/var/lib/sniper /run/sniper-review-broker
+# Required known secrets; no '-' prefix: absent/mismatched paths must be reviewed.
+InaccessiblePaths=/var/lib/sniper/private-auth /var/lib/sniper/private-ntfy.json /etc/ntfy /var/lib/ntfy /etc/sniper /etc/caddy /run/caddy-admin /root /home /proc
+# No EnvironmentFile; -I ignores Python environment configuration. Main clears env.
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH PYTHONPATH PYTHONHOME HTTP_PROXY HTTPS_PROXY ALL_PROXY NETRC
+MemoryMax=128M
+TasksMax=8
+LimitNOFILE=64
+LimitCORE=0
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=multi-user.target

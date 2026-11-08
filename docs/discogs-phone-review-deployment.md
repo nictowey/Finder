@@ -41,47 +41,22 @@ and review runtime belong to that group. Root is implicitly trusted. No TCP mode
 is offered. Verify Caddy's supplementary group membership in its running process
 (after a controlled restart if needed); editing groups alone does not update it.
 
-## Database isolation gate
+## Database isolation gate: broker required
 
-The existing `/var/lib/sniper/rules.db` is the actual aggregate database, NOT a
-fixture or disposable copy. Its directory currently also holds notification
-secrets. Do not simply grant the review account directory access or membership
-in the existing sniper service group. Do not run the page as `sniper`.
+The production page must NOT receive database access. The default full-DB sharing
+and relocation plan is superseded by `docs/discogs-review-broker.md`.
+Keep the canonical DB at `/var/lib/sniper/rules.db`; keep all aggregate, health,
+legacy-web and notification lock paths unchanged. Do not move/copy the DB,
+change monitor configuration, or grant `sniper-review` access to the sniper group
+or database directory. The page service now accepts only a broker socket, runs
+with AF_UNIX only, and has `/var/lib/sniper` inaccessible.
 
-The supplied unit assumes `/var/lib/sniper-shared-db/rules.db`, a dedicated directory
-containing ONLY the shared DB and its genuine journal/WAL/SHM sidecars. Before this
-unit can run, the operator must approve and execute a coordinated relocation:
-
-1. Host inventory includes three active DB consumers: the aggregate monitor,
-   health watcher, and boot-enabled `sniper-test.service` (`finder.discogs_web`).
-   Preserve each consumer's prior enabled/running state. Re-inventory before moving.
-   Inventory every service, timer, script, health/proof tool and backup referencing
-   the original DB. Save private unit/config backups and a consistent SQLite backup.
-2. Stop all readers/writers; confirm no remaining processes have the DB or sidecars
-   open. Check SQLite integrity and journal state. Do not clear read-guard pending
-   state, change monitor enable/revision state, reset refusals, or initialize a DB.
-3. Relocate the SAME DB and associated sidecars together on local durable storage,
-   preserving all state. Update every consumer to the same canonical absolute path.
-   Never bind just the main file into another directory, copy it for the page,
-   leave a second writable copy, or create separate sidecar/lock namespaces.
-4. Map every existing consumer to its verified runtime UID. Use a dedicated
-   `sniper-shared-db` group containing only those necessary UIDs and the review
-   UID, directory 2770 and DB/sidecars 0660. Do not assume different services use
-   the same UID. Audit actual process umasks,
-   sidecar ownership/modes and new sidecar creation under every writer UID.
-   Preserve the notification send lock as 0600 and leave private backups/secrets
-   in the original private directory; do not widen them with a recursive chmod.
-   Verify the canonical path/device/inode and guard state from every consumer service namespace.
-5. Resume existing services only after validating their updated configuration,
-   notification secrets remaining inaccessible to the review UID, and shared
-   cooldown/concurrency behavior. Roll back all consumers together if necessary.
-
-This is a material filesystem-access change and is not performed by this package.
-The operator must confirm it is within the approved live plan before doing it.
-A compromised page process can modify the ENTIRE shared DB, not just the guard.
-The existing SQL authorizer limits legitimate code, not an exploited process.
-For OS-enforced table isolation, implement and review a budget broker instead;
-none is claimed here. Do not weaken this gate to make deployment easy.
+The private broker owns the exact known-listing GET and real shared guard
+lifecycle. It exposes only bounded status/read operations over a Unix socket
+restricted to the page UID, with reciprocal broker UID verification. No arbitrary
+URL, path, SQL, credential, or monitoring/notification operation is accepted.
+See the broker runbook for additive provisioning, bounded replay receipts,
+refusal persistence, hard request timeout and same-UID residual risks.
 
 ## Provisioning sequence (operator, private terminal)
 
@@ -93,13 +68,16 @@ public CI, or placing values in this repository.
   an isolated venv with the project's `cloud` extra (Waitress >=3.0.2,<4). The unit
   uses `python -I` so the package must actually be installed, not PYTHONPATH-loaded.
 - Create non-login `sniper-review` UID, groups `sniper-review-proxy` and
-  `sniper-shared-db`; add only Caddy to the proxy group. Do not add page UID to
+  `sniper-review-broker`; add only Caddy to the proxy group. Add only the page UID
+  to the broker group; do not add Caddy. Do not add page UID to
   the Caddy or sniper groups. No secrets/environment files are loaded by this unit.
-- Set up the dedicated DB directory as reviewed above. Provision only the additive
-  page table once using the installed package, verified DB path, SQLite connection
-  and `initialize_review_state(connection)`. It must preserve an existing latch
-  and reject malformed state. Verify schema and shared control; never enable it
-  merely to make the page work.
+- Follow the broker runbook: privately provision its additive page/latch and receipt
+  tables in the existing DB with `initialize_broker_state(connection)`. Do not
+  enable aggregate control, reset refusals/guard state, alter watch rules, or
+  prune existing receipt IDs. Inventory and sandbox every secret path first.
+- Install and verify `deploy/phone-review/sniper-review-broker.service`, using the
+  existing verified DB-owner UID. Start only after its static/runtime sandbox,
+  no-secrets and private-socket checks pass. There is no HTTP listener.
 - Privately generate a strong random page-only password. Hash with Caddy's supported
   bcrypt password prompt, without putting plaintext in argv. Set principal
   `review-owner`. Store only the hash for Caddy in a root-owned private configuration
@@ -112,7 +90,8 @@ public CI, or placing values in this repository.
 - Verify all live secret paths and extend InaccessiblePaths as needed. Review UID
   must not read ntfy config/DB, existing sniper config, service EnvironmentFiles,
   SSH keys, Caddy config/hash, process environments or other credentials. Confirm
-  the shared DB itself contains no secret unrelated to the necessary budget data.
+  the page cannot read the DB at all. Verify broker-only access and the separate
+  broker runbook's secret/process isolation gates.
 - The actual host's systemd 255 lacks BPF support; do NOT rely on IPAddressDeny.
   Complete `docs/discogs-review-admin-isolation.md` before starting the page:
   Caddy admin must move from localhost:2019 to a private 0700 Unix-socket directory.
@@ -181,8 +160,9 @@ that restriction. No Caddy binary is available here. Required live gates:
   Waitress dechunks requests and removes Transfer-Encoding; direct WSGI rejection
   tests do not establish wire-level chunk rejection. Verify bounded dechunking and
   strict frontend framing rather than claiming every chunked request is rejected.
-- No other local UID can connect to the socket or read secrets; only intended DB
-  directory writable; shared sidecar modes and cooldown reservation remain correct.
+- No other local UID can connect to the socket or read secrets; page cannot access any DB/secret path and cannot open INET sockets; broker
+  sidecar modes and shared cooldown remain correct. Verify same-UID isolation
+  controls described in the broker runbook.
 - Existing ntfy login/subscribe/publish behavior unchanged and root service worker
   cannot control the :8443 page; no cookie/auth payload appears in logs.
 - Real phone login, 390px layout, reload/back/repeated submission, interrupted submit,

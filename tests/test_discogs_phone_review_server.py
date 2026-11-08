@@ -228,15 +228,18 @@ def test_launcher_only_private_socket(tmp_path, monkeypatch):
 
     directory = tmp_path / "run"
     directory.mkdir(mode=0o750)
-    db = tmp_path / "rules.db"
-    db.touch()
+    import types
+
+    monkeypatch.setattr("pwd.getpwnam", lambda _: types.SimpleNamespace(pw_uid=1234))
     calls = []
     monkeypatch.setattr(waitress, "serve", lambda app, **options: calls.append(options))
     monkeypatch.setattr("logging.disable", lambda _: None)
     main(
         [
-            "--database",
-            str(db),
+            "--broker-socket",
+            str(tmp_path / "broker.sock"),
+            "--broker-user",
+            "fixture-broker",
             "--origin",
             "https://review.example:8443",
             "--principal",

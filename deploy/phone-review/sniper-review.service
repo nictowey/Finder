@@ -1,20 +1,19 @@
-# GATED TEMPLATE: replace canonical origin and shared DB directory after review.
+# GATED TEMPLATE: private broker required; page must never receive shared DB access.
 [Unit]
 Description=Private known-listing review
-After=network-online.target caddy.service
-Requires=caddy.service
-Wants=network-online.target
+After=caddy.service sniper-review-broker.service
+Requires=caddy.service sniper-review-broker.service
 
 [Service]
 Type=simple
 User=sniper-review
 Group=sniper-review-proxy
-SupplementaryGroups=sniper-shared-db
+SupplementaryGroups=sniper-review-broker
 RuntimeDirectory=sniper-review
 RuntimeDirectoryMode=0750
 UMask=0007
 WorkingDirectory=/opt/sniper-review
-ExecStart=/opt/sniper-review/venv/bin/python -I -m finder.discogs_phone_review_server --database /var/lib/sniper-shared-db/rules.db --origin https://vps-a0c5b746.vps.ovh.us:8443 --principal review-owner --socket-directory /run/sniper-review
+ExecStart=/opt/sniper-review/venv/bin/python -I -m finder.discogs_phone_review_server --broker-socket /run/sniper-review-broker/broker.sock --broker-user sniper --origin https://vps-a0c5b746.vps.ovh.us:8443 --principal review-owner --socket-directory /run/sniper-review
 Restart=no
 TimeoutStopSec=35
 KillSignal=SIGTERM
@@ -35,8 +34,8 @@ RestrictRealtime=yes
 LockPersonality=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-ReadWritePaths=/var/lib/sniper-shared-db /run/sniper-review
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/run/sniper-review
 # Confirm all secret paths on host; dedicated UID must have no secret-reading groups.
 InaccessiblePaths=/var/lib/sniper /etc/sniper /root /home /etc/caddy /run/caddy-admin
 MemoryMax=192M

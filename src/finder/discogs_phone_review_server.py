@@ -7,6 +7,7 @@ The socket directory is the authentication trust boundary, not the HTTP header.
 import argparse
 import logging
 import os
+import pwd
 import re
 import stat
 import threading
@@ -15,6 +16,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .discogs_phone_review import PhoneReviewApp
+from .discogs_review_broker import BrokerClient
 
 
 class PrivateBoundary:
@@ -65,7 +67,7 @@ class PrivateBoundary:
         return self.app(environ, start_response)
 
 
-def build_app(*, database, origin, principal, transport=None, clock=time.time):
+def build_app(*, database=None, backend=None, origin, principal, transport=None, clock=time.time):
     parsed = urlsplit(origin)
     if (
         parsed.scheme != "https"
@@ -84,6 +86,7 @@ def build_app(*, database, origin, principal, transport=None, clock=time.time):
     boundary = PrivateBoundary(None, principal=principal)
     boundary.app = PhoneReviewApp(
         database=database,
+        backend=backend,
         origin=origin,
         authenticate=boundary.authenticate,
         transport=transport,
@@ -104,15 +107,17 @@ def validate_socket_directory(path):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--database", required=True, type=Path)
+    parser.add_argument("--broker-socket", required=True, type=Path)
+    parser.add_argument("--broker-user", required=True)
     parser.add_argument("--origin", required=True)
     parser.add_argument("--principal", required=True)
     parser.add_argument("--socket-directory", required=True, type=Path)
     args = parser.parse_args(argv)
-    if not args.database.is_absolute() or not args.database.is_file():
-        parser.error("existing absolute shared database required")
+    if not args.broker_socket.is_absolute():
+        parser.error("absolute private broker socket required")
+    backend = BrokerClient(args.broker_socket, broker_uid=pwd.getpwnam(args.broker_user).pw_uid)
     socket = validate_socket_directory(args.socket_directory)
-    app = build_app(database=args.database, origin=args.origin, principal=args.principal)
+    app = build_app(backend=backend, origin=args.origin, principal=args.principal)
     # Never emit request/exception payloads to journald. Waitress receives only
     # sanitized requests; there is no request access logger in this host.
     logging.disable(logging.CRITICAL)
