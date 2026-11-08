@@ -18,7 +18,8 @@ dependencies = [
 
 [project.optional-dependencies]
 cloud = ["waitress>=3.0.2,<4"]
-dev = ["pytest>=8,<10", "ruff>=0.9,<1", "waitress>=3.0.2,<4"]
+dev = ["pytest>=8,<10", "ruff>=0.9,<1", "waitress>=3.0.2,<4", "bcrypt>=4.2,<6"]
+review-ops = ["bcrypt>=4.2,<6"]
 
 [project.scripts]
 finder = "finder.cli:main"

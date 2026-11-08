@@ -50,7 +50,10 @@ The supplied unit assumes `/var/lib/sniper-shared-db/rules.db`, a dedicated dire
 containing ONLY the shared DB and its genuine journal/WAL/SHM sidecars. Before this
 unit can run, the operator must approve and execute a coordinated relocation:
 
-1. Inventory every service, timer, script, health/proof tool and backup referencing
+1. Host inventory includes three active DB consumers: the aggregate monitor,
+   health watcher, and boot-enabled `sniper-test.service` (`finder.discogs_web`).
+   Preserve each consumer's prior enabled/running state. Re-inventory before moving.
+   Inventory every service, timer, script, health/proof tool and backup referencing
    the original DB. Save private unit/config backups and a consistent SQLite backup.
 2. Stop all readers/writers; confirm no remaining processes have the DB or sidecars
    open. Check SQLite integrity and journal state. Do not clear read-guard pending
@@ -59,10 +62,14 @@ unit can run, the operator must approve and execute a coordinated relocation:
    preserving all state. Update every consumer to the same canonical absolute path.
    Never bind just the main file into another directory, copy it for the page,
    leave a second writable copy, or create separate sidecar/lock namespaces.
-4. Use a dedicated `sniper-shared-db` group with only the aggregate runtime and
-   review runtime, directory 2770 and DB/sidecars 0660. Audit actual process umasks,
-   sidecar ownership/modes and new sidecar creation under both UIDs. Verify the
-   canonical path/device/inode and guard state from both service namespaces.
+4. Map every existing consumer to its verified runtime UID. Use a dedicated
+   `sniper-shared-db` group containing only those necessary UIDs and the review
+   UID, directory 2770 and DB/sidecars 0660. Do not assume different services use
+   the same UID. Audit actual process umasks,
+   sidecar ownership/modes and new sidecar creation under every writer UID.
+   Preserve the notification send lock as 0600 and leave private backups/secrets
+   in the original private directory; do not widen them with a recursive chmod.
+   Verify the canonical path/device/inode and guard state from every consumer service namespace.
 5. Resume existing services only after validating their updated configuration,
    notification secrets remaining inaccessible to the review UID, and shared
    cooldown/concurrency behavior. Roll back all consumers together if necessary.
@@ -104,15 +111,16 @@ public CI, or placing values in this repository.
   must not read ntfy config/DB, existing sniper config, service EnvironmentFiles,
   SSH keys, Caddy config/hash, process environments or other credentials. Confirm
   the shared DB itself contains no secret unrelated to the necessary budget data.
-- Audit the actual Caddy admin endpoint. The unit denies loopback IP traffic except
-  Ubuntu's 127.0.0.53 DNS stub; verify systemd cgroup-BPF enforcement actually works
-  and the admin endpoint is not bound on the allowed DNS address or a public address.
-  Verify the DNS stub and its restricted bind before relying on this exception.
-  If this host lacks enforcement, fail closed and independently review a private
-  admin Unix socket/UID firewall alternative. Do not leave localhost:2019 reachable
-  from the page process: it can expose/change Caddy config and its password hash.
-  Audit inherited process environment; neither service manager nor wrappers may
-  inject credentials into this service. Core dumps are disabled.
+- The actual host's systemd 255 lacks BPF support; do NOT rely on IPAddressDeny.
+  Complete `docs/discogs-review-admin-isolation.md` before starting the page:
+  Caddy admin must move from localhost:2019 to a private 0700 Unix-socket directory.
+  The page unit also hides that directory. Verify actual denial from the runtime
+  UID and removal of every TCP admin listener. The page requires and starts after
+  Caddy, so its private directory exists before sandbox setup. Verify reboot
+  ordering; explicitly restart the page after Caddy maintenance if needed.
+  Other local TCP services, including
+  ntfy, remain reachable and must enforce their own authorization. Audit inherited
+  process environment; no manager or wrapper may inject secrets. Core dumps are off.
 - Install `deploy/phone-review/sniper-review.service` root-owned into
   `/etc/systemd/system/`. Validate `systemd-analyze verify` and execute
   `systemctl daemon-reload`, then `systemctl start sniper-review`.
