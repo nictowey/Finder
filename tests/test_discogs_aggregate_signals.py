@@ -52,7 +52,9 @@ class Watch:
 
     def handle(self, request):
         self.requests.append(request)
-        return httpx.Response(self.response, headers={"Retry-After": "900"})
+        return httpx.Response(
+            self.response, headers={"Retry-After": "900"} if self.response == 429 else {}
+        )
 
     def read(self, price="10.00", count=5, **options):
         self.now += 1
@@ -564,7 +566,8 @@ def test_rollback_removes_only_new_fields_preserves_history_and_is_idempotent(wa
     watch.alerts.set_enabled(True, expected_revision=2)
     watch.revision += 1
     watch.read("7", 8)
-    assert watch.send() == "idle"
+    assert watch.send() == "uncertain_recovery"
+    assert watch.send() == "idle"  # Abandoned reservation is consumed only once.
     assert watch.alerts.status()["purchase_allowed"] is False
 
 

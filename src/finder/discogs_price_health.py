@@ -272,7 +272,9 @@ def _queue_report(rows, rules, samples, control, binding, now, changes):
             due += 1
         if not control["enabled"]:
             reasons.append("alerts_disabled")
-        if control["send_cooldown_seconds"] > 0:
+        if control["notification_manual_attention"]:
+            reasons.append("provider_manual_attention")
+        elif control["send_cooldown_seconds"] > 0:
             reasons.append("send_cooldown")
         if control["daily_cap_reached"]:
             reasons.append("daily_cap")
@@ -357,7 +359,10 @@ def health_report(
             "enabled": _flag(control["enabled"]),
             "revision": _number(control["revision"], integer=True),
             "request_cooldown_seconds": max(0, pacing - now),
-            "send_cooldown_seconds": max(0, _number(control["next_send"]) - now),
+            "send_cooldown_seconds": None
+            if control["next_send"] == math.inf
+            else max(0, _number(control["next_send"]) - now),
+            "notification_manual_attention": control["next_send"] == math.inf,
             "send_attempts_today": sends_today,
             "daily_send_cap": DAILY_SEND_CAP,
             "daily_cap_reached": sends_today >= DAILY_SEND_CAP,
@@ -401,6 +406,8 @@ def health_report(
             issues.append("queue_backlog")
         if controls["daily_cap_reached"]:
             issues.append("daily_send_cap_reached")
+        if controls["notification_manual_attention"]:
+            issues.append("provider_manual_attention")
         status = (
             "empty"
             if not reports

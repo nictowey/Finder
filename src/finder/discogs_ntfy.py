@@ -2,15 +2,20 @@
 
 import hashlib
 import json
+import math
 import os
 import re
 import stat
+import time
 from dataclasses import dataclass
 from decimal import Decimal
+from email.utils import parsedate_to_datetime
 
 import httpx
 
 from finder.discogs_aggregate_signals import change_message
+from finder.discogs_health_messages import health_message
+from finder.discogs_notification_lock import notification_lock, recover_abandoned
 from finder.discogs_notification_outbox import NotificationBinding
 from finder.discogs_price_alerts import PriceLeadRule, availability_message, lead_message
 
@@ -63,6 +68,34 @@ class PrivateNtfyConfig:
 class DeliveryResult:
     outcome: str
     retry_after: int = 0
+    manual_attention: bool = False
+    provider_deadline: float | None = None
+
+
+def provider_retry_after(raw, *, now=None):
+    """Honor seconds and HTTP dates without clipping an explicit provider deadline.
+
+    Python/SQLite finite timestamps through year 9999 are supported. A nonempty
+    unparseable/out-of-range header requires a durable manual-attention hold.
+    """
+    if not raw:
+        return 0, False
+    now = time.time() if now is None else now
+    try:
+        if not math.isfinite(now) or now < 0:
+            return 0, True
+        if re.fullmatch(r"[0-9]{1,12}", raw):
+            delay = int(raw)
+        else:
+            date = parsedate_to_datetime(raw)
+            if date.tzinfo is None:
+                return 0, True
+            delay = max(0, math.ceil(date.timestamp() - now))
+        if now + delay > 253402300799:
+            return 0, True
+        return delay, False
+    except (ValueError, TypeError, OverflowError):
+        return 0, True
 
 
 class NtfySender:
@@ -168,6 +201,18 @@ class NtfySender:
             )
         if payload != expected:
             raise ValueError("Only the fixed public price-lead message is supported.")
+        return self._publish(payload)
+
+    def send_health(self, kind, reasons=(), *, test=False):
+        """Private operational messages only; caller must reserve the shared budget."""
+        if not self.enabled:
+            return DeliveryResult("disabled")
+        if self._token is None or self._origin != PRIVATE_NTFY_ORIGIN:
+            raise ValueError("Health notifications require the existing private configuration.")
+        return self._publish(health_message(kind, reasons, test=test))
+
+    def _publish(self, payload):
+        # Both validated message paths share this transport and outcome classification.
         # JSON publishing to the fixed root keeps the topic out of HTTP URL logs.
         # Never log request bodies, response bodies or exception strings.
         try:
@@ -180,15 +225,21 @@ class NtfySender:
                     json={"topic": self._topic, **payload},
                     headers={"Authorization": "Bearer " + self._token} if self._token else {},
                 ) as response:
+                    raw_retry = response.headers.get("Retry-After", "")
+                    response_time = time.time()
+                    delay, manual = provider_retry_after(raw_retry, now=response_time)
+                    deadline = response_time + delay if raw_retry and not manual else None
                     if 200 <= response.status_code < 300:
-                        return DeliveryResult("accepted")
+                        return DeliveryResult("accepted", delay, manual, deadline)
                     if response.status_code == 429:
-                        raw = response.headers.get("Retry-After", "")
-                        delay = min(86400, int(raw)) if re.fullmatch(r"[0-9]{1,6}", raw) else 900
-                        return DeliveryResult("rejected", max(900, delay))
+                        return (
+                            DeliveryResult("failed", 0, True)
+                            if manual
+                            else DeliveryResult("rejected", max(900, delay), False, deadline)
+                        )
                     if 300 <= response.status_code < 500:
-                        return DeliveryResult("failed")
-                    return DeliveryResult("uncertain")  # A server error may follow acceptance.
+                        return DeliveryResult("failed", delay, manual, deadline)
+                    return DeliveryResult("uncertain", delay, manual, deadline)
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
             return DeliveryResult("rejected", 900)
         except httpx.HTTPError:
@@ -199,11 +250,22 @@ def deliver_one(alerts, sender=None):
     """One reserved attempt; neither default construction nor polling sends."""
     if not isinstance(sender, NtfySender) or not sender.enabled:
         return {"state": "disabled", "delivered": False}
-    reservation = alerts.claim(sender.binding)
-    if reservation is None:
-        return {"state": "idle", "delivered": False}
-    if not alerts.delivery_current(reservation):
-        return alerts.finish(reservation, "failed")
-    # A crash from here leaves a durable lease that expires to uncertain, never auto-retry.
-    result = sender.send(reservation["payload"])
-    return alerts.finish(reservation, result.outcome, retry_after=result.retry_after)
+    with notification_lock(alerts.database) as acquired:
+        if not acquired:
+            return {"state": "busy", "delivered": False}
+        if recover_abandoned(alerts.database, alerts.clock()):
+            return {"state": "uncertain_recovery", "delivered": False}
+        reservation = alerts.claim(sender.binding)
+        if reservation is None:
+            return {"state": "idle", "delivered": False}
+        if not alerts.delivery_current(reservation):
+            return alerts.finish(reservation, "failed")
+        # A crash releases the lock but leaves a quarantined, never-replayed lease.
+        result = sender.send(reservation["payload"])
+        return alerts.finish(
+            reservation,
+            result.outcome,
+            retry_after=result.retry_after,
+            manual_attention=result.manual_attention,
+            provider_deadline=result.provider_deadline,
+        )

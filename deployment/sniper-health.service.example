@@ -1,0 +1,22 @@
+# TEMPLATE ONLY. Replace every @@...@@ value with verified existing paths/account.
+# Do not install or enable until the offline, review, and phone-confirmed canary gates pass.
+[Unit]
+Description=Discogs aggregate monitor health check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@@EXISTING_MONITOR_USER@@
+Group=@@EXISTING_MONITOR_GROUP@@
+WorkingDirectory=@@EXISTING_CODE_DIRECTORY@@
+Environment=PYTHONPATH=@@EXISTING_CODE_DIRECTORY@@/src
+ExecStart=@@EXISTING_PYTHON@@ -m finder.discogs_health_watcher tick --database @@EXISTING_DATABASE@@ --discogs-app-file @@EXISTING_APP_FILE@@ --ntfy-config-file @@EXISTING_NTFY_FILE@@ --deliver
+TimeoutStartSec=60
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=@@DATABASE_DIRECTORY@@
+ReadOnlyPaths=@@EXISTING_APP_FILE@@ @@EXISTING_NTFY_FILE@@

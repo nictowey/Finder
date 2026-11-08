@@ -308,3 +308,12 @@ price lows and offer-count highs within an eligible period. See
 [aggregate change leads](discogs-aggregate-changes.md) for exact semantics,
 no-flood activation, queue/recovery behavior, and mandatory legacy-code rollback
 preparation. These signals are aggregate changes, never individual new listings.
+
+The optional health-watcher milestone also tightens shared ntfy dispatch:
+aggregate and health delivery share an owner-only single-host sender lock, finish-
+time pacing, known numeric/HTTP-date provider deadlines, and bounded interrupted-
+attempt recovery. Explicit Retry-After deadlines are not clipped to the internal
+backoff cap, including on uncertain responses. Unrepresentable deadlines require
+manual attention through the existing shared gate. This does not change Discogs
+polling or record criteria. See [health watcher](discogs-health-watcher.md) for the
+coordinated version cutover and downgrade limitations.

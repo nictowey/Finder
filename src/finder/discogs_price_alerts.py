@@ -669,10 +669,25 @@ class AggregatePriceAlerts:
         finally:
             store.close()
 
-    def finish(self, reservation, outcome, *, retry_after=0):
+    def finish(
+        self, reservation, outcome, *, retry_after=0, manual_attention=False, provider_deadline=None
+    ):
         """Unknown delivery is never retried. Known rejection alone can back off."""
         if outcome not in {"accepted", "rejected", "failed", "uncertain"}:
             raise ValueError("Use a fixed delivery outcome.")
+        if (
+            type(manual_attention) is not bool
+            or type(retry_after) not in (int, float)
+            or not math.isfinite(retry_after)
+            or retry_after < 0
+        ):
+            raise ValueError("Use a valid provider cooldown.")
+        if provider_deadline is not None and (
+            type(provider_deadline) not in (int, float)
+            or not math.isfinite(provider_deadline)
+            or provider_deadline < 0
+        ):
+            raise ValueError("Use a valid provider deadline.")
         store = RulesStore(self.database)
         try:
             with store.db:
@@ -696,13 +711,28 @@ class AggregatePriceAlerts:
                 # unfinished attempt; consumed/terminal results stay idempotent.
                 if row[0] != "leased" and not (row[0] == "uncertain" and row[3] is not None):
                     return {"state": row[0], "delivered": False}
+                # A delayed dispatch/result must not shorten the shared provider pacing.
+                db.execute(
+                    "UPDATE discogs_price_control SET next_send=max(next_send,?) WHERE id=1",
+                    (now + 90,),
+                )
+                if provider_deadline is not None:
+                    db.execute(
+                        "UPDATE discogs_price_control SET next_send=max(next_send,?) WHERE id=1",
+                        (provider_deadline,),
+                    )
+                if manual_attention or retry_after:
+                    db.execute(
+                        "UPDATE discogs_price_control SET next_send=max(next_send,?) WHERE id=1",
+                        (math.inf if manual_attention else now + retry_after,),
+                    )
                 next_attempt = now
-                state = outcome
-                if outcome == "rejected":
+                state = "failed" if manual_attention and outcome == "rejected" else outcome
+                if outcome == "rejected" and not manual_attention:
                     state = "failed" if row[2] >= MAX_ATTEMPTS else "retry_wait"
                     next_attempt = now + max(
                         min(MAX_BACKOFF, BASE_BACKOFF * 2 ** (row[2] - 1)),
-                        min(MAX_BACKOFF, max(0, retry_after)),
+                        retry_after,
                     )
                 if outcome == "rejected":
                     # Provider rejection is shared by this destination/worker. A
@@ -759,6 +789,10 @@ class AggregatePriceAlerts:
                 and row[0] == "leased"
                 and row[1] == reservation["token"]
                 and now < row[2]
+                and db.execute("SELECT next_send FROM discogs_price_control WHERE id=1").fetchone()[
+                    0
+                ]
+                <= row[2] - LEASE_SECONDS + 90
                 and row[3] == row[6]
                 and row[4] == row[8]
                 and row[9]

@@ -134,3 +134,17 @@ queue gates. A recovered count or price no longer supporting the queued change
 is `change_not_supported`; incompatible or malformed change evidence fails closed.
 Older databases need neither the new table nor the helper module. This inspection
 still makes no changes to extrema, episodes, metadata or outbox rows.
+
+## Optional scheduled failure notifications
+
+The separate [health watcher](discogs-health-watcher.md) owns durable debounced
+incidents and a rate-gated health outbox. It defaults off; this diagnostic command
+remains read-only. Historical queue warnings are baselined rather than repeatedly
+notified, and all health sends share the aggregate notification pacing/cap.
+
+A provider deadline that cannot be represented safely can place the shared
+notification budget in a persistent manual-attention hold. The read-only report
+shows `notification_manual_attention:true`, `send_cooldown_seconds:null`, and
+`provider_manual_attention`; it never emits a nonfinite JSON number or resets the
+hold. Polling remains separately enabled. See the watcher documentation for
+provider deadline handling and downgrade-safe recovery requirements.
