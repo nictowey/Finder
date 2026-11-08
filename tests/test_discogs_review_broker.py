@@ -350,18 +350,41 @@ def test_slow_drip_provider_has_elapsed_deadline():
             client.get("https://fixture.invalid")
 
 
-def test_real_unix_socket_protocol_if_permitted(setup, tmp_path):
-    """Explicit skipped gate on socket-denied executors; never escalate/bypass."""
+def _connect_gate_socket(sock, address, expected):
+    if sock.family != socket.AF_UNIX or address != expected:
+        raise AssertionError("Only the exact disposable Unix gate socket is allowed")
+    if error := sock.connect_ex(address):
+        raise OSError(error, "Isolated Unix socket connect failed")
+
+
+@pytest.fixture
+def unix_gate(monkeypatch, tmp_path):
+    # Same narrow pattern as existing hosted tests; never restores INET networking.
+    monkeypatch.setattr(
+        socket.socket,
+        "connect",
+        lambda sock, address: _connect_gate_socket(sock, address, str(tmp_path / "broker.sock")),
+    )
+
+
+def test_real_unix_socket_protocol_if_permitted(setup, tmp_path, unix_gate):
+    """Explicit skipped gate on restricted/root executors; never weaken UID policy."""
+    import os
+
+    if os.getuid() == 0:
+        pytest.skip(
+            "Real IPC proof requires a non-root UID; production UID validation is unchanged"
+        )
     service, _, *_ = setup
     try:
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     except PermissionError:
         pytest.skip("Environment denies sockets; actual IPC/peer-UID gate remains unverified")
-    import os
-
     path = tmp_path / "broker.sock"
     service.allowed_uid = os.getuid()
+    errors = []
     with listener:
+        listener.settimeout(2)
         try:
             listener.bind(str(path))
             listener.listen(1)
@@ -369,16 +392,23 @@ def test_real_unix_socket_protocol_if_permitted(setup, tmp_path):
             pytest.skip("Environment denies socket binding; real IPC gate remains unverified")
 
         def serve():
-            connection, _ = listener.accept()
-            with connection:
-                service.serve_connection(connection)
+            try:
+                connection, _ = listener.accept()
+                with connection:
+                    service.serve_connection(connection)
+            except Exception as error:
+                errors.append(type(error).__name__)
 
-        worker = threading.Thread(target=serve)
+        worker = threading.Thread(target=serve, daemon=True)
         worker.start()
-        client = BrokerClient(path, broker_uid=os.getuid())
-        assert client.status() == "ready"
-        worker.join(5)
-        assert not worker.is_alive()
+        try:
+            client = BrokerClient(path, broker_uid=os.getuid())
+            assert client.status() == "ready"
+        finally:
+            listener.close()
+            worker.join(3)
+        assert not worker.is_alive(), "bounded socket worker did not exit"
+        assert not errors, "socket worker failed"
 
 
 def test_second_frame_on_same_connection_ignored(setup):
@@ -582,3 +612,79 @@ def test_production_launcher_arms_and_disarms_hard_deadline(setup, tmp_path, mon
     assert ("alarm", 25) in events and events[-1] == ("alarm", 0)
     assert "env_clear" in events
     assert peer.sent
+
+
+def test_ipc_gate_root_skip_precedes_socket_creation(setup, tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.setattr(os, "getuid", lambda: 0)
+    monkeypatch.setattr(socket, "socket", lambda *args: pytest.fail("socket must not be attempted"))
+    with pytest.raises(pytest.skip.Exception):
+        test_real_unix_socket_protocol_if_permitted(setup, tmp_path, None)
+
+
+def test_ipc_gate_cleanup_after_client_failure_without_real_sockets(setup, tmp_path, monkeypatch):
+    import os
+
+    events = []
+
+    class Listener:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+        def settimeout(self, value):
+            events.append(("timeout", value))
+
+        def bind(self, *args):
+            pass
+
+        def listen(self, *args):
+            pass
+
+        def accept(self):
+            raise TimeoutError()
+
+        def close(self):
+            events.append("close")
+
+    class Worker:
+        def __init__(self, target, daemon):
+            assert daemon is True
+            self.target = target
+
+        def start(self):
+            self.target()
+
+        def join(self, seconds):
+            events.append(("join", seconds))
+
+        def is_alive(self):
+            return False
+
+    def fail_client(*args, **kwargs):
+        raise RuntimeError("fixture client failure")
+
+    monkeypatch.setattr(os, "getuid", lambda: 1234)
+    monkeypatch.setattr(socket, "socket", lambda *args: Listener())
+    monkeypatch.setattr(threading, "Thread", Worker)
+    monkeypatch.setitem(globals(), "BrokerClient", fail_client)
+    with pytest.raises(RuntimeError, match="fixture client failure"):
+        test_real_unix_socket_protocol_if_permitted(setup, tmp_path, None)
+    assert ("timeout", 2) in events and "close" in events and ("join", 3) in events
+
+
+def test_ipc_gate_connector_never_allows_inet_or_other_unix_paths():
+    class Socket:
+        def __init__(self, family):
+            self.family = family
+
+        def connect_ex(self, path):
+            pytest.fail("unexpected connection attempted")
+
+    with pytest.raises(AssertionError, match="exact disposable"):
+        _connect_gate_socket(Socket(socket.AF_INET), "/tmp/fixture.sock", "/tmp/fixture.sock")
+    with pytest.raises(AssertionError, match="exact disposable"):
+        _connect_gate_socket(Socket(socket.AF_UNIX), "/tmp/other.sock", "/tmp/fixture.sock")
