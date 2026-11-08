@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from html import escape
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from finder.discogs_listing import ListingReadError, ReadBudgetBusy, listing_id, normalize
 from finder.discogs_listing_preview import evaluate_preview
@@ -30,6 +30,7 @@ from finder.discogs_review_backend import (
 from finder.discogs_rules import GRADES, amount, release_id
 
 PATH = "/listing-review"
+INPUT_FIELDS = {"listing", "release", "under", "media", "sleeve"}
 STYLE = """
 body{font:17px system-ui;background:#101827;color:#eef3ff;margin:0;padding:20px}
 main{max-width:600px;margin:auto}h1{font-size:1.8rem}label{display:block;margin:18px 0}
@@ -39,7 +40,92 @@ button,.button{background:#b7f2cf;font-weight:700;display:block;text-align:cente
 a{color:#b7f2cf}p,li{line-height:1.5;overflow-wrap:anywhere}li{margin-bottom:10px}
 section{border:1px solid #8798b4;border-radius:12px;padding:16px;margin:20px 0}
 small{line-height:1.5;display:block}.comments{white-space:pre-wrap;overflow-wrap:anywhere}
+summary{cursor:pointer;padding:14px 0}details{margin-top:28px}
 """
+
+
+def _parse_fields(raw, allowed):
+    """Decode bounded ASCII form data once, without ignoring blanks or bad escapes."""
+    if (
+        not isinstance(raw, str)
+        or len(raw) > 2048
+        or re.search(r"[^\x21-\x7e]|%(?![0-9a-fA-F]{2})", raw)
+    ):
+        raise ValueError()
+    data = parse_qs(
+        raw,
+        keep_blank_values=True,
+        strict_parsing=True,
+        max_num_fields=len(allowed),
+        encoding="ascii",
+        errors="strict",
+    )
+    if not set(data) <= allowed or any(len(value) != 1 for value in data.values()):
+        raise ValueError()
+    fields = {key: value[0] for key, value in data.items()}
+    if any(re.search(r"[^\x20-\x7e]", value) for value in fields.values()):
+        raise ValueError()
+    return fields
+
+
+def _criteria(fields):
+    """Validate every supplied criterion; absent values remain visibly unset."""
+    values = {}
+    if "release" in fields:
+        if not re.fullmatch(r"[1-9][0-9]{0,15}", fields["release"]):
+            raise ValueError()
+        values["release"] = str(release_id(fields["release"]))
+    if "under" in fields:
+        if not re.fullmatch(r"[0-9]{1,7}(?:\.[0-9]{1,2})?", fields["under"]):
+            raise ValueError()
+        values["under"] = amount(fields["under"])
+        if Decimal(values["under"]) <= 0:
+            raise ValueError()
+    for field in ("media", "sleeve"):
+        if field in fields:
+            if fields[field] not in GRADES:
+                raise ValueError()
+            values[field] = fields[field]
+    return values
+
+
+def _prefill(query):
+    fields = _parse_fields(query, INPUT_FIELDS)
+    values = _criteria(fields)
+    # The optional GET builder sends listing= when preparing criteria alone.
+    # Do not trim, follow, resolve, or accept anything except this exact URL shape.
+    if fields.get("listing"):
+        if not re.fullmatch(
+            r"https://(?:www\.)?discogs\.com/sell/item/[1-9][0-9]{0,15}", fields["listing"]
+        ):
+            raise ValueError()
+        try:
+            ident = listing_id(fields["listing"])
+        except ListingReadError:
+            raise ValueError() from None
+        values["listing"] = f"https://www.discogs.com/sell/item/{ident}"
+    return values
+
+
+def _input_fields(values, *, prepare=False):
+    label = "Known listing link (optional)" if prepare else "Known listing URL or ID"
+    attributes = 'type="url"' if prepare else "required"
+    fields = (
+        f'<label>{label}<input name="listing" {attributes} maxlength="120" '
+        f'autocomplete="off" value="{escape(values.get("listing", ""), quote=True)}"></label>'
+        '<label>Exact release ID<input name="release" required inputmode="numeric" '
+        f'pattern="[1-9][0-9]*" maxlength="16" value="{escape(values.get("release", ""))}">'
+        '</label><label>Item price strictly under (USD)<input name="under" required '
+        'inputmode="decimal" placeholder="Amount in USD" maxlength="10" '
+        f'value="{escape(values.get("under", ""))}"></label>'
+    )
+    for field, label in (("media", "Minimum media grade"), ("sleeve", "Minimum sleeve grade")):
+        options = "".join(
+            f"<option{' selected' if grade == values.get(field, 'NM') else ''}>{grade}</option>"
+            for grade in GRADES
+        )
+        fields += f'<label>{label}<select name="{field}">{options}</select></label>'
+    return fields
 
 
 class PhoneReviewApp:
@@ -104,7 +190,7 @@ class PhoneReviewApp:
             del self.tokens[token]
             return True
 
-    def _form(self, principal):
+    def _form(self, principal, values):
         if self._backend().status() == "denied":
             return (
                 "<p>Page reads stopped after Discogs denied public listing access. "
@@ -114,25 +200,31 @@ class PhoneReviewApp:
         token = self._token(principal)
         if token is None:
             return "<p>Too many open forms. Close old tabs and try again after ten minutes.</p>"
-        fields = (
-            '<label>Known listing URL or ID<input name="listing" required maxlength="120" '
-            'autocomplete="off"></label>'
-            '<label>Exact release ID<input name="release" required inputmode="numeric" '
-            'pattern="[1-9][0-9]*" maxlength="16"></label>'
-            '<label>Item price strictly under (USD)<input name="under" required '
-            'inputmode="decimal" placeholder="175.00" maxlength="10"></label>'
-        )
-        for field, label in (("media", "Minimum media grade"), ("sleeve", "Minimum sleeve grade")):
-            options = "".join(
-                f"<option{' selected' if grade == 'NM' else ''}>{grade}</option>"
-                for grade in GRADES
+        prepared = ""
+        if values:
+            url = self.origin + PATH + "?" + urlencode(values)
+            prepared = (
+                "<section><h2>Prepared review link</h2><p>No Discogs read has been made. "
+                "Check every prefilled value below before submitting.</p>"
+                f'<label>Copy or bookmark this link<input readonly value="{escape(url)}">'
+                "</label><small>Opening or sharing the link does not review the listing "
+                "or grant access. Owner authentication is still required.</small></section>"
             )
-            fields += f'<label>{label}<select name="{field}">{options}</select></label>'
         return (
-            f'<form method="post" action="{PATH}"><input type="hidden" name="csrf" '
-            f'value="{token}">{fields}<button type="submit">Review this listing once</button>'
+            prepared + f'<form method="post" action="{PATH}"><input type="hidden" name="csrf" '
+            f'value="{token}">{_input_fields(values)}'
+            '<button type="submit">Review this listing once</button>'
             "</form><small>One public read. No automatic retries, discovery or purchases. "
             "The price cap excludes shipping, tax and fees.</small>"
+            "<details><summary>Prepare a reusable link without reading Discogs</summary>"
+            "<p>Choose your criteria here. Leave the listing blank to reuse them for another "
+            "copy, or paste one canonical HTTPS Discogs sell/item link.</p>"
+            f'<form method="get" action="{PATH}">{_input_fields(values, prepare=True)}'
+            '<button type="submit">Prepare link only</button></form></details>'
+            "<p>Prepared links put ordinary listing and criteria values in browser history, "
+            "bookmarks and copied/shared links, which may sync between devices. "
+            "The page does not save a watch or start monitoring. "
+            "Nothing is read until you explicitly tap Review this listing once.</p>"
         )
 
     def _review(self, fields):
@@ -140,12 +232,10 @@ class PhoneReviewApp:
             ident = listing_id(fields["listing"])
         except ListingReadError:
             raise ValueError() from None
-        if not re.fullmatch(r"[1-9][0-9]{0,15}", fields["release"]):
+        criteria = _criteria(fields)
+        if set(criteria) != INPUT_FIELDS - {"listing"}:
             raise ValueError()
-        release = release_id(fields["release"])
-        limit = amount(fields["under"])
-        if Decimal(limit) <= 0 or any(fields[key] not in GRADES for key in ("media", "sleeve")):
-            raise ValueError()
+        release, limit = int(criteria["release"]), criteria["under"]
         payload = self._backend().read(ident)
         result = evaluate_preview(payload, ident, release, under=limit, currency="USD")
         listing = normalize(payload, ident)
@@ -216,7 +306,9 @@ class PhoneReviewApp:
     def __call__(self, environ, start_response):
         status, body = "200 OK", ""
         try:
-            if environ.get("HTTP_HOST") != self.host or environ.get("QUERY_STRING", ""):
+            if environ.get("HTTP_HOST") != self.host or (
+                environ.get("QUERY_STRING", "") and environ.get("REQUEST_METHOD") != "GET"
+            ):
                 status, body = "400 Bad Request", "<p>Invalid request.</p>"
             elif environ.get("PATH_INFO") != PATH:
                 status, body = "404 Not Found", "<p>Not found.</p>"
@@ -231,7 +323,7 @@ class PhoneReviewApp:
                     ):
                         status, body = "403 Forbidden", "<p>Open the review page directly.</p>"
                     else:
-                        body = self._form(principal)
+                        body = self._form(principal, _prefill(environ.get("QUERY_STRING", "")))
                 elif environ.get("REQUEST_METHOD") != "POST":
                     status, body = "405 Method Not Allowed", "<p>Use the review form.</p>"
                 elif (
@@ -248,12 +340,9 @@ class PhoneReviewApp:
                     raw = environ["wsgi.input"].read(length)
                     if len(raw) != length:
                         raise ValueError()
-                    data = parse_qs(raw.decode("ascii"), strict_parsing=True, max_num_fields=6)
-                    if set(data) != {"csrf", "listing", "release", "under", "media", "sleeve"}:
+                    fields = _parse_fields(raw.decode("ascii"), INPUT_FIELDS | {"csrf"})
+                    if set(fields) != INPUT_FIELDS | {"csrf"}:
                         raise ValueError()
-                    if any(len(value) != 1 for value in data.values()):
-                        raise ValueError()
-                    fields = {key: value[0] for key, value in data.items()}
                     if not self._consume(fields["csrf"], principal):
                         status, body = (
                             "409 Conflict",

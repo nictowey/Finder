@@ -23,6 +23,62 @@ reliability, destination shipping, tax, fees or delivered total. The cap is item
 The canonical Discogs link hands control to the owner; current details must be
 checked there. The form does not accept checkout or purchase instructions.
 
+## Manual listing intake and reusable links
+
+GET `/listing-review` now accepts optional `listing`, `release`, `under`, `media`
+and `sleeve` query parameters. These only prefill visible, editable controls. GET
+does not read Discogs, reserve provider budget, modify database state, submit a
+review, create a saved watch, or discover listings. The existing backend status
+check and owner authentication still apply. Opening a prepared link always mints
+a fresh principal-bound form token; the link contains no token or credentials and
+does not grant access.
+
+- `listing` accepts exactly one HTTPS `discogs.com/sell/item/` or
+  `www.discogs.com/sell/item/` URL with a valid positive ASCII numeric ID. It is
+  canonicalized to `www.discogs.com`. Query strings, fragments, ports, credentials,
+  alternate hosts/paths, surrounding whitespace and encoded path tricks are
+  rejected. Numeric IDs remain supported in the ordinary POST review form, not
+  as GET intake links.
+- The exact release ID, positive USD item cap and supported media/sleeve grades
+  are independently validated when present. The cap remains strictly-under,
+  item-only and at most two decimal places. No saved watch data is consulted.
+- Queries are bounded to 2,048 characters and five fields. Unknown/repeated
+  parameters, malformed percent encodings, non-ASCII characters, controls and
+  invalid criteria fail closed before minting a token. The sole blank-value
+  exception is optional `listing=`, used by the criteria-only link builder.
+- The separate **Prepare a reusable link without reading Discogs** form uses
+  GET, contains no CSRF token and cannot perform a review. It returns a copy-ready
+  URL and prefilled review form without redirecting. A normal explicit review
+  still uses a query-free POST with exact same-origin checks and a one-use token.
+  POST requests with query strings, missing/null/foreign origins or repeated
+  parameters remain rejected. No JavaScript or additional CSP permission is used.
+- Ordinary listing and criteria values enter browser history, bookmarks and
+  copied/shared URLs, which may sync across devices. This is disclosed on the
+  page. Do not put secrets in a prepared link. No-store does not erase browser
+  history. Existing no-query/body logging requirements remain essential. The
+  same-origin referrer policy and `noreferrer noopener` Discogs handoff prevent
+  external query referrer leakage without weakening the POST Origin requirement.
+
+### Phone steps
+
+1. Open the existing authenticated review page. Expand **Prepare a reusable link
+   without reading Discogs** and choose the exact release ID, USD item cap and
+   media/sleeve minimums. Leave the listing blank to reuse these criteria for
+   different copies, or paste one canonical known listing link.
+2. Tap **Prepare link only**. Copy the displayed link or bookmark the page. This
+   has not contacted Discogs and does not start monitoring.
+3. Reopen the link when needed. Paste a known listing URL/ID into the review form
+   if absent, inspect every visible value, and change any criteria as desired.
+4. Tap **Review this listing once**. Only this explicit POST can make one public
+   listing read. Review its timestamp, uncertainties and seller description before
+   using **Open listing on Discogs** for a manual handoff. Refresh/resubmission
+   does not repeat the read; start a new form for another explicit review.
+
+This is a manual browser workflow, not an installed phone share-sheet target or
+all-seller monitoring. Existing path-only proxy routing and authentication need no
+configuration expansion. Local WSGI tests simulate both forms and their submitted
+controls; they do not establish physical-phone visual or live-proxy validation.
+
 ## Authentication and deployment contract (requires separate authorization)
 
 The constructor requires `database` (absolute path to the EXISTING aggregate
@@ -124,7 +180,9 @@ state remains for operator review. If headers did arrive and the process finishe
 provider cooldown is preserved even if body parsing fails. A crash before durable
 finalization leaves conservative pending state for operator recovery.
 
-No result or input is persisted by the page; no-store responses prevent intentional
+No result or input is persisted by the page itself. Optional prepared links contain
+ordinary listing/criteria inputs in the URL; browser history, bookmarks, copied
+links and device sync may retain them. No-store responses prevent intentional
 HTTP caching but cannot promise a browser never retains a live/history screen.
 Every result is timestamped and explicitly not auto-refreshed.
 
@@ -151,6 +209,24 @@ validation remain unperformed. See the deployment runbook for current owner
 authorization and remaining integration gates.
 
 ### Local verification record (2026-11-08)
+
+Prepared-link intake update:
+
+- Page suite: 122 passed. Page, authenticated wrapper and operations suites
+  together: 188 passed. The no-JavaScript WSGI proof parses real form controls,
+  submits the GET builder, reopens its copy-ready link, verifies no provider calls
+  or SQLite changes, then submits the review POST once and rejects its replay.
+- Full Python: 4,735 passed, 41 subtests passed, one skipped, and 18 blocked
+  failures. All failures are existing AF_UNIX socket tests raising
+  `PermissionError: [Errno 1] Operation not permitted`; no bypass was attempted.
+  This is not a full-suite pass. Exact-commit CI remains a publication gate.
+- Repository Ruff lint/format, TypeScript and diff whitespace checks passed.
+- `npm test`: 110 passed on the isolated rerun. The first run, concurrent with
+  Python, hit a native V8/Wasm assertion in unchanged `decisions.test.ts`.
+- No provider request, live database change, deployment or physical-phone visual
+  test was performed for this feature's local verification.
+
+Original page implementation:
 
 - Focused page suite: 40 passed, using real temporary SQLite plus mock transport.
 - Full Python run on final implementation: 4,367 passed, 41 subtests passed,

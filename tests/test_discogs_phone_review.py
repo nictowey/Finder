@@ -4,7 +4,8 @@ import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from urllib.parse import urlencode
+from html.parser import HTMLParser
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 import pytest
@@ -421,3 +422,264 @@ def test_form_policy_preserves_origin_gate_and_unused_token(setup, origin):
     assert 'rel="noreferrer noopener" target="_blank"' in body
     assert request(app, "POST", fields)[0] == "409 Conflict"
     assert len(calls) == 1
+
+
+class PageForms(HTMLParser):
+    """Collect successful controls as a no-JavaScript browser would submit them."""
+
+    def __init__(self, body):
+        super().__init__()
+        self.forms, self.copy_links = [], []
+        self.current, self.select = None, None
+        self.feed(body)
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "form":
+            assert self.current is None, "Forms must not be nested"
+            self.current = dict(method=attrs["method"], action=attrs["action"], fields={})
+            self.forms.append(self.current)
+        if tag == "input":
+            if "readonly" in attrs:
+                self.copy_links.append(attrs["value"])
+                assert "name" not in attrs, "The copy link must not submit as form data"
+            if self.current is not None and "name" in attrs:
+                self.current["fields"][attrs["name"]] = attrs.get("value", "")
+        if tag == "select":
+            self.select = attrs["name"]
+        if tag == "option":
+            self.selected = "selected" in attrs
+        if tag == "button":
+            assert attrs == {"type": "submit"}, "No method/action override or hidden intent"
+
+    def handle_data(self, data):
+        if self.select and self.selected:
+            self.current["fields"][self.select] = data
+
+    def handle_endtag(self, tag):
+        if tag == "form":
+            self.current = None
+        if tag == "select":
+            self.select = None
+        if tag == "option":
+            self.selected = False
+
+
+def test_no_javascript_link_builder_to_prefill_to_review_and_replay(setup):
+    app, calls, _, _, path = setup
+    with closing(sqlite3.connect(path)) as db:
+        before = list(db.iterdump())
+    blank = PageForms(request(app)[2])
+    review, builder = blank.forms
+    assert review["method"] == "post" and builder["method"] == "get"
+    assert review["action"] == builder["action"] == PATH
+    assert "csrf" in review["fields"] and "csrf" not in builder["fields"]
+    builder["fields"].update(
+        listing="https://discogs.com/sell/item/123",
+        release="456",
+        under="150",
+        media="VG+",
+        sleeve="G+",
+    )
+    query = urlencode(builder["fields"])
+    status, headers, body = request(app, QUERY_STRING=query)
+    assert status == "200 OK" and calls == []
+    assert headers["Cache-Control"] == "no-store"
+    assert headers["Referrer-Policy"] == "same-origin"
+    assert "default-src 'none'" in headers["Content-Security-Policy"]
+    assert "script-src" not in headers["Content-Security-Policy"]
+    assert "<script" not in body and "<iframe" not in body
+    assert "browser history" in body and "may sync between devices" in body
+    assert "No Discogs read has been made" in body and "does not save a watch" in body
+    page = PageForms(body)
+    expected = dict(
+        builder["fields"], listing="https://www.discogs.com/sell/item/123", under="150.00"
+    )
+    fields = page.forms[0]["fields"]
+    assert {k: v for k, v in fields.items() if k != "csrf"} == expected
+    assert page.forms[1]["fields"] == expected
+    link = page.copy_links[0]
+    assert link.startswith(app.origin + PATH + "?")
+    assert "csrf" not in link and fields["csrf"] not in link
+    assert "&amp;" in body and "&amp;" not in link
+    assert "Location" not in headers
+    # Reloading or opening the prepared link is still GET-only with a fresh token.
+    again = PageForms(request(app, QUERY_STRING=urlsplit(link).query)[2])
+    assert again.copy_links == [link]
+    assert again.forms[0]["fields"]["csrf"] != fields["csrf"]
+    with closing(sqlite3.connect(path)) as db:
+        assert list(db.iterdump()) == before
+    assert calls == []
+    status, _, body = request(app, "POST", fields)
+    assert status == "200 OK" and len(calls) == 1
+    assert 'href="https://www.discogs.com/sell/item/123"' in body
+    assert 'rel="noreferrer noopener" target="_blank"' in body
+    assert request(app, "POST", fields)[0] == "409 Conflict"
+    assert len(calls) == 1
+
+
+def test_criteria_only_bookmark_leaves_listing_blank_and_is_editable(setup):
+    app, calls, *_ = setup
+    query = urlencode(dict(listing="", release="456", under="125", media="VG", sleeve="G"))
+    status, _, body = request(app, QUERY_STRING=query)
+    assert status == "200 OK" and calls == []
+    page = PageForms(body)
+    assert "listing=" not in page.copy_links[0]
+    fields = page.forms[0]["fields"]
+    assert fields["listing"] == "" and fields["under"] == "125.00"
+    # Query values are suggestions, not hidden authorization or saved watch rules.
+    fields.update(listing="123", under="100", media="M", sleeve="M")
+    status, _, body = request(app, "POST", fields)
+    assert status == "200 OK" and len(calls) == 1
+    assert "strictly under 100.00 USD" in body
+    assert "Minimum media: M; minimum sleeve: M" in body
+
+
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        ("", {}),
+        ("listing=", {}),
+        (
+            "listing=https%3A%2F%2Fwww.discogs.com%2Fsell%2Fitem%2F123",
+            {"listing": "https://www.discogs.com/sell/item/123"},
+        ),
+        ("release=456", {"release": "456"}),
+        ("under=000150.1", {"under": "150.10"}),
+        ("media=VG%2B&sleeve=G%2B", {"media": "VG+", "sleeve": "G+"}),
+    ],
+)
+def test_optional_prefills_are_individually_validated_without_provider_calls(
+    setup, query, expected
+):
+    app, calls, *_ = setup
+    status, _, body = request(app, QUERY_STRING=query)
+    assert status == "200 OK" and calls == []
+    page = PageForms(body)
+    assert all(page.forms[0]["fields"][key] == value for key, value in expected.items())
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [
+        "123",
+        "http://www.discogs.com/sell/item/123",
+        "//www.discogs.com/sell/item/123",
+        "https://evil.invalid/sell/item/123",
+        "https://www.discogs.com.evil.invalid/sell/item/123",
+        "https://user:password@www.discogs.com/sell/item/123",
+        "https://www.discogs.com:443/sell/item/123",
+        "https://www.discogs.com/sell/item/123/",
+        "https://www.discogs.com/sell/item/123?curr_abbr=USD",
+        "https://www.discogs.com/sell/item/123#details",
+        "https://www.discogs.com/release/123",
+        "https://www.discogs.com/sell/item/0",
+        "https://www.discogs.com/sell/item/0123",
+        "https://www.discogs.com/sell/item/9007199254740992",
+        "https://www.discogs.com/sell/item/12345678901234567",
+        "https://www.discogs.com/sell/item/1\u0662\u0663",
+        " https://www.discogs.com/sell/item/123",
+        "https://www.discogs.com/sell/item/123\n",
+        "https://www.discogs.com/sell/item/123\x00",
+        "https://www.discogs.com\\@evil.invalid/123",
+        "https://www.discogs.com/sell/item/../123",
+        "https://www.discogs.com/sell/item/%31%32%33",
+        '<script>alert("x")</script>',
+        'https://www.discogs.com/sell/item/123" autofocus onfocus="x',
+    ],
+)
+def test_prefill_invalid_urls_fail_before_token_or_provider_call(setup, listing):
+    app, calls, *_ = setup
+    status, headers, body = request(app, QUERY_STRING=urlencode({"listing": listing}))
+    assert status == "400 Bad Request"
+    assert headers["Cache-Control"] == "no-store" and "Location" not in headers
+    assert not app.tokens and not calls
+    assert "<form" not in body and "<script>" not in body and "evil.invalid" not in body
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "unknown=",
+        "csrf=token",
+        "release=456&release=789",
+        "listing=&listing=",
+        "release=456&%72elease=789",
+        "media=VG&media=",
+        "release=456&under=1&media=NM&sleeve=NM&listing=&extra=1",
+        "release=",
+        "under=",
+        "media=",
+        "sleeve=",
+        "release=0",
+        "release=01",
+        "release=9007199254740992",
+        "release=456%0a",
+        "release=%EF%BC%94%EF%BC%95%EF%BC%96",
+        "under=0",
+        "under=-1",
+        "under=NaN",
+        "under=1e2",
+        "under=150.001",
+        "under=10000000",
+        "under=%D9%A1%D9%A0",
+        "media=Generic",
+        "sleeve=unknown",
+        "media=VG+",
+        "release=%",
+        "release=%4",
+        "release=%GG",
+        "release=%ff",
+        "release=%25456",
+        "release=456&",
+        "release",
+        "release=456;under=150",
+        "release=4 56",
+        "release=456\r\n",
+        "release=\u0664\u0665\u0666",
+        "release=" + "4" * 2048,
+        "release=%3Cscript%3E",
+        "under=1%22%20onfocus%3D%22x",
+    ],
+)
+def test_prefill_rejects_unknown_duplicate_malformed_and_injected_values(setup, query):
+    app, calls, *_ = setup
+    status, _, body = request(app, QUERY_STRING=query)
+    assert status == "400 Bad Request" and not app.tokens and not calls
+    assert "<form" not in body and "<script>" not in body
+
+
+def test_prepared_get_preserves_auth_and_cross_site_navigation_boundary(setup):
+    app, calls, *_ = setup
+    query = urlencode({"listing": "https://www.discogs.com/sell/item/123"})
+    app.authenticate = None
+    assert request(app, QUERY_STRING=query)[0] == "403 Forbidden"
+    assert not app.tokens
+    app.authenticate = lambda _: "owner"
+    assert request(app, QUERY_STRING=query, HTTP_SEC_FETCH_SITE="cross-site")[0] == "403 Forbidden"
+    assert not app.tokens
+    assert (
+        request(
+            app,
+            QUERY_STRING=query,
+            HTTP_SEC_FETCH_SITE="cross-site",
+            HTTP_SEC_FETCH_MODE="navigate",
+            HTTP_SEC_FETCH_DEST="document",
+        )[0]
+        == "200 OK"
+    )
+    assert len(app.tokens) == 1 and not calls
+
+
+@pytest.mark.parametrize("suffix", ["&listing=", "&csrf=", "&unknown=", "&under=%", "&media=%ff"])
+def test_post_malformed_or_duplicate_parameters_never_read(setup, suffix):
+    app, calls, *_ = setup
+    fields = form(app)
+    raw = (urlencode(fields) + suffix).encode("ascii")
+    assert (
+        request(
+            app, "POST", fields, CONTENT_LENGTH=str(len(raw)), **{"wsgi.input": io.BytesIO(raw)}
+        )[0]
+        == "400 Bad Request"
+    )
+    assert not calls
