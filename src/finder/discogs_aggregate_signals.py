@@ -7,6 +7,8 @@ Extrema survive errors and restarts. An event sequence is not a listing identity
 import hashlib
 from decimal import Decimal
 
+from finder.discogs_price_messages import change_message as change_message
+
 SCHEMA = """
     CREATE TABLE IF NOT EXISTS discogs_price_extrema (
         release_id INTEGER PRIMARY KEY, price_floor TEXT, count_high INTEGER NOT NULL,
@@ -24,32 +26,6 @@ def pause_changes(db):
         "UPDATE discogs_price_outbox SET state='revoked' WHERE state IN ('pending','retry_wait') "
         "AND event_key IN (SELECT event_key FROM discogs_price_changes)"
     )
-
-
-def change_message(title, release, currency, price, previous_price, count, previous_count):
-    """Canonical public aggregate observations only; no threshold or seller data."""
-    changes = []
-    if previous_price is not None:
-        changes.append(
-            f"reported minimum item price decreased from {currency} {previous_price} "
-            f"to {currency} {price}"
-        )
-    if previous_count is not None:
-        changes.append(f"reported aggregate offers increased from {previous_count} to {count}")
-    if not changes:
-        raise ValueError("An aggregate change requires a supported signal.")
-    return {
-        "title": "Discogs aggregate change lead",
-        "message": (
-            f"{title}\nRelease {release}: {'; '.join(changes)}. "
-            "Compared with earlier observations in this watch period. "
-            "Aggregate changes do not identify individual new listings. "
-            "Condition and delivered total are unverified. "
-            "This is a manual-review lead, not a qualified purchase.\n"
-            f"https://www.discogs.com/sell/release/{release}\nData provided by Discogs."
-        ),
-        "click": f"https://www.discogs.com/sell/release/{release}",
-    }
 
 
 def change_details(db, key):

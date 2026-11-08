@@ -251,7 +251,9 @@ def test_public_ntfy_json_payload_no_topic_url_or_logs_and_no_redirects(setup, c
         body = json.loads(request.content)
         assert set(body) == {"topic", "title", "message", "click"}
         assert "USD 8.00" in body["message"]
-        assert "Condition and delivered total are unverified" in body["message"]
+        assert (
+            "Condition and shipping are unknown; delivered total is unverified" in body["message"]
+        )
         assert body["click"] == "https://www.discogs.com/sell/release/28720177"
         return httpx.Response(200, json={"event": "message"})
 
@@ -738,7 +740,7 @@ def test_any_price_initial_changes_restart_and_reappearance(any_price_setup):
     destination = sender(lambda r: requests.append(json.loads(r.content)) or httpx.Response(200))
     assert deliver_one(alerts, destination)["state"] == "accepted"
     payload = requests[0]
-    assert payload["title"] == "Discogs availability lead"
+    assert payload["title"] == "56 Nights | available; any price"
     assert "any price" in payload["message"]
     assert "not an individual new-listing alert" in payload["message"]
     assert "minimum item price" not in payload["message"]

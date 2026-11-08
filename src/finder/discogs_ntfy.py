@@ -8,16 +8,14 @@ import re
 import stat
 import time
 from dataclasses import dataclass
-from decimal import Decimal
 from email.utils import parsedate_to_datetime
 
 import httpx
 
-from finder.discogs_aggregate_signals import change_message
 from finder.discogs_health_messages import health_message
 from finder.discogs_notification_lock import notification_lock, recover_abandoned
 from finder.discogs_notification_outbox import NotificationBinding
-from finder.discogs_price_alerts import PriceLeadRule, availability_message, lead_message
+from finder.discogs_price_messages import validate_price_message
 
 PRIVATE_NTFY_ORIGIN = "https://vps-a0c5b746.vps.ovh.us"
 
@@ -134,73 +132,7 @@ class NtfySender:
     def send(self, payload):
         if not self.enabled:
             return DeliveryResult("disabled")
-        if (
-            not isinstance(payload, dict)
-            or set(payload) != {"title", "message", "click"}
-            or not all(isinstance(v, str) for v in payload.values())
-        ):
-            raise ValueError("Only the fixed public price-lead message is supported.")
-        match = re.fullmatch(
-            r"https://www\.discogs\.com/sell/release/([1-9]\d{0,15})", payload["click"]
-        )
-        details = re.match(
-            r"([^\x00-\x1f\x7f]{1,120})\nRelease ([1-9]\d{0,15}): reported minimum item price "
-            r"([A-Z]{3}) (\d{1,7}\.\d{2})\. ",
-            payload["message"],
-        )
-        availability = re.match(
-            r"([^\x00-\x1f\x7f]{1,120})\nRelease ([1-9]\d{0,15}): "
-            r"copies reported for sale \(any price\)\. ",
-            payload["message"],
-        )
-        change = re.match(
-            r"([^\x00-\x1f\x7f]{1,120})\nRelease ([1-9]\d{0,15}): "
-            r"(?:reported minimum item price decreased from ([A-Z]{3}) (\d{1,7}\.\d{2}) "
-            r"to ([A-Z]{3}) (\d{1,7}\.\d{2})(?:; )?)?"
-            r"(?:reported aggregate offers increased from (\d{1,8}) to (\d{1,8}))?\. ",
-            payload["message"],
-        )
-        if not match or not (details or availability or change):
-            raise ValueError("Only the fixed public price-lead message is supported.")
-        fields = details or availability or change
-        if match[1] != fields[2]:
-            raise ValueError("Only the fixed public price-lead message is supported.")
-        # Strict public-title/currency validation; no arbitrary price ceiling.
-        rule = PriceLeadRule(
-            release_id=int(match[1]),
-            public_title=fields[1],
-            currency=details[3] if details else change[3] if change and change[3] else "USD",
-            any_price=True,
-        )
-        expected = (
-            lead_message(rule.public_title, rule.release_id, rule.currency, details[4])
-            if details
-            else availability_message(rule.public_title, rule.release_id)
-        )
-        if change:
-            previous_price, price = change[4], change[6]
-            previous_count = int(change[7]) if change[7] is not None else None
-            count = int(change[8]) if change[8] is not None else None
-            if (
-                previous_price is None
-                and previous_count is None
-                or previous_price is not None
-                and (change[3] != change[5] or Decimal(price) >= Decimal(previous_price))
-                or previous_count is not None
-                and not 0 < previous_count < count <= 10000000
-            ):
-                raise ValueError("Only the fixed public price-lead message is supported.")
-            expected = change_message(
-                rule.public_title,
-                rule.release_id,
-                rule.currency,
-                price,
-                previous_price,
-                count,
-                previous_count,
-            )
-        if payload != expected:
-            raise ValueError("Only the fixed public price-lead message is supported.")
+        validate_price_message(payload)
         return self._publish(payload)
 
     def send_health(self, kind, reasons=(), *, test=False):

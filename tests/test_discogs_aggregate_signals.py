@@ -140,7 +140,7 @@ def test_count_high_water_not_every_rise_or_individual_listing(watch):
     watch.read(count=6)
     assert watch.send() == "accepted"
     payload = watch.payload()
-    assert payload["title"] == "Discogs aggregate change lead"
+    assert payload["title"] == "Synthetic public record | USD 10.00 min; offers 5 -> 6"
     assert "aggregate offers increased from 5 to 6" in payload["message"]
     assert "do not identify individual new listings" in payload["message"]
     assert "not a qualified purchase" in payload["message"]
@@ -179,7 +179,7 @@ def test_pending_entry_absorbs_changes_without_duplicate(tmp_path):
     assert len(watch.events()) == 1
     assert watch.sql("SELECT * FROM discogs_price_changes") == []
     assert watch.send() == "accepted"
-    assert watch.payload()["title"] == "Discogs low item-price lead"
+    assert watch.payload()["title"] == "Synthetic public record | USD 8.00 min"
     assert "USD 8.00" in watch.payload()["message"]
     watch.now += 300
     watch.read("7", 8)
@@ -241,7 +241,8 @@ def test_partial_invalidation_removes_only_false_reason(watch):
     watch.read("9", 6)
     watch.read("10", 7)
     assert watch.send() == "accepted"
-    assert "minimum item price" not in watch.payload()["message"]
+    assert "minimum item price decreased" not in watch.payload()["message"]
+    assert "reported minimum item price USD 10.00" in watch.payload()["message"]
     assert "increased from 5 to 7" in watch.payload()["message"]
     watch.now += 300
     watch.read("8", 8)
@@ -318,7 +319,7 @@ def test_any_price_missing_price_preserves_count_but_price_recovery_is_silent(tm
     assert watch.read(None, 0) == "unavailable"
     watch.read(None, 1)
     assert watch.send() == "accepted"
-    assert watch.payload()["title"] == "Discogs availability lead"
+    assert watch.payload()["title"] == "Synthetic public record | available; any price"
 
 
 def test_threshold_unknown_price_blocks_changes_and_never_assumes_zero(watch):
@@ -457,10 +458,14 @@ def test_end_to_end_real_reader_worker_outbox_private_sender_is_intercepted(tmp_
     assert all(str(r.url) == PRIVATE_NTFY_ORIGIN + "/" for r in posts)
     for post in posts:
         payload = json.loads(post.content)
-        assert payload["title"] == "Discogs aggregate change lead"
+        assert payload["title"].startswith("Synthetic public record | USD ")
+        assert "; offers " in payload["title"]
         assert "minimum item price decreased" in payload["message"]
         assert "aggregate offers increased" in payload["message"]
-        assert "Condition and delivered total are unverified" in payload["message"]
+        assert (
+            "Condition and shipping are unknown; delivered total is unverified"
+            in payload["message"]
+        )
 
 
 def test_no_flood_configure_preserves_existing_samples_and_poll_schedule(tmp_path):

@@ -27,6 +27,8 @@ from finder.discogs_notification_outbox import (
     MAX_BACKOFF,
     NotificationBinding,
 )
+from finder.discogs_price_messages import availability_message as availability_message
+from finder.discogs_price_messages import lead_message as lead_message
 from finder.discogs_read_guard import DatabaseReadBudget, guard_pending, initialize_guard
 from finder.discogs_rules import CURRENCIES, RulesStore, StrictInput, amount, release_id
 
@@ -125,35 +127,6 @@ def _sample(rule, value):
     return Decimal(price) <= Decimal(rule.item_price_ceiling), price, count
 
 
-def lead_message(title, release, currency, price):
-    """Only public record facts; no topic, seller, destination or buying verdict."""
-    return {
-        "title": "Discogs low item-price lead",
-        "message": (
-            f"{title}\nRelease {release}: reported minimum item price {currency} {price}. "
-            "Condition and delivered total are unverified. "
-            "This is a manual-review lead, not a qualified purchase.\n"
-            f"https://www.discogs.com/sell/release/{release}\nData provided by Discogs."
-        ),
-        "click": f"https://www.discogs.com/sell/release/{release}",
-    }
-
-
-def availability_message(title, release):
-    """Aggregate stock, never a new-listing or price-qualification claim."""
-    return {
-        "title": "Discogs availability lead",
-        "message": (
-            f"{title}\nRelease {release}: copies reported for sale (any price). "
-            "This is aggregate availability, not an individual new-listing alert. "
-            "Condition and delivered total are unverified. "
-            "This is a manual-review lead, not a qualified purchase.\n"
-            f"https://www.discogs.com/sell/release/{release}\nData provided by Discogs."
-        ),
-        "click": f"https://www.discogs.com/sell/release/{release}",
-    }
-
-
 def rule_message(rule, price, details=None):
     if details is not None:
         previous_price, previous_count, count = details
@@ -165,10 +138,20 @@ def rule_message(rule, price, details=None):
             previous_price,
             count,
             previous_count,
+            item_price_ceiling=rule.item_price_ceiling,
+            any_price=rule.any_price,
         )
     if rule.any_price:
-        return availability_message(rule.public_title, rule.release_id)
-    return lead_message(rule.public_title, rule.release_id, rule.currency, price)
+        return availability_message(
+            rule.public_title, rule.release_id, currency=rule.currency, price=price
+        )
+    return lead_message(
+        rule.public_title,
+        rule.release_id,
+        rule.currency,
+        price,
+        item_price_ceiling=rule.item_price_ceiling,
+    )
 
 
 class AggregatePriceAlerts:

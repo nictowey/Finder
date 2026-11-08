@@ -1,8 +1,14 @@
 # Official API low item-price leads and optional ntfy delivery
 
-This implementation is **not deployed or activated**. The worker and sender default
-to off. It cannot access a cart, order, payment, browser session or purchase ledger.
-No topic, credential or test notification has been created or sent by this work.
+This document retains the historical October 28 foundation and activation plan;
+its historical “not activated” statements are not current deployment status.
+Current code accepts operator-configured **120–86400-second** polling (600-second
+default), with the [shared API guard](discogs-api-read-guard.md). See the
+[private ntfy transport](#prepared-private-ntfy-transport-not-activation),
+[reliability release gates](sniper-reliability-release-gates.md), and
+[actionable formatting](#actionable-notification-formatting-and-offline-proof)
+sections for subsequent behavior. The new formatting change itself is offline-only
+until separately reviewed and deployed. No cart, order or payment is enabled.
 
 ## Meaning of a lead
 
@@ -28,14 +34,22 @@ for that buying rule. A cheap Poor copy can hide a new VG+ copy, and constant co
 and minimum can hide replacement offers. Short-lived offers between polls can be
 missed. No new-listing, instant-delivery or qualifying-price guarantee is made.
 
-The entire external message contains only the owner-approved **public record
-title**, release ID/link, currency, observed minimum item price and this notice:
-**Condition and delivered total are unverified. This is a manual-review lead,
-not a qualified purchase.** Fixed “Data provided by Discogs” attribution is included. It links to the release marketplace, never a fabricated
-individual offer. No seller, address, threshold, grade rules, account identity,
-event key or buying permission is published.
+Notifications identify the public artist/record title and current minimum item price
+or aggregate offer-count change in the visible title and first body line. The body
+shows the exact saved inclusive item-price cap and currency, or **any price**. It
+never reconstructs a round-dollar “under” threshold from a stored `.99` ceiling.
+An inclusive USD 10.00 cap stays inclusive. These are item-only watch settings,
+not a delivered-price or condition qualification.
 
-## Code and persistence
+Every notification states that the observation is aggregate-only, condition and
+shipping are unknown, and the delivered total is unverified. It remains a
+manual-review lead, not a qualified purchase, with “Data provided by Discogs”
+attribution and the canonical release marketplace link. No individual listing,
+seller, destination, account identity, topic, credential, event key or buying
+permission is included in the message. Watch selection and saved thresholds can
+be private interests; use only the approved notification destination.
+
+## Code and persistence (historical foundation)
 
 - `discogs_price_alerts.py`: strict independent `PriceLeadRule`; default-off alert
   control; official stats-only one-shot polling; durable episodes and price-aware
@@ -54,7 +68,7 @@ Additive tables are `discogs_price_control`, `discogs_price_rules`,
 `discogs_monitor_control.next_request` coordinates the minimum three-second API
 spacing with the older API poller in the **same database**. Nominal per-release
 poll interval defaults to 600 seconds. Explicit `--poll-seconds 300` selects five
-minutes; integer intervals from 300 through 86400 seconds are accepted. The option
+minutes; current code accepts integer intervals from 120 through 86400 seconds. The option
 alone never enables polling, delivery or stored alert controls. Claims and due times
 are durable: changing the interval on restart does not shorten an existing due time,
 claim or provider cooldown; it applies when the next read is reserved. Failed-read
@@ -92,7 +106,7 @@ than promise exactly-once delivery. Reconciliation of uncertain messages is manu
 never reset their state to get a retry. A failed/expired/uncertain message does not
 create another lead in the same episode.
 
-## ntfy privacy and owner inputs
+## ntfy privacy and owner inputs (historical public-topic setup)
 
 The owner selected free ntfy after the public-topic limitation was explained.
 Anonymous topics are not access-controlled accounts: anyone knowing the name can
@@ -126,7 +140,7 @@ Primary references reviewed October28,2026:
 [limits](https://docs.ntfy.sh/publish/#limitations),
 [phone subscription](https://docs.ntfy.sh/subscribe/phone/).
 
-## Redacted configuration example — planning only
+## Redacted configuration example — historical planning only
 
 No code automatically loads this example or changes a live database. The existing
 rule API is explicit and revision-checked; a deployment operator must apply only
@@ -241,13 +255,13 @@ Invalid counts, mismatched observation currency and stale/failed reads never rea
 an episode. These alerts cannot detect every individual listing or offers that
 appear and disappear between polls.
 
-Notifications use the title **Discogs availability lead** and say copies are
-reported for sale **(any price)**, explicitly describing aggregate availability,
-not an individual new-listing alert. No price or price qualification is asserted.
-The existing condition/delivered-total warning, manual-review limitation, public
-release link and Discogs attribution remain. The sender permits only this exact
-canonical message or the existing canonical low-price message; delivery rechecks
-the saved rule's mode and payload before dispatch.
+Availability titles show the record and **any price**, with the current minimum
+when already retained by the enabled price-drop watch; otherwise they say **available**.
+The body includes the configured currency and explicitly describes aggregate
+availability, not an individual new-listing alert. A missing minimum is never
+rendered as zero or as a price qualification. The sender accepts only canonical
+message shapes, and delivery rechecks the saved rule's mode and payload before
+dispatch.
 
 No SQL migration is required. Rules are validated JSON; existing outbox and sample
 price fields use an empty internal marker for availability episodes, never a
@@ -317,3 +331,72 @@ backoff cap, including on uncertain responses. Unrepresentable deadlines require
 manual attention through the existing shared gate. This does not change Discogs
 polling or record criteria. See [health watcher](discogs-health-watcher.md) for the
 coordinated version cutover and downgrade limitations.
+
+
+## Actionable notification formatting and offline proof
+
+Synthetic examples (not real watches or current inventory):
+
+- `Fixture Artist - Album | USD 9.99 min`
+- `Fixture Artist - Album | USD 8.99 min (was USD 9.99); offers 5 -> 6`
+- `Fixture Artist - Album | available; any price`
+
+The body states `Watch: item price at or below USD 99.99.` for that exact saved
+cap, or `Watch: any price (USD).` A count-only change can also show a known
+current minimum without claiming that the minimum decreased. Unknown prices
+stay absent. A price/count change compares earlier observed extrema in the watch
+period; it does not establish a newly listed or sold copy.
+
+`discogs_price_messages.py` owns generation and strict canonical validation.
+The old `lead_message`, `availability_message` and `change_message` import paths
+and positional arguments remain supported. Legacy helper calls that do not supply
+a cap do not invent one. Current rule-driven calls include the saved cap/mode and
+currency. Existing rule data, revisions, price matching, episode keys, queue states,
+provider guards, cadence, budgets and retry rules are not migrated or reset.
+
+Unicode controls, line/paragraph separators and malformed surrogate characters
+in display titles are replaced with spaces. Whitespace is collapsed; the body
+keeps at most 120 title characters. The visible title is truncated at a valid
+UTF-8 boundary to 180 bytes, reserving room for the complete price/count summary.
+Canonical payload JSON is limited to 4,000 bytes, including JSON escaping and
+leaving room below 4,096 bytes for the bounded topic envelope. The warning and
+link are never truncated. Saved titles are not rewritten.
+
+Run the isolated proof from a development environment:
+
+```sh
+PYTHONPATH=src python -m pytest -q tests/test_discogs_price_messages.py
+```
+
+It uses 19 entirely synthetic rules (13 cap shapes and six any-price shapes),
+disposable SQLite state, the real stats adapter/worker/matcher/outbox and private
+sender with intercepted HTTP, plus a socket/DNS fail-closed guard. Each rule covers
+entry, combined changes, unchanged data after restart, and count-only changes;
+accepted messages are not called phone-delivered. It verifies saved rules/targets
+stay unchanged and accepted outbox entries are not replayed. Additional cases cover
+exact `.99` and inclusive `.00` boundaries, all supported currencies, missing
+prices, malformed/control/long Unicode titles, bounded UTF-8 and payloads,
+tampering and canonical disclaimer/link validation. Existing alert and aggregate
+signal suites retain failure, stale data, cooldown, revocation and uncertainty
+coverage. This is offline evidence, not a live send, deployment or phone test.
+
+
+### Formatting cutover and rollback gate
+
+Stop the aggregate worker and coordinate the health watcher before inspecting the
+final cutover snapshot. Require zero `pending`, `retry_wait` and `leased` rows in
+`discogs_price_outbox` before switching either forward or backward. A pre-stop
+empty queue is not sufficient: a poll may enqueue an event before the worker stops.
+If unfinished work exists, let the currently reviewed version settle it within
+normal cooldown/freshness rules before stopping again, or defer the switch. Never
+delete/reset events, clear uncertainty or force an extra send to pass this gate.
+Preserve accepted, failed, revoked, expired and uncertain history and all budgets.
+Uncertain attempts need the existing manual reconciliation, never automatic replay.
+
+The outbox stores event/rule/price metadata, **not serialized notification text**.
+A pending event is rendered only when claimed, so previous and new code can each
+render their own canonical format from unchanged stored rows. This update changes
+no table, saved rule shape or revision. In-memory leased reservations must not be
+transferred between versions: stop/drain first, and retain the existing abandoned
+lease quarantine if a crash occurs. Do not restore an older database to roll back
+formatting, since that can discard acceptance evidence and replay notifications.
