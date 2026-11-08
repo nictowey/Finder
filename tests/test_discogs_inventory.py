@@ -602,3 +602,39 @@ def test_minimum_120_second_due_time_persists_across_observer_restart(tmp_path):
 def test_poll_cadence_rejects_below_minimum_outside_bounds_or_wrong_types(seconds):
     with pytest.raises(ValidationError):
         config(poll_seconds=seconds)
+
+
+@pytest.mark.parametrize("empty_pages", [0, 1])
+def test_both_empty_pagination_forms_establish_baseline_and_allow_first_discovery(
+    workspace, empty_pages
+):
+    _, clock = workspace
+    rows = []
+
+    def inventory(_):
+        payload = page(rows)
+        if not rows:
+            payload["pagination"]["pages"] = empty_pages
+        return httpx.Response(200, json=payload)
+
+    raw = page([])
+    raw["pagination"]["pages"] = empty_pages
+    collected = collect(config(), listing(), lambda _: raw)
+    assert collected["pagination"]["complete"]
+    assert collected["pagination"]["reason"] == "reported_pages_observed"
+    assert collected["pagination"]["pages_fetched"] == 1
+    assert collected["pagination"]["reported_items"] == 0
+    assert collected["observed_ids"] == []
+    assert collected["candidates"] == []
+
+    worker, _ = observer(workspace, inventory)
+    baseline = worker.poll()
+    assert baseline["status"] == "baseline"
+    assert baseline["pagination"]["complete"]
+    assert baseline["baseline_matches"] == 0
+    assert baseline["candidates"] == []
+    rows.append(listing(101))
+    clock.sleep(600)
+    discovered = worker.poll()
+    assert [row["listing_id"] for row in discovered["candidates"]] == [101]
+    assert discovered["candidates"][0]["state"] == "review_ready"

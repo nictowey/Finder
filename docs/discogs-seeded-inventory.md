@@ -183,14 +183,14 @@ remain those in `AGENTS.md`; restricted UNIX-socket tests are not live API valid
 
 ### Local verification on November 8, 2026
 
-- Final inventory suite: 55 passed, including the 120-second minimum and durable due time
-  across an observer restart. Library defaults remain 600 seconds; tests are not a live
+- Final inventory suite: 57 passed, including both zero/one-page empty baselines, the
+  120-second minimum and durable due time across an observer restart. Library defaults remain 600 seconds; tests are not a live
   polling-speed promise.
 - Independent review: 320 inventory/shared-guard/known-listing/phone/aggregate regressions
-  passed before the additional five cadence tests. Runtime module remained unchanged.
-- Full Python: 4,785 passed, one skipped, 41 subtests passed; 18 existing UNIX-socket tests
+  passed before the additional seven cadence/empty-baseline tests. Runtime module remained unchanged.
+- Full Python: 4,792 passed, one skipped, 41 subtests passed; 18 existing UNIX-socket tests
   failed with sandbox `PermissionError`. This is not a full-suite pass. No permission bypass
-  or live API call was attempted. The five later cadence tests passed in the focused rerun.
+  or live API call was attempted. All cadence and empty-baseline tests passed in this rerun.
 - Ruff lint and 226-file format check passed. `npm test`: 110 passed. TypeScript typecheck
   and diff whitespace check passed. Exact remote-commit checks are a separate publication
   check, not implied by these local results.
