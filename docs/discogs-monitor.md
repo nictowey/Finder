@@ -1,5 +1,9 @@
 # Read-only Discogs cloud monitoring
 
+For the newer, separate, explicit one-seller official inventory supplement, see
+[seeded inventory observations](discogs-seeded-inventory.md). Its limited cohort does not
+solve whole-market release discovery and does not activate this historical monitor.
+
 For the newer separate, default-off official API **low item-price lead** worker and
 optional ntfy adapter, see [aggregate price leads](discogs-price-alerts.md). That
 implementation does not activate this older shared-rule monitor or qualify buying.

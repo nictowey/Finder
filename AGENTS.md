@@ -1,5 +1,18 @@
 # Finder Agent Guide
 
+## November 8: explicit seeded inventory observations
+
+`finder-inventory` is a separate, default-off observation supplement for one explicitly
+configured seller derived from an owner-supplied known listing. Its bounded public
+`GET /users/{username}/inventory` route is an exception to the historical provider scope
+below. It verifies the seed through the existing known-listing endpoint and uses that
+endpoint for at most two detail qualifications per invocation. No arbitrary seller lists,
+whole-market discovery claim, credentials, browser recovery, notifications or purchases.
+Read `docs/discogs-seeded-inventory.md` before extending it. Offline implementation and
+explicit operator initialization do not authorize deployment or activation. Preserve existing
+aggregate watches and use the same durable API guard. No real seller, listing, release,
+threshold, configuration, provider payload or delivery destination belongs in public files.
+
 ## October 24 continuation: read-only cloud monitoring
 
 The owner authorizes continuing PR #107 from `a4a3768458fdebc3436427303db9d94ba5e4c13a`,
