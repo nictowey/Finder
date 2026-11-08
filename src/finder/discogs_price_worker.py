@@ -19,6 +19,7 @@ from finder.discogs_price_alerts import (
     POLL_SECONDS,
     AggregatePriceAlerts,
 )
+from finder.discogs_read_guard import SAFETY_EXIT, ReadSafetyHalt
 
 
 def private_topic(path):
@@ -128,6 +129,12 @@ def main(argv=None):
                 return 0
             stop.wait(max(0.5, 3 - (time.monotonic() - started)))
         return 0
+    except ReadSafetyHalt:
+        print(
+            '{"status":"api_safety_halt","manual_recovery_required":true,"purchase_allowed":false}',
+            flush=True,
+        )
+        return SAFETY_EXIT
     except (OSError, ValueError, RuntimeError, sqlite3.Error):
         # Exception text may include paths or secrets; emit only a fixed status.
         print('{"status":"price_alert_worker_unavailable","purchase_allowed":false}', flush=True)

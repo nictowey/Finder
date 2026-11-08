@@ -984,3 +984,14 @@ def test_service_expected_poll_interval_is_not_health_timer():
     timer = (root / "deployment/sniper-health.timer.example").read_text()
     assert "tick --poll-seconds 300 --database" in service
     assert "OnUnitInactiveSec=5min" in timer
+
+
+def test_pending_api_guard_is_polling_problem_even_with_fresh_samples(rig):
+    rig.sql(
+        "UPDATE discogs_api_read_guard SET pending_token=?,pending_since=?",
+        ("a" * 32, rig.now - 31),
+    )
+    report = rig.report()
+    assert all(rule["freshness"] == "fresh" for rule in report["rules"])
+    assert module.current_reasons(report) == ["polling_problem"]
+    assert not rig.requests

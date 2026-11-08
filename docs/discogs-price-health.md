@@ -181,3 +181,8 @@ unrepresentable values produce a finite persistent manual hold. Health exposes
 `request_manual_attention` and `request_provider_manual_attention` for deadlines
 beyond the supported calendar horizon. This is separate from notification holds;
 no notification configuration or delivery permission changes.
+
+The later write-ahead API guard supersedes response-only persistence. See
+[shared API guard and manual recovery](discogs-api-read-guard.md). A pending request
+blocks upgraded shared readers across restart even when response persistence fails;
+health reports the guard separately from ordinary cooldown and notification state.

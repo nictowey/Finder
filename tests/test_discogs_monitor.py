@@ -510,3 +510,133 @@ def test_legacy_headers_commit_hold_before_reading_body(setup):
         wall_clock=lambda: clock[0],
     )
     assert tick(app)["status"] == "ok"
+
+
+def test_manual_listing_catalog_each_guarded_and_cache_hit_has_no_new_request(setup):
+    import sqlite3
+    from contextlib import closing
+
+    from finder.discogs_read_guard import guard_row
+
+    app, clock, _, _ = setup
+    release(app)
+    paths, tokens = [], []
+
+    def handle(request):
+        paths.append(request.url.path)
+        with closing(sqlite3.connect(app.database)) as db:
+            token, _, _ = guard_row(db)
+            assert token is not None
+            tokens.append(token)
+        data = (
+            {"id": 123, "formats": [{"name": "Vinyl", "qty": "2"}]}
+            if request.url.path == "/releases/123"
+            else payload()
+        )
+        return httpx.Response(200, json=data)
+
+    app.monitor.listing_reader = ListingReader(
+        transport=httpx.MockTransport(handle),
+        clock=lambda: clock[0],
+        wall_clock=lambda: clock[0],
+        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    )
+    app.monitor.read_known("123", release_id=123)
+    assert paths == ["/marketplace/listings/123", "/releases/123"]
+    clock[0] += 3
+    app.monitor.read_known("123", release_id=123)
+    assert paths == ["/marketplace/listings/123", "/releases/123", "/marketplace/listings/123"]
+    assert len(set(tokens)) == 3
+    with closing(sqlite3.connect(app.database)) as db:
+        assert guard_row(db)[0] is None
+
+
+def test_catalog_preheader_failure_keeps_guard_pending(setup):
+    import sqlite3
+    from contextlib import closing
+
+    from finder.discogs_read_guard import ReadSafetyHalt, guard_row
+
+    app, clock, _, _ = setup
+    release(app)
+
+    def handle(request):
+        if request.url.path == "/releases/123":
+            raise httpx.ConnectError("fixture")
+        return httpx.Response(200, json=payload())
+
+    app.monitor.listing_reader = ListingReader(
+        transport=httpx.MockTransport(handle),
+        clock=lambda: clock[0],
+        wall_clock=lambda: clock[0],
+        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    )
+    with pytest.raises(ReadSafetyHalt, match="response_unknown"):
+        app.monitor.read_known("123", release_id=123)
+    with closing(sqlite3.connect(app.database)) as db:
+        assert guard_row(db)[0] is not None
+    clock[0] += 31
+    with pytest.raises(ReadSafetyHalt):
+        app.monitor.read_known("123")
+
+
+def test_legacy_normal_slot_contention_preserves_poll_health(setup):
+    import sqlite3
+    import threading
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+    from contextlib import closing
+
+    app, clock, _, _ = setup
+    release(app)
+    assert (
+        call(
+            app,
+            "/api/target",
+            {"target": target(release_id=124).model_dump(), "expected_revision": 1},
+        )[0]
+        == 200
+    )
+    barrier = threading.Barrier(2)
+    entered, finish = threading.Event(), threading.Event()
+    calls = []
+
+    class DelayedReader(ReleaseStatsReader):
+        def read(self, *args, **kwargs):
+            barrier.wait(timeout=5)
+            return super().read(*args, **kwargs)
+
+    def handle(request):
+        calls.append(request.url.path)
+        entered.set()
+        assert finish.wait(8)
+        return httpx.Response(200, json={"num_for_sale": 0, "lowest_price": None})
+
+    def make_monitor():
+        return ReleaseMonitor(
+            app.database,
+            stats_reader=DelayedReader(
+                transport=httpx.MockTransport(handle),
+                clock=lambda: clock[0],
+                wall_clock=lambda: clock[0],
+            ),
+            clock=lambda: clock[0],
+        )
+
+    monitors = [make_monitor(), make_monitor()]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(monitor.run_once) for monitor in monitors]
+        try:
+            assert entered.wait(5)
+            done, _ = wait(futures, timeout=5, return_when=FIRST_COMPLETED)
+            assert len(done) == 1
+            assert next(iter(done)).result() == {"status": "cooldown", "requests": 0}
+        finally:
+            finish.set()
+        results = [future.result() for future in futures]
+    assert sum(result["requests"] for result in results) == len(calls) == 1
+    with closing(sqlite3.connect(app.database)) as db:
+        rows = db.execute(
+            "SELECT failures,status,next_check,last_attempt FROM discogs_poll "
+            "WHERE last_success IS NULL"
+        ).fetchall()
+        assert rows == [(0, "waiting", 0, None)]

@@ -25,6 +25,7 @@ from finder.discogs_price_alerts import (
     PriceLeadRule,
 )
 from finder.discogs_price_worker import private_topic
+from finder.discogs_read_guard import guard_diagnostics
 
 _STATES = (
     "pending",
@@ -104,7 +105,7 @@ def _configuration(app_file, ntfy_config_file, topic_file):
     }, binding
 
 
-def _snapshot(database):
+def _snapshot(database, now):
     """A consistent SQLite read transaction, including committed WAL data.
 
     mode=ro prevents creation/writes; query_only is defense in depth. Do not use
@@ -158,6 +159,7 @@ def _snapshot(database):
             }
             if "discogs_price_changes" in tables
             else {},
+            guard_diagnostics(db, now),
         )
 
 
@@ -349,7 +351,10 @@ def health_report(
         ):
             raise HealthUnavailable("invalid_poll_interval")
         configuration, binding = _configuration(discogs_app_file, ntfy_config_file, topic_file)
-        control, pacing, killed, rows, samples, outbox, changes = _snapshot(database)
+        control, pacing, killed, rows, samples, outbox, changes, api_guard = _snapshot(
+            database, now
+        )
+        pacing = max(pacing, api_guard["known_deadline"] or 0)
         sends_today = (
             _number(control["sends"], integer=True)
             if _number(control["send_day"], integer=True) == int(now // 86400)
@@ -359,7 +364,9 @@ def health_report(
             "enabled": _flag(control["enabled"]),
             "revision": _number(control["revision"], integer=True),
             "request_cooldown_seconds": max(0, pacing - now),
-            "request_manual_attention": pacing > 253402300799,
+            "request_manual_attention": pacing > 253402300799
+            or api_guard["manual_recovery_required"],
+            "api_guard": api_guard,
             "send_cooldown_seconds": None
             if control["next_send"] == math.inf
             else max(0, _number(control["next_send"]) - now),
@@ -481,6 +488,10 @@ def format_text(report):
     lines.append(
         f"Stored alert control: {'enabled' if control['enabled'] else 'disabled'}; "
         f"send attempts today: {control['send_attempts_today']}/{control['daily_send_cap']}"
+    )
+    lines.append(
+        f"API safety guard: {control['api_guard']['state']}; "
+        f"manual recovery required: {control['api_guard']['manual_recovery_required']}"
     )
     for rule in report["rules"]:
         age = rule["last_success_age_seconds"]

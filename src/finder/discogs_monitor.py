@@ -12,9 +12,14 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from finder.discogs_completeness import assess_media_completeness, current_release_media
-from finder.discogs_listing import ListingReader, ListingReadError, PublicReadBudget, listing_id
+from finder.discogs_listing import ListingReader, ListingReadError, ReadBudgetBusy, listing_id
 from finder.discogs_media_defects import assess_media_defects
-from finder.discogs_read_quota import defer_shared_read
+from finder.discogs_read_guard import (
+    DatabaseReadBudget,
+    ReadSafetyHalt,
+    guard_pending,
+    initialize_guard,
+)
 from finder.discogs_release_snapshots import ReleaseSnapshots
 from finder.discogs_rules import GRADES, RulesStore, Target
 
@@ -132,6 +137,12 @@ class ReleaseMonitor:
         finally:
             store.close()
 
+        guard_store = RulesStore(self.database)
+        try:
+            initialize_guard(guard_store.db)
+        finally:
+            guard_store.close()
+
         self.release_snapshots = ReleaseSnapshots(database, clock=lambda: self.clock())
 
     @property
@@ -165,32 +176,8 @@ class ReleaseMonitor:
                 if current_control != control or current["revision"] != initial["revision"]:
                     raise ListingReadError("Cloud controls or saved rules changed during the read.")
 
-            def claim():
-                # Commit before any sleep/network, so Stop and target changes stay available.
-                with store.db:
-                    store.db.execute("BEGIN IMMEDIATE")
-                    unchanged()
-                    now = self.clock()
-                    due = store.db.execute(
-                        "SELECT next_request FROM discogs_monitor_control WHERE id=1"
-                    ).fetchone()[0]
-                    if now < due:
-                        return due - now
-                    store.db.execute(
-                        "UPDATE discogs_monitor_control SET next_request=?", (now + 3,)
-                    )
-                    return 0.0
-
-            def defer(seconds):
-                # Rate limits persist even if Stop/rules changed while the request ran.
-                with store.db:
-                    store.db.execute(
-                        "UPDATE discogs_monitor_control SET next_request=max(next_request,?)",
-                        (self.clock() + seconds,),
-                    )
-
-            budget = PublicReadBudget(
-                clock=self.clock, sleep=self.listing_reader.budget.sleep, claim=claim, defer=defer
+            budget = DatabaseReadBudget(
+                store.db, clock=self.clock, sleep=self.listing_reader.budget.sleep, check=unchanged
             )
             listing = (
                 self.listing_reader.read(ident, budget=budget)
@@ -369,6 +356,8 @@ class ReleaseMonitor:
                     "VALUES(?,'release',?)",
                     (target["release_id"], str(target["release_id"])),
                 )
+            if guard_pending(store.db, now):
+                return {"status": "cooldown", "requests": 0}
             next_request = store.db.execute(
                 "SELECT next_request FROM discogs_monitor_control WHERE id=1"
             ).fetchone()[0]
@@ -379,7 +368,8 @@ class ReleaseMonitor:
                 (
                     row
                     for row in store.db.execute(
-                        "SELECT release_id,kind,reference,failures FROM discogs_poll "
+                        "SELECT release_id,kind,reference,failures,next_check,last_attempt,status "
+                        "FROM discogs_poll "
                         "WHERE next_check<=? ORDER BY next_check,release_id,kind,reference",
                         (now,),
                     )
@@ -389,7 +379,9 @@ class ReleaseMonitor:
             )
             if selected is None:
                 return {"status": "idle", "requests": 0}
-            release, kind, reference, failures = selected
+            release, kind, reference, failures, previous_due, previous_attempt, previous_status = (
+                selected
+            )
             key = (release, kind, reference)
             interval = RELEASE_INTERVAL if kind == "release" else LISTING_INTERVAL
             store.db.execute(
@@ -397,13 +389,16 @@ class ReleaseMonitor:
                 "WHERE release_id=? AND kind=? AND reference=?",
                 (now, now + interval, claim, *key),
             )
-            store.db.execute("UPDATE discogs_monitor_control SET next_request=?", (now + 3,))
+            if not isinstance(
+                self.stats_reader if kind == "release" else self.listing_reader, ListingReader
+            ):
+                store.db.execute("UPDATE discogs_monitor_control SET next_request=?", (now + 3,))
             self._audit(store, now, "intent")
         # No SQLite transaction spans network I/O. Stop/pause/edit remain available.
         payload, retry_after, global_pause = None, 0, 0
         reader = self.stats_reader if kind == "release" else self.listing_reader
         options = (
-            {"defer": lambda seconds: defer_shared_read(store.db, self.clock, seconds)}
+            {"budget": DatabaseReadBudget(store.db, clock=self.clock)}
             if isinstance(reader, ListingReader)
             else {}
         )
@@ -413,6 +408,15 @@ class ReleaseMonitor:
                 if kind == "release"
                 else reader.read(reference, **options)
             )
+        except ReadBudgetBusy:
+            with store.db:
+                store.db.execute(
+                    "UPDATE discogs_poll SET claim=NULL,next_check=?,last_attempt=?,status=? "
+                    "WHERE release_id=? AND kind=? AND reference=? AND claim=?",
+                    (previous_due, previous_attempt, previous_status, *key, claim),
+                )
+                self._audit(store, self.clock(), "cooldown")
+            return {"status": "cooldown", "requests": 0}
         except ListingReadError as error:
             retry_after = max(interval, error.retry_after, 60 * 2 ** min(failures, 6))
             if error.rate_limited:
@@ -488,6 +492,8 @@ class MonitorLoop:
         while not self.stop.is_set():
             try:
                 self.monitor.run_once()
+            except ReadSafetyHalt:
+                self.stop.set()
             except (sqlite3.Error, ValueError, RuntimeError):
                 # Keep raw provider/DB payloads out of cloud logs. Pending claims expire;
                 # a failed job is not evidence that a release has no copies for sale.

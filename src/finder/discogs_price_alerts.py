@@ -19,7 +19,7 @@ from finder.discogs_aggregate_signals import (
     observe_changes,
     pause_changes,
 )
-from finder.discogs_listing import ListingReadError, ReleaseStatsReader
+from finder.discogs_listing import ListingReadError, ReadBudgetBusy, ReleaseStatsReader
 from finder.discogs_notification_outbox import (
     BASE_BACKOFF,
     LEASE_SECONDS,
@@ -27,7 +27,7 @@ from finder.discogs_notification_outbox import (
     MAX_BACKOFF,
     NotificationBinding,
 )
-from finder.discogs_read_quota import defer_shared_read
+from finder.discogs_read_guard import DatabaseReadBudget, guard_pending, initialize_guard
 from finder.discogs_rules import CURRENCIES, RulesStore, StrictInput, amount, release_id
 
 POLL_SECONDS = 600
@@ -218,6 +218,7 @@ class AggregatePriceAlerts:
                     INSERT OR IGNORE INTO discogs_monitor_control VALUES(1,0,0);
                 """)
                 store.db.executescript(CHANGE_SCHEMA)
+                initialize_guard(store.db)
         finally:
             store.close()
 
@@ -534,6 +535,8 @@ class AggregatePriceAlerts:
                 control = self._control(db)
                 if not control[0]:
                     return {"status": "stopped", "requests": 0}
+                if guard_pending(db, now):
+                    return {"status": "cooldown", "requests": 0}
                 if (
                     db.execute(
                         "SELECT next_request FROM discogs_monitor_control WHERE id=1"
@@ -542,7 +545,8 @@ class AggregatePriceAlerts:
                 ):
                     return {"status": "cooldown", "requests": 0}
                 rows = db.execute(
-                    "SELECT r.release_id,r.revision,r.data,s.failures FROM discogs_price_rules r "
+                    "SELECT r.release_id,r.revision,r.data,s.failures,s.next_check "
+                    "FROM discogs_price_rules r "
                     "JOIN discogs_price_samples s USING(release_id) WHERE s.next_check<=? "
                     "AND (s.claim IS NULL OR s.claim_until<=?) ORDER BY s.next_check,r.release_id",
                     (now, now),
@@ -552,24 +556,33 @@ class AggregatePriceAlerts:
                 )
                 if chosen is None:
                     return {"status": "idle", "requests": 0}
-                release, revision, data, failures = chosen
+                release, revision, data, failures, previous_due = chosen
                 rule, token = PriceLeadRule.model_validate_json(data), uuid.uuid4().hex
                 db.execute(
                     "UPDATE discogs_price_samples SET claim=?,claim_until=?,next_check=? "
                     "WHERE release_id=?",
                     (token, now + 30, now + self.poll_seconds, release),
                 )
-                db.execute("UPDATE discogs_monitor_control SET next_request=?", (now + 3,))
+                if not isinstance(reader, ReleaseStatsReader):
+                    db.execute("UPDATE discogs_monitor_control SET next_request=?", (now + 3,))
             try:
                 value = reader.read(
                     release,
                     rule.currency,
                     **(
-                        {"defer": lambda seconds: defer_shared_read(db, self.clock, seconds)}
+                        {"budget": DatabaseReadBudget(db, clock=self.clock)}
                         if isinstance(reader, ReleaseStatsReader)
                         else {}
                     ),
                 )
+            except ReadBudgetBusy:
+                with db:
+                    db.execute(
+                        "UPDATE discogs_price_samples SET claim=NULL,claim_until=NULL,next_check=? "
+                        "WHERE release_id=? AND claim=?",
+                        (previous_due, release, token),
+                    )
+                return {"status": "cooldown", "requests": 0}
             except ListingReadError as error:
                 with db:
                     db.execute("BEGIN IMMEDIATE")
@@ -598,14 +611,6 @@ class AggregatePriceAlerts:
                             (self.clock() + error.retry_after,),
                         )
                 return {"status": "unavailable", "requests": 1}
-            finally:
-                deadline = getattr(reader, "provider_next_request", 0)
-                if type(deadline) in (int, float) and math.isfinite(deadline) and deadline > 0:
-                    with db:
-                        db.execute(
-                            "UPDATE discogs_monitor_control SET next_request=max(next_request,?)",
-                            (deadline,),
-                        )
             return {
                 "status": self.observe(
                     release, revision, value, observed_at=self.clock(), claim=token, control=control

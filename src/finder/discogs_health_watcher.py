@@ -77,7 +77,9 @@ def current_reasons(report):
         reasons.append("monitor_disabled")
     if not report["rules_enabled"]:
         reasons.append("no_enabled_rules")
-    if any(rule["enabled"] and rule["issues"] for rule in report["rules"]):
+    if report["controls"].get("request_manual_attention", False) or any(
+        rule["enabled"] and rule["issues"] for rule in report["rules"]
+    ):
         reasons.append("polling_problem")
     if any(
         report["configuration"][key]["status"] != "valid" for key in ("discogs_app", "destination")
