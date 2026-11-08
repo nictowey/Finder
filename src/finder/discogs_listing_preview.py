@@ -134,7 +134,7 @@ class PreviewReader(ListingReader):
         limit = preview_price({"value": under, "currency": currency})
         if limit is None or Decimal(limit["raw_value"]) <= 0:
             raise ListingReadError("Use a positive supported item-price threshold.")
-        payload = self._request(f"/marketplace/listings/{ident}")
+        payload = self._request(f"/marketplace/listings/{ident}", params={"curr_abbr": currency})
         result = evaluate_preview(payload, ident, target, under=under, currency=currency)
         result["source"] = "official_public_listing_get"
         result["observed_at"] = datetime.now(UTC).isoformat()

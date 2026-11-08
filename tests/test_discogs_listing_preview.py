@@ -115,7 +115,8 @@ def test_metadata_does_not_infer_seller_confirmed_contents():
     assert result["media_completeness"]["status"] == "unknown"
 
 
-def test_one_public_get_no_credentials_or_redirects():
+@pytest.mark.parametrize("currency", ["USD", "GBP", "EUR"])
+def test_one_public_get_no_credentials_or_redirects(currency):
     requests = []
 
     def handler(request):
@@ -123,12 +124,19 @@ def test_one_public_get_no_credentials_or_redirects():
         assert "authorization" not in request.headers
         data = payload()
         data["price"]["value"] = "166.66666666666666"
+        data["price"]["currency"] = currency
         data["original_price"]["value"] = "125.0"
         return httpx.Response(200, json=data)
 
-    result = PreviewReader(transport=httpx.MockTransport(handler)).read_preview(123, 456)
+    result = PreviewReader(transport=httpx.MockTransport(handler)).read_preview(
+        123, 456, currency=currency
+    )
     assert len(requests) == 1
-    assert str(requests[0].url) == "https://api.discogs.com/marketplace/listings/123"
+    assert str(requests[0].url) == (
+        f"https://api.discogs.com/marketplace/listings/123?curr_abbr={currency}"
+    )
+    assert result["checks"]["item_strictly_under"] is True
+    assert result["price"]["currency"] == currency
     assert requests[0].method == "GET"
     assert result["observed_at"]
 
@@ -201,3 +209,18 @@ def test_cli_sanitized_access_and_rate_failures(monkeypatch, capsys, flags, expe
     error = capsys.readouterr().err
     assert expected in error
     assert "secret" not in error
+
+
+def test_provider_currency_mismatch_remains_ineligible():
+    def handler(request):
+        assert request.url.params["curr_abbr"] == "GBP"
+        data = payload()
+        data["price"]["value"] = "125.00"
+        data["original_price"]["value"] = "125.00"
+        return httpx.Response(200, json=data)
+
+    result = PreviewReader(transport=httpx.MockTransport(handler)).read_preview(
+        123, 456, currency="GBP"
+    )
+    assert result["checks"]["item_strictly_under"] is False
+    assert result["item_criteria_match"] is False
