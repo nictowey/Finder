@@ -306,7 +306,9 @@ class PhoneReviewApp:
                 ("Content-Type", "text/html; charset=utf-8"),
                 ("Content-Length", str(len(html))),
                 ("Cache-Control", "no-store"),
-                ("Referrer-Policy", "no-referrer"),
+                # A no-referrer policy makes navigation POST Origin null (Fetch §3.2).
+                # Keep same-origin forms compatible without leaking cross-origin referrers.
+                ("Referrer-Policy", "same-origin"),
                 ("X-Content-Type-Options", "nosniff"),
                 (
                     "Content-Security-Policy",

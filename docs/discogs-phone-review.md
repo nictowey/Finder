@@ -53,7 +53,7 @@ auth boundary on the existing VPS. The hosting wrapper/proxy must:
 - Disable request-body, query, result, cookie, authorization and exception-payload
   logging/tracing. The module emits no logs. Configure access logs to avoid
   sensitive headers and rejected query strings. Disable proxy caching and HTML
-  transformations; preserve no-store, no-referrer, CSP and nosniff headers.
+  transformations; preserve no-store, same-origin Referrer-Policy, CSP and nosniff headers.
 - Give the runtime no email/Discogs credentials, no purchase adapters and no
   broader app imports. The outbound reader ignores environment proxies/netrc.
   Test provider connectivity without weakening TLS or challenge/access blocks.

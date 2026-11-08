@@ -106,7 +106,7 @@ def test_end_to_end_one_request_rounding_and_handoff(setup):
     assert len(calls) == 1
     assert str(calls[0].url) == "https://api.discogs.com/marketplace/listings/123?curr_abbr=USD"
     assert "authorization" not in calls[0].headers
-    assert headers["Referrer-Policy"] == "no-referrer"
+    assert headers["Referrer-Policy"] == "same-origin"
     assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
     with closing(sqlite3.connect(path)) as db:
         assert guard_row(db)[0] is None
@@ -401,3 +401,23 @@ def test_authorizer_cannot_change_durability_or_identity(setup):
         ):
             with pytest.raises(sqlite3.DatabaseError):
                 db.execute(command)
+
+
+@pytest.mark.parametrize("origin", ["null", None, "", "https://evil.example"])
+def test_form_policy_preserves_origin_gate_and_unused_token(setup, origin):
+    app, calls, *_ = setup
+    fields = form(app)
+    status, headers, body = request(app)
+    assert status == "200 OK"
+    assert headers["Referrer-Policy"] == "same-origin"
+    assert f'<form method="post" action="{PATH}">' in body
+    assert headers["Cache-Control"] == "no-store"
+    # Fetch §3.2 sets navigation POST Origin to null under no-referrer.
+    # Fix the document policy, never accept an opaque/missing/foreign Origin.
+    status, _, _ = request(app, "POST", fields, HTTP_ORIGIN=origin)
+    assert status == "403 Forbidden" and calls == []
+    status, _, body = request(app, "POST", fields, HTTP_SEC_FETCH_SITE="same-origin")
+    assert status == "200 OK" and len(calls) == 1
+    assert 'rel="noreferrer noopener" target="_blank"' in body
+    assert request(app, "POST", fields)[0] == "409 Conflict"
+    assert len(calls) == 1
