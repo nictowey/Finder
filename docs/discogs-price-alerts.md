@@ -288,3 +288,13 @@ For an approved independent Web Push setup, verify HTTPS, ntfy Web Push server
 configuration and an iOS 16.4+ Safari Home Screen installation. Server acceptance
 is not proof of a device notification. Credential provisioning, Web Push setup,
 server deployment and actual phone delivery remain separate verification gates.
+
+## Read-only health command
+
+For non-mutating operational checks use `python -m finder.discogs_price_health`,
+not the worker's inert tick or `AggregatePriceAlerts.status()`, which may initialize
+schema or reconcile outbox states. The health command reports per-rule freshness,
+failed polls, controls, queue/retry/uncertain states, and supplied configuration
+validity without network calls or secrets. Provider acceptance remains distinct
+from phone delivery. See [aggregate monitor health](discogs-price-health.md) for
+arguments, exit codes, limitations and the offline/live verification gates.
