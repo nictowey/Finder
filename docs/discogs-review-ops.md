@@ -9,9 +9,11 @@ negative test `/_proxy_gate`. They never contact Discogs.
 ## Prerequisites and provenance
 
 The helper is `scripts/discogs_review_ops.py`. It verifies the SHA256 of the source
-Caddy template against the unchanged template in commit
-`55a23a18406e42dcdd5551814b718cab53d51903`. Each preparation stores that provenance
-and its own source SHA256 in a private manifest. Verify the final helper commit
+Caddy template against its reviewed SHA256. The current patch is based on commit
+`51fca28922862d07ed9ff99dc691638709cffff9`; the manifest identifies that base plus
+the exact template/helper SHA256 values, not a claim that the patched files exist
+in the base commit. The template copies the existing ntfy site's verified explicit
+Let's Encrypt issuer so both ports share its unchanged certificate policy. Verify the final helper commit
 and file hashes before transferring/running it; do not paste it into a generic
 root interpreter or accept new template content without review.
 
@@ -39,8 +41,10 @@ and exclusively creates `/run/sniper-review-provision` (0700) containing:
 
 - `password`: plaintext page-only credential, owner-only 0600, for private QA and
   an explicitly authorized secure handoff only. It is not notification auth.
-- `site-loopback.caddy`: rendered literal bcrypt hash, `bind 127.0.0.1`, 0600.
-- `site-public.caddy`: identical site without the temporary loopback binding, 0600.
+- `site-public.caddy`: rendered literal bcrypt hash and verified matching issuer,
+  0600. This is a wildcard-listener candidate; ingress must remain closed for QA.
+  No Caddy `bind` variant is generated, because Caddy2.6 also applies that setting
+  to ACME challenge policy and can create ambiguous duplicate certificate policies.
 - `provenance.json`: nonsecret source identity, 0600.
 
 No file is activated. A preexisting directory/file stops preparation; no overwrite,
@@ -52,19 +56,23 @@ must install the selected fragment into protected Caddy configuration readable
 only by root/Caddy, validate privately, and perform the reviewed reload process.
 Never print `caddy adapt` output or password hashes in shared logs/transcripts.
 
-Initially install ONLY `site-loopback.caddy`. Verify the actual listener is
-127.0.0.1:8443 and not public/wildcard or IPv6. Keep UFW 8443 closed. The existing
-:443 ntfy site, certificate storage and credentials stay unchanged. The separate
-admin-isolation runbook must be completed first on this BPF-less host.
+Before first activation, complete the firewall-isolated fixture staging gates in
+`docs/discogs-review-tls-policy.md`. This is NOT loopback-bound staging: the new
+listener can bind wildcard addresses, but effective IPv4/IPv6 ingress must deny
+TCP and UDP8443, including alternate interfaces/NAT/container bypass paths. Keep
+that filtering unchanged and use only the disposable fixture backend. Verify
+external denial before and after activation, in addition to effective filter
+inspection. Existing :443 ntfy, certificate storage and credentials stay unchanged.
+The separate private admin-isolation runbook must already be completed.
 
-## Loopback-only authenticated QA
+## Local QA against the firewall-isolated listener
 
 ```sh
 /opt/sniper-review/ops-venv/bin/python -I /opt/sniper-review/source/scripts/discogs_review_ops.py qa --loopback
 ```
 
 This internally reads the 0600 credential. Curl receives a private stdin config,
-not secret argv or a file. Its fixed `--resolve` equivalent sends TCP to127.0.0.1
+not secret argv or a file. Its fixed `--resolve` equivalent sends TCP to 127.0.0.1
 while keeping the approved hostname for TLS SNI, certificate verification and
 Host. No hosts-file change, insecure TLS mode, redirects, netrc, environment proxy,
 curlrc, inherited certificate override or TLS-key-log environment is used. The
@@ -95,9 +103,9 @@ stops the sequence without automatic retry or alternate destination. Inspect
 privately and reconcile before another explicit run. This helper never checks
 credentials against ntfy, changes notification settings or performs purchases.
 
-After all local isolation/auth/TLS gates pass, the operator may replace ONLY the
-loopback fragment with its matching public fragment and apply the separately
-approved TCP8443 firewall change. Confirm real public reachability and run `qa`
+After all local isolation/auth/TLS gates pass, the operator may apply the separately
+approved TCP8443 firewall change. There is no bind-fragment replacement. Keep
+UDP8443 closed unless separately approved and reviewed. Confirm real public reachability and run `qa`
 without `--loopback` from an authorized external context. Normal DNS QA on the
 VPS alone does not prove an external client can traverse the firewall. Do not
 claim phone validation from an operator-host test. No helper performs this exposure.
@@ -121,7 +129,7 @@ It checks a controlling terminal, refuses getpass's echoing fallback, prompts
 twice, and prepares the same artifacts under `/run/sniper-review-rotation`.
 It does not change the live credential. The operator validates and activates the
 matching protected fragment through the same reviewed process, then runs
-`qa-rotation` (optionally `--loopback` only if the listener is still loopback).
+`qa-rotation` (optionally `--loopback` for a local verification connection).
 The user already knows the new passphrase; no random password needs delivery.
 
 If that secure handoff is unavailable, the parent must arrange an approved secure
@@ -137,13 +145,13 @@ Logout button. Explain that behavior to the user.
 
 Offline mock QA is not real Caddy authentication. Required live gates include
 Caddy2.6 adaptation, TLS/SNI, literal bcrypt parsing, spoofing/header normalization,
-pre-auth rate-gate fail-closed behavior, private admin/socket ACLs, loopback-only
-initial bind, no leaked secrets/logs, eventual shared DB isolation and phone UX.
+pre-auth rate-gate fail-closed behavior, private admin/socket ACLs, effective closed-ingress
+fixture staging, no leaked secrets/logs, eventual shared DB isolation and phone UX.
 No live credential, service, network, database or firewall action was performed
 when preparing this package. One known-listing provider test requires a separate
 explicit gate later; it is deliberately absent here.
 
-### Offline verification record (2026-11-08)
+### Initial helper verification record (2026-11-08, before TLS-policy patch)
 
 - Helper suite: 24 passed. Combined helper/page/server suites: 97 passed.
 - Full Python run: 4,575 passed and 41 subtests passed; 18 existing socket tests

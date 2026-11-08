@@ -16,8 +16,10 @@ site verbatim. No automatic redirect from the ntfy origin is supplied.
 
 Caddy 2.6.2 template: `deploy/phone-review/Caddyfile.fragment`.
 Use the existing Caddy process and certificate automation; the existing hostname
-certificate also covers this hostname on port 8443. Verify the adapted configuration
-actually reuses the certificate and serves a valid chain. Do not copy/export its
+certificate also covers this hostname on port 8443. The review template must match the existing explicit ACME issuer exactly;
+see `docs/discogs-review-tls-policy.md` for the Caddy2.6 policy-consolidation fix
+and firewall-isolated fixture staging. Verify the adapted configuration
+preserves the entire existing TLS app and serves a valid chain. Do not copy/export its
 private key or weaken TLS. Restrict the firewall addition to TCP 8443 only.
 
 Caddy first calls a private Unix-socket rate gate before password verification.

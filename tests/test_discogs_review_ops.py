@@ -30,8 +30,9 @@ def test_prepare_secure_files_and_literal_bcrypt(tmp_path, capsys):
     assert bcrypt.checkpw(PASSWORD, hashed.encode())
     assert "{$REVIEW_" not in rendered
     assert ops.ORIGIN in rendered
-    local = (directory / "site-loopback.caddy").read_text()
-    assert local.replace("    bind 127.0.0.1\n", "", 1) == rendered
+    assert not (directory / "site-loopback.caddy").exists()
+    assert "bind 127.0.0.1" not in rendered
+    assert ops.TLS_BLOCK in rendered
     assert PASSWORD.decode() not in rendered
     assert (directory / "provenance.json").is_file()
     provenance = json.loads((directory / "provenance.json").read_text())
@@ -302,3 +303,106 @@ def test_invalid_cli_never_echoes_unknown_argument(capsys):
     output = capsys.readouterr()
     assert PASSWORD.decode() not in output.out + output.err
     assert json.loads(output.out)["error"] == "invalid_arguments"
+
+
+@pytest.fixture
+def legacy_preparation(tmp_path, monkeypatch):
+    initial = tmp_path / "initial"
+    candidate = tmp_path / "candidate"
+    monkeypatch.setattr(ops, "INITIAL", initial)
+    monkeypatch.setattr(ops, "TLS_CANDIDATE", candidate)
+    ops.private_directory(initial)
+    legacy = ops.checked_template().replace(ops.TLS_BLOCK, "", 1)
+    hashed = bcrypt.hashpw(PASSWORD, bcrypt.gensalt(rounds=12)).decode()
+    public = ops.render_hash(legacy, hashed)
+    loopback = public.replace(ops.ORIGIN + " {\n", ops.ORIGIN + " {\n    bind 127.0.0.1\n", 1)
+    ops.write_private(initial, "site-public.caddy", public.encode())
+    ops.write_private(initial, "site-loopback.caddy", loopback.encode())
+    ops.write_private(initial, "password", PASSWORD)
+    ops.write_private(
+        initial,
+        "provenance.json",
+        json.dumps(
+            {
+                "template_sha256": ops.LEGACY_TEMPLATE_SHA256,
+                "origin": ops.ORIGIN,
+                "principal": ops.PRINCIPAL,
+            }
+        ).encode(),
+    )
+    return initial, candidate, hashed
+
+
+def test_tls_candidate_preserves_exact_hash_without_reading_password(
+    legacy_preparation, monkeypatch
+):
+    initial, candidate, hashed = legacy_preparation
+    before = {p.name: p.read_bytes() for p in initial.iterdir()}
+    monkeypatch.setattr(ops, "read_password", lambda *args: pytest.fail("password read"))
+    monkeypatch.setattr(bcrypt, "hashpw", lambda *args: pytest.fail("hash regenerated"))
+    monkeypatch.setattr(ops.secrets, "token_urlsafe", lambda *args: pytest.fail("new credential"))
+    read_artifact = ops.read_private_artifact
+
+    def read(directory, name):
+        assert name != "password"
+        return read_artifact(directory, name)
+
+    monkeypatch.setattr(ops, "read_private_artifact", read)
+    ops.preserve_existing_tls()
+    assert {p.name: p.read_bytes() for p in initial.iterdir()} == before
+    assert {p.name for p in candidate.iterdir()} == {"site-public.caddy", "provenance.json"}
+    assert (candidate / "site-public.caddy").read_text() == ops.render_hash(
+        ops.checked_template(), hashed
+    )
+    assert candidate.stat().st_mode & 0o777 == 0o700
+    assert all(p.stat().st_mode & 0o777 == 0o600 for p in candidate.iterdir())
+    manifest = json.loads((candidate / "provenance.json").read_text())
+    assert manifest["credential_hash_preserved"]
+    assert manifest["staging_requires_closed_ingress"]
+
+
+@pytest.mark.parametrize("name", ["site-public.caddy", "site-loopback.caddy", "provenance.json"])
+def test_tls_candidate_rejects_modified_legacy_artifacts(legacy_preparation, name):
+    initial, candidate, _ = legacy_preparation
+    artifact = initial / name
+    text = artifact.read_text()
+    artifact.write_text(text.replace(ops.ORIGIN, "https://wrong.invalid"))
+    with pytest.raises(ops.SafeStop):
+        ops.preserve_existing_tls()
+    assert not candidate.exists()
+
+
+def test_tls_candidate_never_overwrites(legacy_preparation):
+    _, candidate, _ = legacy_preparation
+    ops.preserve_existing_tls()
+    before = {p.name: p.read_bytes() for p in candidate.iterdir()}
+    with pytest.raises(FileExistsError):
+        ops.preserve_existing_tls()
+    assert {p.name: p.read_bytes() for p in candidate.iterdir()} == before
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "mode"])
+def test_tls_candidate_rejects_unsafe_legacy_files(legacy_preparation, tmp_path, kind):
+    initial, candidate, _ = legacy_preparation
+    source = initial / "site-public.caddy"
+    if kind == "symlink":
+        other = tmp_path / "other"
+        source.rename(other)
+        source.symlink_to(other)
+    elif kind == "hardlink":
+        os.link(source, tmp_path / "other")
+    else:
+        source.chmod(0o644)
+    with pytest.raises((ops.SafeStop, OSError)):
+        ops.preserve_existing_tls()
+    assert not candidate.exists()
+
+
+def test_tls_candidate_rejects_template_drift(legacy_preparation, monkeypatch, tmp_path):
+    _, candidate, _ = legacy_preparation
+    source = tmp_path / "source"
+    source.write_text(ops.checked_template().replace("issuer acme", "issuer changed"))
+    monkeypatch.setattr(ops, "TEMPLATE", source)
+    with pytest.raises(ops.SafeStop, match="template_provenance_mismatch"):
+        ops.preserve_existing_tls()
+    assert not candidate.exists()

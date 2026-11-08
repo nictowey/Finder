@@ -2,6 +2,9 @@
 # Caddy 2.6 uses basicauth, not the newer basic_auth spelling.
 # Values are nonsecret except REVIEW_PASSWORD_HASH; provision privately.
 {$REVIEW_ORIGIN} {
+    tls {
+        issuer acme https://acme-v02.api.letsencrypt.org/directory
+    }
     # No access log. Existing global DEBUG/log settings must be checked first.
     @review path /listing-review
     handle @review {

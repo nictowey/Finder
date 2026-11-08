@@ -20,9 +20,12 @@ ORIGIN = "https://vps-a0c5b746.vps.ovh.us:8443"
 PRINCIPAL = "review-owner"
 INITIAL = Path("/run/sniper-review-provision")
 ROTATION = Path("/run/sniper-review-rotation")
+TLS_CANDIDATE = Path("/run/sniper-review-tls-candidate")
 TEMPLATE = Path(__file__).resolve().parents[1] / "deploy/phone-review/Caddyfile.fragment"
-TEMPLATE_SHA256 = "988a8f3d83a0dac4cd28dea464fb2d3f7e302779a40c173fc6c0d53c2968de3a"
-TEMPLATE_COMMIT = "55a23a18406e42dcdd5551814b718cab53d51903"
+TEMPLATE_SHA256 = "dfa1df4929d9536459542c6168d29725a3c2db17466eae8a27c4c48530f9d452"
+LEGACY_TEMPLATE_SHA256 = "988a8f3d83a0dac4cd28dea464fb2d3f7e302779a40c173fc6c0d53c2968de3a"
+SOURCE_BASE_COMMIT = "51fca28922862d07ed9ff99dc691638709cffff9"
+TLS_BLOCK = "    tls {\n        issuer acme https://acme-v02.api.letsencrypt.org/directory\n    }\n"
 
 
 class SafeStop(Exception):
@@ -166,41 +169,43 @@ def chosen_password():
     return first.encode("ascii")
 
 
-def prepare(directory, password):
-    import bcrypt
-
+def checked_template():
     source = TEMPLATE.read_bytes()
     if hashlib.sha256(source).hexdigest() != TEMPLATE_SHA256:
         raise SafeStop("template_provenance_mismatch")
-    hashed = bcrypt.hashpw(password, bcrypt.gensalt(rounds=12)).decode("ascii")
+    return source.decode("ascii")
+
+
+def render_hash(source, hashed):
     if not re.fullmatch(r"\$2[aby]\$12\$[./A-Za-z0-9]{53}", hashed):
         raise SafeStop("unexpected_bcrypt_format")
     # This is a Caddyfile, never a shell string. Quoting preserves literal '$'.
     rendered = (
-        source.decode("ascii")
-        .replace("{$REVIEW_ORIGIN}", ORIGIN)
+        source.replace("{$REVIEW_ORIGIN}", ORIGIN)
         .replace("{$REVIEW_PRINCIPAL}", PRINCIPAL)
         .replace("{$REVIEW_PASSWORD_HASH}", '"' + hashed + '"')
     )
     if "{$REVIEW_" in rendered:
         raise SafeStop("unresolved_template_variable")
-    private_directory(directory)
-    write_private(directory, "password", password)
+    return rendered
+
+
+def finish_candidates(directory, rendered, *, preserved=False):
+    # No `bind` variant: Caddy2.6 turns bind into ACME challenge policy settings.
+    # First activation requires independently verified closed ingress, fixture DB.
     write_private(directory, "site-public.caddy", rendered.encode("ascii"))
-    loopback = rendered.replace(ORIGIN + " {\n", ORIGIN + " {\n    bind 127.0.0.1\n", 1)
-    if loopback == rendered:
-        raise SafeStop("loopback_binding_not_inserted")
-    write_private(directory, "site-loopback.caddy", loopback.encode("ascii"))
     write_private(
         directory,
         "provenance.json",
         json.dumps(
             {
-                "source_commit": TEMPLATE_COMMIT,
+                "source_base_commit": SOURCE_BASE_COMMIT,
                 "template_sha256": TEMPLATE_SHA256,
                 "origin": ORIGIN,
                 "principal": PRINCIPAL,
                 "helper_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                "credential_hash_preserved": preserved,
+                "staging_requires_closed_ingress": True,
             },
             sort_keys=True,
         ).encode("ascii"),
@@ -210,6 +215,66 @@ def prepare(directory, password):
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def prepare(directory, password):
+    import bcrypt
+
+    source = checked_template()
+    hashed = bcrypt.hashpw(password, bcrypt.gensalt(rounds=12)).decode("ascii")
+    rendered = render_hash(source, hashed)
+    private_directory(directory)
+    write_private(directory, "password", password)
+    finish_candidates(directory, rendered)
+
+
+def read_private_artifact(directory, name):
+    info = directory.lstat()
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.getuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise SafeStop("unsafe_private_directory")
+    fd = os.open(directory / name, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_nlink != 1
+        ):
+            raise SafeStop("unsafe_private_artifact")
+        data = handle.read(16385)
+    if len(data) > 16384:
+        raise SafeStop("private_artifact_too_large")
+    return data.decode("ascii")
+
+
+def preserve_existing_tls():
+    source = checked_template()
+    legacy = source.replace(TLS_BLOCK, "", 1)
+    if hashlib.sha256(legacy.encode("ascii")).hexdigest() != LEGACY_TEMPLATE_SHA256:
+        raise SafeStop("legacy_template_provenance_mismatch")
+    original = read_private_artifact(INITIAL, "site-public.caddy")
+    hashes = re.findall(re.escape(PRINCIPAL) + r' "([^"\n]+)"', original)
+    if len(hashes) != 1 or render_hash(legacy, hashes[0]) != original:
+        raise SafeStop("legacy_public_fragment_mismatch")
+    expected_loopback = original.replace(ORIGIN + " {\n", ORIGIN + " {\n    bind 127.0.0.1\n", 1)
+    if read_private_artifact(INITIAL, "site-loopback.caddy") != expected_loopback:
+        raise SafeStop("legacy_loopback_fragment_mismatch")
+    provenance = json.loads(read_private_artifact(INITIAL, "provenance.json"))
+    if (
+        provenance.get("template_sha256") != LEGACY_TEMPLATE_SHA256
+        or provenance.get("origin") != ORIGIN
+        or provenance.get("principal") != PRINCIPAL
+    ):
+        raise SafeStop("legacy_manifest_mismatch")
+    # Deliberately never read password, call bcrypt, overwrite, install or reload.
+    rendered = render_hash(source, hashes[0])
+    private_directory(TLS_CANDIDATE)
+    finish_candidates(TLS_CANDIDATE, rendered, preserved=True)
 
 
 def run_qa(password, *, exercise_rate_gate=False, loopback=False, transport=None):
@@ -321,7 +386,10 @@ def run_qa(password, *, exercise_rate_gate=False, loopback=False, transport=None
 
 def main(argv=None):
     parser = PrivateParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "prepare-rotation", "qa", "qa-rotation"))
+    parser.add_argument(
+        "action",
+        choices=("prepare", "prepare-rotation", "preserve-existing-tls", "qa", "qa-rotation"),
+    )
     parser.add_argument("--exercise-rate-gate", action="store_true")
     parser.add_argument("--loopback", action="store_true")
     try:
@@ -344,6 +412,14 @@ def main(argv=None):
         if args.action == "prepare":
             prepare(INITIAL, secrets.token_urlsafe(32).encode("ascii"))
             result = {"completed": True, "prepared": "initial", "activated": False}
+        elif args.action == "preserve-existing-tls":
+            preserve_existing_tls()
+            result = {
+                "completed": True,
+                "prepared": "tls-candidate",
+                "activated": False,
+                "credential_hash_preserved": True,
+            }
         elif args.action == "prepare-rotation":
             prepare(ROTATION, chosen_password())
             result = {"completed": True, "prepared": "rotation", "activated": False}
