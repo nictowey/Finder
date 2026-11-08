@@ -1,8 +1,9 @@
 # Protected known-listing phone review
 
 Implementation only; not deployed. `finder.discogs_phone_review.PhoneReviewApp`
-provides exactly `/listing-review`. It has no command that launches a server, no
-credentials, and no dependency on CloudApp or its control/mutation model.
+provides exactly `/listing-review`. The separately reviewed hosting wrapper and
+gated templates are described in `docs/discogs-phone-review-deployment.md`. It has
+no credentials and no dependency on CloudApp or its control/mutation model.
 
 ## What the page does
 
@@ -82,8 +83,8 @@ Python process. True OS-level table separation is impossible in SQLite. Do not
 misdescribe this as a read-only DB service. Production approval must explicitly
 accept a tightly sandboxed page process with shared-DB write access, or introduce
 a separately reviewed local budget broker so the page does not receive that
-filesystem capability. The latter is not implemented here. No production service
-unit or blanket writable directory permission is supplied.
+filesystem capability. The latter is not implemented here. A gated dedicated-UID production service template is now supplied separately;
+it must not run against a directory containing notification secrets.
 
 ## Page-only durable access refusal
 
@@ -145,8 +146,9 @@ controlled provider read and end-to-end handoff. No purchase test is authorized.
 
 
 The schema addition is private SQLite-only and does not affect PostgreSQL watch
-schemas. No migration was applied to a live database. Production provisioning,
-OS-level DB privilege approval, and browser/mobile validation remain unperformed.
+schemas. No migration was applied to a live database. Production provisioning, OS-level DB privilege review, and browser/mobile
+validation remain unperformed. See the deployment runbook for current owner
+authorization and remaining integration gates.
 
 ### Local verification record (2026-11-08)
 

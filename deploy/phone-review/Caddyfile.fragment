@@ -1,0 +1,49 @@
+# NEW dedicated origin only. Never paste this into the existing ntfy site.
+# Caddy 2.6 uses basicauth, not the newer basic_auth spelling.
+# Values are nonsecret except REVIEW_PASSWORD_HASH; provision privately.
+{$REVIEW_ORIGIN} {
+    # No access log. Existing global DEBUG/log settings must be checked first.
+    @review path /listing-review
+    handle @review {
+        route {
+            header Cache-Control "no-store"
+            request_body {
+                max_size 2048
+            }
+            # Pre-auth gate bounds bcrypt work without a third-party module.
+            forward_auth unix//run/sniper-review/review.sock {
+                uri /_proxy_gate
+                header_up -Authorization
+                header_up -Cookie
+                header_up -X-Review-Principal
+                transport http {
+                    dial_timeout 2s
+                    response_header_timeout 5s
+                }
+            }
+            basicauth {
+                {$REVIEW_PRINCIPAL} {$REVIEW_PASSWORD_HASH}
+            }
+            reverse_proxy unix//run/sniper-review/review.sock {
+                # Set, do not append. Client-supplied assertions are replaced.
+                header_up X-Review-Principal {http.auth.user.id}
+                header_up -Authorization
+                header_up -Cookie
+                header_up -Forwarded
+                header_up -X-Forwarded-For
+                header_up -X-Forwarded-Host
+                header_up -X-Forwarded-Proto
+                # Keep original Host and Origin for app validation.
+                transport http {
+                    dial_timeout 2s
+                    response_header_timeout 30s
+                    read_timeout 30s
+                    write_timeout 10s
+                }
+            }
+        }
+    }
+    handle {
+        respond "Not found" 404
+    }
+}
