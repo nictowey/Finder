@@ -13,10 +13,11 @@ from contextlib import closing
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from finder.discogs_inventory import GRADES, _connect, _control, _state
+from finder.discogs_inventory import GRADES, _connect, _control, _save, _state
 from finder.discogs_notification_lock import notification_lock, recover_abandoned
 from finder.discogs_ntfy import NtfySender
 from finder.discogs_price_alerts import DAILY_SEND_CAP
+from finder.discogs_read_guard import ReadSafetyHalt
 
 FRESH_SECONDS = 120
 TABLE = "discogs_inventory_notification_outbox"
@@ -97,6 +98,77 @@ class InventoryNotifications:
             raise ValueError("Use a bounded explicit proof key and exact snapshot listing.")
         self.test_listing, self.test_key = test_listing, test_key
         self.database, self.config, self.enabled, self.clock = database, config, enabled, clock
+
+    def prepare_observation(self):
+        """Admit scheduler work and retain stale, NEVER attempted normal events.
+
+        This is not delivery or retry authorization. It moves only stale unattempted
+        review results back to the existing guarded detail queue, preserving their
+        discovery identity. A later sender race leaves the result durable for another
+        due invocation. Snapshot proofs and every outbox record are excluded.
+        """
+        if not self.enabled or self.test_listing is not None:
+            return {"state": "disabled"}
+        with notification_lock(self.database) as acquired:
+            if not acquired:
+                return {"state": "busy"}
+            if recover_abandoned(self.database, self.clock()):
+                return {"state": "uncertain_recovery"}
+            with closing(_connect(self.database)) as db, db:
+                db.execute("BEGIN IMMEDIATE")
+                _control(db)
+                state = _state(db, self.config)
+                if state["denied"] or state["in_progress"]:
+                    raise ReadSafetyHalt("inventory_denied_or_manual_recovery_required")
+                now = self.clock()
+                if now < state["next_poll"]:
+                    return {"state": "not_due"}
+                day, used, next_send = db.execute(
+                    "SELECT send_day,sends,next_send FROM discogs_price_control WHERE id=1"
+                ).fetchone()
+                if (
+                    day > int(now // 86400)
+                    or next_send > now
+                    or day == int(now // 86400)
+                    and used >= DAILY_SEND_CAP
+                ):
+                    return {"state": "notification_deferred"}
+                refresh = []
+                for row in state["results"]:
+                    expected = hashlib.sha256(
+                        f"{self.config.fingerprint}:newly_observed:{row['listing_id']}".encode()
+                    ).hexdigest()
+                    if (
+                        row["origin"] == "newly_observed"
+                        and (
+                            row["state"] == "review_ready"
+                            or (
+                                row["state"] == "expired"
+                                and row.get("expired_from") == "review_ready"
+                            )
+                        )
+                        and state["baseline"]
+                        and state["seed_verified_at"] is not None
+                        and state["seed_verified_at"] <= now
+                        and row.get("event_key") == expected
+                        and 0 <= row["discovered_at"] <= row["checked_at"]
+                        and now - row["checked_at"] >= FRESH_SECONDS
+                        and not db.execute(
+                            f"SELECT 1 FROM {TABLE} WHERE event_key=?", (expected,)
+                        ).fetchone()
+                    ):
+                        refresh.append(row)
+                for row in refresh:
+                    state["results"].remove(row)
+                    state["pending"].append(
+                        {
+                            key: row[key]
+                            for key in ("listing_id", "release_id", "origin", "discovered_at")
+                        }
+                    )
+                if refresh:
+                    _save(db, state)
+                return {"state": "ready", "pending": bool(state["pending"])}
 
     def _eligible(self, db, now):
         _control(db)

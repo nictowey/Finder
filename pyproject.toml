@@ -32,6 +32,7 @@ finder-price-leads = "finder.discogs_price_worker:main"
 finder-price-health = "finder.discogs_price_health:main"
 finder-health-watch = "finder.discogs_health_watcher:main"
 finder-inventory = "finder.discogs_inventory:main"
+finder-inventory-step = "finder.discogs_inventory_step:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

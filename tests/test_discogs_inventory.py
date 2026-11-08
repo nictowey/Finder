@@ -638,3 +638,251 @@ def test_both_empty_pagination_forms_establish_baseline_and_allow_first_discover
     discovered = worker.poll()
     assert [row["listing_id"] for row in discovered["candidates"]] == [101]
     assert discovered["candidates"][0]["state"] == "review_ready"
+
+
+def pending_fixture(workspace, *, ids=(101,), snapshot=True):
+    """Discover normally, then leave durable detail work after a safe provider hold."""
+    _, clock = workspace
+    rows = [listing()] if not snapshot else [listing(ident) for ident in ids]
+    worker, _ = observer(
+        workspace,
+        lambda _: httpx.Response(200, json=page(rows)),
+        detail=lambda _: httpx.Response(429, headers={"Retry-After": "60"}),
+    )
+    if not snapshot:
+        assert worker.poll()["status"] == "baseline"
+        rows.extend(listing(ident) for ident in ids)
+        clock.sleep(600)
+    assert worker.poll(snapshot=snapshot)["status"] == "cooldown"
+    assert len(worker.results()["pending"]) == len(ids)
+    return worker
+
+
+def only_detail_observer(workspace, response):
+    path, clock = workspace
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        assert request.url.path.startswith("/marketplace/listings/")
+        assert dict(request.url.params) == {"curr_abbr": "USD"}
+        assert request.method == "GET" and request.url.host == "api.discogs.com"
+        with closing(sqlite3.connect(path)) as db:
+            assert guard_row(db)[0] is not None
+        return response(request)
+
+    return InventoryObserver(
+        path, config(), transport=httpx.MockTransport(handle), clock=clock, sleep=clock.sleep
+    ), calls
+
+
+def inventory_state(path):
+    with closing(sqlite3.connect(path)) as db:
+        return json.loads(
+            db.execute("SELECT data FROM discogs_seeded_inventory_state").fetchone()[0]
+        )
+
+
+def test_empty_drain_never_verifies_seed_or_reads_inventory_and_preserves_state(workspace):
+    path, _ = workspace
+    worker, calls = only_detail_observer(
+        workspace, lambda _: pytest.fail("No HTTP for empty drain")
+    )
+    before, aggregate = inventory_state(path), tables(path)
+    result = worker.poll(drain_pending=True)
+    assert result["status"] == "no_pending_details" and result["requests"] == 0
+    assert calls == []
+    assert inventory_state(path) == before and tables(path) == aggregate
+
+
+@pytest.mark.parametrize("snapshot", [True, False])
+def test_drain_only_reads_retained_detail_preserves_evidence_origin_and_dedup(workspace, snapshot):
+    path, clock = workspace
+    pending_fixture(workspace, snapshot=snapshot)
+    before, aggregate = inventory_state(path), tables(path)
+    clock.sleep(600)
+    worker, calls = only_detail_observer(
+        workspace,
+        lambda request: httpx.Response(200, json=listing(int(request.url.path.rsplit("/", 1)[1]))),
+    )
+    result = worker.poll(drain_pending=True)
+    assert result["status"] == "pending_details"
+    assert result["requests"] == len(calls) == 1
+    assert result["source"] == "official_public_listing_get"
+    assert result["inventory_refreshed"] is False and "pagination" not in result
+    assert result["pending_detail_count"] == 0
+    event = result["candidates"][0]
+    assert event["listing_id"] == 101 and event["state"] == "review_ready"
+    assert event["origin"] == ("snapshot" if snapshot else "newly_observed")
+    after = inventory_state(path)
+    for name in ("baseline", "seen", "seed_verified_at"):
+        assert after[name] == before[name]
+    assert tables(path) == aggregate
+    assert worker.results()["results"][-1] == event
+    clock.sleep(600)
+    assert worker.poll(drain_pending=True)["status"] == "no_pending_details"
+    assert len(calls) == 1
+
+
+def test_not_due_drain_retains_pending_without_http(workspace):
+    path, _ = workspace
+    pending_fixture(workspace)
+    before = inventory_state(path)
+    worker, calls = only_detail_observer(workspace, lambda _: pytest.fail("No due work"))
+    result = worker.poll(drain_pending=True)
+    assert result["status"] == "not_due" and result["requests"] == 0
+    assert calls == [] and inventory_state(path) == before
+
+
+def test_drain_still_respects_shared_budget_without_resetting_next_poll(workspace):
+    path, clock = workspace
+    pending_fixture(workspace)
+    clock.sleep(600)
+    before = inventory_state(path)
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute("UPDATE discogs_monitor_control SET next_request=?", (clock.now + 1200,))
+    worker, calls = only_detail_observer(
+        workspace, lambda _: pytest.fail("Shared hold blocks HTTP")
+    )
+    result = worker.poll(drain_pending=True)
+    assert result["status"] == "cooldown" and result["requests"] == 0
+    after = inventory_state(path)
+    assert after["pending"] == before["pending"] and after["results"] == before["results"]
+    assert after["next_poll"] >= clock.now + 1200
+    assert not after["in_progress"] and not calls
+
+
+@pytest.mark.parametrize("status", [429, 403])
+def test_drain_denial_and_rate_hold_preserve_pending_without_replay(workspace, status):
+    path, clock = workspace
+    pending_fixture(workspace)
+    clock.sleep(600)
+    pending = inventory_state(path)["pending"]
+    worker, calls = only_detail_observer(
+        workspace, lambda _: httpx.Response(status, headers={"Retry-After": "1200"})
+    )
+    result = worker.poll(drain_pending=True)
+    assert result["status"] == ("access_denied" if status == 403 else "cooldown")
+    assert result["requests"] == len(calls) == 1
+    assert inventory_state(path)["pending"] == pending
+    assert not result["candidates"]
+    with closing(sqlite3.connect(path)) as db:
+        assert guard_row(db)[0] is None
+        assert guard_row(db)[2] >= clock.now + 1200
+    if status == 403:
+        clock.sleep(1500)
+        with pytest.raises(ReadSafetyHalt):
+            worker.poll(drain_pending=True)
+    else:
+        assert worker.poll(drain_pending=True)["status"] == "not_due"
+    assert len(calls) == 1
+
+
+def test_uncertain_drain_leaves_durable_pending_guard_and_manual_recovery_stop(workspace):
+    path, clock = workspace
+    pending_fixture(workspace)
+    clock.sleep(600)
+    pending = inventory_state(path)["pending"]
+
+    def fail(_):
+        raise httpx.ConnectError("Uncertain request must not be replayed")
+
+    worker, calls = only_detail_observer(workspace, fail)
+    with pytest.raises(ReadSafetyHalt, match="response_unknown"):
+        worker.poll(drain_pending=True)
+    after = inventory_state(path)
+    assert after["pending"] == pending and after["in_progress"]
+    with closing(sqlite3.connect(path)) as db:
+        assert guard_row(db)[0] is not None
+    clock.sleep(100000)
+    with pytest.raises(ReadSafetyHalt):
+        worker.poll(drain_pending=True)
+    assert len(calls) == 1
+
+
+def test_drain_caps_detail_reads_and_resumes_remaining_without_inventory(workspace):
+    _, clock = workspace
+    pending_fixture(workspace, ids=(101, 102, 103))
+    clock.sleep(600)
+    worker, calls = only_detail_observer(
+        workspace,
+        lambda request: httpx.Response(200, json=listing(int(request.url.path.rsplit("/", 1)[1]))),
+    )
+    result = worker.poll(drain_pending=True)
+    assert result["requests"] == len(calls) == 2
+    assert [v["listing_id"] for v in result["candidates"]] == [101, 102]
+    assert result["pending_detail_count"] == 1
+    clock.sleep(600)
+    restarted, resumed_calls = only_detail_observer(
+        workspace, lambda _: httpx.Response(200, json=listing(103))
+    )
+    result = restarted.poll(drain_pending=True)
+    assert result["requests"] == len(resumed_calls) == 1
+    assert [v["listing_id"] for v in result["candidates"]] == [103]
+    assert result["pending_detail_count"] == 0
+
+
+def test_drain_requires_persisted_verified_seed_for_existing_pending_work(workspace):
+    path, clock = workspace
+    pending_fixture(workspace)
+    clock.sleep(600)
+    state = inventory_state(path)
+    state["seed_verified_at"] = None
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute("UPDATE discogs_seeded_inventory_state SET data=?", (json.dumps(state),))
+    worker, calls = only_detail_observer(workspace, lambda _: pytest.fail("No missing-seed HTTP"))
+    with pytest.raises(ReadSafetyHalt, match="seed_evidence_missing"):
+        worker.poll(drain_pending=True)
+    assert not calls and inventory_state(path) == state
+
+
+def test_drain_cli_is_explicit_and_incompatible_with_new_inventory_modes(
+    workspace, tmp_path, capsys, monkeypatch
+):
+    path, _ = workspace
+    cfg = tmp_path / "config.json"
+    cfg.write_text(config().model_dump_json())
+    monkeypatch.setattr(
+        httpx.Client, "stream", lambda *_a, **_k: pytest.fail("No HTTP on empty drain")
+    )
+    assert main(["--config", str(cfg), "--database", str(path), "--drain-pending"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "no_pending_details"
+    for args in (
+        ["--drain-pending"],
+        ["--drain-pending", "--poll"],
+        ["--drain-pending", "--snapshot"],
+    ):
+        with pytest.raises(SystemExit):
+            main(["--config", str(cfg), *args])
+
+
+def test_stopped_control_blocks_drain_without_consuming_pending(workspace):
+    path, clock = workspace
+    pending_fixture(workspace)
+    clock.sleep(600)
+    before = inventory_state(path)
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute("UPDATE discogs_price_control SET enabled=0,revision=revision+1")
+    worker, calls = only_detail_observer(workspace, lambda _: pytest.fail("Stopped control"))
+    with pytest.raises(ReadSafetyHalt, match="control_stopped"):
+        worker.poll(drain_pending=True)
+    assert inventory_state(path) == before and not calls
+
+
+def test_drain_keeps_completed_result_if_second_detail_is_rate_limited(workspace):
+    path, clock = workspace
+    pending_fixture(workspace, ids=(101, 102, 103))
+    clock.sleep(600)
+    worker, calls = only_detail_observer(
+        workspace,
+        lambda request: (
+            httpx.Response(200, json=listing(101))
+            if request.url.path.endswith("/101")
+            else httpx.Response(429, headers={"Retry-After": "1200"})
+        ),
+    )
+    result = worker.poll(drain_pending=True)
+    assert result["status"] == "cooldown" and result["requests"] == len(calls) == 2
+    assert [row["listing_id"] for row in result["candidates"]] == [101]
+    assert [row["listing_id"] for row in inventory_state(path)["pending"]] == [102, 103]
+    assert [row["listing_id"] for row in worker.results()["results"]] == [101]
