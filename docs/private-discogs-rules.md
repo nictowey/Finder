@@ -190,3 +190,39 @@ attach catalog metadata; no new watch, poller or background discovery is created
 Catalog failure preserves the normalized listing with unknown quantity/omission assessment,
 unless its comments already clearly disclose incomplete media. All-in totals and the physical
 pressing remain unverified regardless of the metadata result.
+
+## One-time exact-listing preview
+
+For a user-supplied known listing, the isolated preview command returns review data and a
+canonical phone-friendly listing link. It creates no watch, notification, cart, order or
+payment and reads no credentials. It is not wired into purchase eligibility.
+
+```sh
+PYTHONPATH=src python -m finder.discogs_listing_preview 123 --release 456 --under 175 --currency USD --fixture /tmp/listing.json
+# Explicit opt-in: one bounded official public listing GET, no discovery or redirects:
+PYTHONPATH=src python -m finder.discogs_listing_preview 123 --release 456 --under 175 --currency USD --live
+```
+
+The fixture must contain an official-API-shaped listing object. Offline output explicitly
+has unknown freshness and no observed timestamp. Live output timestamps the actual read;
+this is a snapshot, not a promise of continued availability. Access restrictions and rate
+limits stop the read without retries or alternate routes.
+
+Preview pricing preserves the reported decimal value and the separate original currency
+and value. It performs no FX conversion. Display and strict-under comparison round the
+reported price **up** to cents, conservatively: 166.66666666666666 displays 166.67;
+174.999 displays 175.00 and does **not** pass an under-175 threshold. Exact equality also
+fails. Currency mismatch, malformed amounts and unsupported grades fail the item criteria.
+The purchase-money parser still rejects non-cent amounts unchanged.
+
+`item_criteria_match` only summarizes the exact release, reported availability, minimum NM
+media and sleeve, item-only threshold and supported seller-description exclusion checks.
+It is never a fully qualified purchase. Missing-disc disclosures or disclosed playable-media
+damage block this summary. Unavailable/unsupported comments also block it. No disclosed
+omission is not a claim that all records are present. The CLI does not fetch release
+metadata, so completeness is explicitly unknown. The evaluation function can accept
+fresh, separately obtained exact-release metadata/provenance; even then it does not infer
+seller-confirmed contents merely from silence. Missing shipping remains unknown and even
+reported shipping is not a verified destination quote. Shipping eligibility, total, tax,
+fees and physical contents remain unverified. `purchase_qualified` and `purchased` are
+always false. A human must review the listing and any actual checkout separately.
