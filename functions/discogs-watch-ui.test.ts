@@ -23,6 +23,7 @@ async function app(handler?:(path:string,opts:any)=>Promise<any>,hash=''){
 test('Saved labels are text, filtering works, and refresh retains the draft',async()=>{
  const a=await app();try{
   assert.equal(a.doc.querySelectorAll('#watches script').length,0);
+  assert.equal(a.doc.getElementById('status')!.textContent,'');
   assert.match(a.doc.querySelector('#watches')!.textContent!,/Synthetic <script>/);
   a.input('title','My unsaved draft');a.click('#refresh');await tick();await tick();
   assert.equal((a.doc.getElementById('title') as HTMLInputElement).value,'My unsaved draft');

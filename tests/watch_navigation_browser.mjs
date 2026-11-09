@@ -54,13 +54,13 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
       assert.equal(await page.locator('#watches-view').isVisible(), true);
       await page.locator('#nav-add').click();
       await page.locator('#save').click();
-      await page.waitForURL('**/#watches');
+      await page.waitForURL(url => url.hash === '#watches');
       assert.equal(saves, 1);
       await page.locator('[data-action=edit]').click();
       await page.locator('#title').waitFor({state: 'visible'});
       assert.equal(await page.locator('#release').inputValue(), '1');
       await page.locator('#cancel').click();
-      await page.waitForURL('**/#watches');
+      await page.waitForURL(url => url.hash === '#watches');
       await page.locator('#add-view').waitFor({state: 'hidden'});
       assert.equal(await page.locator('#add-view').isVisible(), false);
       await page.close();

@@ -19,8 +19,10 @@ only the Origin actually emitted by the browser. Three flows run in both engines
    decision of 303 with Location `/session`. Playwright interception only covers
    the first URL in a redirect chain, so the network-disabled fixture delivers
    that response to the browser as 200 with Location removed and Set-Cookie
-   unchanged. A separate explicit navigation to intercepted `/session` must
-   authenticate using the retained cookie. The cookie is Secure, HttpOnly,
+   unchanged. A native same-origin anchor click from the committed POST document
+   to intercepted `/session` must authenticate using the retained cookie. This
+   deliberately preserves the document initiator instead of using automation
+   `page.goto`, which can differ in WebKit's site-for-cookies classification. The cookie is Secure, HttpOnly,
    SameSite=Strict and host-only; JavaScript cannot read it. This verifies only
    synthetic-response cookie storage/use, not native 303 handling, real TLS or
    persistence across browser restarts. The native request and Origin are never
@@ -55,9 +57,11 @@ creation or automatic login retry in this test.
 
 The fixture waits for the native POST document's load/commit before inspecting
 cookies, then polls the browser cookie jar read-only for at most three seconds
-before explicit account navigation. It never injects cookies or repeats the POST.
-Diagnostics report only route method/path/status and cookie-presence/security
-booleans. If WebKit cannot commit a cookie from a synthetic fulfilled response,
+before native same-origin account navigation. It never injects cookies or repeats
+any POST. Diagnostics report only route method/path/status and cookie-presence/
+security booleans. Cookie presence from `request.allHeaders()` and `headerValue`
+is observed separately to diagnose header-exposure discrepancies; the fixture
+never substitutes a cookie from the browser cookie jar into a request. If WebKit cannot commit a cookie from a synthetic fulfilled response,
 the test fails explicitly at that boundary rather than claiming retention or
 attempting a network fallback. Route callback failures are caught and reported
 without headers, bodies or cookie values so one engine cannot hide the other's result.

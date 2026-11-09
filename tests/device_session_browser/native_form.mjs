@@ -63,6 +63,7 @@ try {
             return;
           }
           const requestHeaders = await request.allHeaders();
+          const observedCookieHeader = await request.headerValue('cookie');
           const response = await dispatch({path: url.pathname, method: request.method(),
             headers: requestHeaders,
             body: (request.postDataBuffer() ?? Buffer.alloc(0)).toString('base64'), policy});
@@ -70,6 +71,7 @@ try {
           console.log(JSON.stringify({phase: 'fixture-route', browser: name,
             method: request.method(), path: url.pathname, application_status: applicationStatus,
             request_has_session_cookie: /(?:^|;\s*)__Host-sniper_session=/.test(requestHeaders.cookie ?? ''),
+            header_value_has_session_cookie: /(?:^|;\s*)__Host-sniper_session=/.test(observedCookieHeader ?? ''),
             response_has_set_cookie: typeof response.headers['set-cookie'] === 'string'}));
           let fixtureStatus = response.status;
           const fixtureHeaders = {...response.headers};
@@ -146,9 +148,23 @@ try {
         same_site_strict: committedCookie?.sameSite === 'Strict'}));
       assert.ok(committedCookie, `${name}: synthetic Set-Cookie was not committed after native navigation`);
       assert.deepEqual(routeErrors, [], 'Synthetic route failures must not be hidden');
-      // Separate explicit navigation, not evidence of native 303 redirect handling.
-      const account = await page.goto(origin + '/session');
+      // A browser-native link preserves this document as the same-origin
+      // initiator. Automation page.goto can have a different site-for-cookies
+      // classification in WebKit. No cookie/header is copied or injected.
+      await page.evaluate(() => {
+        const link = document.createElement('a');
+        link.href = '/session';
+        link.textContent = 'Open fixture device settings';
+        document.body.append(link);
+      });
+      const [account] = await Promise.all([
+        page.waitForResponse(res => res.url() === origin + '/session' &&
+          res.request().method() === 'GET'),
+        page.getByRole('link', {name: 'Open fixture device settings', exact: true}).click(),
+      ]);
+      await account.finished();
       assert.equal(account.status(), 200);
+      await page.waitForURL(origin + '/session', {waitUntil: 'load'});
       assert.equal(page.url(), origin + '/session');
       assert.equal(attempts.at(-1).origin, origin, `${name}: native form must emit canonical Origin`);
       assert.equal(attempts.at(-1).status, 303, `${name}: current native form must create session`);
@@ -183,7 +199,7 @@ try {
         current_native_origin: attempts[1].origin, current_status: attempts[1].status,
         foreign_native_origin: attempts[2].origin, foreign_status: attempts[2].status,
         fixture_redirect_normalized: true, native_redirect_verified: false,
-        explicit_cookie_navigation_status: 200, restart_persistence_verified: false,
+        same_origin_anchor_navigation_status: 200, restart_persistence_verified: false,
         cookie_secure: true, cookie_http_only: true, cookie_same_site: 'Strict'}));
       await context.close();
     } catch (error) {
