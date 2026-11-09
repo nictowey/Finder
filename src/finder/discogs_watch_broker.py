@@ -13,7 +13,8 @@ WATCH_REQUEST_LIMIT = 4096
 WATCH_RESPONSE_LIMIT = 1048576
 SAVE_FIELDS = {"release", "title", "currency", "price", "any_price", "enabled", "revision"}
 RULE_FIELDS = set(PriceLeadRule.model_fields)
-SAMPLE_FIELDS = {"revision", "last_success", "lowest_item_price", "count", "status"}
+SAMPLE_FIELDS = {"revision", "last_success", "lowest_item_price", "count", "status", "removed"}
+REMOVAL_FIELDS = {"action", "release", "revision"}
 NOTIFICATION_FIELDS = {"accepted", "accepted_current_revision", "pending", "in_flight", "uncertain"}
 
 
@@ -50,6 +51,23 @@ def save_fields(fields):
     return dict(fields)
 
 
+def mutation_fields(fields):
+    """Existing exact save schema or one exact, bounded lifecycle operation."""
+    if type(fields) is dict and set(fields) == REMOVAL_FIELDS:
+        if (
+            type(fields["action"]) is not str
+            or fields["action"] not in ("remove", "restore")
+            or type(fields["release"]) is not str
+            or not re.fullmatch(r"[1-9][0-9]{0,15}", fields["release"])
+            or type(fields["revision"]) is not int
+            or not 0 < fields["revision"] < 2**63 - 1
+        ):
+            raise ProtocolError("invalid_watch_action")
+        release_id(fields["release"])
+        return dict(fields)
+    return save_fields(fields)
+
+
 def project_snapshot(data):
     """Explicit allowlist, bounded legacy stores, no internal DB/control/outbox data."""
     if (
@@ -74,7 +92,10 @@ def project_snapshot(data):
         ):
             raise ProtocolError("invalid_notification_counts")
         if (
-            type(sample["revision"]) is not int
+            type(sample["removed"]) is not bool
+            or sample["removed"]
+            and rule.enabled
+            or type(sample["revision"]) is not int
             or not 0 < sample["revision"] < 2**63
             or (
                 sample["count"] is not None
@@ -137,7 +158,7 @@ class WatchBrokerClient(BrokerClient):
             raise RuntimeError("Watch response unavailable") from None
 
     def save(self, fields):
-        fields = save_fields({key: value for key, value in fields.items() if key != "csrf"})
+        fields = mutation_fields({key: value for key, value in fields.items() if key != "csrf"})
         request_id = secrets.token_hex(16)
         response = self._watch_call(
             {"v": 1, "op": "watch_save", "request_id": request_id, "fields": fields}

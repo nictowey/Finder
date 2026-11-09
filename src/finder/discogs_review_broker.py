@@ -23,11 +23,12 @@ from finder.discogs_review_backend import (
     initialize_review_state,
     project_payload,
 )
+from finder.discogs_watch_removals import RemovedWatchError
 
 REQUEST_LIMIT = 512
 RESPONSE_LIMIT = 32768
 LEDGER_LIMIT = 4096
-ERRORS = {"invalid", "unavailable", "busy", "provider", "denied", "replay", "capacity"}
+ERRORS = {"invalid", "unavailable", "busy", "provider", "denied", "replay", "capacity", "removed"}
 
 
 class ProtocolError(ValueError):
@@ -207,7 +208,7 @@ class BrokerService:
             return {"v": 1, "ok": False, "error": "unavailable"}
 
     def _watch_request(self, request):
-        from finder.discogs_watch_broker import project_snapshot, save_fields
+        from finder.discogs_watch_broker import mutation_fields, project_snapshot
 
         if self.watch_backend is None:
             return {"v": 1, "ok": False, "error": "invalid"}
@@ -225,12 +226,14 @@ class BrokerService:
                 or not re.fullmatch(r"[a-f0-9]{32}", request["request_id"])
             ):
                 return {"v": 1, "ok": False, "error": "invalid"}
-            fields = save_fields(request["fields"])
+            fields = mutation_fields(request["fields"])
             failure = self._claim(request["request_id"])
             if failure:
                 return {"v": 1, "ok": False, "error": failure}
             revision = self.watch_backend.save(fields)
             return {"v": 1, "ok": True, "request_id": request["request_id"], "revision": revision}
+        except RemovedWatchError:
+            return {"v": 1, "ok": False, "error": "removed"}
         except (ValueError, TypeError, KeyError, RuntimeError, sqlite3.Error, OSError):
             return {"v": 1, "ok": False, "error": "unavailable"}
 
@@ -289,6 +292,8 @@ class BrokerClient:
             if response["ok"] is False:
                 if set(response) != {"v", "ok", "error"} or response["error"] not in ERRORS:
                     raise ProtocolError("invalid_response")
+                if response["error"] == "removed" and request.get("op") == "watch_save":
+                    raise RemovedWatchError("Find this watch in Removed and restore it first.")
                 if response["error"] == "busy":
                     raise ReadBudgetBusy("Broker busy.")
                 if response["error"] in {"provider", "denied"}:

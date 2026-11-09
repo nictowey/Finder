@@ -34,6 +34,12 @@ from finder.discogs_price_messages import availability_message as availability_m
 from finder.discogs_price_messages import lead_message as lead_message
 from finder.discogs_read_guard import DatabaseReadBudget, guard_pending, initialize_guard
 from finder.discogs_rules import CURRENCIES, RulesStore, StrictInput, amount, release_id
+from finder.discogs_watch_removals import (
+    initialize_removal_state,
+    require_removal_schema,
+    require_retained_watch,
+    watch_removed,
+)
 
 POLL_SECONDS = 600
 MIN_POLL_SECONDS = 120
@@ -206,6 +212,7 @@ class AggregatePriceAlerts:
                 """)
                 store.db.executescript(CHANGE_SCHEMA)
                 initialize_guard(store.db)
+            initialize_removal_state(store.db)
         finally:
             store.close()
 
@@ -235,6 +242,7 @@ class AggregatePriceAlerts:
                 present = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
                 if not columns <= present:
                     raise ValueError("Existing aggregate watch schema is required.")
+            require_removal_schema(db)
         instance = cls.__new__(cls)
         instance.database, instance.clock = database, clock
         instance.poll_seconds = POLL_SECONDS
@@ -254,6 +262,7 @@ class AggregatePriceAlerts:
         try:
             with store.db:
                 store.db.execute("BEGIN IMMEDIATE")
+                require_retained_watch(store.db, rule.release_id)
                 old = store.db.execute(
                     "SELECT revision,data FROM discogs_price_rules WHERE release_id=?",
                     (rule.release_id,),
@@ -295,6 +304,72 @@ class AggregatePriceAlerts:
         finally:
             store.close()
 
+    def set_removed(self, release, *, removed, expected_revision):
+        """Retain a watch and its history, atomically stopping new work on removal.
+
+        Restoring is deliberately paused. No schema creation, provider request or
+        notification send occurs here. A previously dispatched send cannot be
+        recalled; its lease remains uncertain under the existing quarantine policy.
+        """
+        release = release_id(release)
+        if (
+            type(removed) is not bool
+            or type(expected_revision) is not int
+            or not 0 < expected_revision < 2**63 - 1
+        ):
+            raise ValueError("Use an explicit action and current rule revision.")
+        store = RulesStore(self.database)
+        try:
+            with store.db:
+                db = store.db
+                db.execute("BEGIN IMMEDIATE")
+                require_removal_schema(db)
+                old = db.execute(
+                    "SELECT revision,data FROM discogs_price_rules WHERE release_id=?", (release,)
+                ).fetchone()
+                if not old or old[0] != expected_revision:
+                    raise RuntimeError("Watch changed; refresh before trying again.")
+                if watch_removed(db, release) == removed:
+                    raise RuntimeError("Watch removal state changed; refresh before trying again.")
+                rule = PriceLeadRule.model_validate_json(old[1])
+                if not removed and rule.enabled:
+                    raise RuntimeError("Invalid removed watch state.")
+                # Keep every saved flag/setting; enabled is the sole changed setting.
+                data = json.loads(old[1])
+                data["enabled"] = False
+                revision = expected_revision + 1
+                if not removed:
+                    db.execute(
+                        "UPDATE discogs_price_removed SET removed=0 WHERE release_id=?", (release,)
+                    )
+                db.execute(
+                    "UPDATE discogs_price_rules SET revision=?,data=? WHERE release_id=?",
+                    (revision, json.dumps(data, separators=(",", ":")), release),
+                )
+                if removed:
+                    db.execute(
+                        "INSERT INTO discogs_price_removed VALUES(?,1) "
+                        "ON CONFLICT(release_id) DO UPDATE SET removed=1",
+                        (release,),
+                    )
+                db.execute(
+                    "UPDATE discogs_price_outbox SET state=CASE WHEN state='leased' "
+                    "THEN 'uncertain' ELSE 'revoked' END WHERE release_id=? "
+                    "AND state IN ('leased','pending','retry_wait')",
+                    (release,),
+                )
+                db.execute(
+                    "UPDATE discogs_price_samples SET claim=NULL,claim_until=NULL "
+                    "WHERE release_id=?",
+                    (release,),
+                )
+                db.execute(
+                    "UPDATE discogs_price_extrema SET continuous=0 WHERE release_id=?", (release,)
+                )
+                return revision
+        finally:
+            store.close()
+
     def configure_change_alerts(
         self, release, *, alert_price_drops, alert_count_increases, expected_revision
     ):
@@ -317,6 +392,7 @@ class AggregatePriceAlerts:
             with store.db:
                 db = store.db
                 db.execute("BEGIN IMMEDIATE")
+                require_retained_watch(db, release)
                 saved = db.execute(
                     "SELECT revision,data FROM discogs_price_rules WHERE release_id=?", (release,)
                 ).fetchone()

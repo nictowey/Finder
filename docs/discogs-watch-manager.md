@@ -22,9 +22,12 @@ start a globally paused monitor.
 
 Edits preserve the saved initial-availability, price-drop and count-increase alert
 flags. New price watches use initial availability and price drops; new any-price
-watches use initial availability and count increases. There is no delete action:
-pause retains the watch and history. Paused test watches are not re-enabled by
-loading the page. A saved rule edit uses the existing canonical save behavior:
+watches use initial availability and count increases. Remove asks for confirmation
+showing the title and release ID, then moves the retained watch to a separate
+Removed view. Its settings, samples and notification history stay in the database.
+Restore returns the watch **paused**; only a separate explicit Resume starts it.
+Adding or editing a removed release directs the owner to restore it first and
+keeps the draft. Paused test watches are not re-enabled by loading the page. A saved rule edit uses the existing canonical save behavior:
 unsent old-revision events are revoked, claimed deliveries remain uncertain, and
 the sample is reset for a fresh observation. A no-op leaves samples untouched.
 
@@ -32,11 +35,15 @@ the sample is reset for a fresh observation. A no-op leaves samples untouched.
 
 `WatchBackend` receives the existing initialized `AggregatePriceAlerts` instance.
 It reads the existing `discogs_price_rules` and `discogs_price_samples` tables and
-uses `save_rule` with an optimistic revision for every actual mutation. There is
-no second database, schema migration, provider operation, destination setting,
-credential access or global enable/disable control. The canonical writer enforces
+uses `save_rule` for edits and `set_removed` for removal/restoration, each with an
+optimistic revision inside the canonical writer. The additive removal schema is
+provisioned explicitly by an operator, never from a request or read-only startup.
+There is no second database, provider operation, destination setting, credential
+access or global enable/disable control. The canonical writer enforces
 the optional 200-rule admission limit inside its SQLite transaction. Existing
 larger stores remain readable and editable; they cannot add more through this UI.
+Removed watches still count toward this existing 200-retained-rule limit. Removal
+does not free storage or erase historical watches.
 
 Do not give the public-facing web UID direct access to the production database.
 The optional IPC adapter runs in the existing DB-owning review broker and exposes
@@ -72,9 +79,66 @@ resources, no browser storage, and no private state in URLs. Hosting must retain
 TLS, no-store/no-referrer policy and private access. No deployment or real-user
 end-to-end claim follows from isolated tests.
 
+## Reversible removal schema and rollout
+
+The additive v1 schema consists of `discogs_price_removed(release_id, removed)` and
+three narrowly scoped INSERT/UPDATE/DELETE guards on `discogs_price_rules`. Exact
+stored definitions are checked on startup and before lifecycle writes. Partial or
+changed schema fails closed; the initializer does not repair it. No rule model
+field is added, so a running previous aggregate worker still reads the saved rule
+as ordinary `enabled:false` JSON. Guards block older writers from changing,
+re-enabling, deleting, UPSERTing or replacing a removed row, including with
+`recursive_triggers` off. Unrelated release IDs remain writable.
+
+For an authorized operator rollout only:
+
+1. Record all existing rule JSON/revisions, samples, retained notification history
+   and control values. Preserve the database using the normal backup procedure.
+2. Run `python -m finder.discogs_watch_removals --database /absolute/existing/rules.db`
+   as the existing DB-owning identity. This validated, idempotent transaction adds
+   only the table and guards, with no existing row changes. The normal aggregate
+   initializer also provisions this schema; do not replace or restart a private
+   aggregate runtime merely to do this migration.
+3. Compare all existing rows byte-for-byte/logically, then restart the reviewed
+   removal-capable broker and web host. `for_existing_store` and snapshots never
+   provision schema; they fail closed if it is missing. Keep the current socket,
+   authentication, private runtime pacing, Caddy routes and permission settings.
+4. Test only an explicitly authorized synthetic watch. Never remove a real watch
+   merely to verify deployment. An offline pass is not a live verification claim.
+
+Removal increments the rule revision even if already paused, sets only its enabled
+setting to false, and marks it removed in the same `BEGIN IMMEDIATE` transaction.
+Pending/retry-wait events are revoked, claimed sends become uncertain, and active
+sample claims are cleared. Samples and extrema are retained, with continuous
+comparison reset. An observation started under the old revision is discarded.
+The existing immediate-before-send guard rejects invalidated leases; an alert
+already sent to a provider cannot be recalled and remains subject to the existing
+uncertain-outcome policy. Accepted history is never changed by removal.
+
+Restore atomically clears the marker and increments revision again, preserving
+settings and samples while remaining disabled. Both actions retain the normal
+one-use CSRF, durable IPC replay ledger and uncertain-response/no-retry rules.
+Refresh is mandatory after uncertainty before deciding whether another action is
+needed. Repeated actions or stale revisions cannot silently re-enable a watch.
+
+Use the existing `/watches/save` endpoint and `watch_save` IPC operation. The normal
+save fields are unchanged. Lifecycle POSTs have exactly `action` (`remove` or
+`restore`), `release` (decimal ID string), `revision` and `csrf`; IPC strips only
+`csrf`. Success remains `{"saved":true}` and is followed by a separate state read.
+Every snapshot row contains a boolean `removed`, including retained removed rows.
+No extra endpoint, privilege, public response data or provider capability is added.
+
+Rollback must retain the removal-capable broker/writer and additive schema once
+any removal marker exists. A UI-only rollback may hide removal controls, but must
+not switch to an old writer or allow removed rows to be edited. Database guards
+are a safety backstop, not a recovery UI. Do not drop the schema, permanently delete
+retained watches, restore an old database over new history, or broadly replace the
+private aggregate runtime. Existing already-running aggregate polling/sending
+code is compatible; it does not need a restart for this feature.
+
 ## Validation
 
-- Python: `PYTHONPATH=src:. python -m pytest tests/test_discogs_watch_manager.py tests/test_discogs_price_alerts.py`
+- Python: `PYTHONPATH=src:. python -m pytest tests/test_discogs_watch_manager.py tests/test_discogs_watch_removals.py tests/test_discogs_price_alerts.py`
 - UI interaction: `node --import tsx --test functions/discogs-watch-ui.test.ts`
 - Full repository checks: Python regression suite, `npm test`, `npm run typecheck`,
   Ruff lint and format checks. Report environment-limited checks separately.

@@ -600,3 +600,33 @@ def test_override_original_source_fingerprint_still_checked(rig):
         rig.run(test_item_ceiling="9.00", _checkpoint=changed)
     assert not rig.calls
     assert rig.sql("SELECT name FROM sqlite_master WHERE name=?", (TABLE,)) == []
+
+
+@pytest.mark.parametrize("tamper", ["extra", "changed", "partial", "table"])
+def test_removal_trigger_allowlist_rejects_every_unreviewed_schema(rig, tamper):
+    if tamper == "extra":
+        rig.sql(
+            "CREATE TRIGGER synthetic_unreviewed BEFORE UPDATE ON discogs_price_control "
+            "BEGIN SELECT 1; END"
+        )
+    elif tamper in ("changed", "partial"):
+        rig.sql("DROP TRIGGER discogs_price_removed_insert_guard")
+        if tamper == "changed":
+            rig.sql(
+                "CREATE TRIGGER discogs_price_removed_insert_guard "
+                "BEFORE INSERT ON discogs_price_rules BEGIN SELECT 1; END"
+            )
+    else:
+        rig.sql("ALTER TABLE discogs_price_removed ADD COLUMN unknown TEXT")
+    before = rig.content()
+    with pytest.raises(ValueError, match="Unsupported source triggers"):
+        rig.run()
+    assert not rig.calls and rig.content() == before
+
+
+def test_removed_target_cannot_be_used_for_phone_proof(rig):
+    rig.alerts.set_removed(123, removed=True, expected_revision=1)
+    before = rig.content()
+    with pytest.raises(ValueError, match="eligible"):
+        rig.run()
+    assert not rig.calls and rig.content() == before

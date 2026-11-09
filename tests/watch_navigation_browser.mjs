@@ -9,7 +9,7 @@ const fixture = {
   csrf: 'synthetic', monitor_enabled: true,
   watches: [{
     release_id: 1, public_title: 'Synthetic Artist · Favourite Record', currency: 'USD',
-    item_price_ceiling: '40.00', any_price: false, enabled: true, revision: 1,
+    item_price_ceiling: '40.00', any_price: false, enabled: true, removed: false, revision: 1,
     alert_initial_low: true, alert_price_drops: true, alert_count_increases: false,
     status: 'ok', last_success: 1794229200, lowest_item_price: '35.00', count: 2,
     notifications: {accepted: 5, accepted_current_revision: 2, pending: 0, in_flight: 0, uncertain: 0},
@@ -22,18 +22,38 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
     for (const width of [390, 320, 960]) {
       const page = await browser.newPage({viewport: {width, height: 844}, serviceWorkers: 'block'});
       let saves = 0, reads = 0;
+      let acceptDialogs = false, saveMode = 'ok', failRead = false, holdSave = false, releaseSave;
+      const confirmations = [], saveBodies = [];
       let snapshot = structuredClone(fixture);
-      page.on('dialog', dialog => dialog.dismiss());
+      page.on('dialog', async dialog => {
+        confirmations.push(dialog.message());
+        if (acceptDialogs) await dialog.accept(); else await dialog.dismiss();
+      });
       await page.route('**/*', async route => {
         const url = new URL(route.request().url());
         if (url.origin !== 'https://sniper.example') return route.abort();
         if (url.pathname === '/watches') return route.fulfill({contentType: 'text/html', body: html});
         if (url.pathname === '/watches/state') {
           reads++;
+          if (failRead) return route.fulfill({status: 503, json: {error: 'State unavailable.'}});
           return route.fulfill({json: snapshot});
         }
         if (url.pathname === '/watches/save') {
           saves++;
+          const body = route.request().postDataJSON();
+          saveBodies.push(body);
+          if (saveMode === 'conflict') return route.fulfill({status: 409, json: {error: 'Saved watch changed. Refresh saved watches.'}});
+          if (body.action) {
+            assert.deepEqual(Object.keys(body).sort(), ['action', 'csrf', 'release', 'revision']);
+            const watch = snapshot.watches.find(w => String(w.release_id) === body.release);
+            assert.equal(body.revision, watch.revision);
+            watch.removed = body.action === 'remove';
+            watch.enabled = false;
+            watch.revision++;
+          }
+          if (holdSave) await new Promise(resolve => {releaseSave = resolve;});
+          if (saveMode === 'lost') return route.abort('failed');
+          if (saveMode === 'unverified') return route.fulfill({json: {saved: false}});
           return route.fulfill({json: {saved: true}});
         }
         return route.abort();
@@ -106,8 +126,117 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
       await page.waitForURL(url => url.hash === '#watches');
       await page.locator('#add-view').waitFor({state: 'hidden'});
       assert.equal(await page.locator('#add-view').isVisible(), false);
+      // Reversible removal and recovery use synthetic state only. No real watch is changed.
+      snapshot = structuredClone(fixture);
+      snapshot.watches.push({...structuredClone(snapshot.watches[0]), release_id: 2, public_title: 'Synthetic Paused Record', enabled: false, revision: 4});
+      snapshot.watches.push({...structuredClone(snapshot.watches[0]), release_id: 3, public_title: 'Synthetic Removed Record', enabled: false, removed: true, revision: 7});
+      await page.locator('#refresh').click();
+      await page.locator('#refresh:not(:disabled)').waitFor();
+      assert.match(await page.locator('#count').innerText(), /1 enabled · 1 paused/);
+      assert.equal(await page.locator('#watches .card').count(), 2);
+      assert.equal(await page.locator('#removed-watches .card').count(), 1);
+      await page.locator('#nav-add').click();
+      await page.locator('#release').fill('99');
+      await page.locator('#title').fill('Keep my unsaved removal draft');
+      await page.locator('#price').fill('12');
+      await page.locator('#nav-watches').click();
+      const beforeRemove = saves;
+      await page.locator('#watches [data-release="1"] [data-action="remove"]').click();
+      assert.equal(saves, beforeRemove);
+      assert.match(confirmations.at(-1), /Synthetic Artist · Favourite Record/);
+      assert.match(confirmations.at(-1), /Discogs release 1/);
+      assert.match(confirmations.at(-1), /restoring keeps the watch paused/);
+      acceptDialogs = true;
+      holdSave = true;
+      await page.locator('#watches [data-release="1"] [data-action="remove"]').click();
+      await page.waitForFunction(() => document.querySelector('#refresh').disabled);
+      await page.locator('#watches [data-release="1"] [data-action="remove"]').evaluate(button => button.click());
+      while (!releaseSave) await new Promise(resolve => setTimeout(resolve, 5));
+      assert.equal(saves, beforeRemove + 1);
+      holdSave = false;
+      releaseSave();releaseSave = undefined;
+      await page.locator('#refresh:not(:disabled)').waitFor();
+      assert.deepEqual(saveBodies.at(-1), {action: 'remove', release: '1', revision: 1, csrf: 'synthetic'});
+      assert.match(await page.locator('#status').innerText(), /^Watch removed/);
+      assert.match(await page.locator('#count').innerText(), /0 enabled · 1 paused/);
+      assert.equal(await page.locator('#watches [data-release="1"]').count(), 0);
+      await page.locator('#nav-removed').click();
+      assert.equal(await page.locator('#removed-watches .card').count(), 2);
+      assert.equal(await page.locator('#removed-watches [data-action="toggle"]').count(), 0);
+      assert.equal(await page.locator('#removed-watches [data-action="edit"]').count(), 0);
+      assert.match(await page.locator('#removed-watches [data-release="1"]').textContent(), /not confirmed phone delivery/);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      await page.screenshot({path: `/artifacts/${engineName}-${width}-removed.png`, fullPage: true});
+      await page.goBack();
+      await page.locator('#watches-view').waitFor({state: 'visible'});
+      await page.goForward();
+      await page.locator('#removed-view').waitFor({state: 'visible'});
+      assert.equal(saves, beforeRemove + 1);
+      await page.locator('#removed-search').fill('no match');
+      assert.match(await page.locator('#removed-watches').innerText(), /No removed watches match/);
+      await page.locator('#removed-search').fill('1');
+      await page.locator('#removed-watches [data-release="1"] [data-action="restore"]').click();
+      await page.locator('#refresh-removed:not(:disabled)').waitFor();
+      assert.equal(saves, beforeRemove + 2);
+      assert.deepEqual(saveBodies.at(-1), {action: 'restore', release: '1', revision: 2, csrf: 'synthetic'});
+      assert.match(await page.locator('#status').innerText(), /restored and paused/);
+      await page.locator('#nav-watches').click();
+      assert.equal(await page.locator('#watches [data-release="1"] .pill').innerText(), 'Paused');
+      assert.equal(await page.locator('#watches [data-release="1"] [data-action="toggle"]').innerText(), 'Resume');
+      await page.screenshot({path: `/artifacts/${engineName}-${width}-restored-paused.png`, fullPage: true});
+      await page.locator('#nav-add').click();
+      assert.equal(await page.locator('#title').inputValue(), 'Keep my unsaved removal draft');
+      await page.locator('#release').fill('https://www.discogs.com/release/3-Synthetic');
+      assert.equal(await page.locator('#removed-hint').isVisible(), true);
+      assert.equal(await page.locator('#save').isDisabled(), true);
+      await page.screenshot({path: `/artifacts/${engineName}-${width}-removed-duplicate.png`, fullPage: true});
+      await page.locator('#view-removed').click();
+      await page.locator('#removed-view').waitFor({state: 'visible'});
+      assert.equal(await page.locator('#removed-search').inputValue(), '3');
+      assert.equal(saves, beforeRemove + 2);
+      // Lost POST: the state may already have changed. No second POST until a fresh decision.
+      saveMode = 'lost';
+      await page.locator('#removed-watches [data-release="3"] [data-action="restore"]').click();
+      await page.waitForFunction(() => document.querySelector('#status').textContent.includes('No automatic retry'));
+      assert.equal(saves, beforeRemove + 3);
+      assert.equal(await page.locator('#removed-watches [data-action="restore"]').isDisabled(), true);
+      assert.match(await page.locator('#status').innerText(), /check whether it was restored/);
+      await page.screenshot({path: `/artifacts/${engineName}-${width}-restore-uncertain.png`, fullPage: true});
+      saveMode = 'ok';
+      await page.locator('#refresh-removed').click();
+      await page.locator('#refresh-removed:not(:disabled)').waitFor();
+      assert.equal(saves, beforeRemove + 3);
+      assert.equal(await page.locator('#removed-watches .card').count(), 0);
+      await page.locator('#nav-watches').click();
+      assert.equal(await page.locator('#watches [data-release="3"] .pill').innerText(), 'Paused');
+      // Stale revision: keep the state and require manual refresh, without replay.
+      saveMode = 'conflict';
+      const beforeConflictReads = reads;
+      await page.locator('#watches [data-release="1"] [data-action="remove"]').click();
+      await page.waitForFunction(() => document.querySelector('#status').textContent.includes('Saved watch changed'));
+      assert.equal(saves, beforeRemove + 4);
+      assert.equal(reads, beforeConflictReads);
+      assert.equal(await page.locator('#watches [data-release="1"] [data-action="remove"]').isDisabled(), true);
+      snapshot.watches[0].revision++;
+      saveMode = 'ok';
+      await page.locator('#refresh').click();
+      await page.locator('#refresh:not(:disabled)').waitFor();
+      // A confirmed removal remains confirmed even when the next read fails.
+      failRead = true;
+      await page.locator('#watches [data-release="1"] [data-action="remove"]').click();
+      await page.waitForFunction(() => document.querySelector('#status').textContent.includes('Watch removed. State unavailable.'));
+      assert.equal(saves, beforeRemove + 5);
+      assert.equal(await page.locator('#watches [data-release="1"] [data-action="remove"]').isDisabled(), true);
+      assert.equal(saveBodies.at(-1).revision, 4);
+      failRead = false;
+      await page.locator('#refresh').click();
+      await page.locator('#refresh:not(:disabled)').waitFor();
+      assert.equal(saves, beforeRemove + 5);
+      await page.locator('#nav-add').click();
+      assert.equal(await page.locator('#title').inputValue(), 'Keep my unsaved removal draft');
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       await page.close();
-      console.log(`PASS ${engineName} width ${width}: visible check results, observation labels, paused/disabled states, navigation, draft, Back/Forward, save, edit, cancel and overflow`);
+      console.log(`PASS ${engineName} width ${width}: check results, navigation and Back/Forward, draft guards, remove cancel and repeated click, removed recovery, paused restore, duplicate add, lost response, revision conflict and failed read without replay, overflow`);
     }
   } finally {
     await browser.close();

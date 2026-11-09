@@ -6,13 +6,13 @@ import {JSDOM} from 'jsdom';
 const source=readFileSync(new URL('../src/finder/discogs_watch_ui.py',import.meta.url),'utf8');
 const html=source.split('PAGE = r"""')[1].split('"""',1)[0].replaceAll('@@NONCE@@','test');
 const tick=()=>new Promise<void>(r=>setImmediate(r));
-const fixture=()=>({csrf:'synthetic',monitor_enabled:true,watches:[{release_id:1,public_title:'Synthetic <script>alert(1)</script>',currency:'USD',item_price_ceiling:'40.00',any_price:false,enabled:true,revision:1,alert_initial_low:true,alert_price_drops:true,alert_count_increases:false,last_success:null,lowest_item_price:null,count:null,status:'waiting',notifications:{accepted:5,accepted_current_revision:2,pending:1,in_flight:0,uncertain:1}}]});
+const fixture=()=>({csrf:'synthetic',monitor_enabled:true,watches:[{release_id:1,public_title:'Synthetic <script>alert(1)</script>',currency:'USD',item_price_ceiling:'40.00',any_price:false,enabled:true,removed:false,revision:1,alert_initial_low:true,alert_price_drops:true,alert_count_increases:false,last_success:null,lowest_item_price:null,count:null,status:'waiting',notifications:{accepted:5,accepted_current_revision:2,pending:1,in_flight:0,uncertain:1}}]});
 async function app(handler?:(path:string,opts:any)=>Promise<any>,hash=''){
  const dom=new JSDOM(html,{url:'https://sniper.example/watches'+hash,runScripts:'outside-only'});
  const w=dom.window, requests:{path:string,body:any}[]=[];
  w.confirm=()=>true;
  w.scrollTo=()=>{};
- w.fetch=(async(path:any,opts:any={})=>{requests.push({path:String(path),body:opts.body?JSON.parse(opts.body):null});return handler?handler(String(path),opts):{ok:true,json:async()=>fixture()};}) as any;
+ w.fetch=(async(path:any,opts:any={})=>{requests.push({path:String(path),body:opts.body?JSON.parse(opts.body):null});return handler?handler(String(path),opts):{ok:true,json:async()=>String(path).endsWith('/save')?{saved:true}:fixture()};}) as any;
  w.eval(w.document.querySelector('script')!.textContent!);await tick();await tick();
  const input=(id:string,value:string)=>{const node=w.document.getElementById(id) as HTMLInputElement;node.value=value;node.dispatchEvent(new w.Event('input',{bubbles:true}));};
  const click=(selector:string)=>(w.document.querySelector(selector) as HTMLButtonElement).click();
@@ -256,6 +256,182 @@ test('Manual refresh updates recorded results without starting another check or 
 test('Price-capped watches retain their saved count-increase alert preference',async()=>{
  const a=await checkState({alert_count_increases:true});try{
   assert.match(a.doc.querySelector('.card details')!.textContent!,/Alert preferences: initial availability, price drops, count increases/);
+  assert.equal(a.requests.length,1);
+ }finally{a.close();}
+});
+
+function removalFixture(){
+ const s=fixture();
+ s.watches.push({...s.watches[0],release_id:2,public_title:'Synthetic paused record',enabled:false,revision:4});
+ s.watches.push({...s.watches[0],release_id:3,public_title:'Synthetic removed <script>record</script>',enabled:false,removed:true,revision:7});
+ return s;
+}
+
+test('Removed watches have a separate searchable recovery view and never count as paused',async()=>{
+ const a=await app(async()=>({ok:true,json:async()=>removalFixture()}));try{
+  assert.equal(a.doc.querySelectorAll('#watches .card').length,2);
+  assert.equal(a.doc.querySelectorAll('#removed-watches .card').length,1);
+  assert.match(a.doc.getElementById('count')!.textContent!,/1 enabled · 1 paused/);
+  assert.equal(a.doc.getElementById('removed-nav-count')!.textContent,'(1)');
+  assert.doesNotMatch(a.doc.getElementById('watches')!.textContent!,/Synthetic removed/);
+  assert.match(a.doc.getElementById('removed-watches')!.textContent!,/Synthetic removed <script>record<\/script>/);
+  assert.equal(a.doc.querySelectorAll('#removed-watches script').length,0);
+  assert.equal(a.doc.querySelector('#removed-watches .pill')!.textContent,'Removed');
+  assert.equal(a.doc.querySelector('#removed-watches [data-action="edit"]'),null);
+  assert.equal(a.doc.querySelector('#removed-watches [data-action="toggle"]'),null);
+  assert.equal(a.doc.querySelector('#removed-watches [data-action="remove"]'),null);
+  assert.equal(a.doc.querySelector('#removed-watches [data-action="restore"]')!.textContent,'Restore paused');
+  assert.match(a.doc.getElementById('removed-watches')!.textContent!,/not confirmed phone delivery/);
+  assert.match(a.doc.getElementById('removed-watches')!.textContent!,/Recorded notifications5/);
+  assert.doesNotMatch(a.doc.getElementById('removed-watches')!.textContent!,/Watch paused/);
+  a.input('removed-search','absent');assert.match(a.doc.getElementById('removed-watches')!.textContent!,/No removed watches match/);
+  a.input('removed-search','3');assert.equal(a.doc.querySelectorAll('#removed-watches .card').length,1);
+  assert.equal(a.requests.length,1);
+ }finally{a.close();}
+});
+
+test('Removal cancellation names the saved record and release, changes nothing, and keeps the draft',async()=>{
+ const a=await app();try{
+  a.input('release','99');a.input('title','Unsaved draft');a.input('price','12');
+  let message='';a.w.confirm=text=>{message=String(text);return false;};
+  a.click('[data-action="remove"]');await tick();
+  assert.match(message,/Synthetic <script>alert\(1\)<\/script>/);
+  assert.match(message,/Discogs release 1/);
+  assert.match(message,/new checks and queued alerts/);
+  assert.match(message,/already in progress may still arrive/);
+  assert.match(message,/settings and notification history stay in Removed/);
+  assert.match(message,/restoring keeps the watch paused/);
+  assert.equal(a.requests.length,1);
+  assert.equal((a.doc.getElementById('title') as HTMLInputElement).value,'Unsaved draft');
+  assert.equal((a.doc.querySelector('[data-action="remove"]') as HTMLButtonElement).disabled,false);
+ }finally{a.close();}
+});
+
+test('Confirmed removal sends only the action, identity, revision and token once, then refreshes recovery',async()=>{
+ const snapshot=fixture();let resolveSave:(value:any)=>void=()=>{};
+ const a=await app(async(path)=>path.endsWith('/state')?{ok:true,json:async()=>structuredClone(snapshot)}:new Promise(resolve=>{resolveSave=resolve;}));try{
+  a.input('title','Keep my unsaved draft');let confirms=0;a.w.confirm=()=>{confirms++;return true;};
+  a.click('[data-action="remove"]');a.click('[data-action="remove"]');
+  assert.equal(confirms,1);
+  assert.equal((a.doc.getElementById('refresh') as HTMLButtonElement).disabled,true);
+  assert.equal((a.doc.getElementById('refresh-removed') as HTMLButtonElement).disabled,true);
+  const saves=a.requests.filter(r=>r.path.endsWith('/save'));assert.equal(saves.length,1);
+  assert.deepEqual(saves[0].body,{action:'remove',release:'1',revision:1,csrf:'synthetic'});
+  snapshot.watches[0].removed=true;snapshot.watches[0].enabled=false;snapshot.watches[0].revision=2;
+  resolveSave({ok:true,json:async()=>({saved:true})});await tick();await tick();
+  assert.equal(a.requests.length,3);
+  assert.equal(a.doc.querySelectorAll('#watches .card').length,0);
+  assert.equal(a.doc.querySelectorAll('#removed-watches .card').length,1);
+  assert.match(a.doc.getElementById('status')!.textContent!,/^Watch removed/);
+  assert.equal((a.doc.getElementById('title') as HTMLInputElement).value,'Keep my unsaved draft');
+  assert.match(a.doc.getElementById('count')!.textContent!,/0 enabled · 0 paused/);
+ }finally{a.close();}
+});
+
+test('Restore is explicit and returns paused with a new revision; only a later Resume enables it',async()=>{
+ const snapshot=removalFixture();
+ const a=await app(async(path,opts)=>{if(path.endsWith('/save')){const body=JSON.parse(opts.body);const target=snapshot.watches.find(w=>String(w.release_id)===body.release)!;target.removed=false;target.enabled=body.action==='restore'?false:body.enabled;target.revision++;return {ok:true,json:async()=>({saved:true})};}return {ok:true,json:async()=>structuredClone(snapshot)};},'#removed');try{
+  a.input('title','Unrelated draft');
+  a.click('[data-action="restore"]');a.click('[data-action="restore"]');await tick();await tick();
+  let saves=a.requests.filter(r=>r.path.endsWith('/save'));assert.equal(saves.length,1);
+  assert.deepEqual(saves[0].body,{action:'restore',release:'3',revision:7,csrf:'synthetic'});
+  assert.equal(a.doc.querySelector('#watches [data-release="3"] .pill')!.textContent,'Paused');
+  assert.equal(a.doc.querySelector('#watches [data-release="3"] [data-action="toggle"]')!.textContent,'Resume');
+  assert.equal(a.doc.querySelectorAll('#removed-watches .card').length,0);
+  assert.match(a.doc.getElementById('status')!.textContent!,/restored and paused/);
+  assert.match(a.doc.getElementById('count')!.textContent!,/1 enabled · 2 paused/);
+  assert.equal((a.doc.getElementById('title') as HTMLInputElement).value,'Unrelated draft');
+  a.click('#watches [data-release="3"] [data-action="toggle"]');await tick();await tick();
+  saves=a.requests.filter(r=>r.path.endsWith('/save'));assert.equal(saves.length,2);assert.equal(saves[1].body.enabled,true);assert.equal(saves[1].body.revision,8);
+ }finally{a.close();}
+});
+
+for(const action of ['remove','restore']){
+ test(`A lost ${action} response locks further writes until explicit refresh and never retries`,async()=>{
+  const snapshot=removalFixture();const target=snapshot.watches.find(w=>w.release_id===(action==='remove'?1:3))!;
+  const a=await app(async(path)=>{if(path.endsWith('/save')){target.removed=action==='remove';target.enabled=false;target.revision++;throw Error('Failed to fetch');}return {ok:true,json:async()=>structuredClone(snapshot)};});try{
+   a.input('title','Retain after uncertain operation');a.click(`[data-action="${action}"]`);await tick();await tick();
+   assert.equal(a.requests.filter(r=>r.path.endsWith('/save')).length,1);
+   assert.match(a.doc.getElementById('status')!.textContent!,new RegExp('check whether it was '+(action==='remove'?'removed':'restored')));
+   assert.match(a.doc.getElementById('status')!.textContent!,/No automatic retry/);
+   assert.ok([...a.doc.querySelectorAll<HTMLButtonElement>('[data-action]')].every(button=>button.disabled));
+   a.click(`[data-action="${action}"]`);await tick();assert.equal(a.requests.length,2);
+   a.click('#refresh-removed');await tick();await tick();
+   assert.equal(a.requests.filter(r=>r.path.endsWith('/save')).length,1);
+   assert.equal((a.doc.getElementById('title') as HTMLInputElement).value,'Retain after uncertain operation');
+   assert.equal(a.doc.querySelectorAll(`#${action==='remove'?'removed-watches':'watches'} [data-release="${target.release_id}"]`).length,1);
+  }finally{a.close();}
+ });
+ test(`A stale ${action} conflicts without updating its revision or retrying`,async()=>{
+  let reads=0;const a=await app(async(path)=>path.endsWith('/state')?{ok:true,json:async()=>{const s=removalFixture();if(++reads>1)s.watches.forEach(w=>w.revision+=10);return s;}}:{ok:false,json:async()=>({error:'Saved watch changed. Refresh saved watches.'})});try{
+   a.click(`[data-action="${action}"]`);await tick();await tick();
+   assert.match(a.doc.getElementById('status')!.textContent!,/Saved watch changed/);
+   assert.equal(reads,1);assert.equal(a.requests.filter(r=>r.path.endsWith('/save')).length,1);
+   a.click('#refresh');await tick();await tick();
+   assert.equal(a.requests.filter(r=>r.path.endsWith('/save')).length,1);
+   a.click(`[data-action="${action}"]`);await tick();await tick();
+   const saves=a.requests.filter(r=>r.path.endsWith('/save'));assert.equal(saves.length,2);assert.equal(saves[1].body.revision,saves[0].body.revision+10);
+  }finally{a.close();}
+ });
+ test(`Confirmed ${action} is not reported as failed when the following state read fails`,async()=>{
+  let reads=0;const a=await app(async(path)=>path.endsWith('/state')?(++reads===1?{ok:true,json:async()=>removalFixture()}:{ok:false,json:async()=>({error:'State unavailable.'})}):{ok:true,json:async()=>({saved:true})});try{
+   a.click(`[data-action="${action}"]`);await tick();await tick();
+   assert.match(a.doc.getElementById('status')!.textContent!,new RegExp('^Watch '+(action==='remove'?'removed':'restored and paused')+'\\. State unavailable'));
+   assert.equal(a.requests.filter(r=>r.path.endsWith('/save')).length,1);assert.equal(reads,2);
+   assert.ok([...a.doc.querySelectorAll<HTMLButtonElement>('[data-action]')].every(button=>button.disabled));
+  }finally{a.close();}
+ });
+}
+
+test('An unverified successful HTTP response is uncertain rather than claiming a removal',async()=>{
+ const a=await app(async(path)=>({ok:true,json:async()=>path.endsWith('/state')?fixture():{saved:false}}));try{
+  a.click('[data-action="remove"]');await tick();await tick();
+  assert.match(a.doc.getElementById('status')!.textContent!,/save result could not be verified/);
+  assert.match(a.doc.getElementById('status')!.textContent!,/No automatic retry/);
+  assert.equal(a.requests.length,2);
+  assert.equal(a.doc.querySelectorAll('#watches .card').length,1);
+ }finally{a.close();}
+});
+
+test('Known removed releases cannot be added or edited into an active watch and recovery keeps the draft',async()=>{
+ for(const release of ['3','https://www.discogs.com/release/3-Synthetic','https://discogs.com/en/release/3?test=yes']){
+  const a=await app(async()=>({ok:true,json:async()=>removalFixture()}),'#add');try{
+   a.input('release',release);a.input('title','My unsaved replacement');a.input('price','10');
+   assert.equal((a.doc.getElementById('removed-hint') as HTMLElement).hidden,false);
+   assert.match(a.doc.getElementById('removed-hint')!.textContent!,/Restore the saved watch there first/);
+   assert.equal((a.doc.getElementById('save') as HTMLButtonElement).disabled,true);
+   a.submit();await tick();assert.equal(a.requests.length,1);
+   a.click('#view-removed');a.w.dispatchEvent(new a.w.HashChangeEvent('hashchange'));
+   assert.equal(a.w.location.hash,'#removed');assert.equal((a.doc.getElementById('removed-view') as HTMLElement).hidden,false);
+   assert.equal((a.doc.getElementById('title') as HTMLInputElement).value,'My unsaved replacement');
+   assert.equal((a.doc.getElementById('removed-search') as HTMLInputElement).value,'3');
+   assert.equal(a.requests.length,1);
+  }finally{a.close();}
+ }
+});
+
+test('A draft of a newly removed watch survives refresh but cannot silently re-enable it',async()=>{
+ let reads=0;const a=await app(async()=>({ok:true,json:async()=>{const s=fixture();if(++reads>1){s.watches[0].removed=true;s.watches[0].enabled=false;s.watches[0].revision=2;}return s;}}));try{
+  a.click('[data-action="edit"]');a.input('title','Old unsaved edit');a.click('#refresh');await tick();await tick();
+  assert.equal((a.doc.getElementById('title') as HTMLInputElement).value,'Old unsaved edit');
+  assert.equal((a.doc.getElementById('save') as HTMLButtonElement).disabled,true);
+  a.submit();await tick();assert.ok(a.requests.every(r=>r.path.endsWith('/state')));
+ }finally{a.close();}
+});
+
+test('Recovery navigation is read-only, supports deep links, and keeps an unsaved draft and unload guard',async()=>{
+ const a=await app(async()=>({ok:true,json:async()=>removalFixture()}),'#removed');try{
+  assert.equal((a.doc.getElementById('removed-view') as HTMLElement).hidden,false);
+  assert.equal(a.doc.getElementById('nav-removed')!.getAttribute('aria-current'),'page');
+  assert.match(a.doc.title,/Removed watches/);
+  a.input('title','Preserved navigation draft');
+  for(const view of ['add','removed','watches','removed','add']){
+   a.w.location.hash=view;a.w.dispatchEvent(new a.w.HashChangeEvent('hashchange'));
+   assert.equal([...a.doc.querySelectorAll<HTMLElement>('.layout>section')].filter(section=>!section.hidden).length,1);
+   assert.equal(a.doc.getElementById('nav-'+view)!.getAttribute('aria-current'),'page');
+  }
+  assert.equal((a.doc.getElementById('title') as HTMLInputElement).value,'Preserved navigation draft');
+  const leaving=new a.w.Event('beforeunload',{cancelable:true});a.w.dispatchEvent(leaving);assert.equal(leaving.defaultPrevented,true);
   assert.equal(a.requests.length,1);
  }finally{a.close();}
 });

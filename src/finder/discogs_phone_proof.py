@@ -27,6 +27,8 @@ from finder.discogs_price_alerts import (
 )
 from finder.discogs_price_messages import validate_price_message
 from finder.discogs_rules import RulesStore, amount
+from finder.discogs_watch_removals import SCHEMA as REMOVAL_SCHEMA
+from finder.discogs_watch_removals import require_removal_schema
 
 TABLE = "discogs_phone_proof_attempts"
 SCHEMA = f"""CREATE TABLE {TABLE} (
@@ -73,8 +75,18 @@ def _database(path, identity):
             raise ValueError("SQLite FULL synchronization unavailable.")
         if db.execute("PRAGMA application_id").fetchone()[0] != 1178882643:
             raise ValueError("Existing aggregate database required.")
-        if db.execute("SELECT count(*) FROM sqlite_master WHERE type='trigger'").fetchone()[0]:
-            raise ValueError("Unsupported source triggers.")
+        triggers = dict(db.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger'"))
+        removal_objects = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='discogs_price_removed'"
+        ).fetchone()
+        if triggers or removal_objects:
+            expected = {name: sql for name, sql in REMOVAL_SCHEMA.items() if "_guard" in name}
+            if triggers != expected:
+                raise ValueError("Unsupported source triggers.")
+            try:
+                require_removal_schema(db)
+            except RuntimeError:
+                raise ValueError("Unsupported source triggers.") from None
         if _pin(path) != identity:
             raise ValueError("Source database identity changed; no retry.")
         yield db

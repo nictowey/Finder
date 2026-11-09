@@ -16,11 +16,13 @@ from urllib.parse import urlsplit
 
 from finder.discogs_price_alerts import PriceLeadRule
 from finder.discogs_rules import release_id
+from finder.discogs_watch_removals import RemovedWatchError, require_removal_schema
 from finder.discogs_watch_ui import render_page
 
 PATH = "/watches"
 LIMIT = 200
 FIELDS = {"release", "title", "currency", "price", "any_price", "enabled", "revision", "csrf"}
+REMOVAL_FIELDS = {"action", "release", "revision", "csrf"}
 
 
 class WatchBackend:
@@ -39,13 +41,16 @@ class WatchBackend:
             db.execute("BEGIN")
             if db.execute("PRAGMA application_id").fetchone()[0] != 1178882643:
                 raise RuntimeError("Wrong workspace")
+            require_removal_schema(db)
             control = db.execute("SELECT enabled FROM discogs_price_control WHERE id=1").fetchone()
             if control is None:
                 raise RuntimeError("Missing control")
             rows = db.execute(
-                "SELECT r.revision,r.data,s.last_success,s.price,s.count,s.status "
+                "SELECT r.revision,r.data,s.last_success,s.price,s.count,s.status,"
+                "coalesce(m.removed,0) "
                 "FROM discogs_price_rules r LEFT JOIN discogs_price_samples s "
-                "ON r.release_id=s.release_id ORDER BY r.release_id",
+                "ON r.release_id=s.release_id LEFT JOIN discogs_price_removed m "
+                "ON r.release_id=m.release_id ORDER BY r.release_id",
             ).fetchall()
             # Only finalized provider acceptance counts as a recorded notification.
             # Attempts, queued work and uncertain sends are never delivery evidence.
@@ -67,13 +72,16 @@ class WatchBackend:
                 )
             }
             watches = []
-            for revision, data, last_success, price, count, status in rows:
+            for revision, data, last_success, price, count, status, removed in rows:
                 rule = PriceLeadRule.model_validate_json(data)
+                if removed not in (0, 1) or removed and rule.enabled:
+                    raise RuntimeError("Invalid watch removal state")
                 counts = history.get(rule.release_id, dict.fromkeys(count_names, 0))
                 watches.append(
                     {
                         **rule.model_dump(),
                         "revision": revision,
+                        "removed": removed == 1,
                         "last_success": last_success,
                         "lowest_item_price": price or None,
                         "count": count,
@@ -89,7 +97,14 @@ class WatchBackend:
             }
 
     def save(self, fields):
+        from finder.discogs_watch_broker import mutation_fields
+
+        fields = mutation_fields({key: value for key, value in fields.items() if key != "csrf"})
         ident = release_id(fields["release"])
+        if "action" in fields:
+            return self.alerts.set_removed(
+                ident, removed=fields["action"] == "remove", expected_revision=fields["revision"]
+            )
         if type(fields["title"]) is not str:
             raise ValueError("Use a text label or leave it blank")
         if type(fields["revision"]) is not int or fields["revision"] < 0:
@@ -98,6 +113,8 @@ class WatchBackend:
             raise ValueError("Use explicit settings")
         current = self.snapshot()
         old = next((w for w in current["watches"] if w["release_id"] == ident), None)
+        if old is not None and old["removed"]:
+            raise RemovedWatchError("Find this watch in Removed and restore it before editing.")
         if (old["revision"] if old else 0) != fields["revision"]:
             raise RuntimeError("Watch changed")
         if old is None and len(current["watches"]) >= LIMIT:
@@ -240,7 +257,7 @@ class WatchApp:
                 object_pairs_hook=_pairs,
                 parse_constant=lambda _: (_ for _ in ()).throw(ValueError()),
             )
-            if type(fields) is not dict or set(fields) != FIELDS:
+            if type(fields) is not dict or set(fields) not in (FIELDS, REMOVAL_FIELDS):
                 raise ValueError()
             if not self._consume(fields["csrf"], principal):
                 return reply(
@@ -260,6 +277,14 @@ class WatchApp:
                 {
                     "error": "Check the release, title, currency and positive price limit. "
                     "Refresh saved watches before trying again."
+                },
+            )
+        except RemovedWatchError:
+            return reply(
+                409,
+                {
+                    "error": "This watch is removed. Refresh, then find it in Removed and "
+                    "restore it before editing or resuming."
                 },
             )
         except RuntimeError:

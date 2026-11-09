@@ -93,6 +93,10 @@ def main(*, extra_gate=None):
         store.close()
         backend = WatchBackend(AggregatePriceAlerts.for_existing_store(database))
         baseline = backend.snapshot()
+        with sqlite3.connect(database) as db:
+            baseline_rules = db.execute(
+                "SELECT * FROM discogs_price_rules ORDER BY release_id"
+            ).fetchall()
         service = BrokerService(
             DirectReviewBackend(database), allowed_uid=os.getuid(), watch_backend=backend
         )
@@ -164,17 +168,25 @@ def main(*, extra_gate=None):
                 assert code == 200
                 return json.loads(raw)["csrf"]
 
-            def saved(revision, enabled, price):
+            def saved(revision, enabled, price, *, removed=False):
                 snapshot = client.snapshot()
                 assert snapshot["watches"][:-1] == baseline["watches"]
                 assert len(snapshot["watches"]) == 22
                 watch = snapshot["watches"][-1]
                 assert watch["revision"] == revision and watch["enabled"] is enabled
+                assert watch["removed"] is removed
                 assert watch["item_price_ceiling"] == price
                 assert watch["public_title"] == "Discogs release 999"
                 assert all(value == 0 for value in watch["notifications"].values())
                 assert snapshot["monitor_enabled"] is False
                 with sqlite3.connect(database) as db:
+                    assert (
+                        db.execute(
+                            "SELECT * FROM discogs_price_rules "
+                            "WHERE release_id<=21 ORDER BY release_id"
+                        ).fetchall()
+                        == baseline_rules
+                    )
                     assert (
                         db.execute("SELECT COUNT(*) FROM discogs_price_outbox").fetchone()[0] == 0
                     )
@@ -224,6 +236,63 @@ def main(*, extra_gate=None):
                 raise AssertionError("durable request ID replay accepted")
             except RuntimeError:
                 pass
+            # Exercise the real existing HTTP route and Unix-broker lifecycle wire
+            # against only the extra synthetic ID, never any of the 21 baseline rows.
+            with sqlite3.connect(database) as db:
+                db.execute(
+                    "UPDATE discogs_price_samples SET last_success=123,count=2,price='5.00',"
+                    "status='ok' WHERE release_id=999"
+                )
+                sample_before = db.execute(
+                    "SELECT * FROM discogs_price_samples WHERE release_id=999"
+                ).fetchone()
+            lifecycle = {"action": "remove", "release": "999", "revision": 3, "csrf": token()}
+            assert call("/watches/save", lifecycle)[0] == 200
+            assert call("/watches/save", lifecycle)[0] == 403
+            removed = saved(4, False, "6.99", removed=True)
+            assert removed["watches"][-1]["last_success"] == 123
+            with sqlite3.connect(database) as db:
+                assert (
+                    db.execute(
+                        "SELECT * FROM discogs_price_samples WHERE release_id=999"
+                    ).fetchone()
+                    == sample_before
+                )
+            for revision in (0, 3, 4):
+                fields.update(revision=revision, csrf=token())
+                code, raw = call("/watches/save", fields)
+                assert code == 409 and "Removed" in json.loads(raw)["error"]
+            lifecycle.update(action="restore", revision=3, csrf=token())
+            assert call("/watches/save", lifecycle)[0] == 409
+            lifecycle.update(revision=4, csrf=token())
+            assert call("/watches/save", lifecycle)[0] == 200
+            saved(5, False, "6.99")
+            # A distinct broker ID can remove once; replay cannot repeat it even
+            # after the same watch is explicitly restored to another revision.
+            removal_request = {
+                "v": 1,
+                "op": "watch_save",
+                "request_id": "cd" * 16,
+                "fields": {"action": "remove", "release": "999", "revision": 5},
+            }
+            assert client._watch_call(removal_request)["revision"] == 6
+            saved(6, False, "6.99", removed=True)
+            lifecycle.update(revision=6, csrf=token())
+            assert call("/watches/save", lifecycle)[0] == 200
+            after = saved(7, False, "6.99")
+            try:
+                client._watch_call(removal_request)
+                raise AssertionError("durable removal request ID replay accepted")
+            except RuntimeError:
+                pass
+            assert after["watches"][-1]["alert_price_drops"] is True
+            with sqlite3.connect(database) as db:
+                assert (
+                    db.execute(
+                        "SELECT * FROM discogs_price_samples WHERE release_id=999"
+                    ).fetchone()
+                    == sample_before
+                )
             service.allowed_uid = os.getuid() + 1
             try:
                 client.snapshot()
@@ -257,6 +326,7 @@ def main(*, extra_gate=None):
         print(
             "PASS real HTTP over Unix socket and broker IPC, both peer UID checks, "
             "owner boundary, CSRF/origin/durable replay, add/edit/no-op/stale/pause, "
+            "remove/restore-paused and retained samples/settings, "
             "zero notification counts/outbox, 21 preserved rules; "
             "no production or provider access; not a TLS/login/iOS persistence test"
         )
