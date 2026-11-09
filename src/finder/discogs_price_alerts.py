@@ -3,9 +3,12 @@
 import hashlib
 import json
 import math
+import sqlite3
 import time
 import uuid
+from contextlib import closing
 from decimal import Decimal
+from pathlib import Path
 
 from pydantic import Field, field_validator, model_validator
 
@@ -206,22 +209,66 @@ class AggregatePriceAlerts:
         finally:
             store.close()
 
-    def save_rule(self, rule, *, expected_revision):
+    @classmethod
+    def for_existing_store(cls, database, *, clock=time.time):
+        """Attach without creating tables, migrating state or changing controls.
+
+        Intended for the narrowly scoped DB-owning watch-management broker. The
+        path is operator supplied, not a web request field. Missing schema fails
+        closed; only the normal worker/operator initializer may provision it.
+        """
+        database = Path(database)
+        if database.is_symlink() or not database.is_file():
+            raise ValueError("An existing regular rules database is required.")
+        database = database.resolve()
+        required = {
+            "discogs_price_rules": {"release_id", "revision", "data"},
+            "discogs_price_samples": {"release_id", "last_success", "price", "count", "status"},
+            "discogs_price_control": {"id", "enabled"},
+            "discogs_price_outbox": {"release_id", "state"},
+            "discogs_price_extrema": {"release_id"},
+        }
+        with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as db:
+            if db.execute("PRAGMA application_id").fetchone()[0] != 1178882643:
+                raise ValueError("Not a Discogs rules workspace.")
+            for table, columns in required.items():
+                present = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+                if not columns <= present:
+                    raise ValueError("Existing aggregate watch schema is required.")
+        instance = cls.__new__(cls)
+        instance.database, instance.clock = database, clock
+        instance.poll_seconds = POLL_SECONDS
+        return instance
+
+    def save_rule(self, rule, *, expected_revision, maximum_rules=None, unchanged_is_noop=False):
         rule = PriceLeadRule.model_validate(
             rule.model_dump() if isinstance(rule, PriceLeadRule) else rule
         )
         if type(expected_revision) is not int:
             raise ValueError("Use a current rule revision.")
+        if type(unchanged_is_noop) is not bool:
+            raise ValueError("Use an explicit no-op policy.")
+        if maximum_rules is not None and (type(maximum_rules) is not int or maximum_rules <= 0):
+            raise ValueError("Use a positive watch limit.")
         store = RulesStore(self.database)
         try:
             with store.db:
                 store.db.execute("BEGIN IMMEDIATE")
                 old = store.db.execute(
-                    "SELECT revision FROM discogs_price_rules WHERE release_id=?",
+                    "SELECT revision,data FROM discogs_price_rules WHERE release_id=?",
                     (rule.release_id,),
                 ).fetchone()
                 if (old[0] if old else 0) != expected_revision:
                     raise RuntimeError("Alert rule changed; reload before saving.")
+                if old is not None and unchanged_is_noop:
+                    if PriceLeadRule.model_validate_json(old[1]) == rule:
+                        return expected_revision
+                if old is None and maximum_rules is not None:
+                    count = store.db.execute("SELECT COUNT(*) FROM discogs_price_rules").fetchone()[
+                        0
+                    ]
+                    if count >= maximum_rules:
+                        raise ValueError("Watch limit reached.")
                 revision = expected_revision + 1
                 store.db.execute(
                     "INSERT INTO discogs_price_rules VALUES(?,?,?) ON CONFLICT(release_id) "

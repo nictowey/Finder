@@ -6,6 +6,9 @@
         issuer acme https://acme-v02.api.letsencrypt.org/directory
     }
     # No access log. Existing global DEBUG/log settings must be checked first.
+    # Watch paths are optional: add only alongside both --enable-watch-management gates.
+    # @review path /listing-review /watches /watches/state /watches/save
+    # When enabling watches, raise max_size below to 4096 (app still enforces route limits).
     @review path /listing-review
     handle @review {
         route {

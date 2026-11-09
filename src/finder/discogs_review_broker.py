@@ -130,10 +130,11 @@ def _ledger_count(db):
 
 
 class BrokerService:
-    def __init__(self, backend, *, allowed_uid):
+    def __init__(self, backend, *, allowed_uid, watch_backend=None):
         if type(allowed_uid) is not int or allowed_uid <= 0:
             raise ValueError("non-root review UID required")
         self.backend, self.allowed_uid = backend, allowed_uid
+        self.watch_backend = watch_backend
 
     def _claim(self, request_id):
         with closing(
@@ -165,6 +166,8 @@ class BrokerService:
         if type(request) is not dict or type(request.get("v")) is not int or request["v"] != 1:
             return response
         try:
+            if request.get("op") in ("watch_snapshot", "watch_save"):
+                return self._watch_request(request)
             if request == {"v": 1, "op": "status"}:
                 with closing(
                     sqlite3.connect(self.backend.database.as_uri() + "?mode=ro", uri=True)
@@ -203,15 +206,49 @@ class BrokerService:
         except (ValueError, sqlite3.Error, OSError, ReadSafetyHalt):
             return {"v": 1, "ok": False, "error": "unavailable"}
 
+    def _watch_request(self, request):
+        from finder.discogs_watch_broker import project_snapshot, save_fields
+
+        if self.watch_backend is None:
+            return {"v": 1, "ok": False, "error": "invalid"}
+        try:
+            if request == {"v": 1, "op": "watch_snapshot"}:
+                return {
+                    "v": 1,
+                    "ok": True,
+                    "snapshot": project_snapshot(self.watch_backend.snapshot()),
+                }
+            if (
+                set(request) != {"v", "op", "request_id", "fields"}
+                or request["op"] != "watch_save"
+                or type(request["request_id"]) is not str
+                or not re.fullmatch(r"[a-f0-9]{32}", request["request_id"])
+            ):
+                return {"v": 1, "ok": False, "error": "invalid"}
+            fields = save_fields(request["fields"])
+            failure = self._claim(request["request_id"])
+            if failure:
+                return {"v": 1, "ok": False, "error": failure}
+            revision = self.watch_backend.save(fields)
+            return {"v": 1, "ok": True, "request_id": request["request_id"], "revision": revision}
+        except (ValueError, TypeError, KeyError, RuntimeError, sqlite3.Error, OSError):
+            return {"v": 1, "ok": False, "error": "unavailable"}
+
     def serve_connection(self, connection):
         # Authenticate before consuming any attacker-supplied frame; one operation per socket.
         try:
             uid = peer_uid(connection)
             if uid != self.allowed_uid:
                 return
-            request = receive(connection, REQUEST_LIMIT, timeout=2)
+            from finder.discogs_watch_broker import WATCH_REQUEST_LIMIT, WATCH_RESPONSE_LIMIT
+
+            request = receive(
+                connection, WATCH_REQUEST_LIMIT if self.watch_backend else REQUEST_LIMIT, timeout=2
+            )
             response = self.handle(request, uid)
-            framed = encode(response, RESPONSE_LIMIT)
+            framed = encode(
+                response, WATCH_RESPONSE_LIMIT if self.watch_backend else RESPONSE_LIMIT
+            )
             connection.settimeout(2)
             connection.sendall(framed)
         except (OSError, ValueError, ReadSafetyHalt, sqlite3.Error):
@@ -221,6 +258,9 @@ class BrokerService:
 
 class BrokerClient:
     """No fallback, reconnect or retry. Socket factory exists only for offline tests."""
+
+    request_limit = REQUEST_LIMIT
+    response_limit = RESPONSE_LIMIT
 
     def __init__(self, path, *, broker_uid, socket_factory=None):
         path = Path(path)
@@ -238,8 +278,8 @@ class BrokerClient:
                 connection.connect(str(self.path))
                 if peer_uid(connection) != self.broker_uid:
                     raise ProtocolError("wrong_broker")
-                connection.sendall(encode(request, REQUEST_LIMIT))
-                response = receive(connection, RESPONSE_LIMIT, timeout=30)
+                connection.sendall(encode(request, self.request_limit))
+                response = receive(connection, self.response_limit, timeout=30)
             if (
                 type(response.get("v")) is not int
                 or response["v"] != 1
@@ -320,12 +360,22 @@ def main(argv=None):
     parser.add_argument("--database", required=True, type=Path)
     parser.add_argument("--socket-directory", required=True, type=Path)
     parser.add_argument("--review-user", required=True)
+    parser.add_argument("--enable-watch-management", action="store_true")
     args = parser.parse_args(argv)
     if not args.database.is_absolute() or not args.database.is_file() or args.database.is_symlink():
         parser.error("existing real absolute database required")
     uid = pwd.getpwnam(args.review_user).pw_uid
     path = validate_directory(args.socket_directory)
-    service = BrokerService(DirectReviewBackend(args.database), allowed_uid=uid)
+    watch_backend = None
+    if args.enable_watch_management:
+        from finder.discogs_price_alerts import AggregatePriceAlerts
+        from finder.discogs_watch_manager import WatchBackend
+
+        watch_backend = WatchBackend(AggregatePriceAlerts.for_existing_store(args.database))
+        watch_backend.snapshot()  # Fail closed before binding; never initialize or migrate.
+    service = BrokerService(
+        DirectReviewBackend(args.database), allowed_uid=uid, watch_backend=watch_backend
+    )
     # Verify schema/status without provider traffic before binding.
     if not service.handle({"v": 1, "op": "status"}, uid).get("ok"):
         parser.error("broker state unavailable; operator provisioning required")

@@ -13,7 +13,8 @@ RuntimeDirectory=sniper-review
 RuntimeDirectoryMode=0750
 UMask=0007
 WorkingDirectory=/opt/sniper-review
-ExecStart=/opt/sniper-review/venv/bin/python -I -m finder.discogs_phone_review_server --broker-socket /run/sniper-review-broker/broker.sock --broker-user sniper --origin https://vps-a0c5b746.vps.ovh.us:8443 --principal review-owner --socket-directory /run/sniper-review
+# Add --enable-watch-management only after operator review; broker needs the same flag.
+ExecStart=/opt/sniper-review/venv/bin/python -I -m finder.discogs_phone_review_server --broker-socket /run/sniper-review-broker/broker.sock --broker-user sniper --origin https://review.example:8443 --principal review-owner --socket-directory /run/sniper-review
 Restart=no
 TimeoutStopSec=35
 KillSignal=SIGTERM

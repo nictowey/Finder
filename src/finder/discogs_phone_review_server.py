@@ -67,7 +67,17 @@ class PrivateBoundary:
         return self.app(environ, start_response)
 
 
-def build_app(*, database=None, backend=None, origin, principal, transport=None, clock=time.time):
+def build_app(
+    *,
+    database=None,
+    backend=None,
+    origin,
+    principal,
+    transport=None,
+    clock=time.time,
+    enable_watch_management=False,
+    watch_backend=None,
+):
     parsed = urlsplit(origin)
     if (
         parsed.scheme != "https"
@@ -84,7 +94,7 @@ def build_app(*, database=None, backend=None, origin, principal, transport=None,
     if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", principal):
         raise ValueError("invalid owner principal")
     boundary = PrivateBoundary(None, principal=principal)
-    boundary.app = PhoneReviewApp(
+    review_app = PhoneReviewApp(
         database=database,
         backend=backend,
         origin=origin,
@@ -92,6 +102,22 @@ def build_app(*, database=None, backend=None, origin, principal, transport=None,
         transport=transport,
         clock=clock,
     )
+    boundary.app = review_app
+    if enable_watch_management:
+        from .discogs_watch_manager import WatchApp
+
+        if watch_backend is None or database is not None:
+            raise ValueError("watch management requires a narrow broker backend, no web database")
+        watch_app = WatchApp(
+            backend=watch_backend, origin=origin, authenticate=boundary.authenticate, clock=clock
+        )
+
+        def route(environ, start_response):
+            if environ.get("PATH_INFO") in {"/watches", "/watches/state", "/watches/save"}:
+                return watch_app(environ, start_response)
+            return review_app(environ, start_response)
+
+        boundary.app = route
     return boundary
 
 
@@ -112,12 +138,26 @@ def main(argv=None):
     parser.add_argument("--origin", required=True)
     parser.add_argument("--principal", required=True)
     parser.add_argument("--socket-directory", required=True, type=Path)
+    parser.add_argument("--enable-watch-management", action="store_true")
     args = parser.parse_args(argv)
     if not args.broker_socket.is_absolute():
         parser.error("absolute private broker socket required")
     backend = BrokerClient(args.broker_socket, broker_uid=pwd.getpwnam(args.broker_user).pw_uid)
     socket = validate_socket_directory(args.socket_directory)
-    app = build_app(backend=backend, origin=args.origin, principal=args.principal)
+    from .discogs_watch_broker import WatchBrokerClient
+
+    watch_backend = (
+        WatchBrokerClient(args.broker_socket, broker_uid=backend.broker_uid)
+        if args.enable_watch_management
+        else None
+    )
+    app = build_app(
+        backend=backend,
+        origin=args.origin,
+        principal=args.principal,
+        enable_watch_management=args.enable_watch_management,
+        watch_backend=watch_backend,
+    )
     # Never emit request/exception payloads to journald. Waitress receives only
     # sanitized requests; there is no request access logger in this host.
     logging.disable(logging.CRITICAL)
@@ -133,7 +173,7 @@ def main(argv=None):
         channel_timeout=15,
         cleanup_interval=1,
         max_request_header_size=8192,
-        max_request_body_size=2048,
+        max_request_body_size=4096 if args.enable_watch_management else 2048,
         expose_tracebacks=False,
         clear_untrusted_proxy_headers=True,
         log_socket_errors=False,

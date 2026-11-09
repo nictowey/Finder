@@ -14,6 +14,7 @@ RuntimeDirectory=sniper-review-broker
 RuntimeDirectoryMode=0750
 UMask=0077
 WorkingDirectory=/opt/sniper-review
+# Add --enable-watch-management only after operator review; web host needs the same flag.
 ExecStart=/opt/sniper-review/venv/bin/python -I -m finder.discogs_review_broker --database /var/lib/sniper/rules.db --socket-directory /run/sniper-review-broker --review-user sniper-review
 Restart=no
 TimeoutStopSec=30
