@@ -235,11 +235,12 @@ def session_gate(directory, broker_endpoint, client, database, baseline):
         )
         # Remembered-device activity reads use the same private state route.
         # Keep the already-issued save token to prove reads do not consume it.
-        activity = {"action": "activity", "release_id": 999, "cursor": None}
+        activity_release = baseline["watches"][0]["release_id"]
+        activity = {"action": "activity", "release_id": activity_release, "cursor": None}
         before_activity = Path(database).read_bytes()
         response = call("/watches/state", cookie=first, fields=activity)
         assert response.status_code == 200
-        assert response.json()["activity"] == client.activity(999)
+        assert response.json()["activity"] == client.activity(activity_release)
         assert response.json()["activity"]["rows"] == []
         assert response.headers["cache-control"] == "no-store"
         assert call("/watches/state", fields=activity).status_code == 401
