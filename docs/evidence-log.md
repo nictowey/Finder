@@ -633,3 +633,31 @@ first-prediction retention and rollback. Embedded PostgreSQL does not validate m
 locking; `check_watch_postgres.py` now includes a disposable-schema migration, restore and
 concurrent worker/save gate that must pass before release. No production labels, schema or
 notifications were changed. A push already in flight cannot be recalled by saving feedback.
+
+## October 24, 2026 — private Discogs cloud checks (not deployed)
+
+Continued PR #107 from `a4a3768458fdebc3436427303db9d94ba5e4c13a`. Added optional
+public release-availability polling and supplied-listing rechecks with durable schedules,
+request claims, shared rate-limit cooldown, stop controls, payload expiration and a private
+in-app change log. The all-in filter remains unsatisfied when shipping/tax/fees are unknown.
+No automatic release-listing discovery or checkout implementation is claimed.
+
+Validation: one full Python run passed 3,048 tests and 41 subtests after removing an inherited
+workspace credential from the child test environment; the evaluator's credential guard was
+not changed. Final targeted adapter/rules/cloud/monitor/execution checks passed 211 tests,
+including 38 monitoring tests and both synthetic DOM fixtures. The serial Node suite passed
+all 110 tests on retry; the first attempt had a native V8 assertion in an unchanged PGlite
+fixture. Ruff lint/format, TypeScript typecheck and diff checks passed. The real Waitress
+loopback fixture passed with synthetic auth/provider data; all 14 read-only cart helper
+checks passed. These are application checks, not live market/checkout verification.
+
+The provided managed cloud browser reached a public release page and its sort controls.
+Discogs sign-in then showed Cloudflare bot verification. Stopped without any recovery retry,
+challenge interaction, alternate login route, profile export or protected-browser workaround.
+No authenticated cart DOM/checkout controls were verified. The prior screenshot's missing
+address, pending shipping and unknown total remain blockers.
+
+No new live-worker provider call, production database operation, deployment, credentials,
+orders, payments or email monitoring. Render's free tier does not provide an always-running
+process plus durable SQLite storage for this design. Paid hosting and persistent credential
+configuration still require explicit owner approval. See [monitor contract](discogs-monitor.md).

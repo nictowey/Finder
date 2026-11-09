@@ -1,0 +1,41 @@
+{
+  "provenance": "Actual hosted inspect-only DOM/frame observation on 2026-10-27, job f6ad0aec-9b04-4ac6-8d7b-8086f50367d8, deployed 94860b2. No initialization or payment.",
+  "provider_frame_diagnostic": {
+    "schema": "provider_frame_predicates_v1",
+    "selection": "one",
+    "total_count": 2,
+    "origin_count": 1,
+    "buttons_path_count": 1,
+    "matching_count": 1,
+    "truncated": false,
+    "candidates": [
+      {
+        "origin_matches": true,
+        "path_matches": true,
+        "credentials_absent": true,
+        "fragment_absent": true,
+        "allowlisted": true,
+        "direct_parent": true,
+        "element_visible": true,
+        "content_frame_matches": true,
+        "owner_frame_matches": true,
+        "provider_ready": true,
+        "existing_guest_form": false,
+        "card_visible": true,
+        "card_enabled": true,
+        "card_aria_enabled": true,
+        "url_stable": true,
+        "access": "normal",
+        "card_count": 1,
+        "error_stage": "none"
+      }
+    ]
+  },
+  "observed_card_control_attributes": {
+    "role": "link",
+    "data-funding-source": "card",
+    "aria-label": "Debit or Credit Card",
+    "aria-disabled": "false"
+  },
+  "limitation": "Full provider HTML and the earlier failure-time frame count were not retained. Tests reconstruct only the observed control attributes; delayed attachment/readiness and buyer/title/address extensions are explicitly simulated."
+}

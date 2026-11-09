@@ -1,0 +1,43 @@
+name: Device session native browser forms
+on:
+  push:
+    paths:
+      - 'src/finder/discogs_device_sessions.py'
+      - 'tests/device_session_browser/**'
+      - 'tests/cloud_browser/package*.json'
+      - 'deployment/DeviceSessionBrowser.Dockerfile'
+      - 'deployment/DeviceSessionBrowser.Dockerfile.dockerignore'
+      - 'tests/test_device_session_native_browser_contract.py'
+      - '.github/workflows/device-session-native-browser.yml'
+  pull_request:
+    paths:
+      - 'src/finder/discogs_device_sessions.py'
+      - 'tests/device_session_browser/**'
+      - 'tests/cloud_browser/package*.json'
+      - 'deployment/DeviceSessionBrowser.Dockerfile'
+      - 'deployment/DeviceSessionBrowser.Dockerfile.dockerignore'
+      - 'tests/test_device_session_native_browser_contract.py'
+      - '.github/workflows/device-session-native-browser.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: device-native-browser-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  chromium-webkit-native-form:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Build official pinned browser test dependencies
+        run: docker build -f deployment/DeviceSessionBrowser.Dockerfile -t finder-native-form .
+      - name: Click real native forms in Chromium and WebKit without network
+        run: |
+          test "$(docker image inspect --format '{{.Config.User}}' finder-native-form)" = '10001:10001'
+          timeout --signal=TERM --kill-after=10 180 docker run --rm --init \
+            --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --memory 2g --memory-swap 2g --cpus 2 --pids-limit 256 --shm-size 256m \
+            --tmpfs /tmp:rw,nosuid,size=512m,mode=1777 finder-native-form

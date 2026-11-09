@@ -1,0 +1,21 @@
+{
+  "provenance": "2026-10-26 normal Firefox Inspector on existing checkout after one server Go; no reload, console evaluation, or payment action",
+  "quantity_heading": {
+    "tag": "H2",
+    "class_prefix": "_checkout-summary__header_",
+    "text_nodes": ["Items ", "(1)"]
+  },
+  "country_labels": {"cart": "United States", "checkout": "US"},
+  "retained_renderer": {
+    "quantity_before_session_data": "Items ",
+    "address_before_buyer_info": "empty fragment",
+    "checkout_country_source": "buyerInfo.countryCode"
+  },
+  "navigation_result": {
+    "checkout_navigation_issued": true,
+    "card_initialization_issued": false,
+    "code": "visible_scope_evidence_missing",
+    "missing_fields": ["quantity", "destination"]
+  },
+  "limitation": "Missing quantity at the original instant is consistent with data hydration but was not captured; do not label that timing inference a proven live root cause."
+}

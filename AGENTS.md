@@ -1,5 +1,56 @@
 # Finder Agent Guide
 
+## October 24 continuation: read-only cloud monitoring
+
+The owner authorizes continuing PR #107 from `a4a3768458fdebc3436427303db9d94ba5e4c13a`,
+with tests and pushes. Cloud-only operation, no email monitoring, orders or payments.
+Ask before paid hosting or persistent credential/session configuration. Keep this PR draft;
+no merge or production deployment is part of the current implementation.
+The cloud opt-in monitor may use public GET `/marketplace/stats/{release_id}` and recheck
+owner-supplied listing IDs through the existing public listing reader. This extends the
+earlier manual-read-only exception below, not permission for scraping or undocumented APIs.
+Counts/lowest item prices are aggregate availability, never individual listing discovery,
+condition/seller qualification, a delivered quote or evidence of a new/sold copy.
+See `docs/discogs-monitor.md` for capabilities, schema, scheduling and remaining blockers.
+
+Preserve the prior explicit browser-recovery block. A managed cloud route reached a public
+release page; Discogs sign-in then displayed Cloudflare bot verification. Stop that attempt:
+no recovery retry, alternate sign-in route, session export or browser launch workaround.
+An offer to log in does not remove this restriction or authorize persistent credentials.
+No authenticated cart DOM or checkout controls have been verified.
+
+## Read-only cart inspection
+
+The owner explicitly prohibits orders. `scripts/discogs_cart_inspector.mjs` may only read
+an already-authorized current cart page and report blockers. It does not launch browsers,
+configure sessions, navigate, click, fill, check agreements, place orders or pay. Read
+`docs/discogs-cart-inspection.md` before extending it. The separate `discogs_cart_prepare.mjs`
+may click one verified visible Add to Cart link only for an explicitly authorized selected
+listing; it must reconcile uncertain outcomes and cannot remove items, accept terms, edit
+address/payment, or submit an order. Local browser inspection is not the production runtime.
+
+
+## October 24 cloud-only foundation
+
+The owner requires a cloud runtime, not an always-on Mac, and explicitly prohibits placing
+orders at this stage. `docs/cloud-foundation.md` describes the owner-authenticated WSGI
+foundation and unverified container/deployment gates. Existing local tools remain development
+fixtures, not the final cloud delivery. Do not deploy, configure real credentials/sessions,
+create access grants, or connect a real checkout adapter without further authorization.
+
+## October 24 private Discogs pivot
+
+The owner approved a private, Discogs-only primary local interface. `finder-local` now
+prepares exact-release target rules and evaluates synthetic observations; purchasing and
+automatic discovery remain disabled. Explicit opt-in public known-listing reads are supported. Read `docs/private-discogs-rules.md` first. The historical
+review UI is retained as `finder-review`, and legacy production data/code is not migrated.
+The historical scope below applies to retained eBay components, not the new rule editor.
+The approved known-listing reader uses only public GET /marketplace/listings/{id}; no credentials,
+background discovery, cart or order endpoints. This exception supersedes the historical catalog-only
+provider rule below for this adapter alone. No new paid services, live scraping, security bypass, purchase, merge or deployment is authorized
+by this local implementation. The new rule ceiling includes shipping, tax and fees; it does
+not reuse the historical pre-tax subtotal semantics below.
+
 ## Purpose and scope
 
 Finder is a pressing hunter under a **zero-cost development and product evaluation** mandate.

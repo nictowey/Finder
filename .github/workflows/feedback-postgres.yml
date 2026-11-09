@@ -53,6 +53,18 @@ jobs:
         run: |
           python -m pip install -e '.[dev]'
           npm ci
+      - name: Run complete offline regression checks
+        run: |
+          python -m pytest -q
+          ruff check src tests scripts
+          ruff format --check src tests scripts
+          npm test
+          npm run typecheck
+      - name: Exercise isolated watch manager Unix IPC and owner boundary
+        run: |
+          python scripts/discogs_watch_ipc_selftest.py
+          python scripts/discogs_device_session_ipc_selftest.py
+          python scripts/discogs_device_session_ipc_selftest.py --ip-origin
       - name: Exercise owner endpoint and provider worker integration
         env:
           FINDER_REQUIRE_REFRESH_INTEGRATION: '1'

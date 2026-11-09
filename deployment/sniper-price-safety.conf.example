@@ -1,0 +1,4 @@
+# TEMPLATE ONLY. Review and install only during an authorized all-reader cutover.
+# Preserve the existing unit, account, paths, permissions and restart policy.
+[Service]
+RestartPreventExitStatus=78

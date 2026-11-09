@@ -1,0 +1,12 @@
+# MERGE inside the existing global options block, not a second global block.
+# Exact :8443 listener only; do not change :443 ntfy timeouts.
+# Validate with the live Caddy 2.6.2 binary before applying.
+servers :8443 {
+    max_header_size 8KB
+    timeouts {
+        read_header 5s
+        read_body 10s
+        write 35s
+        idle 15s
+    }
+}

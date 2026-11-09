@@ -1,0 +1,431 @@
+{
+  "provenance": {
+    "kind": "sanitized_actual_hosted_cart_structure",
+    "source_commit": "1ea2be8491c44e193e400b5274f397a5262b948d",
+    "date": "2026-10-26",
+    "private_text_and_values": "not_captured",
+    "note": "Bounded structural observation; synthetic address values used separately in HTML tests are not captured DOM."
+  },
+  "cart_layout": {
+    "schema": "discogs_cart_layout_v1",
+    "collector_gate": {
+      "code": "not_run_private_text_guard",
+      "form_count": 0,
+      "order_container_count": 1,
+      "summary_count": 1,
+      "address_wrapper_count": 1,
+      "address_count": 0,
+      "go_count": 1,
+      "shipping_select_count": 1,
+      "selected_count": 1,
+      "option_count": 1,
+      "form_contains_row": false,
+      "container_contains_row": true,
+      "container_in_form": false,
+      "go_form_present": true,
+      "go_form_legacy": false,
+      "go_form_contains_row": true,
+      "go_in_container": true,
+      "shipping_form_present": true,
+      "shipping_form_same_as_go": true,
+      "shipping_in_container": true,
+      "selected_index": 0
+    },
+    "ancestry": [
+      {
+        "tag": "TBODY",
+        "hints": []
+      },
+      {
+        "tag": "TABLE",
+        "hints": []
+      },
+      {
+        "tag": "DIV",
+        "hints": []
+      },
+      {
+        "tag": "DIV",
+        "hints": [
+          "order_container",
+          "cart_order_prefix"
+        ]
+      },
+      {
+        "tag": "FORM",
+        "hints": []
+      },
+      {
+        "tag": "DIV",
+        "hints": []
+      },
+      {
+        "tag": "DIV",
+        "hints": []
+      },
+      {
+        "tag": "DIV",
+        "hints": []
+      }
+    ],
+    "tables": [
+      {
+        "hints": [],
+        "row_count": 1,
+        "rows": [
+          {
+            "hints": [
+              "order_row"
+            ],
+            "cell_count": 4,
+            "cells": [
+              {
+                "tag": "TD",
+                "hints": [],
+                "child_types": [
+                  "#text",
+                  "A",
+                  "#text"
+                ],
+                "public_text": null
+              },
+              {
+                "tag": "TD",
+                "hints": [],
+                "child_types": [
+                  "#text",
+                  "A",
+                  "BR",
+                  "#text",
+                  "SPAN",
+                  "#text"
+                ],
+                "public_text": null
+              },
+              {
+                "tag": "TD",
+                "hints": [],
+                "child_types": [
+                  "#text",
+                  "SPAN",
+                  "#text"
+                ],
+                "public_text": null
+              },
+              {
+                "tag": "TD",
+                "hints": [],
+                "child_types": [
+                  "#text",
+                  "A",
+                  "#text"
+                ],
+                "public_text": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "hints": [],
+        "row_count": 6,
+        "rows": [
+          {
+            "hints": [
+              "order_subtotal"
+            ],
+            "cell_count": 2,
+            "cells": [
+              {
+                "tag": "TD",
+                "hints": [],
+                "child_types": [
+                  "#text"
+                ],
+                "public_text": "Subtotal"
+              },
+              {
+                "tag": "TD",
+                "hints": [
+                  "order_summary_value"
+                ],
+                "child_types": [
+                  "#text",
+                  "SPAN",
+                  "#text"
+                ],
+                "public_text": "$0.10 USD"
+              }
+            ]
+          },
+          {
+            "hints": [],
+            "cell_count": 2,
+            "cells": [
+              {
+                "tag": "TD",
+                "hints": [],
+                "child_types": [
+                  "#text"
+                ],
+                "public_text": null
+              },
+              {
+                "tag": "TD",
+                "hints": [
+                  "order_summary_value",
+                  "order_shipping_amount"
+                ],
+                "child_types": [
+                  "#text",
+                  "SPAN",
+                  "#text"
+                ],
+                "public_text": "$4.95 USD"
+              }
+            ]
+          },
+          {
+            "hints": [],
+            "cell_count": 2,
+            "cells": [
+              {
+                "tag": "TD",
+                "hints": [],
+                "child_types": [
+                  "#text",
+                  "SPAN",
+                  "#text",
+                  "A",
+                  "#text",
+                  "A",
+                  "#text",
+                  "A",
+                  "#text",
+                  "A",
+                  "#text",
+                  "A",
+                  "#text"
+                ],
+                "public_text": null
+              },
+              {
+                "tag": "TD",
+                "hints": [
+                  "order_summary_value"
+                ],
+                "child_types": [
+                  "#text",
+                  "SPAN",
+                  "#text"
+                ],
+                "public_text": null
+              }
+            ]
+          },
+          {
+            "hints": [],
+            "cell_count": 1,
+            "cells": [
+              {
+                "tag": "TD",
+                "hints": [],
+                "child_types": [
+                  "#text"
+                ],
+                "public_text": null
+              }
+            ]
+          },
+          {
+            "hints": [
+              "order_total"
+            ],
+            "cell_count": 2,
+            "cells": [
+              {
+                "tag": "TD",
+                "hints": [],
+                "child_types": [
+                  "#text"
+                ],
+                "public_text": "Total"
+              },
+              {
+                "tag": "TD",
+                "hints": [
+                  "order_summary_value"
+                ],
+                "child_types": [
+                  "#text",
+                  "SPAN",
+                  "#text"
+                ],
+                "public_text": "$5.05 USD"
+              }
+            ]
+          },
+          {
+            "hints": [],
+            "cell_count": 1,
+            "cells": [
+              {
+                "tag": "TD",
+                "hints": [],
+                "child_types": [
+                  "#text"
+                ],
+                "public_text": null
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "address_shapes": [
+      {
+        "kind": "shipping_wrapper",
+        "tag": "DIV",
+        "hints": [
+          "shipping_address_prefix"
+        ],
+        "child_types": [
+          "#text",
+          "DIV",
+          "#text",
+          "DIV",
+          "#text"
+        ],
+        "children": [
+          {
+            "tag": "DIV",
+            "hints": [],
+            "child_types": [
+              "#text",
+              "H2",
+              "#text"
+            ]
+          },
+          {
+            "tag": "DIV",
+            "hints": [],
+            "child_types": [
+              "#text",
+              "DIV",
+              "#text"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "shipping_wrapper",
+        "tag": "DIV",
+        "hints": [
+          "shipping_address_prefix"
+        ],
+        "child_types": [
+          "#text",
+          "DIV",
+          "#text",
+          "DIV",
+          "#text"
+        ],
+        "children": [
+          {
+            "tag": "DIV",
+            "hints": [],
+            "child_types": [
+              "#text",
+              "H2",
+              "#text"
+            ]
+          },
+          {
+            "tag": "DIV",
+            "hints": [],
+            "child_types": [
+              "#text",
+              "DIV",
+              "#text"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "shipping_wrapper",
+        "tag": "DIV",
+        "hints": [
+          "shipping_address_prefix"
+        ],
+        "child_types": [
+          "#text",
+          "DIV",
+          "#text",
+          "P",
+          "#text",
+          "FORM",
+          "#text",
+          "DIV",
+          "#text",
+          "BR",
+          "#text"
+        ],
+        "children": [
+          {
+            "tag": "DIV",
+            "hints": [],
+            "child_types": [
+              "#text",
+              "P",
+              "#text"
+            ]
+          },
+          {
+            "tag": "P",
+            "hints": [],
+            "child_types": [
+              "#text"
+            ]
+          },
+          {
+            "tag": "FORM",
+            "hints": [],
+            "child_types": [
+              "#text",
+              "OTHER",
+              "#text",
+              "DIV",
+              "#text",
+              "DIV",
+              "#text",
+              "DIV",
+              "#text",
+              "DIV",
+              "#text",
+              "DIV",
+              "#text",
+              "DIV",
+              "#text",
+              "DIV"
+            ]
+          },
+          {
+            "tag": "DIV",
+            "hints": [],
+            "child_types": [
+              "#text",
+              "P",
+              "#text"
+            ]
+          },
+          {
+            "tag": "BR",
+            "hints": [],
+            "child_types": []
+          }
+        ]
+      }
+    ],
+    "truncated": true
+  }
+}

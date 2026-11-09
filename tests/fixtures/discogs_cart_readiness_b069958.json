@@ -1,0 +1,19 @@
+{
+  "provenance": "2026-10-26 reviewed exact-KC server preflight on b069958, after successful cart inspection and destination confirmation",
+  "result": {
+    "status": "blocked",
+    "code": "page_not_ready",
+    "checkout_navigation_issued": false,
+    "card_initialization_issued": false,
+    "scope_diagnostic": {
+      "stage": "cart",
+      "quantity_matches": true,
+      "destination_matches": true,
+      "address_present": true,
+      "address_container_count": 1,
+      "address_line_count": 4
+    }
+  },
+  "known_gate": "collectHostedGuestDom.ready requires document.readyState exactly complete",
+  "limitation": "The actual non-complete state token and resource delaying load were not exported. Interactive in regression tests is an explicitly synthetic reproduction."
+}

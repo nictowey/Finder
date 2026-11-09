@@ -1,0 +1,13 @@
+# TEMPLATE ONLY. Installing this template does not initialize or enable the watcher.
+[Unit]
+Description=Check Discogs aggregate monitor health every five minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=5min
+AccuracySec=10s
+RandomizedDelaySec=5s
+Unit=sniper-health.service
+
+[Install]
+WantedBy=timers.target

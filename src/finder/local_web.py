@@ -80,6 +80,10 @@ class LocalReviewServer(HTTPServer):
 
     def server_bind(self):
         # HTTPServer's implementation calls getfqdn; no DNS is needed for loopback.
+        # Honor subclass SO_REUSEADDR policy without DNS or SO_REUSEPORT. The
+        # legacy review server leaves this off; Sniper opts in for fast restarts.
+        if self.allow_reuse_address:
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.bind(self.server_address)
         self.server_address = self.socket.getsockname()
         self.server_name = "127.0.0.1"
