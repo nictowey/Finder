@@ -65,7 +65,7 @@ def encode(value, limit):
     return struct.pack("!I", len(data)) + data
 
 
-def receive(sock, limit, *, timeout, clock=time.monotonic):
+def receive(sock, limit, *, timeout, clock=time.monotonic, operation_limits=None):
     deadline = clock() + timeout
 
     def exact(size):
@@ -84,7 +84,12 @@ def receive(sock, limit, *, timeout, clock=time.monotonic):
     length = struct.unpack("!I", exact(4))[0]
     if not 0 < length <= limit:
         raise ProtocolError("frame_size")
-    return decode(exact(length))
+    value = decode(exact(length))
+    if operation_limits is not None:
+        for operation, operation_limit in operation_limits.items():
+            if value.get("op") == operation and length > operation_limit:
+                raise ProtocolError("frame_size")
+    return value
 
 
 def peer_uid(sock):
@@ -167,7 +172,7 @@ class BrokerService:
         if type(request) is not dict or type(request.get("v")) is not int or request["v"] != 1:
             return response
         try:
-            if request.get("op") in ("watch_snapshot", "watch_save"):
+            if request.get("op") in ("watch_snapshot", "watch_save", "watch_activity"):
                 return self._watch_request(request)
             if request == {"v": 1, "op": "status"}:
                 with closing(
@@ -213,6 +218,29 @@ class BrokerService:
         if self.watch_backend is None:
             return {"v": 1, "ok": False, "error": "invalid"}
         try:
+            if request.get("op") == "watch_activity":
+                from finder.discogs_watch_activity import (
+                    ACTIVITY_REQUEST_LIMIT,
+                    ACTIVITY_RESPONSE_LIMIT,
+                    activity_fields,
+                    project_activity,
+                )
+
+                if set(request) != {"v", "op", "release_id", "cursor"}:
+                    raise ValueError("Invalid activity")
+                encode(request, ACTIVITY_REQUEST_LIMIT)
+                fields = activity_fields({key: request[key] for key in ("release_id", "cursor")})
+                result = {
+                    "v": 1,
+                    "ok": True,
+                    "activity": project_activity(
+                        self.watch_backend.activity(fields["release_id"], fields["cursor"]),
+                        fields["release_id"],
+                        fields["cursor"],
+                    ),
+                }
+                encode(result, ACTIVITY_RESPONSE_LIMIT)
+                return result
             if request == {"v": 1, "op": "watch_snapshot"}:
                 return {
                     "v": 1,
@@ -243,15 +271,22 @@ class BrokerService:
             uid = peer_uid(connection)
             if uid != self.allowed_uid:
                 return
+            from finder.discogs_watch_activity import ACTIVITY_REQUEST_LIMIT
             from finder.discogs_watch_broker import WATCH_REQUEST_LIMIT, WATCH_RESPONSE_LIMIT
 
             request = receive(
-                connection, WATCH_REQUEST_LIMIT if self.watch_backend else REQUEST_LIMIT, timeout=2
+                connection,
+                WATCH_REQUEST_LIMIT if self.watch_backend else REQUEST_LIMIT,
+                timeout=2,
+                operation_limits={"watch_activity": ACTIVITY_REQUEST_LIMIT},
             )
             response = self.handle(request, uid)
-            framed = encode(
-                response, WATCH_RESPONSE_LIMIT if self.watch_backend else RESPONSE_LIMIT
-            )
+            limit = WATCH_RESPONSE_LIMIT if self.watch_backend else RESPONSE_LIMIT
+            if request.get("op") == "watch_activity":
+                from finder.discogs_watch_activity import ACTIVITY_RESPONSE_LIMIT
+
+                limit = ACTIVITY_RESPONSE_LIMIT
+            framed = encode(response, limit)
             connection.settimeout(2)
             connection.sendall(framed)
         except (OSError, ValueError, ReadSafetyHalt, sqlite3.Error):
@@ -275,14 +310,22 @@ class BrokerClient:
         )
 
     def _call(self, request):
+        request_limit, response_limit = self.request_limit, self.response_limit
+        if request.get("op") == "watch_activity":
+            from finder.discogs_watch_activity import (
+                ACTIVITY_REQUEST_LIMIT,
+                ACTIVITY_RESPONSE_LIMIT,
+            )
+
+            request_limit, response_limit = ACTIVITY_REQUEST_LIMIT, ACTIVITY_RESPONSE_LIMIT
         try:
             with self.socket_factory() as connection:
                 connection.settimeout(2)
                 connection.connect(str(self.path))
                 if peer_uid(connection) != self.broker_uid:
                     raise ProtocolError("wrong_broker")
-                connection.sendall(encode(request, self.request_limit))
-                response = receive(connection, self.response_limit, timeout=30)
+                connection.sendall(encode(request, request_limit))
+                response = receive(connection, response_limit, timeout=30)
             if (
                 type(response.get("v")) is not int
                 or response["v"] != 1

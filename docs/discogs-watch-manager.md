@@ -264,3 +264,34 @@ revision, so refresh cannot silently turn a stale draft into an overwrite. Reset
 uses the latest loaded settings. Writes lock on failure or uncertainty and are not
 automatically retried. Saving preferences does not submit or clear the watch-edit
 form. Removed watches have no preference controls.
+
+### Retained alert activity
+
+Each watch, including a removed watch, has a lazy **Alert activity** disclosure.
+It reads at most 20 retained aggregate alert records per page, newest immutable
+revision/episode first. Older pages replace rather than accumulate rows; this view
+stops after 10 pages and offers a return to newest. It is not a complete audit,
+check history, settings history, or record of individual new/sold copies. Pending
+records may combine observations. Separate page reads are not a frozen snapshot.
+
+Times mean **Observation used**, never sending or delivery time. Accepted means
+accepted by the notification service, not confirmed phone delivery. Leased means
+only recorded attempt-in-progress state; uncertain outcomes are not automatically
+retried. Historical amounts/currencies and labels are deliberately omitted because
+the original settings context was not retained. Current/earlier-settings labels
+are checked against the revision read in the same SQLite transaction.
+
+The existing owner-only `POST /watches/state` route accepts exactly
+`{"action":"activity","release_id":1,"cursor":null}` (or a cursor with exact
+`revision` and `episode` integer keys). GET state and POST save are unchanged.
+This POST is semantically read-only: authenticated JSON and exact-origin checks
+apply, but it never consumes save CSRF, a mutation receipt, or provider budget.
+No proxy allowlist expansion is needed. The dedicated private `watch_activity`
+IPC request contains only version, operation, release ID, and cursor. Requests
+are capped at 1 KiB and projected responses at 16 KiB. Only the existing DB-owning
+broker opens SQLite, in read-only mode, with a short timeout and VM work budget.
+Existing unique indexes support the bounded seek; no schema/index migration,
+reconciliation, outbox initialization, notification call or write occurs on read.
+The web UID still needs no database access. Deploy the broker and web consumers
+from the same release; an older broker fails this optional panel closed without
+changing saved watches. Keep the canonical private polling pacing module intact.

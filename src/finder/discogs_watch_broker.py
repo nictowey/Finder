@@ -171,6 +171,31 @@ class WatchBrokerClient(BrokerClient):
         except (ValueError, TypeError, KeyError):
             raise RuntimeError("Watch response unavailable") from None
 
+    def activity(self, release_id, cursor=None):
+        from finder.discogs_watch_activity import (
+            ACTIVITY_REQUEST_LIMIT,
+            ACTIVITY_RESPONSE_LIMIT,
+            activity_fields,
+            project_activity,
+        )
+
+        fields = activity_fields({"release_id": release_id, "cursor": cursor})
+        request = {"v": 1, "op": "watch_activity", **fields}
+        encode(request, ACTIVITY_REQUEST_LIMIT)
+        response = self._watch_call(request)
+        try:
+            encode(response, ACTIVITY_RESPONSE_LIMIT)
+            if (
+                set(response) != {"v", "ok", "activity"}
+                or type(response["v"]) is not int
+                or response["v"] != 1
+                or response["ok"] is not True
+            ):
+                raise ValueError("Invalid activity")
+            return project_activity(response["activity"], release_id, cursor)
+        except (ValueError, TypeError, KeyError):
+            raise RuntimeError("Alert activity unavailable") from None
+
     def save(self, fields):
         fields = mutation_fields({key: value for key, value in fields.items() if key != "csrf"})
         request_id = secrets.token_hex(16)

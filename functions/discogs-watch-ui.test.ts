@@ -574,3 +574,68 @@ test('Failed preference save locks actions, keeps choices, and reset uses refres
   assert.equal((a.doc.querySelector('[data-preference="alert_count_increases"]') as HTMLInputElement).checked,false);
  }finally{a.close();}
 });
+
+const activityPage=(episode=200,has_more=false,revision=1)=>({activity:{release_id:1,current_revision:revision,rows:Array.from({length:has_more?20:1},(_,i)=>({revision,episode:episode-i,observed_at:1794229200,state:'accepted',kind:'availability',settings_scope:'current'})),next_cursor:has_more?{revision,episode:episode-19}:null,has_more}});
+async function openActivity(a:Awaited<ReturnType<typeof app>>,release=1){const panel=a.doc.querySelector(`[data-release="${release}"] [data-activity]`) as HTMLDetailsElement;panel.open=true;panel.dispatchEvent(new a.w.Event('toggle'));await tick();await tick();return panel;}
+
+test('Activity is lazy, read-only, bounded to replacement pages and refreshes from newest',async()=>{
+ let page=0;const a=await app(async(path,opts)=>({ok:true,json:async()=>!opts.body?fixture():activityPage(1000-20*page++,true)}));try{
+  assert.equal(a.requests.length,1);a.input('title','Keep this draft');
+  const panel=await openActivity(a);
+  assert.deepEqual(a.requests[1].body,{action:'activity',release_id:1,cursor:null});
+  assert.equal(panel.querySelectorAll('li').length,20);
+  for(let i=1;i<10;i++){a.click('[data-activity-older]');await tick();await tick();assert.equal(panel.querySelectorAll('li').length,20);}
+  assert.equal((panel.querySelector('[data-activity-older]') as HTMLButtonElement).disabled,true);
+  assert.match(panel.textContent!,/Deeper retained records are not displayed/);
+  a.click('[data-activity-refresh]');await tick();await tick();assert.equal(a.requests.at(-1)!.body.cursor,null);
+  assert.equal((a.doc.getElementById('title') as HTMLInputElement).value,'Keep this draft');
+  assert.equal(a.requests.some(r=>r.path.endsWith('/save')),false);
+  assert.match(panel.textContent!,/Not confirmed phone delivery/);
+ }finally{a.close();}
+});
+
+test('Activity loading prevents duplicate requests and closed or replaced panels ignore stale responses',async()=>{
+ const pending:((value:any)=>void)[]=[];const snapshot=fixture();snapshot.watches.push({...snapshot.watches[0],release_id:2});
+ const a=await app(async(path,opts)=>!opts.body?{ok:true,json:async()=>snapshot}:new Promise(resolve=>pending.push(resolve)));try{
+  const first=await openActivity(a);assert.match(first.textContent!,/Loading alert activity/);
+  a.click('[data-activity-older]');a.click('[data-activity-refresh]');assert.equal(pending.length,1);
+  const second=await openActivity(a,2);assert.equal(first.open,false);assert.equal(pending.length,2);
+  pending[0]({ok:true,json:async()=>activityPage()});await tick();assert.equal(second.querySelectorAll('li').length,0);
+  const data=activityPage();data.activity.release_id=2;pending[1]({ok:true,json:async()=>data});await tick();await tick();assert.equal(second.querySelectorAll('li').length,1);
+  second.open=false;second.dispatchEvent(new a.w.Event('toggle'));await openActivity(a,2);assert.equal(pending.length,3);
+  a.click('#refresh');await tick();pending[2]({ok:true,json:async()=>data});await tick();assert.equal(a.doc.querySelectorAll('.activity li').length,0);
+ }finally{a.close();}
+});
+
+test('Activity states/reasons and observation labels are fixed text, including removed and earlier settings',async()=>{
+ const states=['accepted','pending','retry_wait','leased','uncertain','failed','expired','revoked'];
+ const labels=['Accepted by notification service','Queued','Queued for retry after rejection','Attempt in progress (recorded state)','Outcome uncertain','Attempt failed','Expired before acceptance','Cancelled before acceptance'];
+ const kinds=['availability','price_drop','count_increase','price_drop_and_count_increase'];
+ const snapshot=fixture();snapshot.watches[0].removed=true;snapshot.watches[0].revision=2;
+ const data=activityPage(20,false,2);data.activity.rows=states.map((state,i)=>({revision:1,episode:20-i,observed_at:1794229200,state,kind:kinds[i%4],settings_scope:'earlier'}));
+ const a=await app(async(path,opts)=>({ok:true,json:async()=>!opts.body?snapshot:data}),'#removed');try{
+  const panel=await openActivity(a);for(const label of labels)assert.ok(panel.textContent!.includes(label));
+  assert.equal(panel.querySelectorAll('time').length,8);assert.match(panel.textContent!,/Observation used:/);assert.match(panel.textContent!,/Earlier watch settings/);assert.match(panel.textContent!,/Not automatically retried/);
+  assert.doesNotMatch(panel.textContent!,/USD|Sent:|Delivered:|new listings/);assert.equal(panel.querySelector('[data-action]'),null);
+ }finally{a.close();}
+});
+
+test('Activity empty/error/malformed/revision mismatch are distinct and do not modify drafts or save token',async()=>{
+ let mode='empty';const a=await app(async(path,opts)=>{if(!opts.body)return {ok:true,json:async()=>fixture()};if(path.endsWith('/save'))return {ok:true,json:async()=>({saved:true})};if(mode==='error')throw Error('<script>private server error</script>');const data=activityPage();if(mode==='empty')data.activity.rows=[];if(mode==='revision'){data.activity.current_revision=2;data.activity.rows[0].settings_scope='earlier';}if(mode==='malformed')data.activity.rows[0].state='<script>alert(1)</script>';return {ok:true,json:async()=>data};});try{
+  a.input('release','9');a.input('price','20');a.input('title','Draft retained');const panel=await openActivity(a);assert.match(panel.textContent!,/No retained alert records/);
+  for(const next of ['error','malformed']){mode=next;a.click('[data-activity-refresh]');await tick();await tick();assert.match(panel.textContent!,/Alert activity unavailable. Your saved watches are unchanged/);assert.equal(panel.querySelectorAll('li,script').length,0);}
+  mode='revision';a.click('[data-activity-refresh]');await tick();await tick();
+  assert.match(panel.textContent!,/Watch settings changed; refresh activity/);
+  assert.equal(panel.querySelectorAll('li').length,0);assert.equal((a.doc.getElementById('title') as HTMLInputElement).value,'Draft retained');
+  a.submit();await tick();await tick();assert.equal(a.requests.find(r=>r.path.endsWith('/save'))!.body.csrf,'synthetic');
+ }finally{a.close();}
+});
+
+test('Closing a loading activity panel permits a fresh request while ignoring its old response',async()=>{
+ const pending:((value:any)=>void)[]=[];const a=await app(async(_path,opts)=>!opts.body?{ok:true,json:async()=>fixture()}:new Promise(resolve=>pending.push(resolve)));try{
+  const panel=await openActivity(a);panel.open=false;panel.dispatchEvent(new a.w.Event('toggle'));
+  await openActivity(a);assert.equal(pending.length,2);
+  pending[0]({ok:true,json:async()=>activityPage()});await tick();assert.match(panel.textContent!,/Loading alert activity/);assert.equal(panel.querySelectorAll('li').length,0);
+  pending[1]({ok:true,json:async()=>activityPage()});await tick();await tick();assert.equal(panel.querySelectorAll('li').length,1);
+ }finally{a.close();}
+});

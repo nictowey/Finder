@@ -359,6 +359,65 @@ def main(*, extra_gate=None):
             if extra_gate is not None:
                 extra_gate(directory, endpoint, client, database, after)
                 assert not errors
+
+            # Retained activity gate: actual HTTP parser and AF_UNIX framing,
+            # with only synthetic records, and no socket fallback/provider work.
+            next_window = app.clock() + 61
+            app.clock = lambda: next_window
+            activity_fields = {"action": "activity", "release_id": 999, "cursor": None}
+            code, raw = call("/watches/state", activity_fields)
+            assert code == 200 and json.loads(raw)["activity"]["rows"] == []
+            with sqlite3.connect(database) as db:
+                db.executemany(
+                    "INSERT INTO discogs_price_outbox "
+                    "(event_key,release_id,rule_revision,episode,price,observed_at,state,"
+                    "next_attempt,provider_id,destination_ref,token,last_error,lease_until) "
+                    "VALUES (?,999,10,?,'',?,'leased',0,?,?,?,?,0)",
+                    (
+                        (f"private-canary-{i}", i, 100 + i, *(["private-canary"] * 4))
+                        for i in range(21)
+                    ),
+                )
+            before_activity = database.read_bytes()
+            csrf = token()
+            code, raw = call("/watches/state", activity_fields)
+            assert code == 200 and b"private-canary" not in raw
+            first = json.loads(raw)["activity"]
+            assert first == client.activity(999)
+            assert len(first["rows"]) == 20 and first["has_more"]
+            assert all(row["state"] == "leased" for row in first["rows"])
+            code, raw = call(
+                "/watches/state",
+                {
+                    **activity_fields,
+                    "cursor": first["next_cursor"],
+                },
+            )
+            assert code == 200
+            last = json.loads(raw)["activity"]
+            assert [row["episode"] for row in last["rows"]] == [0]
+            assert not last["has_more"] and last["next_cursor"] is None
+            for headers in ({"Origin": "https://wrong.example"}, {"X-Review-Principal": "wrong"}):
+                assert call("/watches/state", activity_fields, **headers)[0] in (401, 403)
+            assert call("/watches/state?release_id=999", activity_fields)[0] != 200
+            try:
+                wrong_peer.activity(999)
+                raise AssertionError("activity accepted wrong broker UID")
+            except RuntimeError:
+                pass
+            service.allowed_uid = os.getuid() + 1
+            try:
+                client.activity(999)
+                raise AssertionError("activity accepted disallowed client UID")
+            except RuntimeError:
+                pass
+            finally:
+                service.allowed_uid = os.getuid()
+            assert database.read_bytes() == before_activity
+            # Reading history must not consume the one-use edit token.
+            preference_request["fields"]["revision"] = 10
+            assert call("/watches/save", {**preference_request["fields"], "csrf": csrf})[0] == 200
+            assert not errors
         finally:
             try:
                 try:
@@ -381,7 +440,8 @@ def main(*, extra_gate=None):
             "owner boundary, CSRF/origin/durable replay, add/edit/no-op/stale/pause, "
             "remove/restore-paused, preference save/no-op/stale/removed/replay, "
             "retained samples/settings, "
-            "zero notification counts/outbox, 21 preserved rules; "
+            "initial zero notification counts/outbox, bounded retained activity, "
+            "activity no-write/CSRF isolation, 21 preserved rules; "
             "no production or provider access; not a TLS/login/iOS persistence test"
         )
 

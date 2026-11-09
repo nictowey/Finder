@@ -21,7 +21,8 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
   try {
     for (const width of [390, 320, 960]) {
       const page = await browser.newPage({viewport: {width, height: 844}, isMobile: width < 600, hasTouch: width < 600, serviceWorkers: 'block'});
-      let saves = 0, reads = 0;
+      let saves = 0, reads = 0, activityReads = 0;
+      const activityBodies = [];
       let acceptDialogs = false, saveMode = 'ok', failRead = false, holdSave = false, releaseSave;
       const confirmations = [], saveBodies = [];
       let snapshot = structuredClone(fixture);
@@ -33,10 +34,24 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
         const url = new URL(route.request().url());
         if (url.origin !== 'https://sniper.example') return route.abort();
         if (url.pathname === '/watches') return route.fulfill({contentType: 'text/html', body: html});
-        if (url.pathname === '/watches/state') {
+        if (url.pathname === '/watches/state' && route.request().method() === 'GET') {
           reads++;
           if (failRead) return route.fulfill({status: 503, json: {error: 'State unavailable.'}});
           return route.fulfill({json: snapshot});
+        }
+        if (url.pathname === '/watches/state' && route.request().method() === 'POST') {
+          activityReads++;
+          const body = route.request().postDataJSON();
+          activityBodies.push(body);
+          assert.deepEqual(Object.keys(body).sort(), ['action', 'cursor', 'release_id']);
+          assert.equal(body.release_id, 1);
+          assert.equal(body.action, 'activity');
+          const revision = snapshot.watches[0].revision;
+          const episode = body.cursor ? body.cursor.episode - 1 : 40;
+          return route.fulfill({json: {activity: {release_id: 1, current_revision: revision,
+            rows: Array.from({length: 20}, (_, i) => ({revision, episode: episode - i,
+              observed_at: 1794229200, state: i ? 'pending' : 'accepted', kind: 'availability', settings_scope: 'current'})),
+            has_more: episode > 20, next_cursor: episode > 20 ? {revision, episode: episode - 19} : null}}});
         }
         if (url.pathname === '/watches/save') {
           saves++;
@@ -70,6 +85,26 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
       await page.addInitScript(() => localStorage.setItem('allow-pinch-zoom', 'true'));
       await page.goto('https://sniper.example/watches');
       await page.getByText('Synthetic Artist · Favourite Record').waitFor();
+      assert.equal(activityReads, 0);
+      await page.locator('[data-activity] summary').click();
+      await page.locator('.activity li').first().waitFor();
+      assert.equal(await page.locator('.activity li').count(), 20);
+      assert.equal(activityReads, 1);
+      assert.deepEqual(activityBodies[0], {action: 'activity', release_id: 1, cursor: null});
+      await page.locator('[data-activity-older]').focus();
+      await page.keyboard.press('Enter');
+      await page.getByText('End of retained alert records', {exact: true}).waitFor();
+      assert.equal(await page.locator('.activity li').count(), 20);
+      assert.equal(await page.locator('[data-activity-older]').isDisabled(), true);
+      assert.match(await page.locator('[data-activity]').innerText(), /Observation used:/);
+      assert.match(await page.locator('[data-activity]').innerText(), /Not confirmed phone delivery/);
+      assert.equal(await page.locator('[data-activity-status]').getAttribute('aria-live'), 'polite');
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      await page.locator('[data-activity-refresh]').click();
+      await page.getByText('Page 1 · Older retained records available.', {exact: true}).waitFor();
+      assert.equal(activityBodies.at(-1).cursor, null);
+      await page.locator('[data-activity] summary').click();
+      assert.equal(saves, 0);
       // These are computed-style/layout checks, not proof of physical iPhone autozoom.
       const viewport = await page.locator('meta[name="viewport"]').getAttribute('content');
       assert.match(viewport, /viewport-fit=cover/);

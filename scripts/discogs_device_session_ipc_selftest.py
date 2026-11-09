@@ -233,6 +233,35 @@ def session_gate(directory, broker_endpoint, client, database, baseline):
             revision=0,
             csrf=state(call, first)["csrf"],
         )
+        # Remembered-device activity reads use the same private state route.
+        # Keep the already-issued save token to prove reads do not consume it.
+        activity = {"action": "activity", "release_id": 999, "cursor": None}
+        before_activity = Path(database).read_bytes()
+        response = call("/watches/state", cookie=first, fields=activity)
+        assert response.status_code == 200
+        assert response.json()["activity"] == client.activity(999)
+        assert response.json()["activity"]["rows"] == []
+        assert response.headers["cache-control"] == "no-store"
+        assert call("/watches/state", fields=activity).status_code == 401
+        assert call("/watches/state", basic=True, fields=activity).status_code == 403
+        assert (
+            call(
+                "/watches/state",
+                cookie=first,
+                fields=activity,
+                headers={"Origin": "https://wrong.example"},
+            ).status_code
+            == 403
+        )
+        assert (
+            call(
+                "/watches/state",
+                cookie=second,
+                fields=activity,
+            ).status_code
+            == 200
+        )
+        assert Path(database).read_bytes() == before_activity
         # Cross-device watch CSRF must fail before any broker mutation.
         assert call("/watches/save", cookie=second, fields=fields).status_code == 403
         assert client.snapshot() == baseline

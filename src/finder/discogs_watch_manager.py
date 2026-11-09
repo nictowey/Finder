@@ -37,6 +37,11 @@ class WatchBackend:
         self.alerts = alerts
         self.database = Path(alerts.database).resolve()
 
+    def activity(self, release_id, cursor=None):
+        from finder.discogs_watch_activity import read_activity
+
+        return read_activity(self.database, release_id, cursor)
+
     def snapshot(self):
         with closing(sqlite3.connect(self.database.as_uri() + "?mode=ro", uri=True)) as db:
             db.execute("BEGIN")
@@ -246,7 +251,8 @@ class WatchApp:
         try:
             if method == "GET" and path == PATH + "/state":
                 return reply(200, {**self.backend.snapshot(), "csrf": self._token(principal)})
-            if method != "POST" or path != PATH + "/save":
+            activity_read = method == "POST" and path == PATH + "/state"
+            if method != "POST" or path not in (PATH + "/save", PATH + "/state"):
                 return reply(404, {"error": "Not found."})
             if (
                 env.get("HTTP_ORIGIN") != self.origin
@@ -255,7 +261,7 @@ class WatchApp:
             ):
                 return reply(403, {"error": "Invalid request origin."})
             length = env.get("CONTENT_LENGTH", "")
-            if not length.isdigit() or not 0 < int(length) <= 4096:
+            if not length.isdigit() or not 0 < int(length) <= (1024 if activity_read else 4096):
                 return reply(413, {"error": "Invalid request size."})
             raw = env["wsgi.input"].read(int(length))
             if len(raw) != int(length):
@@ -265,6 +271,33 @@ class WatchApp:
                 object_pairs_hook=_pairs,
                 parse_constant=lambda _: (_ for _ in ()).throw(ValueError()),
             )
+            if activity_read:
+                from finder.discogs_watch_activity import activity_fields, project_activity
+
+                try:
+                    if (
+                        type(fields) is not dict
+                        or set(fields) != {"action", "release_id", "cursor"}
+                        or fields["action"] != "activity"
+                    ):
+                        raise ValueError("Invalid activity")
+                    selectors = activity_fields(
+                        {key: fields[key] for key in ("release_id", "cursor")}
+                    )
+                    data = self.backend.activity(selectors["release_id"], selectors["cursor"])
+                    return reply(
+                        200,
+                        {
+                            "activity": project_activity(
+                                data, selectors["release_id"], selectors["cursor"]
+                            )
+                        },
+                    )
+                except (ValueError, TypeError, KeyError, RuntimeError, sqlite3.Error, OSError):
+                    return reply(
+                        503,
+                        {"error": "Alert activity unavailable. Your saved watches are unchanged."},
+                    )
             if type(fields) is not dict or set(fields) not in (
                 FIELDS,
                 REMOVAL_FIELDS,
