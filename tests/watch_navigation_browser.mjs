@@ -43,7 +43,16 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
           const body = route.request().postDataJSON();
           saveBodies.push(body);
           if (saveMode === 'conflict') return route.fulfill({status: 409, json: {error: 'Saved watch changed. Refresh saved watches.'}});
-          if (body.action) {
+          if (body.action === 'preferences') {
+            assert.deepEqual(Object.keys(body).sort(), ['action', 'alert_count_increases', 'alert_price_drops', 'csrf', 'release', 'revision']);
+            const watch = snapshot.watches.find(w => String(w.release_id) === body.release);
+            if (body.revision !== watch.revision) return route.fulfill({status: 409, json: {error: 'Saved watch changed. Refresh saved watches.'}});
+            if (watch.alert_price_drops !== body.alert_price_drops || watch.alert_count_increases !== body.alert_count_increases) {
+              watch.alert_price_drops = body.alert_price_drops;
+              watch.alert_count_increases = body.alert_count_increases;
+              watch.revision++;
+            }
+          } else if (body.action) {
             assert.deepEqual(Object.keys(body).sort(), ['action', 'csrf', 'release', 'revision']);
             const watch = snapshot.watches.find(w => String(w.release_id) === body.release);
             assert.equal(body.revision, watch.revision);
@@ -358,8 +367,84 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
       await page.locator('#nav-add').click();
       assert.equal(await page.locator('#title').inputValue(), 'Keep my unsaved removal draft');
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      // Separate preference flow on a retained synthetic paused watch. The
+      // existing removal/edit draft remains intact throughout.
+      await page.locator('#nav-watches').click();
+      await page.locator('#search').fill('');
+      await page.locator('#watch-filter').selectOption('all');
+      const preferenceCard = '#watches [data-release="3"]';
+      const countChoice = preferenceCard + ' [data-preference="alert_count_increases"]';
+      const applyPreferences = preferenceCard + ' [data-action="preferences"]';
+      const resetPreferences = preferenceCard + ' [data-action="reset-preferences"]';
+      const openPreferences = async () => {
+        const panel = page.locator(preferenceCard + ' [data-preference-panel]');
+        if (!(await panel.evaluate(node => node.open))) await panel.locator('summary').click();
+      };
+      await openPreferences();
+      const originalCount = snapshot.watches.find(w => w.release_id === 3).alert_count_increases;
+      const beforePreferences = saves;
+      await page.locator(countChoice).setChecked(!originalCount);
+      assert.equal(saves, beforePreferences);
+      for (const filter of ['enabled', 'paused', 'all']) await page.locator('#watch-filter').selectOption(filter);
+      for (const sort of ['name', 'checked', 'release']) await page.locator('#watch-sort').selectOption(sort);
+      await page.locator('#search').fill('no matches');
+      await page.locator('#search').fill('');
+      await page.locator('#refresh').click();
+      await page.locator('#refresh:not(:disabled)').waitFor();
+      await openPreferences();
+      assert.equal(await page.locator(countChoice).isChecked(), !originalCount);
+      await page.locator(resetPreferences).click();
+      await openPreferences();
+      assert.equal(await page.locator(countChoice).isChecked(), originalCount);
+      await page.locator(countChoice).setChecked(!originalCount);
+      holdSave = true;
+      await page.locator(applyPreferences).click();
+      await page.waitForFunction(() => document.querySelector('#refresh').disabled);
+      await page.locator(applyPreferences).evaluate(button => button.click());
+      while (!releaseSave) await new Promise(resolve => setTimeout(resolve, 5));
+      assert.equal(saves, beforePreferences + 1);
+      holdSave = false; releaseSave(); releaseSave = undefined;
+      await page.locator('#refresh:not(:disabled)').waitFor();
+      await openPreferences();
+      assert.match(await page.locator('#status').innerText(), /Alert preferences saved/);
+      assert.equal(await page.locator(countChoice).isChecked(), !originalCount);
+      await page.locator(countChoice).setChecked(originalCount);
+      const draftRevision = snapshot.watches.find(w => w.release_id === 3).revision;
+      snapshot.watches.find(w => w.release_id === 3).revision++;
+      await page.locator('#refresh').click();
+      await page.locator('#refresh:not(:disabled)').waitFor();
+      await openPreferences();
+      await page.locator(applyPreferences).click();
+      await page.waitForFunction(() => document.querySelector('#status').textContent.includes('Saved watch changed'));
+      assert.equal(saveBodies.at(-1).revision, draftRevision);
+      assert.equal(saves, beforePreferences + 2);
+      assert.equal(await page.locator(applyPreferences).isDisabled(), true);
+      await page.locator('#refresh').click();
+      await page.locator('#refresh:not(:disabled)').waitFor();
+      await openPreferences();
+      assert.equal(await page.locator(countChoice).isChecked(), originalCount);
+      await page.locator(resetPreferences).click();
+      await openPreferences();
+      await page.locator(countChoice).setChecked(originalCount);
+      saveMode = 'lost';
+      await page.locator(applyPreferences).click();
+      await page.waitForFunction(() => document.querySelector('#status').textContent.includes('No automatic retry'));
+      assert.equal(saves, beforePreferences + 3);
+      assert.equal(await page.locator(applyPreferences).isDisabled(), true);
+      saveMode = 'ok';
+      await page.locator('#refresh').click();
+      await page.locator('#refresh:not(:disabled)').waitFor();
+      await openPreferences();
+      assert.equal(saves, beforePreferences + 3);
+      await page.locator(resetPreferences).click();
+      await openPreferences();
+      assert.equal(await page.locator(countChoice).isChecked(), originalCount);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      await page.screenshot({path: `/artifacts/${engineName}-${width}-preferences.png`, fullPage: true});
+      await page.locator('#nav-add').click();
+      assert.equal(await page.locator('#title').inputValue(), 'Keep my unsaved removal draft');
       await page.close();
-      console.log(`PASS ${engineName} width ${width}: search, status filters, stable sorting, check results, navigation and Back/Forward, readable input fonts and labels, focus, enlarged text, unrestricted zoom metadata, draft guards, remove cancel and repeated click, removed recovery, paused restore, duplicate add, lost response, revision conflict and failed read without replay, overflow`);
+      console.log(`PASS ${engineName} width ${width}: search, status filters, stable sorting, check results, navigation and Back/Forward, readable input fonts and labels, focus, enlarged text, unrestricted zoom metadata, draft guards, remove cancel and repeated click, removed recovery, paused restore, duplicate add, lost response, revision conflict and failed read without replay, preference save/reset/filter/draft/conflict/uncertain recovery, overflow`);
     }
   } finally {
     await browser.close();

@@ -270,3 +270,51 @@ def test_optional_label_round_trips_through_broker(integration):
     payload["title"] = ""
     assert client.save(payload) == 2
     assert backend.snapshot()["watches"][0]["public_title"] == "Discogs release 1"
+
+
+def test_preferences_cross_http_ipc_and_reject_replay(integration):
+    _, watch, _, client, app, _ = integration
+    before = watch.snapshot()["watches"]
+    data = dict(
+        action="preferences",
+        release="1",
+        revision=1,
+        alert_price_drops=False,
+        alert_count_increases=False,
+        csrf=request(app)[1]["csrf"],
+    )
+    assert request(app, "/watches/save", data) == ("200 OK", {"saved": True})
+    assert request(app, "/watches/save", data)[0] == "403 Forbidden"
+    after = client.snapshot()["watches"]
+    assert after[1:] == before[1:]
+    assert after[0]["revision"] == 2
+    assert after[0]["alert_initial_low"] == before[0]["alert_initial_low"]
+    data["csrf"] = request(app)[1]["csrf"]
+    assert request(app, "/watches/save", data)[0] == "409 Conflict"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"alert_price_drops": 1},
+        {"alert_count_increases": "false"},
+        {"revision": True},
+        {"revision": 0},
+        {"revision": 2**63 - 1},
+        {"enabled": False},
+        {"action": "remove"},
+        {"alert_initial_low": False},
+    ],
+)
+def test_preferences_strict_schema(overrides):
+    from finder.discogs_watch_broker import mutation_fields
+
+    data = dict(
+        action="preferences",
+        release="1",
+        revision=1,
+        alert_price_drops=False,
+        alert_count_increases=False,
+    )
+    with pytest.raises(ProtocolError):
+        mutation_fields({**data, **overrides})

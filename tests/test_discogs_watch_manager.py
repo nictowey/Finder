@@ -368,3 +368,64 @@ def test_adding_watch_needs_only_release_and_price_not_a_label(setup):
     _, _, backend, app = setup
     assert call(app, "/watches/save", "POST", fields(app, title=""))["status"].startswith("200")
     assert backend.snapshot()["watches"][-1]["public_title"] == "Discogs release 99"
+
+
+def test_preferences_are_narrow_noop_revision_checked_and_reject_removed(setup):
+    db, alerts, backend, app = setup
+    before = backend.snapshot()["watches"]
+    data = dict(
+        action="preferences",
+        release="1",
+        revision=1,
+        alert_price_drops=True,
+        alert_count_increases=False,
+    )
+    assert backend.save(data) == 2
+    after = backend.snapshot()["watches"]
+    assert after[1:] == before[1:]
+    changed = {key for key in before[0] if before[0][key] != after[0][key]}
+    assert changed == {"revision", "alert_price_drops", "alert_count_increases"}
+    data["revision"] = 2
+    with sqlite3.connect(db) as conn:
+        before_dump = list(conn.iterdump())
+    assert backend.save(data) == 2
+    with sqlite3.connect(db) as conn:
+        assert list(conn.iterdump()) == before_dump
+    with pytest.raises(RuntimeError):
+        backend.save({**data, "revision": 1})
+    alerts.set_removed(1, removed=True, expected_revision=2)
+    from finder.discogs_watch_removals import RemovedWatchError
+
+    with pytest.raises(RemovedWatchError):
+        backend.save({**data, "revision": 3})
+
+
+def test_preference_backend_keeps_observations_pacing_and_accepted_history(tmp_path):
+    from test_discogs_aggregate_signals import Watch
+
+    watch = Watch(
+        tmp_path, alert_initial_low=True, alert_price_drops=False, alert_count_increases=False
+    )
+    watch.read()
+    assert watch.send() == "accepted"
+    watch.sql("UPDATE discogs_price_samples SET next_check=?,failures=2", (watch.now + 1800,))
+    samples = watch.sql("SELECT * FROM discogs_price_samples")
+    history = watch.events()
+    backend = WatchBackend(watch.alerts)
+    watch.revision = backend.save(
+        dict(
+            action="preferences",
+            release="123",
+            revision=1,
+            alert_price_drops=True,
+            alert_count_increases=True,
+        )
+    )
+    assert watch.sql("SELECT * FROM discogs_price_samples") == samples
+    assert watch.events() == history
+    assert watch.alerts.poll_once(object())["status"] == "idle"
+    watch.read("8", 8)
+    watch.now += 300
+    assert watch.send() == "idle"
+    watch.read("7", 9)
+    assert watch.send() == "accepted"

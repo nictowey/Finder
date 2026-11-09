@@ -293,6 +293,59 @@ def main(*, extra_gate=None):
                     ).fetchone()
                     == sample_before
                 )
+            # Advance only this fixture's injected monotonic rate-limit clock into
+            # a new request window; keep the production boundary and limit intact.
+            next_window = app.clock() + 61
+            app.clock = lambda: next_window
+            preferences = {
+                "action": "preferences",
+                "release": "999",
+                "revision": 7,
+                "alert_price_drops": False,
+                "alert_count_increases": True,
+                "csrf": token(),
+            }
+            assert call("/watches/save", preferences, Origin="https://wrong.example")[0] == 403
+            assert call("/watches/save", preferences)[0] == 200
+            assert call("/watches/save", preferences)[0] == 403
+            after = saved(8, False, "6.99")
+            assert after["watches"][-1]["alert_price_drops"] is False
+            assert after["watches"][-1]["alert_count_increases"] is True
+            assert after["watches"][-1]["alert_initial_low"] is True
+            preferences.update(revision=8, csrf=token())
+            assert call("/watches/save", preferences)[0] == 200
+            saved(8, False, "6.99")  # Preference no-op keeps its revision.
+            preferences.update(revision=7, csrf=token())
+            assert call("/watches/save", preferences)[0] == 409
+            saved(8, False, "6.99")
+            lifecycle.update(action="remove", revision=8, csrf=token())
+            assert call("/watches/save", lifecycle)[0] == 200
+            preferences.update(revision=9, csrf=token())
+            assert call("/watches/save", preferences)[0] == 409
+            saved(9, False, "6.99", removed=True)
+            lifecycle.update(action="restore", revision=9, csrf=token())
+            assert call("/watches/save", lifecycle)[0] == 200
+            after = saved(10, False, "6.99")
+            with sqlite3.connect(database) as db:
+                assert (
+                    db.execute(
+                        "SELECT * FROM discogs_price_samples WHERE release_id=999"
+                    ).fetchone()
+                    == sample_before
+                )
+            preference_request = {
+                "v": 1,
+                "op": "watch_save",
+                "request_id": "ef" * 16,
+                "fields": {key: value for key, value in preferences.items() if key != "csrf"},
+            }
+            preference_request["fields"]["revision"] = 10
+            assert client._watch_call(preference_request)["revision"] == 10
+            try:
+                client._watch_call(preference_request)
+                raise AssertionError("durable preference request ID replay accepted")
+            except RuntimeError:
+                pass
             service.allowed_uid = os.getuid() + 1
             try:
                 client.snapshot()
@@ -326,7 +379,8 @@ def main(*, extra_gate=None):
         print(
             "PASS real HTTP over Unix socket and broker IPC, both peer UID checks, "
             "owner boundary, CSRF/origin/durable replay, add/edit/no-op/stale/pause, "
-            "remove/restore-paused and retained samples/settings, "
+            "remove/restore-paused, preference save/no-op/stale/removed/replay, "
+            "retained samples/settings, "
             "zero notification counts/outbox, 21 preserved rules; "
             "no production or provider access; not a TLS/login/iOS persistence test"
         )

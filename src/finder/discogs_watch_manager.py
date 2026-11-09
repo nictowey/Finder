@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from finder.discogs_price_alerts import PriceLeadRule
 from finder.discogs_rules import release_id
+from finder.discogs_watch_broker import PREFERENCE_FIELDS
 from finder.discogs_watch_removals import RemovedWatchError, require_removal_schema
 from finder.discogs_watch_ui import render_page
 
@@ -101,6 +102,13 @@ class WatchBackend:
 
         fields = mutation_fields({key: value for key, value in fields.items() if key != "csrf"})
         ident = release_id(fields["release"])
+        if fields.get("action") == "preferences":
+            return self.alerts.configure_change_alerts(
+                ident,
+                alert_price_drops=fields["alert_price_drops"],
+                alert_count_increases=fields["alert_count_increases"],
+                expected_revision=fields["revision"],
+            )
         if "action" in fields:
             return self.alerts.set_removed(
                 ident, removed=fields["action"] == "remove", expected_revision=fields["revision"]
@@ -257,7 +265,11 @@ class WatchApp:
                 object_pairs_hook=_pairs,
                 parse_constant=lambda _: (_ for _ in ()).throw(ValueError()),
             )
-            if type(fields) is not dict or set(fields) not in (FIELDS, REMOVAL_FIELDS):
+            if type(fields) is not dict or set(fields) not in (
+                FIELDS,
+                REMOVAL_FIELDS,
+                PREFERENCE_FIELDS | {"csrf"},
+            ):
                 raise ValueError()
             if not self._consume(fields["csrf"], principal):
                 return reply(

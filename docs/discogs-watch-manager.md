@@ -241,3 +241,26 @@ Chromium two-contact touch input with a temporary test-only CSS zoom override as
 a positive control (removed afterward), plus normal one-finger scrolling and navigation taps. These tests must run in CI; computed styles or emulated
 Chromium gestures do not prove behavior on physical iPhone Safari or an installed
 home-screen app. Physical-device validation remains necessary before claiming it.
+
+## Per-watch change-alert preferences
+
+Retained watches expose explicit Save/Reset controls for aggregate price drops and
+aggregate count increases. Both operate within the watch's existing eligibility
+and price setting. Count increases do not prove a new individual listing. These
+controls do not mute availability-entry alerts; pause the watch to stop new checks
+and alerts. The initial-eligible-check flag is preserved, not exposed as a misleading
+availability on/off switch. New-watch defaults are unchanged.
+
+The exact `preferences` operation uses the existing owner, CSRF, single-use token
+and bounded IPC path. It changes only the two explicit boolean flags, requires the
+saved positive revision, rejects removed watches, and delegates to
+`configure_change_alerts`. Identical settings do not advance revision. A changed
+preference preserves price/threshold, samples, history and polling/backoff; the next
+fresh observation establishes the change baseline. Queued old-revision alerts are
+revoked and already claimed sends become uncertain and may still arrive.
+
+Preference drafts survive navigation, filtering and refresh with their original
+revision, so refresh cannot silently turn a stale draft into an overwrite. Reset
+uses the latest loaded settings. Writes lock on failure or uncertainty and are not
+automatically retried. Saving preferences does not submit or clear the watch-edit
+form. Removed watches have no preference controls.

@@ -12,6 +12,7 @@ from finder.discogs_rules import release_id
 WATCH_REQUEST_LIMIT = 4096
 WATCH_RESPONSE_LIMIT = 1048576
 SAVE_FIELDS = {"release", "title", "currency", "price", "any_price", "enabled", "revision"}
+PREFERENCE_FIELDS = {"action", "release", "revision", "alert_price_drops", "alert_count_increases"}
 RULE_FIELDS = set(PriceLeadRule.model_fields)
 SAMPLE_FIELDS = {"revision", "last_success", "lowest_item_price", "count", "status", "removed"}
 REMOVAL_FIELDS = {"action", "release", "revision"}
@@ -63,6 +64,19 @@ def mutation_fields(fields):
             or not 0 < fields["revision"] < 2**63 - 1
         ):
             raise ProtocolError("invalid_watch_action")
+        release_id(fields["release"])
+        return dict(fields)
+    if type(fields) is dict and set(fields) == PREFERENCE_FIELDS:
+        if (
+            fields["action"] != "preferences"
+            or type(fields["release"]) is not str
+            or not re.fullmatch(r"[1-9][0-9]{0,15}", fields["release"])
+            or type(fields["revision"]) is not int
+            or not 0 < fields["revision"] < 2**63 - 1
+            or type(fields["alert_price_drops"]) is not bool
+            or type(fields["alert_count_increases"]) is not bool
+        ):
+            raise ProtocolError("invalid_watch_preferences")
         release_id(fields["release"])
         return dict(fields)
     return save_fields(fields)

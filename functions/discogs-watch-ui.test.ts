@@ -256,7 +256,7 @@ test('Manual refresh updates recorded results without starting another check or 
 
 test('Price-capped watches retain their saved count-increase alert preference',async()=>{
  const a=await checkState({alert_count_increases:true});try{
-  assert.match(a.doc.querySelector('.card details')!.textContent!,/Alert preferences: initial availability, price drops, count increases/);
+  assert.match(a.doc.querySelector('.card details')!.textContent!,/Alert preferences: initial eligible check, price drops, aggregate count increases/);
   assert.equal(a.requests.length,1);
  }finally{a.close();}
 });
@@ -544,4 +544,33 @@ test('Pan-only styling has no toggle or stored preference and survives navigatio
  const noScript=new JSDOM(html);try{
   assertPanOnly(noScript.window.document);
  }finally{noScript.window.close();}
+});
+
+test('Preference drafts need explicit save, survive filtering and refresh, retain their revision',async()=>{
+ let reads=0;const a=await app(async(path)=>({ok:true,json:async()=>{if(path.endsWith('/save'))return {saved:true};const data=fixture();data.watches[0].revision=++reads;return data;}}));try{
+  a.input('title','Keep watch draft');
+  a.click('[data-preference="alert_count_increases"]');
+  assert.equal(a.requests.filter(r=>r.path.endsWith('/save')).length,0);
+  a.input('search','hidden');a.input('search','');
+  a.click('#refresh');await tick();await tick();
+  assert.equal((a.doc.querySelector('[data-preference="alert_count_increases"]') as HTMLInputElement).checked,true);
+  a.click('[data-action="preferences"]');a.click('[data-action="preferences"]');await tick();await tick();
+  const writes=a.requests.filter(r=>r.path.endsWith('/save'));assert.equal(writes.length,1);
+  assert.deepEqual(writes[0].body,{action:'preferences',release:'1',revision:1,alert_price_drops:true,alert_count_increases:true,csrf:'synthetic'});
+  assert.equal((a.doc.getElementById('title') as HTMLInputElement).value,'Keep watch draft');
+  assert.match(a.doc.getElementById('status')!.textContent!,/Alert preferences saved/);
+  assert.match(a.doc.querySelector('#watches')!.textContent!,/does not mute/);
+ }finally{a.close();}
+});
+
+test('Failed preference save locks actions, keeps choices, and reset uses refreshed saved settings',async()=>{
+ const a=await app(async(path)=>path.endsWith('/state')?{ok:true,json:async()=>fixture()}:{ok:false,json:async()=>({error:'Watch changed.'})});try{
+  a.click('[data-preference="alert_count_increases"]');a.click('[data-action="preferences"]');await tick();await tick();
+  assert.equal(a.requests.filter(r=>r.path.endsWith('/save')).length,1);
+  assert.equal((a.doc.querySelector('[data-action="preferences"]') as HTMLButtonElement).disabled,true);
+  a.click('#refresh');await tick();await tick();
+  assert.equal((a.doc.querySelector('[data-preference="alert_count_increases"]') as HTMLInputElement).checked,true);
+  a.click('[data-action="reset-preferences"]');
+  assert.equal((a.doc.querySelector('[data-preference="alert_count_increases"]') as HTMLInputElement).checked,false);
+ }finally{a.close();}
 });
