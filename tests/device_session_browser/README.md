@@ -52,3 +52,12 @@ After the code fix is included, native browser CI must pass for both engines bef
 claiming this regression covered. Real iPhone reopening and production Caddy/TLS
 behavior remain separate user/operator checks. There is no production session
 creation or automatic login retry in this test.
+
+The fixture waits for the native POST document's load/commit before inspecting
+cookies, then polls the browser cookie jar read-only for at most three seconds
+before explicit account navigation. It never injects cookies or repeats the POST.
+Diagnostics report only route method/path/status and cookie-presence/security
+booleans. If WebKit cannot commit a cookie from a synthetic fulfilled response,
+the test fails explicitly at that boundary rather than claiming retention or
+attempting a network fallback. Route callback failures are caught and reported
+without headers, bodies or cookie values so one engine cannot hide the other's result.

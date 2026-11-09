@@ -40,48 +40,65 @@ try {
       const context = await browser.newContext({serviceWorkers: 'block', acceptDownloads: false});
       const attempts = [];
       const unexpected = [];
+      const routeErrors = [];
       let policy = 'legacy';
       let attackHTML = '';
       await context.route('**/*', async route => {
         const request = route.request();
         const url = new URL(request.url());
-        if (url.origin === attacker && url.pathname === '/attack' && request.method() === 'GET') {
-          await route.fulfill({status: 200, headers: {'content-type': 'text/html',
-            'referrer-policy': 'origin', 'cache-control': 'no-store'}, body: attackHTML});
-          return;
+        let applicationStatus = null;
+        try {
+          if (url.origin === attacker && url.pathname === '/attack' && request.method() === 'GET') {
+            await route.fulfill({status: 200, headers: {'content-type': 'text/html',
+              'referrer-policy': 'origin', 'cache-control': 'no-store'}, body: attackHTML});
+            return;
+          }
+          if (url.origin !== origin || url.search || ![
+            '/session/login', '/session/start', '/session', '/session/logout',
+            '/session/revoke-all', '/manifest.webmanifest', '/session/icon.png', '/watches',
+          ].includes(url.pathname)) {
+            // Browsers may independently request a favicon; it is never fetched.
+            if (url.origin !== origin || url.pathname !== '/favicon.ico') unexpected.push(url.origin);
+            await route.abort('blockedbyclient');
+            return;
+          }
+          const requestHeaders = await request.allHeaders();
+          const response = await dispatch({path: url.pathname, method: request.method(),
+            headers: requestHeaders,
+            body: (request.postDataBuffer() ?? Buffer.alloc(0)).toString('base64'), policy});
+          applicationStatus = response.status;
+          console.log(JSON.stringify({phase: 'fixture-route', browser: name,
+            method: request.method(), path: url.pathname, application_status: applicationStatus,
+            request_has_session_cookie: /(?:^|;\s*)__Host-sniper_session=/.test(requestHeaders.cookie ?? ''),
+            response_has_set_cookie: typeof response.headers['set-cookie'] === 'string'}));
+          let fixtureStatus = response.status;
+          const fixtureHeaders = {...response.headers};
+          if (request.method() === 'POST' && url.pathname === '/session/start' && response.status === 303) {
+            // Playwright routes only the first URL of a redirect chain. In this
+            // network-disabled fixture, preserve the REAL application's decision
+            // and Set-Cookie, but do not ask the browser to follow that redirect.
+            assert.equal(response.headers.location, '/session');
+            fixtureStatus = 200;
+            delete fixtureHeaders.location;
+          }
+          if (request.method() === 'POST') {
+            attempts.push({origin: response.origin, status: response.status,
+              fixtureStatus, location: response.headers.location ?? null});
+            console.log(JSON.stringify({phase: 'native-post', browser: name, policy,
+              origin: response.origin, application_status: response.status,
+              fixture_delivery_status: fixtureStatus,
+              expected_location: response.headers.location ?? null}));
+          }
+          await route.fulfill({status: fixtureStatus, headers: fixtureHeaders,
+            body: Buffer.from(response.body, 'base64')});
+        } catch {
+          // Never leak headers/body/cookie values or leave an unhandled route error.
+          const failure = {browser: name, method: request.method(), path: url.pathname,
+            application_status: applicationStatus};
+          routeErrors.push(failure);
+          console.error(JSON.stringify({phase: 'fixture-route-failed', ...failure}));
+          try { await route.abort('failed'); } catch { /* Route may already be handled. */ }
         }
-        if (url.origin !== origin || url.search || ![
-          '/session/login', '/session/start', '/session', '/session/logout',
-          '/session/revoke-all', '/manifest.webmanifest', '/session/icon.png', '/watches',
-        ].includes(url.pathname)) {
-          // Browsers may independently request a favicon; it is never fetched.
-          if (url.origin !== origin || url.pathname !== '/favicon.ico') unexpected.push(url.origin);
-          await route.abort('blockedbyclient');
-          return;
-        }
-        const response = await dispatch({path: url.pathname, method: request.method(),
-          headers: await request.allHeaders(),
-          body: (request.postDataBuffer() ?? Buffer.alloc(0)).toString('base64'), policy});
-        let fixtureStatus = response.status;
-        const fixtureHeaders = {...response.headers};
-        if (request.method() === 'POST' && url.pathname === '/session/start' && response.status === 303) {
-          // Playwright routes only the first URL of a redirect chain. In this
-          // network-disabled fixture, preserve the REAL application's decision
-          // and Set-Cookie, but do not ask the browser to follow that redirect.
-          assert.equal(response.headers.location, '/session');
-          fixtureStatus = 200;
-          delete fixtureHeaders.location;
-        }
-        if (request.method() === 'POST') {
-          attempts.push({origin: response.origin, status: response.status,
-            fixtureStatus, location: response.headers.location ?? null});
-          console.log(JSON.stringify({phase: 'native-post', browser: name, policy,
-            origin: response.origin, application_status: response.status,
-            fixture_delivery_status: fixtureStatus,
-            expected_location: response.headers.location ?? null}));
-        }
-        await route.fulfill({status: fixtureStatus, headers: fixtureHeaders,
-          body: Buffer.from(response.body, 'base64')});
       });
       const page = await context.newPage();
       page.setDefaultTimeout(15000);
@@ -92,6 +109,10 @@ try {
           page.getByRole('button', {name}).click(),
         ]);
         await response.finished();
+        // Response-body completion can precede document/cookie commit in WebKit.
+        // Wait for the normalized native POST navigation, not only its headers.
+        await page.waitForURL(origin + '/session/start', {waitUntil: 'load'});
+        await page.waitForLoadState('load');
         return response.status();
       }
 
@@ -110,6 +131,21 @@ try {
       assert.equal(await submit('Remember this device for 30 days'), 200);
       assert.equal(attempts.at(-1).location, '/session');
       assert.equal(attempts.at(-1).fixtureStatus, 200);
+      // Observe cookie commit before issuing another navigation. This bounded
+      // read-only poll never creates cookies or repeats a request/mutation.
+      let committedCookie;
+      const cookieDeadline = Date.now() + 3000;
+      do {
+        committedCookie = (await context.cookies(origin)).find(item => item.name === '__Host-sniper_session');
+        if (committedCookie) break;
+        await page.waitForTimeout(50);
+      } while (Date.now() < cookieDeadline);
+      console.log(JSON.stringify({phase: 'cookie-commit', browser: name,
+        present: Boolean(committedCookie), secure: committedCookie?.secure === true,
+        http_only: committedCookie?.httpOnly === true,
+        same_site_strict: committedCookie?.sameSite === 'Strict'}));
+      assert.ok(committedCookie, `${name}: synthetic Set-Cookie was not committed after native navigation`);
+      assert.deepEqual(routeErrors, [], 'Synthetic route failures must not be hidden');
       // Separate explicit navigation, not evidence of native 303 redirect handling.
       const account = await page.goto(origin + '/session');
       assert.equal(account.status(), 200);
@@ -141,6 +177,7 @@ try {
       assert.equal(attempts.at(-1).origin, attacker, `${name}: foreign origin evidence must be browser-generated`);
       assert.equal(attempts.at(-1).status, 403, `${name}: cross-origin native form must be denied`);
       assert.deepEqual(unexpected, [], 'No unexpected application network destination');
+      assert.deepEqual(routeErrors, [], 'Synthetic route failures must not be hidden');
       console.log(JSON.stringify({status: 'passed', browser: name, version: browser.version(),
         legacy_native_origin: attempts[0].origin, legacy_status: attempts[0].status,
         current_native_origin: attempts[1].origin, current_status: attempts[1].status,

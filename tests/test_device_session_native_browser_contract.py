@@ -140,3 +140,19 @@ def test_browser_fixture_preserves_decision_without_claiming_native_redirect():
     assert "fixture_delivery_status: fixtureStatus" in script
     assert "if (failures.length) throw new AggregateError" in script
     assert "if (browser) await browser.close()" in script
+
+
+def test_browser_waits_for_cookie_commit_and_catches_route_errors():
+    script = (ROOT / "tests/device_session_browser/native_form.mjs").read_text()
+    assert "await page.waitForURL(origin + '/session/start', {waitUntil: 'load'})" in script
+    assert "await page.waitForLoadState('load')" in script
+    assert "const cookieDeadline = Date.now() + 3000" in script
+    assert script.index("assert.ok(committedCookie") < script.index(
+        "const account = await page.goto"
+    )
+    assert "present: Boolean(committedCookie)" in script
+    assert "routeErrors.push(failure)" in script
+    assert "phase: 'fixture-route-failed'" in script
+    assert "await route.abort('failed')" in script
+    assert "addCookies" not in script
+    assert "document.cookie =" not in script

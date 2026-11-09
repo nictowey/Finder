@@ -7,10 +7,11 @@ const source=readFileSync(new URL('../src/finder/discogs_watch_ui.py',import.met
 const html=source.split('PAGE = r"""')[1].split('"""',1)[0].replaceAll('@@NONCE@@','test');
 const tick=()=>new Promise<void>(r=>setImmediate(r));
 const fixture=()=>({csrf:'synthetic',monitor_enabled:true,watches:[{release_id:1,public_title:'Synthetic <script>alert(1)</script>',currency:'USD',item_price_ceiling:'40.00',any_price:false,enabled:true,revision:1,alert_initial_low:true,alert_price_drops:true,alert_count_increases:false,last_success:null,lowest_item_price:null,count:null,status:'waiting',notifications:{accepted:5,accepted_current_revision:2,pending:1,in_flight:0,uncertain:1}}]});
-async function app(handler?:(path:string,opts:any)=>Promise<any>){
- const dom=new JSDOM(html,{url:'https://sniper.example/watches',runScripts:'outside-only'});
+async function app(handler?:(path:string,opts:any)=>Promise<any>,hash=''){
+ const dom=new JSDOM(html,{url:'https://sniper.example/watches'+hash,runScripts:'outside-only'});
  const w=dom.window, requests:{path:string,body:any}[]=[];
  w.confirm=()=>true;
+ w.scrollTo=()=>{};
  w.fetch=(async(path:any,opts:any={})=>{requests.push({path:String(path),body:opts.body?JSON.parse(opts.body):null});return handler?handler(String(path),opts):{ok:true,json:async()=>fixture()};}) as any;
  w.eval(w.document.querySelector('script')!.textContent!);await tick();await tick();
  const input=(id:string,value:string)=>{const node=w.document.getElementById(id) as HTMLInputElement;node.value=value;node.dispatchEvent(new w.Event('input',{bubbles:true}));};
@@ -99,4 +100,59 @@ test('A release and price can be submitted without a separate record label',asyn
   a.input('release','99');a.input('price','12');a.submit();await tick();await tick();
   const save=a.requests.find(r=>r.path.endsWith('/save'))!;assert.equal(save.body.title,'');assert.equal(save.body.release,'99');assert.equal(save.body.price,'12');
  }finally{a.close();}
+});
+
+
+test('Navigation shows only one workspace and preserves unsaved input',async()=>{
+ const a=await app();try{
+  const hidden=(id:string)=>(a.doc.getElementById(id) as HTMLElement).hidden;
+  assert.equal(hidden('add-view'),true);assert.equal(hidden('watches-view'),false);
+  a.w.location.hash='add';a.w.dispatchEvent(new a.w.HashChangeEvent('hashchange'));
+  assert.equal(hidden('add-view'),false);assert.equal(hidden('watches-view'),true);
+  assert.equal(a.doc.getElementById('nav-add')!.getAttribute('aria-current'),'page');
+  a.input('title','Keep this draft');a.input('release','99');
+  a.w.location.hash='watches';a.w.dispatchEvent(new a.w.HashChangeEvent('hashchange'));
+  assert.equal(hidden('add-view'),true);assert.equal(hidden('watches-view'),false);
+  a.w.location.hash='add';a.w.dispatchEvent(new a.w.HashChangeEvent('hashchange'));
+  assert.equal((a.doc.getElementById('title') as HTMLInputElement).value,'Keep this draft');
+  assert.equal(a.requests.filter(r=>r.path.endsWith('/save')).length,0);
+ }finally{a.close();}
+});
+
+test('Watch cards keep verbose history collapsed, editing opens its own view',async()=>{
+ const a=await app();try{
+  assert.equal((a.doc.querySelector('#watches details') as HTMLDetailsElement).open,false);
+  a.click('[data-action="edit"]');
+  a.w.dispatchEvent(new a.w.HashChangeEvent('hashchange'));
+  assert.equal((a.doc.getElementById('watches-view') as HTMLElement).hidden,true);
+  assert.equal((a.doc.getElementById('add-view') as HTMLElement).hidden,false);
+  assert.match(a.doc.title,/Edit watch/);
+  a.click('#cancel');a.w.dispatchEvent(new a.w.HashChangeEvent('hashchange'));
+  assert.equal((a.doc.getElementById('add-view') as HTMLElement).hidden,true);
+  assert.equal(a.requests.filter(r=>r.path.endsWith('/save')).length,0);
+ }finally{a.close();}
+});
+
+test('Confirmed save returns to watches without repeating the write',async()=>{
+ const a=await app();try{
+  a.w.location.hash='add';a.w.dispatchEvent(new a.w.HashChangeEvent('hashchange'));
+  a.input('release','99');a.input('price','12');a.submit();await tick();await tick();
+  a.w.dispatchEvent(new a.w.HashChangeEvent('hashchange'));
+  assert.equal(a.w.location.hash,'#watches');
+  assert.equal((a.doc.getElementById('add-view') as HTMLElement).hidden,true);
+  assert.equal(a.requests.filter(r=>r.path.endsWith('/save')).length,1);
+ }finally{a.close();}
+});
+
+
+test('Direct Add link opens its form and empty watchlist offers an Add action',async()=>{
+ const a=await app(undefined,'#add');try{
+  assert.equal((a.doc.getElementById('add-view') as HTMLElement).hidden,false);
+  assert.equal((a.doc.getElementById('watches-view') as HTMLElement).hidden,true);
+ }finally{a.close();}
+ const empty=await app(async()=>({ok:true,json:async()=>({...fixture(),watches:[]})}));try{
+  empty.click('#watches button');empty.w.dispatchEvent(new empty.w.HashChangeEvent('hashchange'));
+  assert.equal(empty.w.location.hash,'#add');
+  assert.equal((empty.doc.getElementById('add-view') as HTMLElement).hidden,false);
+ }finally{empty.close();}
 });
