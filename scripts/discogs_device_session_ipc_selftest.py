@@ -11,13 +11,13 @@ HTTPS and real-device persistence remain separate deployment gates.
 import argparse
 import re
 import sqlite3
-import threading
 from contextlib import contextmanager
 from email.utils import parsedate_to_datetime
 from http.cookies import SimpleCookie
 from pathlib import Path
 
 import httpx
+from discogs_watch_ipc_selftest import FixtureHTTPRunner
 from discogs_watch_ipc_selftest import main as watch_gate
 from waitress import create_server
 
@@ -107,8 +107,7 @@ def http_app(directory, broker_endpoint, watch_client, session_path, now, genera
         max_request_body_size=4096,
         max_request_header_size=8192,
     )
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
+    runner = FixtureHTTPRunner(server)
     http = httpx.Client(
         transport=httpx.HTTPTransport(uds=str(endpoint)),
         base_url="http://" + HOST,
@@ -122,12 +121,10 @@ def http_app(directory, broker_endpoint, watch_client, session_path, now, genera
     try:
         yield call
     finally:
-        http.close()
-        server.task_dispatcher.shutdown()
-        server.close()
-        server.asyncore.close_all(map=server._map)
-        thread.join(timeout=3)
-        assert not thread.is_alive(), "Synthetic HTTP listener did not stop"
+        try:
+            http.close()
+        finally:
+            runner.stop()
 
 
 def requester(http, rate_clock):

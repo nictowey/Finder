@@ -1,5 +1,6 @@
 """Synthetic real-IPC gate. No production paths, provider calls or notifications."""
 
+import errno
 import json
 import os
 import socket
@@ -18,6 +19,55 @@ from finder.discogs_review_broker import BrokerClient, BrokerService, initialize
 from finder.discogs_rules import RulesStore
 from finder.discogs_watch_broker import WatchBrokerClient
 from finder.discogs_watch_manager import WatchBackend
+
+
+class FixtureHTTPRunner:
+    """Test-only Waitress lifecycle: tolerate only the documented close/select race."""
+
+    def __init__(self, server):
+        self.server = server
+        self.closing = threading.Event()
+        self.errors = []
+        self.close_ebadf = 0
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        try:
+            self.server.run()
+        except BaseException as error:
+            if isinstance(error, OSError) and error.errno == errno.EBADF and self.closing.is_set():
+                # close_all can invalidate a descriptor already in select().
+                self.close_ebadf += 1
+            else:
+                self.errors.append(error)
+
+    def stop(self):
+        server = self.server
+        cleanup_errors = []
+        try:
+            server.task_dispatcher.shutdown(timeout=3)
+        except BaseException as error:
+            cleanup_errors.append(error)
+        # Do not suppress EBADF during normal service or worker draining.
+        self.closing.set()
+        try:
+            server.close()
+        except BaseException as error:
+            cleanup_errors.append(error)
+        try:
+            server.asyncore.close_all(map=server._map)
+        except BaseException as error:
+            cleanup_errors.append(error)
+        self.thread.join(timeout=3)
+        assert not self.thread.is_alive(), "Synthetic HTTP listener did not stop"
+        assert not server.task_dispatcher.threads, "Synthetic HTTP workers did not stop"
+        assert not server._map, "Synthetic HTTP descriptors remain open"
+        unexpected = self.errors + cleanup_errors
+        if unexpected:
+            raise AssertionError(
+                "Unexpected synthetic HTTP thread/cleanup failure"
+            ) from unexpected[0]
 
 
 def main(*, extra_gate=None):
@@ -68,7 +118,7 @@ def main(*, extra_gate=None):
 
         thread = threading.Thread(target=serve, daemon=True)
         thread.start()
-        http_server = http_thread = http = None
+        http_server = http_runner = http = None
         try:
             client = WatchBrokerClient(endpoint, broker_uid=os.getuid())
             assert client.snapshot() == baseline
@@ -91,8 +141,7 @@ def main(*, extra_gate=None):
                 max_request_body_size=4096,
                 max_request_header_size=8192,
             )
-            http_thread = threading.Thread(target=http_server.run, daemon=True)
-            http_thread.start()
+            http_runner = FixtureHTTPRunner(http_server)
             transport = httpx.HTTPTransport(uds=str(http_endpoint))
             http = httpx.Client(transport=transport, base_url="http://watch.example", timeout=5)
 
@@ -188,26 +237,29 @@ def main(*, extra_gate=None):
             if extra_gate is not None:
                 extra_gate(directory, endpoint, client, database, after)
                 assert not errors
-            print(
-                "PASS real HTTP over Unix socket and broker IPC, both peer UID checks, "
-                "owner boundary, CSRF/origin/durable replay, add/edit/no-op/stale/pause, "
-                "zero notification counts/outbox, 21 preserved rules; "
-                "no production or provider access; not a TLS/login/iOS persistence test"
-            )
         finally:
-            if http is not None:
-                http.close()
-            if http_server is not None:
-                http_server.task_dispatcher.shutdown()
-                http_server.close()
-                http_server.asyncore.close_all(map=http_server._map)
-            if http_thread is not None:
-                http_thread.join(timeout=3)
-                assert not http_thread.is_alive()
-            stop.set()
-            thread.join(timeout=2)
-            listener.close()
-            assert not thread.is_alive()
+            try:
+                try:
+                    if http is not None:
+                        http.close()
+                finally:
+                    if http_runner is not None:
+                        http_runner.stop()
+            finally:
+                stop.set()
+                try:
+                    thread.join(timeout=2)
+                finally:
+                    listener.close()
+                assert not thread.is_alive(), "Synthetic broker listener did not stop"
+                assert not errors, "Unexpected synthetic broker thread failure"
+
+        print(
+            "PASS real HTTP over Unix socket and broker IPC, both peer UID checks, "
+            "owner boundary, CSRF/origin/durable replay, add/edit/no-op/stale/pause, "
+            "zero notification counts/outbox, 21 preserved rules; "
+            "no production or provider access; not a TLS/login/iOS persistence test"
+        )
 
 
 if __name__ == "__main__":

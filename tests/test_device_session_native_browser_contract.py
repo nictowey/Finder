@@ -72,3 +72,55 @@ def test_native_browser_ci_is_opt_in_synthetic_and_network_isolated():
     assert ".getByRole('button'" in script and ").click()" in script
     assert "setExtraHTTPHeaders" not in script
     assert "ignoreHTTPSErrors" not in script
+
+
+def test_dockerfile_specific_context_allows_only_required_browser_inputs():
+    # Docker uses this adjacent file instead of the root .dockerignore. Keep
+    # parent-directory exceptions explicit so nested COPY inputs can be reached.
+    ignore = ROOT / "deployment/DeviceSessionBrowser.Dockerfile.dockerignore"
+    lines = ignore.read_text().splitlines()
+    assert lines[0] == "**"
+    assert {line for line in lines if line.startswith("!")} == {
+        "!pyproject.toml",
+        "!README.md",
+        "!src/",
+        "!src/**",
+        "!tests/",
+        "!tests/cloud_browser/",
+        "!tests/cloud_browser/package.json",
+        "!tests/cloud_browser/package-lock.json",
+        "!tests/device_session_browser/",
+        "!tests/device_session_browser/native_form.mjs",
+        "!tests/device_session_browser/wsgi_bridge.py",
+        "!deployment/",
+        "!deployment/DeviceSessionBrowser.Dockerfile",
+        "!deployment/DeviceSessionBrowser.Dockerfile.dockerignore",
+    }
+    for denied in (
+        "**/__pycache__",
+        "**/*.pyc",
+        "**/.env*",
+        "**/*.db",
+        "**/*.sqlite*",
+        "**/node_modules",
+        "**/*.pem",
+        "**/*.key",
+    ):
+        assert lines.index(denied) > max(i for i, line in enumerate(lines) if line.startswith("!"))
+    for source in (
+        "pyproject.toml",
+        "README.md",
+        "tests/cloud_browser/package.json",
+        "tests/cloud_browser/package-lock.json",
+        "tests/device_session_browser/native_form.mjs",
+        "tests/device_session_browser/wsgi_bridge.py",
+    ):
+        assert (ROOT / source).is_file()
+        assert "!" + source in lines
+    dockerfile = (ROOT / "deployment/DeviceSessionBrowser.Dockerfile").read_text()
+    assert (
+        "COPY tests/cloud_browser/package.json tests/cloud_browser/package-lock.json" in dockerfile
+    )
+    assert "COPY tests/device_session_browser ./tests/device_session_browser/" in dockerfile
+    workflow = (ROOT / ".github/workflows/device-session-native-browser.yml").read_text()
+    assert workflow.count("'deployment/DeviceSessionBrowser.Dockerfile.dockerignore'") == 2
