@@ -437,7 +437,7 @@ test('Recovery navigation is read-only, supports deep links, and keeps an unsave
 });
 
 
-test('Mobile controls use readable fonts and preserve browser zoom and labels',async()=>{
+test('Mobile controls use readable fonts and preserve viewport zoom and labels',async()=>{
  const a=await app();try{
   const viewport=a.doc.querySelector('meta[name="viewport"]')!.getAttribute('content')!;
   assert.match(viewport,/viewport-fit=cover/);
@@ -514,4 +514,32 @@ test('Last-success sorting keeps epoch timestamps ahead of unknown dates and fai
    assert.ok(Number.parseFloat(a.w.getComputedStyle(select).minHeight)>=44);
   }
  }finally{a.close();}
+});
+
+
+test('Pinch preference is reversible, read-only, and independent of form locks and navigation',async()=>{
+ const a=await app();try{
+  const toggle=a.doc.getElementById('allow-pinch-zoom') as HTMLInputElement;
+  assert.equal((a.doc.getElementById('zoom-option') as HTMLElement).hidden,false);
+  assert.equal(toggle.checked,false);
+  assert.equal(a.doc.documentElement.classList.contains('pinch-locked'),true);
+  a.click('#allow-pinch-zoom');
+  assert.equal(a.doc.documentElement.classList.contains('pinch-locked'),false);
+  assert.equal(a.w.localStorage.length,0);assert.equal(a.w.sessionStorage.length,0);
+  a.input('title','Preserved draft');
+  a.w.location.hash='#add';a.w.dispatchEvent(new a.w.HashChangeEvent('hashchange'));
+  a.click('#refresh');await tick();await tick();
+  assert.equal(toggle.checked,true);
+  assert.equal((a.doc.getElementById('title') as HTMLInputElement).value,'Preserved draft');
+  a.click('#allow-pinch-zoom');assert.equal(a.doc.documentElement.classList.contains('pinch-locked'),true);
+  assert.equal(a.requests.filter(r=>r.path.endsWith('/save')).length,0);
+ }finally{a.close();}
+ const failed=await app(async()=>{throw Error('Offline');});try{
+  assert.equal((failed.doc.getElementById('save') as HTMLButtonElement).disabled,true);
+  assert.equal((failed.doc.getElementById('allow-pinch-zoom') as HTMLInputElement).disabled,false);
+  failed.click('#allow-pinch-zoom');assert.equal(failed.doc.documentElement.classList.contains('pinch-locked'),false);
+ }finally{failed.close();}
+ const noScript=new JSDOM(html);try{
+  assert.equal(noScript.window.document.documentElement.classList.contains('pinch-locked'),false);
+ }finally{noScript.window.close();}
 });

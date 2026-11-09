@@ -226,3 +226,20 @@ No stale threshold, next-check countdown, polling interval or automatic page
 refresh is inferred. Refresh reads stored results only; it does not trigger a
 provider check. Aggregate-only, grade/US-seller and delivered-price limitations
 remain visible. Notification-service acceptance still is not phone delivery.
+
+## Touch zoom in the watch workspace
+
+The workspace requests scrolling without pinch zoom using `touch-action: pan-x pan-y`
+on its root and body. The visible **Allow pinch zoom** checkbox restores the default
+root/body gesture behavior immediately for subsequent gestures. It is page-local,
+not saved to the browser or server, and remains usable during loading/errors.
+Without JavaScript, no pinch restriction is activated. Form text remains at least
+16px, and the viewport has no maximum/minimum scale or user-scalable restriction.
+There are no gesture-cancellation listeners or browser/OS accessibility changes.
+Browsers may honor accessibility overrides or differ in their touch implementation.
+
+The offline browser harness checks computed styles in Chromium and WebKit, plus
+Chromium two-contact touch input with an enabled-zoom positive control and normal
+one-finger scrolling. These tests must run in CI; computed styles or emulated
+Chromium gestures do not prove behavior on physical iPhone Safari or an installed
+home-screen app. Physical-device validation remains necessary before claiming it.

@@ -71,7 +71,54 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
         assert.ok(field.font >= 16, field.id + ' has a readable computed font');
         assert.ok(field.labeled, field.id + ' has an accessible label');
       }
-      assert.equal(await page.locator('body').evaluate(node => getComputedStyle(node).touchAction), 'auto');
+      for (const selector of ['html', 'body']) assert.equal(await page.locator(selector).evaluate(node => getComputedStyle(node).touchAction), 'pan-x pan-y');
+      await page.getByLabel('Allow pinch zoom', {exact: true}).check();
+      for (const selector of ['html', 'body']) assert.equal(await page.locator(selector).evaluate(node => getComputedStyle(node).touchAction), 'auto');
+      await page.getByLabel('Allow pinch zoom', {exact: true}).uncheck();
+      if (engineName === 'chromium' && width === 390) {
+        // Actual two-contact input through Chromium, not a synthetic DOM event or
+        // forced page-scale change. Positive control must zoom after opting out.
+        // This does not establish physical iPhone Safari/PWA gesture behavior.
+        const cdp = await page.context().newCDPSession(page);
+        const contacts = distance => [
+          {id: 1, x: width / 2 - distance, y: 400},
+          {id: 2, x: width / 2 + distance, y: 400},
+        ];
+        const pinch = async () => {
+          await cdp.send('Input.dispatchTouchEvent', {type: 'touchStart', touchPoints: contacts(30)});
+          for (let distance = 36; distance <= 126; distance += 6) {
+            await cdp.send('Input.dispatchTouchEvent', {type: 'touchMove', touchPoints: contacts(distance)});
+            await page.waitForTimeout(20);
+          }
+          await cdp.send('Input.dispatchTouchEvent', {type: 'touchEnd', touchPoints: []});
+          await page.waitForTimeout(250);
+        };
+        const initialScale = await page.evaluate(() => visualViewport.scale);
+        await pinch();
+        assert.ok(Math.abs(await page.evaluate(() => visualViewport.scale) - initialScale) < 0.02, 'pan-only mode suppresses pinch');
+        await page.getByLabel('Allow pinch zoom', {exact: true}).check();
+        await pinch();
+        assert.ok(await page.evaluate(() => visualViewport.scale) > initialScale + 0.2, 'positive control: opted-in pinch actually zooms');
+        // Reset only after measuring the real gesture, to keep later tests independent.
+        await cdp.send('Emulation.setPageScaleFactor', {pageScaleFactor: 1});
+        await page.getByLabel('Allow pinch zoom', {exact: true}).uncheck();
+        await page.evaluate(() => scrollTo(0, 0));
+        await cdp.send('Input.dispatchTouchEvent', {type: 'touchStart', touchPoints: [{id: 1, x: 12, y: 700}]});
+        for (let y = 680; y >= 300; y -= 20) {
+          await cdp.send('Input.dispatchTouchEvent', {type: 'touchMove', touchPoints: [{id: 1, x: 12, y}]});
+          await page.waitForTimeout(20);
+        }
+        await cdp.send('Input.dispatchTouchEvent', {type: 'touchEnd', touchPoints: []});
+        await page.waitForFunction(() => scrollY > 50);
+        await page.waitForTimeout(300);
+        await page.evaluate(() => scrollTo(0, 0));
+        await page.getByLabel('Allow pinch zoom', {exact: true}).tap();
+        assert.equal(await page.getByLabel('Allow pinch zoom', {exact: true}).isChecked(), true);
+        await page.getByLabel('Allow pinch zoom', {exact: true}).tap();
+        assert.equal(await page.getByLabel('Allow pinch zoom', {exact: true}).isChecked(), false);
+        assert.equal(saves, 0);
+        await cdp.detach();
+      }
       assert.equal(await page.locator('#search').evaluate(node => getComputedStyle(node).touchAction), 'manipulation');
       await page.locator('#search').focus();
       assert.equal(await page.locator('#search').evaluate(node => node === document.activeElement), true);

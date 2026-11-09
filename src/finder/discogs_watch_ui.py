@@ -36,16 +36,21 @@ main{max-width:960px}.layout{display:block;margin-top:20px}.panel{position:stati
 /* Removed watches remain recoverable, separate from enabled and paused watches. */
 .card-actions{flex-wrap:wrap}.card-actions button{flex:1 1 72px}.card-actions .remove{color:#ffbcb3;border-color:#805d64}.recovery-note{font-size:14px;color:var(--muted)}.removed-hint{padding:12px;border:1px solid var(--line);border-radius:9px;margin-top:16px;font-size:14px}.removed-hint button{margin-top:8px}.view-nav a{overflow-wrap:anywhere}.removed-card .pill{border-color:#805d64;color:#ffcbc3}
 /* Keep form entry at a readable size to avoid iOS's small-input focus zoom.
-   Pinch zoom remains available; manipulation is limited to interactive targets. */
+   Browser/OS zoom overrides remain available. No restrictive viewport is used. */
 input,select{font-size:16px}
 button,a,summary,input,select,label.check{touch-action:manipulation}
 summary,label.check{min-height:44px}
+/* Request pan-only gestures in this workspace, with a visible zoom escape hatch.
+   Applied by JS only after the opt-out handler is ready; never persisted. */
+html.pinch-locked,html.pinch-locked body{touch-action:pan-x pan-y}
+.zoom-option{margin:0 0 12px;color:var(--muted);font-weight:400}
 main{padding-top:max(36px,env(safe-area-inset-top));padding-right:max(24px,env(safe-area-inset-right));padding-bottom:max(64px,env(safe-area-inset-bottom));padding-left:max(24px,env(safe-area-inset-left))}
 .view-nav{top:max(8px,env(safe-area-inset-top))}
 @media(max-width:800px){main{padding-top:max(24px,env(safe-area-inset-top));padding-right:max(16px,env(safe-area-inset-right));padding-bottom:max(40px,env(safe-area-inset-bottom));padding-left:max(16px,env(safe-area-inset-left))}}
 @media(max-width:600px){main{padding-top:max(20px,env(safe-area-inset-top));padding-bottom:max(32px,env(safe-area-inset-bottom))}}
 </style></head><body><main>
 <header><div class="brand">SNIPER<span class="accent">.</span></div><span class="pill">Private watchlist</span></header>
+<label class="check zoom-option" id="zoom-option" hidden><input id="allow-pinch-zoom" type="checkbox">Allow pinch zoom</label>
 <div class="intro"><h1>Your next record starts here.</h1><p class="muted">Your records. Your price. One place to keep watch.</p></div>
 <nav class="view-nav" aria-label="Watch workspace"><a id="nav-watches" href="#watches" aria-controls="watches-view" aria-current="page">Your watches</a><a id="nav-add" href="#add" aria-controls="add-view">Add a watch</a><a id="nav-removed" href="#removed" aria-controls="removed-view">Removed <span id="removed-nav-count"></span></a></nav>
 
@@ -68,6 +73,11 @@ main{padding-top:max(36px,env(safe-area-inset-top));padding-right:max(24px,env(s
 </main><script nonce="@@NONCE@@">
 'use strict';
 const el = id => document.getElementById(id);
+// Keep the escape hatch outside form locks and available even if state loading fails.
+const updatePinchZoom = () => document.documentElement.classList.toggle('pinch-locked', !el('allow-pinch-zoom').checked);
+el('allow-pinch-zoom').addEventListener('change', updatePinchZoom);
+el('zoom-option').hidden=false;
+updatePinchZoom();
 let state = null, busy = false, locked = true, editing = null, dirty = false;
 function currentView() { return location.hash==='#add'?'add':location.hash==='#removed'?'removed':'watches'; }
 function showView(view, focus=false) { for(const name of ['add','watches','removed']){el(name+'-view').hidden=name!==view;const link=el('nav-'+name);if(name===view)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current');}document.title='Sniper · '+(view==='add'?(editing?'Edit watch':'Add a watch'):view==='removed'?'Removed watches':'Your watches');if(focus){(view==='add'?el(editing?'title':'release'):el(view+'-title')).focus();window.scrollTo(0,0);} }
