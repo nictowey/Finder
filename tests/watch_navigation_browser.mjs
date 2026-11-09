@@ -103,6 +103,7 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
       await page.locator('[data-activity-refresh]').click();
       await page.getByText('Page 1 · Older retained records available.', {exact: true}).waitFor();
       assert.equal(activityBodies.at(-1).cursor, null);
+      await page.screenshot({path: `/artifacts/${engineName}-${width}-activity.png`, fullPage: true});
       await page.locator('[data-activity] summary').click();
       assert.equal(saves, 0);
       // These are computed-style/layout checks, not proof of physical iPhone autozoom.
