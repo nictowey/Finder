@@ -19,14 +19,12 @@ only the Origin actually emitted by the browser. Three flows run in both engines
    decision of 303 with Location `/session`. Playwright interception only covers
    the first URL in a redirect chain, so the network-disabled fixture delivers
    that response to the browser as 200 with Location removed and Set-Cookie
-   unchanged. A native same-origin anchor click from the committed POST document
-   to intercepted `/session` must authenticate using the retained cookie. This
-   deliberately preserves the document initiator instead of using automation
-   `page.goto`, which can differ in WebKit's site-for-cookies classification. The cookie is Secure, HttpOnly,
-   SameSite=Strict and host-only; JavaScript cannot read it. This verifies only
-   synthetic-response cookie storage/use, not native 303 handling, real TLS or
-   persistence across browser restarts. The native request and Origin are never
-   changed. This check fails against the unfixed no-referrer application.
+   unchanged. Both engines must store the resulting Secure, HttpOnly,
+   SameSite=Strict, host-only cookie with the intended expiry; JavaScript cannot
+   read it. This verifies browser cookie **storage and properties**, not outgoing
+   cookie transport, native 303 handling, real TLS or restart persistence. The
+   native request and Origin are never changed. This check fails against the
+   unfixed no-referrer application.
 3. An actual native form on `https://attacker.example` submits a valid synthetic
    challenge to the bootstrap route and must receive 403. Simulated cached Basic
    identity cannot bypass the strict foreign-Origin check. The legacy flow also
@@ -39,7 +37,9 @@ of the existing Firefox pipeline. Results print browser versions, observed origi
 application/fixture-delivery statuses and security-property booleans, never cookie
 values or form tokens. Each engine is attempted even when the other fails; the
 job fails if either fails or is unavailable. Logs explicitly mark synthetic
-redirect normalization and do not claim native redirect/restart verification.
+redirect normalization, `cookie_store_verified:true`,
+`cookie_transport_verified:false`, `native_redirect_verified:false` and
+`restart_persistence_verified:false`. There is no engine-specific skip.
 
 Local contract checks can run without launching a browser:
 
@@ -55,13 +55,29 @@ claiming this regression covered. Real iPhone reopening and production Caddy/TLS
 behavior remain separate user/operator checks. There is no production session
 creation or automatic login retry in this test.
 
-The fixture waits for the native POST document's load/commit before inspecting
-cookies, then polls the browser cookie jar read-only for at most three seconds
-before native same-origin account navigation. It never injects cookies or repeats
-any POST. Diagnostics report only route method/path/status and cookie-presence/
-security booleans. Cookie presence from `request.allHeaders()` and `headerValue`
-is observed separately to diagnose header-exposure discrepancies; the fixture
-never substitutes a cookie from the browser cookie jar into a request. If WebKit cannot commit a cookie from a synthetic fulfilled response,
-the test fails explicitly at that boundary rather than claiming retention or
-attempting a network fallback. Route callback failures are caught and reported
-without headers, bodies or cookie values so one engine cannot hide the other's result.
+## Why cookie transport is outside this fixture
+
+[Official Playwright interception documentation](https://playwright.dev/docs/network#headers-owned-by-the-network-stack)
+explains that routing precedes network-stack cookie attachment, so intercepted
+headers can omit Cookie even when the browser cookie store contains it. A fulfilled
+request never reaches that later transport stage. The previous protected-page
+navigation assertion therefore tested an unsupported premise; waits and anchor
+navigation do not repair it. It is removed for **both** engines, not silently
+skipped for WebKit. No cookie is copied from the jar into a request.
+
+The pinned [v1.64.1 WebKit implementation](https://github.com/microsoft/playwright/blob/v1.64.1/packages/playwright-core/src/server/webkit/wkInterceptableRequest.ts)
+constructs intercepted requests from provisional event headers and receives raw
+request headers later in response processing. It also rejects fulfilled 3xx
+responses, which is why this fixture explicitly normalizes their delivery.
+
+Browser cookie transport/native redirects need a separate non-intercepted HTTP(S)
+integration harness. Existing server/IPC tests and real-device observations are
+separate evidence, not a claimed result of this fixture. Neither the product's
+cookie/Origin guards nor the browser's cookie settings are weakened here.
+
+The fixture still waits for the native POST document's load/commit and polls the
+cookie jar read-only for at most three seconds. Missing cookies or wrong security
+properties fail in either engine. It never repeats a POST, injects cookies, or
+falls back to real network access. Route callback failures are caught and reported
+using only method/path/status and property booleans, without headers, bodies or
+cookie values. Each engine is attempted even if the other fails.

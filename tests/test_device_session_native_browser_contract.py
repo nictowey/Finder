@@ -132,13 +132,9 @@ def test_browser_fixture_preserves_decision_without_claiming_native_redirect():
     assert "fixtureStatus = 200" in script
     assert "delete fixtureHeaders.location" in script
     assert "const fixtureHeaders = {...response.headers}" in script
-    assert "link.href = '/session'" in script
-    assert (
-        "page.getByRole('link', {name: 'Open fixture device settings', exact: true}).click()"
-        in script
-    )
     assert "const account = await page.goto(origin + '/session')" not in script
-    assert "assert.equal(account.status(), 200)" in script
+    assert "Open fixture device settings" not in script
+    assert "cookie_transport_verified: false" in script
     assert "native_redirect_verified: false" in script
     assert "restart_persistence_verified: false" in script
     assert "application_status: response.status" in script
@@ -153,7 +149,7 @@ def test_browser_waits_for_cookie_commit_and_catches_route_errors():
     assert "await page.waitForLoadState('load')" in script
     assert "const cookieDeadline = Date.now() + 3000" in script
     assert script.index("assert.ok(committedCookie") < script.index(
-        "const [account] = await Promise.all"
+        "assert.equal(cookie.httpOnly, true)"
     )
     assert "present: Boolean(committedCookie)" in script
     assert "routeErrors.push(failure)" in script
@@ -163,13 +159,24 @@ def test_browser_waits_for_cookie_commit_and_catches_route_errors():
     assert "document.cookie =" not in script
 
 
-def test_cookie_navigation_keeps_native_initiator_and_only_logs_presence():
+def test_cookie_store_checks_both_engines_without_claiming_transport():
     script = (ROOT / "tests/device_session_browser/native_form.mjs").read_text()
-    assert "const observedCookieHeader = await request.headerValue('cookie')" in script
-    assert "header_value_has_session_cookie:" in script
+    assert "Object.entries({chromium, webkit})" in script
+    assert "cookie_store_verified: true" in script
+    assert "cookie_transport_verified: false" in script
+    for check in (
+        "assert.equal(cookie.httpOnly, true)",
+        "assert.equal(cookie.secure, true)",
+        "assert.equal(cookie.sameSite, 'Strict')",
+        "assert.equal(cookie.domain, 'watch.example')",
+        "assert.equal(cookie.path, '/')",
+        "document.cookie.includes('__Host-sniper_session')",
+    ):
+        assert check in script
     assert "headers: requestHeaders" in script
-    assert "same_origin_anchor_navigation_status: 200" in script
     assert "headers.cookie =" not in script
     assert "requestHeaders.cookie =" not in script
     assert "addCookies" not in script
     assert "document.cookie =" not in script
+    assert "same_origin_anchor_navigation_status" not in script
+    assert "name === 'webkit'" not in script
