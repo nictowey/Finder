@@ -35,6 +35,7 @@ IP_FIXTURE = "8.8.8.8"
 
 def form_token(response, action):
     assert response.status_code == 200
+    assert response.headers["referrer-policy"] == "same-origin"
     found = re.search(rf'action="{re.escape(action)}".*?name="csrf" value="([^"]+)"', response.text)
     assert found is not None, "Expected an action-bound CSRF form"
     return found[1]
@@ -216,6 +217,10 @@ def session_gate(directory, broker_endpoint, client, database, baseline):
                 ).status_code
                 == 403
             )
+        assert (
+            call("/session/start", basic=True, csrf=csrf, headers={"Origin": "null"}).status_code
+            == 403
+        )
         first = issued_cookie(call("/session/start", basic=True, csrf=csrf), now[0])
         second = login(call)
         assert first != second

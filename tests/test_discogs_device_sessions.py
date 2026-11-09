@@ -139,6 +139,18 @@ def test_login_requires_basic_origin_and_single_use_csrf(session):
         )[0]
         == "403 Forbidden"
     )
+    for invalid_origin in ("null", None):
+        assert (
+            call(
+                app,
+                "/session/start",
+                method="POST",
+                basic=True,
+                csrf=csrf,
+                HTTP_ORIGIN=invalid_origin,
+            )[0]
+            == "403 Forbidden"
+        )
     assert call(app, "/session/start", method="POST", basic=True, csrf=csrf)[0] == "303 See Other"
     assert call(app, "/session/start", method="POST", basic=True, csrf=csrf)[0] == "403 Forbidden"
     with closing(sqlite3.connect(store.path)) as db:
@@ -358,7 +370,7 @@ def test_headers_and_bootstrap_no_session_created(session):
     status, headers, body = call(app, basic=True)
     assert status == "200 OK" and "Set-Cookie" not in headers
     assert headers["Cache-Control"] == "no-store"
-    assert headers["Referrer-Policy"] == "no-referrer"
+    assert headers["Referrer-Policy"] == "same-origin"
     assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
     assert "form-action 'self'" in headers["Content-Security-Policy"]
     nonce = re.search(rb'<style nonce="([^"]+)"', body)[1].decode()

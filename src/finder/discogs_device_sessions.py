@@ -320,7 +320,9 @@ class DeviceSessionApp:
             ("Content-Type", "application/json" if json_body else "text/html; charset=utf-8"),
             ("Content-Length", str(len(body))),
             ("Cache-Control", "no-store"),
-            ("Referrer-Policy", "no-referrer"),
+            # Native form POSTs serialize Origin as null under no-referrer.
+            # Keep same-origin verification working without external referrer sharing.
+            ("Referrer-Policy", "same-origin"),
             ("X-Content-Type-Options", "nosniff"),
             ("X-Frame-Options", "DENY"),
             (
