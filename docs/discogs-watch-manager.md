@@ -230,16 +230,14 @@ remain visible. Notification-service acceptance still is not phone delivery.
 ## Touch zoom in the watch workspace
 
 The workspace requests scrolling without pinch zoom using `touch-action: pan-x pan-y`
-on its root and body. The visible **Allow pinch zoom** checkbox restores the default
-root/body gesture behavior immediately for subsequent gestures. It is page-local,
-not saved to the browser or server, and remains usable during loading/errors.
-Without JavaScript, no pinch restriction is activated. Form text remains at least
-16px, and the viewport has no maximum/minimum scale or user-scalable restriction.
+on its root and body, including without JavaScript. There is no zoom checkbox,
+gesture handler or saved zoom preference. Form text remains at least 16px, and the
+viewport has no maximum/minimum scale or user-scalable restriction.
 There are no gesture-cancellation listeners or browser/OS accessibility changes.
 Browsers may honor accessibility overrides or differ in their touch implementation.
 
 The offline browser harness checks computed styles in Chromium and WebKit, plus
-Chromium two-contact touch input with an enabled-zoom positive control and normal
-one-finger scrolling. These tests must run in CI; computed styles or emulated
+Chromium two-contact touch input with a temporary test-only CSS zoom override as
+a positive control (removed afterward), plus normal one-finger scrolling and navigation taps. These tests must run in CI; computed styles or emulated
 Chromium gestures do not prove behavior on physical iPhone Safari or an installed
 home-screen app. Physical-device validation remains necessary before claiming it.

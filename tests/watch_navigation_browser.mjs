@@ -58,6 +58,7 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
         }
         return route.abort();
       });
+      await page.addInitScript(() => localStorage.setItem('allow-pinch-zoom', 'true'));
       await page.goto('https://sniper.example/watches');
       await page.getByText('Synthetic Artist · Favourite Record').waitFor();
       // These are computed-style/layout checks, not proof of physical iPhone autozoom.
@@ -72,12 +73,10 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
         assert.ok(field.labeled, field.id + ' has an accessible label');
       }
       for (const selector of ['html', 'body']) assert.equal(await page.locator(selector).evaluate(node => getComputedStyle(node).touchAction), 'pan-x pan-y');
-      await page.getByLabel('Allow pinch zoom', {exact: true}).check();
-      for (const selector of ['html', 'body']) assert.equal(await page.locator(selector).evaluate(node => getComputedStyle(node).touchAction), 'auto');
-      await page.getByLabel('Allow pinch zoom', {exact: true}).uncheck();
+      assert.equal(await page.locator('#allow-pinch-zoom,#zoom-option').count(), 0);
       if (engineName === 'chromium' && width === 390) {
         // Actual two-contact input through Chromium, not a synthetic DOM event or
-        // forced page-scale change. Positive control must zoom after opting out.
+        // forced page-scale change. Positive control must zoom with a temporary test-only CSS override.
         // This does not establish physical iPhone Safari/PWA gesture behavior.
         const cdp = await page.context().newCDPSession(page);
         const contacts = distance => [
@@ -96,12 +95,16 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
         const initialScale = await page.evaluate(() => visualViewport.scale);
         await pinch();
         assert.ok(Math.abs(await page.evaluate(() => visualViewport.scale) - initialScale) < 0.02, 'pan-only mode suppresses pinch');
-        await page.getByLabel('Allow pinch zoom', {exact: true}).check();
-        await pinch();
-        assert.ok(await page.evaluate(() => visualViewport.scale) > initialScale + 0.2, 'positive control: opted-in pinch actually zooms');
+        const zoomControl = await page.addStyleTag({content: 'html,body{touch-action:auto!important}'});
+        try {
+          await pinch();
+          assert.ok(await page.evaluate(() => visualViewport.scale) > initialScale + 0.2, 'positive control: test-only override permits real pinch zoom');
+        } finally {
+          await zoomControl.evaluate(node => node.remove());
+        }
+        for (const selector of ['html', 'body']) assert.equal(await page.locator(selector).evaluate(node => getComputedStyle(node).touchAction), 'pan-x pan-y');
         // Reset only after measuring the real gesture, to keep later tests independent.
         await cdp.send('Emulation.setPageScaleFactor', {pageScaleFactor: 1});
-        await page.getByLabel('Allow pinch zoom', {exact: true}).uncheck();
         await page.evaluate(() => scrollTo(0, 0));
         await cdp.send('Input.dispatchTouchEvent', {type: 'touchStart', touchPoints: [{id: 1, x: 12, y: 700}]});
         for (let y = 680; y >= 300; y -= 20) {
@@ -112,10 +115,12 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
         await page.waitForFunction(() => scrollY > 50);
         await page.waitForTimeout(300);
         await page.evaluate(() => scrollTo(0, 0));
-        await page.getByLabel('Allow pinch zoom', {exact: true}).tap();
-        assert.equal(await page.getByLabel('Allow pinch zoom', {exact: true}).isChecked(), true);
-        await page.getByLabel('Allow pinch zoom', {exact: true}).tap();
-        assert.equal(await page.getByLabel('Allow pinch zoom', {exact: true}).isChecked(), false);
+        await page.locator('#nav-add').tap();
+        await page.locator('#add-view').waitFor({state: 'visible'});
+        assert.equal(await page.locator('#nav-add').getAttribute('aria-current'), 'page');
+        await page.locator('#nav-watches').tap();
+        await page.locator('#watches-view').waitFor({state: 'visible'});
+        assert.equal(await page.locator('#nav-watches').getAttribute('aria-current'), 'page');
         assert.equal(saves, 0);
         await cdp.detach();
       }

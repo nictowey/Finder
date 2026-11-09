@@ -7,9 +7,10 @@ const source=readFileSync(new URL('../src/finder/discogs_watch_ui.py',import.met
 const html=source.split('PAGE = r"""')[1].split('"""',1)[0].replaceAll('@@NONCE@@','test');
 const tick=()=>new Promise<void>(r=>setImmediate(r));
 const fixture=()=>({csrf:'synthetic',monitor_enabled:true,watches:[{release_id:1,public_title:'Synthetic <script>alert(1)</script>',currency:'USD',item_price_ceiling:'40.00',any_price:false,enabled:true,removed:false,revision:1,alert_initial_low:true,alert_price_drops:true,alert_count_increases:false,last_success:null,lowest_item_price:null,count:null,status:'waiting',notifications:{accepted:5,accepted_current_revision:2,pending:1,in_flight:0,uncertain:1}}]});
-async function app(handler?:(path:string,opts:any)=>Promise<any>,hash=''){
+async function app(handler?:(path:string,opts:any)=>Promise<any>,hash='',storage:Record<string,string>={}){
  const dom=new JSDOM(html,{url:'https://sniper.example/watches'+hash,runScripts:'outside-only'});
  const w=dom.window, requests:{path:string,body:any}[]=[];
+ for(const [key,value] of Object.entries(storage))w.localStorage.setItem(key,value);
  w.confirm=()=>true;
  w.scrollTo=()=>{};
  w.fetch=(async(path:any,opts:any={})=>{requests.push({path:String(path),body:opts.body?JSON.parse(opts.body):null});return handler?handler(String(path),opts):{ok:true,json:async()=>String(path).endsWith('/save')?{saved:true}:fixture()};}) as any;
@@ -517,29 +518,30 @@ test('Last-success sorting keeps epoch timestamps ahead of unknown dates and fai
 });
 
 
-test('Pinch preference is reversible, read-only, and independent of form locks and navigation',async()=>{
- const a=await app();try{
-  const toggle=a.doc.getElementById('allow-pinch-zoom') as HTMLInputElement;
-  assert.equal((a.doc.getElementById('zoom-option') as HTMLElement).hidden,false);
-  assert.equal(toggle.checked,false);
-  assert.equal(a.doc.documentElement.classList.contains('pinch-locked'),true);
-  a.click('#allow-pinch-zoom');
-  assert.equal(a.doc.documentElement.classList.contains('pinch-locked'),false);
-  assert.equal(a.w.localStorage.length,0);assert.equal(a.w.sessionStorage.length,0);
-  a.input('title','Preserved draft');
-  a.w.location.hash='#add';a.w.dispatchEvent(new a.w.HashChangeEvent('hashchange'));
-  a.click('#refresh');await tick();await tick();
-  assert.equal(toggle.checked,true);
-  assert.equal((a.doc.getElementById('title') as HTMLInputElement).value,'Preserved draft');
-  a.click('#allow-pinch-zoom');assert.equal(a.doc.documentElement.classList.contains('pinch-locked'),true);
-  assert.equal(a.requests.filter(r=>r.path.endsWith('/save')).length,0);
- }finally{a.close();}
+test('Pan-only styling has no toggle or stored preference and survives navigation and errors',async()=>{
+ const assertPanOnly=(doc:Document)=>{
+  assert.equal(doc.querySelector('#allow-pinch-zoom,#zoom-option'),null);
+  assert.match(doc.querySelector('style')!.textContent!,/html,body\{touch-action:pan-x pan-y\}/);
+  assert.doesNotMatch(doc.querySelector('script')!.textContent!,/localStorage|sessionStorage|updatePinchZoom|pinch-locked/);
+ };
+ // Synthetic stale keys: the old checkbox never actually persisted a preference.
+ for(const value of ['true','false']){
+  const a=await app(undefined,'',{'allow-pinch-zoom':value});try{
+   assertPanOnly(a.doc);
+   a.input('title','Preserved draft');
+   a.w.location.hash='#add';a.w.dispatchEvent(new a.w.HashChangeEvent('hashchange'));
+   a.click('#refresh');await tick();await tick();
+   assertPanOnly(a.doc);
+   assert.equal((a.doc.getElementById('title') as HTMLInputElement).value,'Preserved draft');
+   assert.equal(a.w.localStorage.getItem('allow-pinch-zoom'),value);
+   assert.equal(a.requests.filter(r=>r.path.endsWith('/save')).length,0);
+  }finally{a.close();}
+ }
  const failed=await app(async()=>{throw Error('Offline');});try{
   assert.equal((failed.doc.getElementById('save') as HTMLButtonElement).disabled,true);
-  assert.equal((failed.doc.getElementById('allow-pinch-zoom') as HTMLInputElement).disabled,false);
-  failed.click('#allow-pinch-zoom');assert.equal(failed.doc.documentElement.classList.contains('pinch-locked'),false);
+  assertPanOnly(failed.doc);
  }finally{failed.close();}
  const noScript=new JSDOM(html);try{
-  assert.equal(noScript.window.document.documentElement.classList.contains('pinch-locked'),false);
+  assertPanOnly(noScript.window.document);
  }finally{noScript.window.close();}
 });
