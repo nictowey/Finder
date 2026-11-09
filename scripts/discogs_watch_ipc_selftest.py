@@ -20,7 +20,7 @@ from finder.discogs_watch_broker import WatchBrokerClient
 from finder.discogs_watch_manager import WatchBackend
 
 
-def main():
+def main(*, extra_gate=None):
     assert os.getuid() > 0, "Run as an existing unprivileged user, not root"
     with tempfile.TemporaryDirectory(prefix="watch-isolated-") as directory:
         database = Path(directory) / "synthetic.db"
@@ -185,6 +185,9 @@ def main():
                 service.allowed_uid = os.getuid()
             assert client.snapshot() == after
             assert not errors
+            if extra_gate is not None:
+                extra_gate(directory, endpoint, client, database, after)
+                assert not errors
             print(
                 "PASS real HTTP over Unix socket and broker IPC, both peer UID checks, "
                 "owner boundary, CSRF/origin/durable replay, add/edit/no-op/stale/pause, "

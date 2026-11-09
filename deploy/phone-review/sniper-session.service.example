@@ -1,0 +1,58 @@
+# UNINSTALLED EXAMPLE. Requires separately approved new service, IP/TLS routing,
+# auth-store provisioning and exact existing UID/group/path verification.
+# Keep sniper-review.service (Basic DNS:8443) and its socket completely unchanged.
+# Placeholder IP is deliberately invalid; never enable before replacing it privately.
+# No initializer, certificate, key, credential or session is created by this file.
+[Unit]
+Description=Private remembered-device session app (separate instance)
+After=caddy.service sniper-review-broker.service
+Requires=caddy.service sniper-review-broker.service
+
+[Service]
+Type=simple
+User=sniper-review
+Group=sniper-review-proxy
+SupplementaryGroups=sniper-review-broker
+RuntimeDirectory=sniper-session
+RuntimeDirectoryMode=0750
+UMask=0077
+WorkingDirectory=/opt/sniper-review
+# Reuse only the existing narrow broker client group; no shared DB access.
+Environment=SNIPER_SESSION_IP=REPLACE_WITH_APPROVED_PUBLIC_IPV4
+ExecStart=/opt/sniper-review/venv/bin/python -I -m finder.discogs_phone_review_server --broker-socket /run/sniper-review-broker/broker.sock --broker-user sniper --origin https://${SNIPER_SESSION_IP} --principal review-owner --socket-directory /run/sniper-session --enable-watch-management --enable-device-sessions --allow-ip-session-origin --session-ip-address ${SNIPER_SESSION_IP} --session-database /var/lib/sniper-review-auth/devices.db
+Restart=no
+TimeoutStopSec=35
+KillSignal=SIGTERM
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/run/sniper-session /var/lib/sniper-review-auth
+# Confirm all secret paths on host; dedicated UID must have no secret-reading groups.
+# Include the actual chosen TLS key storage too; absent paths require operator review.
+InaccessiblePaths=/var/lib/sniper /etc/sniper /root /home /etc/caddy /run/caddy-admin /etc/letsencrypt
+MemoryMax=192M
+TasksMax=16
+LimitNOFILE=128
+LimitCORE=0
+# This host lacks systemd BPF support. No IPAddressDeny enforcement is claimed.
+# Complete the separately reviewed private Caddy admin socket transition first.
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=multi-user.target

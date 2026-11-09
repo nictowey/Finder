@@ -9,7 +9,7 @@ access grant, real session or production state is created by this patch.
 
 Use an approved **dedicated DNS hostname** on standard HTTPS port 443, for example
 `https://sniper.example.com`. It must not host IVC, ntfy, or another application on
-any port. The CLI requires `--session-hostname sniper.example.com` to exactly match
+any port. In default DNS mode, the CLI requires `--session-hostname sniper.example.com` to exactly match
 `--origin https://sniper.example.com` and rejects IPs, nonstandard ports and paths.
 This is a configuration assertion: the operator must verify actual exclusivity.
 Cookies are not isolated by port. A path-scoped cookie on a shared hostname is not
@@ -17,11 +17,14 @@ an alternative security boundary. Do not reuse the shared notification hostname.
 
 Before activation, verify DNS ownership and A/AAAA records, existing proxy routing,
 firewall reachability, no conflicts with other sites, browser-trusted HTTPS and
-certificate renewal. Do not buy a domain or hosting, change firewall/network policy,
-or repurpose unrelated services without authorization. Existing IVC/ntfy routes,
-credentials, notifications and services remain untouched. A separate exclusive IP
-with a trusted IP-SAN certificate is conceptually another host boundary, but is
-not implemented or assumed available by this patch.
+certificate renewal. An explicit alternative IP-literal opt-in is described in
+`docs/discogs-ip-device-sessions.md`; DNS remains the default and implicit IP
+origins remain rejected. Do not buy a domain or hosting, change firewall/network
+policy, or repurpose unrelated services without authorization. Existing IVC/ntfy
+routes, credentials, notifications and services remain untouched. An approved
+IP-literal host with a trusted IP-SAN certificate can also be a host boundary, but only after verifying its exclusive routing on every public listener.
+That separate default-off mode does not imply that a certificate, host-routing
+configuration or approval is available.
 
 ## Authentication and persistence
 

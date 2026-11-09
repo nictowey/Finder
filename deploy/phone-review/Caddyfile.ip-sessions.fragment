@@ -1,0 +1,87 @@
+# OFFLINE, DEFAULT-OFF ADDITION FOR A DISTINCT IP ORIGIN. Requires separately approved IPv4/TLS/Host isolation.
+# Keep the old Basic DNS:8443 site/process/review.sock unchanged for rollback.
+# Never import alongside another site for this IP literal or apply without review.
+# REVIEW_IP_ADDRESS must be an approved canonical public IPv4, matching the host CLI.
+# Cert/key files are externally provisioned and renewed, not created by this template.
+# Keep valid IVC/ntfy DNS sites untouched; EVERY other public IP-Host listener must
+# reject the literal Host. This fragment cannot inventory or enforce other listeners.
+# Validate complete config with the actual Caddy binary before authorized reload.
+(sniper_ip_session_proxy_common) {
+    header_up -Authorization
+    header_up -Forwarded
+    header_up -X-Forwarded-For
+    header_up -X-Forwarded-Host
+    header_up -X-Forwarded-Proto
+    transport http {
+        dial_timeout 2s
+        response_header_timeout 30s
+        read_timeout 30s
+        write_timeout 10s
+    }
+}
+(sniper_ip_session_gate) {
+    header Cache-Control "no-store"
+    request_body {
+        max_size 4096
+    }
+    forward_auth unix//run/sniper-session/review.sock {
+        uri /_proxy_gate
+        header_up -Authorization
+        header_up -Cookie
+        header_up -X-Review-Principal
+        transport http {
+            dial_timeout 2s
+            response_header_timeout 5s
+        }
+    }
+}
+https://{$REVIEW_IP_ADDRESS} {
+    tls {$REVIEW_IP_CERT_FILE} {$REVIEW_IP_KEY_FILE}
+    # No access/debug logs. Retain global bounded header/body/write timeouts.
+    @bootstrap path /session/login /session/start
+    handle @bootstrap {
+        route {
+            import sniper_ip_session_gate
+            basicauth {
+                {$REVIEW_PRINCIPAL} {$REVIEW_PASSWORD_HASH}
+            }
+            reverse_proxy unix//run/sniper-session/review.sock {
+                import sniper_ip_session_proxy_common
+                # Replace, do not append. Only verified Basic can assert identity.
+                header_up X-Review-Principal {http.auth.user.id}
+                # Cookie is used only to rotate a prior session after a valid POST.
+            }
+        }
+    }
+    @session path /watches /watches/state /watches/save /listing-review /session /session/logout /session/revoke-all /manifest.webmanifest /session/icon.png
+    handle @session {
+        route {
+            import sniper_ip_session_gate
+            reverse_proxy unix//run/sniper-session/review.sock {
+                import sniper_ip_session_proxy_common
+                header_up -X-Review-Principal
+                # Preserve Cookie only for the session middleware. It validates and
+                # removes it before calling the old review/watch applications.
+            }
+        }
+    }
+    handle {
+        respond "Not found" 404
+    }
+}
+
+# A dedicated HTTP challenge route only, never an application or general file root.
+# The operator must review conflicts with existing :80 routes before adding this.
+http://{$REVIEW_IP_ADDRESS} {
+    @challenge {
+        path /.well-known/acme-challenge/*
+        method GET HEAD
+    }
+    handle @challenge {
+        root * {$REVIEW_IP_ACME_WEBROOT}
+        file_server
+    }
+    handle {
+        respond "Not found" 404
+    }
+}

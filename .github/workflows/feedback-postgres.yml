@@ -61,7 +61,10 @@ jobs:
           npm test
           npm run typecheck
       - name: Exercise isolated watch manager Unix IPC and owner boundary
-        run: python scripts/discogs_watch_ipc_selftest.py
+        run: |
+          python scripts/discogs_watch_ipc_selftest.py
+          python scripts/discogs_device_session_ipc_selftest.py
+          python scripts/discogs_device_session_ipc_selftest.py --ip-origin
       - name: Exercise owner endpoint and provider worker integration
         env:
           FINDER_REQUIRE_REFRESH_INTEGRATION: '1'

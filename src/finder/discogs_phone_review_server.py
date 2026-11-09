@@ -80,6 +80,8 @@ def build_app(
     enable_device_sessions=False,
     session_store=None,
     session_hostname=None,
+    allow_ip_session_origin=False,
+    session_ip_address=None,
 ):
     parsed = urlsplit(origin)
     if (
@@ -101,13 +103,23 @@ def build_app(
     if enable_device_sessions:
         from .discogs_device_sessions import INTERNAL_PRINCIPAL, validate_origin
 
-        validate_origin(origin, session_hostname)
+        validate_origin(
+            origin,
+            session_hostname,
+            allow_ip_origin=allow_ip_session_origin,
+            ip_address=session_ip_address,
+        )
         if session_store is None or database is not None:
             raise ValueError("Device sessions require a separate session store and broker-only app")
 
         def authenticate(env):
             return env.get(INTERNAL_PRINCIPAL)
-    elif session_store is not None or session_hostname is not None:
+    elif (
+        session_store is not None
+        or session_hostname is not None
+        or allow_ip_session_origin
+        or session_ip_address is not None
+    ):
         raise ValueError("Device sessions are disabled")
     review_app = PhoneReviewApp(
         database=database,
@@ -148,6 +160,8 @@ def build_app(
             principal=principal,
             basic_authenticate=boundary.authenticate,
             clock=clock,
+            allow_ip_origin=allow_ip_session_origin,
+            ip_address=session_ip_address,
         )
     return boundary
 
@@ -172,6 +186,8 @@ def main(argv=None):
     parser.add_argument("--enable-watch-management", action="store_true")
     parser.add_argument("--enable-device-sessions", action="store_true")
     parser.add_argument("--session-hostname")
+    parser.add_argument("--allow-ip-session-origin", action="store_true")
+    parser.add_argument("--session-ip-address")
     parser.add_argument("--session-database", type=Path)
     args = parser.parse_args(argv)
     session_store = None
@@ -180,9 +196,19 @@ def main(argv=None):
 
         if args.session_database is None:
             parser.error("An existing separate private session store is required")
-        validate_origin(args.origin, args.session_hostname)
+        validate_origin(
+            args.origin,
+            args.session_hostname,
+            allow_ip_origin=args.allow_ip_session_origin,
+            ip_address=args.session_ip_address,
+        )
         session_store = SessionStore(args.session_database)
-    elif args.session_database is not None or args.session_hostname is not None:
+    elif (
+        args.session_database is not None
+        or args.session_hostname is not None
+        or args.allow_ip_session_origin
+        or args.session_ip_address is not None
+    ):
         parser.error("Device sessions are disabled")
     if not args.broker_socket.is_absolute():
         parser.error("absolute private broker socket required")
@@ -204,6 +230,8 @@ def main(argv=None):
         enable_device_sessions=args.enable_device_sessions,
         session_store=session_store,
         session_hostname=args.session_hostname,
+        allow_ip_session_origin=args.allow_ip_session_origin,
+        session_ip_address=args.session_ip_address,
     )
     # Never emit request/exception payloads to journald. Waitress receives only
     # sanitized requests; there is no request access logger in this host.

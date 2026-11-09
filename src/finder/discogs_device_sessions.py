@@ -35,7 +35,25 @@ APPLICATION_ID = 1178882644
 INTERNAL_PRINCIPAL = "finder.device_principal"
 
 
-def validate_origin(origin, hostname):
+def validate_origin(origin, hostname, *, allow_ip_origin=False, ip_address=None):
+    if allow_ip_origin or ip_address is not None:
+        if allow_ip_origin is not True or hostname is not None or type(ip_address) is not str:
+            raise ValueError(
+                "IP sessions require an explicit opt-in and one IP, without DNS hostname"
+            )
+        try:
+            address = ipaddress.IPv4Address(ip_address)
+        except ipaddress.AddressValueError:
+            raise ValueError("A canonical public IPv4 address is required") from None
+        if (
+            str(address) != ip_address
+            or not address.is_global
+            or address.is_multicast
+            or address.is_reserved
+            or origin != "https://" + ip_address
+        ):
+            raise ValueError("An exact canonical public IPv4 HTTPS origin on port 443 is required")
+        return ip_address
     parsed = urlsplit(origin)
     if (
         type(hostname) is not str
@@ -54,8 +72,8 @@ def validate_origin(origin, hostname):
     try:
         ipaddress.ip_address(hostname)
     except ValueError:
-        return
-    raise ValueError("A dedicated DNS hostname, not a shared IP address, is required")
+        return hostname
+    raise ValueError("A dedicated DNS hostname, or explicit approved IP opt-in, is required")
 
 
 def _digest(token):
@@ -200,11 +218,23 @@ class SessionStore:
 
 class DeviceSessionApp:
     def __init__(
-        self, app, *, store, origin, hostname, principal, basic_authenticate, clock=time.time
+        self,
+        app,
+        *,
+        store,
+        origin,
+        hostname,
+        principal,
+        basic_authenticate,
+        clock=time.time,
+        allow_ip_origin=False,
+        ip_address=None,
     ):
-        validate_origin(origin, hostname)
+        expected_host = validate_origin(
+            origin, hostname, allow_ip_origin=allow_ip_origin, ip_address=ip_address
+        )
         self.app, self.store = app, store
-        self.origin, self.hostname, self.principal = origin, hostname, principal
+        self.origin, self.hostname, self.principal = origin, expected_host, principal
         self.basic_authenticate, self.clock = basic_authenticate, clock
         self.tokens, self.lock = {}, threading.Lock()
 
