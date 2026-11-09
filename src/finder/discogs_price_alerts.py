@@ -225,7 +225,7 @@ class AggregatePriceAlerts:
             "discogs_price_rules": {"release_id", "revision", "data"},
             "discogs_price_samples": {"release_id", "last_success", "price", "count", "status"},
             "discogs_price_control": {"id", "enabled"},
-            "discogs_price_outbox": {"release_id", "state"},
+            "discogs_price_outbox": {"release_id", "rule_revision", "state"},
             "discogs_price_extrema": {"release_id"},
         }
         with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as db:

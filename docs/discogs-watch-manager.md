@@ -127,3 +127,20 @@ owner-confirmed test remain required before declaring live operation verified.
 
 Additional offline integration checks:
 `PYTHONPATH=src:. python -m pytest tests/test_discogs_watch_broker.py tests/test_discogs_review_broker.py tests/test_discogs_phone_review_server.py`.
+
+## Notification counts
+
+Each card shows retained provider-accepted aggregate-watch events for that release,
+across saved prices, plus accepted events whose rule revision matches the current
+watch settings. Counts are events, not send attempts. Queued/retry-wait, in-flight
+and uncertain outcomes are shown separately and are never added to accepted totals.
+Failed, revoked and expired events do not count. No notification is inferred from
+an aggregate sample, price match, or provider-acceptance record on another release.
+
+Provider acceptance is not confirmation that a phone received or displayed an
+alert. Historical phone delivery receipts are not available. These figures cover
+retained database history, not an asserted lifetime count. Editing or pausing a
+watch increments its revision, so the current-settings count restarts while the
+retained accepted total stays. Earlier events cannot reliably be attributed to the
+current price merely by their observed minimum, since earlier saved caps are not
+stored on those records. No historical price-setting counts are invented.

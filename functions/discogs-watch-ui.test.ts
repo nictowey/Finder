@@ -6,7 +6,7 @@ import {JSDOM} from 'jsdom';
 const source=readFileSync(new URL('../src/finder/discogs_watch_ui.py',import.meta.url),'utf8');
 const html=source.split('PAGE = r"""')[1].split('"""',1)[0].replaceAll('@@NONCE@@','test');
 const tick=()=>new Promise<void>(r=>setImmediate(r));
-const fixture=()=>({csrf:'synthetic',monitor_enabled:true,watches:[{release_id:1,public_title:'Synthetic <script>alert(1)</script>',currency:'USD',item_price_ceiling:'40.00',any_price:false,enabled:true,revision:1,alert_initial_low:true,alert_price_drops:true,alert_count_increases:false,last_success:null,lowest_item_price:null,count:null,status:'waiting'}]});
+const fixture=()=>({csrf:'synthetic',monitor_enabled:true,watches:[{release_id:1,public_title:'Synthetic <script>alert(1)</script>',currency:'USD',item_price_ceiling:'40.00',any_price:false,enabled:true,revision:1,alert_initial_low:true,alert_price_drops:true,alert_count_increases:false,last_success:null,lowest_item_price:null,count:null,status:'waiting',notifications:{accepted:5,accepted_current_revision:2,pending:1,in_flight:0,uncertain:1}}]});
 async function app(handler?:(path:string,opts:any)=>Promise<any>){
  const dom=new JSDOM(html,{url:'https://sniper.example/watches',runScripts:'outside-only'});
  const w=dom.window, requests:{path:string,body:any}[]=[];
@@ -81,5 +81,14 @@ test('Stale edit refresh does not silently overwrite its revision or draft',asyn
   a.click('[data-action="edit"]');assert.equal((a.doc.getElementById('title') as HTMLInputElement).value,'Newer title');
   a.input('title','Reviewed edit');a.submit();await tick();await tick();
   const saves=a.requests.filter(r=>r.path.endsWith('/save'));assert.equal(saves[0].body.revision,1);assert.equal(saves[1].body.revision,2);
+ }finally{a.close();}
+});
+
+test('Notification cards separate accepted history, current settings and unconfirmed work',async()=>{
+ const a=await app();try{
+  const text=a.doc.getElementById('watches')!.textContent!;
+  assert.match(text,/Recorded notifications5/);assert.match(text,/With current watch settings2/);
+  assert.match(text,/not confirmed phone delivery/);assert.match(text,/1 queued · 0 in progress · 1 uncertain/);
+  assert.match(a.doc.getElementById('count')!.textContent!,/1 active · 0 paused/);
  }finally{a.close();}
 });

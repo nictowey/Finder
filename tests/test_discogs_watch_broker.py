@@ -227,3 +227,38 @@ def test_client_rejects_wrong_broker_uid(integration):
     with pytest.raises(RuntimeError):
         client.save(fields())
     assert watch.snapshot()["watches"][0]["revision"] == 1
+
+
+@pytest.mark.parametrize(
+    "counts",
+    [
+        {
+            "accepted": True,
+            "accepted_current_revision": 0,
+            "pending": 0,
+            "in_flight": 0,
+            "uncertain": 0,
+        },
+        {
+            "accepted": 1,
+            "accepted_current_revision": 2,
+            "pending": 0,
+            "in_flight": 0,
+            "uncertain": 0,
+        },
+        {
+            "accepted": -1,
+            "accepted_current_revision": 0,
+            "pending": 0,
+            "in_flight": 0,
+            "uncertain": 0,
+        },
+        {"accepted": 1},
+    ],
+)
+def test_invalid_notification_projection_fails_closed(integration, counts):
+    _, backend, _, _, _, _ = integration
+    state = backend.snapshot()
+    state["watches"][0]["notifications"] = counts
+    with pytest.raises(ProtocolError):
+        project_snapshot(state)

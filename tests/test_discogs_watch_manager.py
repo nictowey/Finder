@@ -314,3 +314,50 @@ def test_noop_rechecks_revision_inside_writer_transaction(setup):
         )
     backend.snapshot = original
     assert backend.snapshot()["watches"][0]["public_title"] == "Newer synthetic edit"
+
+
+def test_notification_counts_use_accepted_events_not_attempts_or_queue(setup):
+    database, alerts, backend, app = setup
+    entries = [
+        ("accepted", 1, 1),
+        ("accepted", 1, 5),
+        ("accepted", 0, 2),
+        ("pending", 1, 0),
+        ("retry_wait", 1, 3),
+        ("leased", 1, 1),
+        ("uncertain", 1, 1),
+        ("failed", 1, 3),
+        ("revoked", 1, 0),
+        ("expired", 1, 0),
+    ]
+    with sqlite3.connect(database) as db:
+        for episode, (state, revision, attempts) in enumerate(entries, 1):
+            db.execute(
+                "INSERT INTO discogs_price_outbox(event_key,release_id,rule_revision,episode,"
+                "price,observed_at,state,attempts,next_attempt) VALUES(?,1,?,?,?,0,?,?,0)",
+                (f"synthetic-{episode}", revision, episode, "12.00", state, attempts),
+            )
+    before = database.read_bytes()
+    saved = backend.snapshot()["watches"]
+    assert saved[0]["notifications"] == {
+        "accepted": 3,
+        "accepted_current_revision": 2,
+        "pending": 2,
+        "in_flight": 1,
+        "uncertain": 1,
+    }
+    assert saved[1]["notifications"] == dict.fromkeys(saved[0]["notifications"], 0)
+    assert database.read_bytes() == before  # Viewing never reconciles/rewrites history.
+    body = fields(
+        app, release="1", title="Synthetic record 1", price="30", revision=1, enabled=False
+    )
+    assert call(app, "/watches/save", "POST", body)["status"].startswith("200")
+    paused = backend.snapshot()["watches"][0]
+    assert paused["notifications"] == {
+        "accepted": 3,
+        "accepted_current_revision": 0,
+        "pending": 0,
+        "in_flight": 0,
+        "uncertain": 2,
+    }
+    assert not paused["enabled"]

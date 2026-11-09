@@ -47,9 +47,29 @@ class WatchBackend:
                 "FROM discogs_price_rules r LEFT JOIN discogs_price_samples s "
                 "ON r.release_id=s.release_id ORDER BY r.release_id",
             ).fetchall()
+            # Only finalized provider acceptance counts as a recorded notification.
+            # Attempts, queued work and uncertain sends are never delivery evidence.
+            count_names = (
+                "accepted",
+                "accepted_current_revision",
+                "pending",
+                "in_flight",
+                "uncertain",
+            )
+            history = {
+                row[0]: dict(zip(count_names, row[1:], strict=True))
+                for row in db.execute(
+                    "SELECT o.release_id,SUM(o.state='accepted'),"
+                    "SUM(o.state='accepted' AND o.rule_revision=r.revision),"
+                    "SUM(o.state IN ('pending','retry_wait')),SUM(o.state='leased'),"
+                    "SUM(o.state='uncertain') FROM discogs_price_outbox o "
+                    "JOIN discogs_price_rules r ON r.release_id=o.release_id GROUP BY o.release_id"
+                )
+            }
             watches = []
             for revision, data, last_success, price, count, status in rows:
                 rule = PriceLeadRule.model_validate_json(data)
+                counts = history.get(rule.release_id, dict.fromkeys(count_names, 0))
                 watches.append(
                     {
                         **rule.model_dump(),
@@ -58,6 +78,7 @@ class WatchBackend:
                         "lowest_item_price": price or None,
                         "count": count,
                         "status": status,
+                        "notifications": counts,
                     }
                 )
             return {

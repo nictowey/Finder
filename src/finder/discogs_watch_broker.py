@@ -14,6 +14,7 @@ WATCH_RESPONSE_LIMIT = 1048576
 SAVE_FIELDS = {"release", "title", "currency", "price", "any_price", "enabled", "revision"}
 RULE_FIELDS = set(PriceLeadRule.model_fields)
 SAMPLE_FIELDS = {"revision", "last_success", "lowest_item_price", "count", "status"}
+NOTIFICATION_FIELDS = {"accepted", "accepted_current_revision", "pending", "in_flight", "uncertain"}
 
 
 def save_fields(fields):
@@ -62,6 +63,16 @@ def project_snapshot(data):
     for row in data["watches"]:
         rule = PriceLeadRule.model_validate({key: row[key] for key in RULE_FIELDS})
         sample = {key: row[key] for key in SAMPLE_FIELDS}
+        notifications = row["notifications"]
+        if (
+            type(notifications) is not dict
+            or set(notifications) != NOTIFICATION_FIELDS
+            or any(
+                type(value) is not int or not 0 <= value < 2**63 for value in notifications.values()
+            )
+            or notifications["accepted_current_revision"] > notifications["accepted"]
+        ):
+            raise ProtocolError("invalid_notification_counts")
         if (
             type(sample["revision"]) is not int
             or not 0 < sample["revision"] < 2**63
@@ -91,7 +102,7 @@ def project_snapshot(data):
             )
         ):
             raise ProtocolError("invalid_watch_sample")
-        watches.append({**rule.model_dump(), **sample})
+        watches.append({**rule.model_dump(), **sample, "notifications": dict(notifications)})
     result = {
         "watches": watches,
         "monitor_enabled": data["monitor_enabled"],
