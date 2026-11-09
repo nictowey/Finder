@@ -42,7 +42,7 @@ Do not give the public-facing web UID direct access to the production database.
 The optional IPC adapter runs in the existing DB-owning review broker and exposes
 only watch snapshot and save, with authenticated peer identity, bounded requests,
 fixed operation schemas and replay/revision checks. Both broker and web host gates
-are default-off. The Caddy template keeps watch routes commented out. Existing authentication,
+are default-off. The checksum-pinned Caddy template remains unchanged; watch routing is opt-in below. Existing authentication,
 proxy identity stripping, request limits, safe logging, secret isolation and TLS
 must be retained. No credentials or permissions are created by this implementation.
 
@@ -87,8 +87,8 @@ end-to-end claim follows from isolated tests.
 
 The existing broker and web-host CLIs both accept `--enable-watch-management`.
 Without the flag, the broker rejects watch operations and the web host does not
-mount the three watch paths. Both flags and the explicitly commented Caddy route
-change are needed. The existing `/listing-review` path, identity replacement,
+mount the three watch paths. Both flags and the explicitly described Caddy route
+change below are needed. The existing `/listing-review` path, identity replacement,
 pre-auth rate gate, socket directory permissions and secret isolation remain.
 No additional socket, credential or database access for the web UID is needed.
 
@@ -114,8 +114,11 @@ For an authorized rollout, preserve the existing database and compare all saved
 rules and global settings before and after enabling these gates. Review both
 systemd templates, use the actual existing identities/socket paths, replace the
 example HTTPS origin privately, and retain all existing secret-denying sandbox
-settings. Change the Caddy matcher to the commented four-path allowlist and its
-request body limit to 4096; review requests retain their own 2048-byte app limit.
+settings. Change the existing protected matcher from `/listing-review` to the exact allowlist
+`/listing-review /watches /watches/state /watches/save`, and its request body limit
+to 4096; review requests retain their own 2048-byte app limit. Do not change the
+checksum-pinned source template or its provenance gate. Apply the reviewed route
+change only to the staged private live configuration.
 Do not expose the private gate or broaden the path matcher. Keep global Caddy
 header/read/write timeouts and safe logging policy. No deployment is performed by
 these templates. Rollback removes both flags and the optional proxy paths; saved
