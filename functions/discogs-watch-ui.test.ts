@@ -435,3 +435,20 @@ test('Recovery navigation is read-only, supports deep links, and keeps an unsave
   assert.equal(a.requests.length,1);
  }finally{a.close();}
 });
+
+
+test('Mobile controls use readable fonts and preserve browser zoom and labels',async()=>{
+ const a=await app();try{
+  const viewport=a.doc.querySelector('meta[name="viewport"]')!.getAttribute('content')!;
+  assert.match(viewport,/viewport-fit=cover/);
+  assert.doesNotMatch(viewport,/user-scalable|maximum-scale|minimum-scale/);
+  for(const field of a.doc.querySelectorAll<HTMLInputElement|HTMLSelectElement>('input,select')){
+   assert.ok(parseFloat(a.w.getComputedStyle(field).fontSize)>=16,field.id);
+   assert.ok(field.labels?.length,field.id+' has an accessible label');
+  }
+  assert.equal(a.doc.querySelector('meta[name="theme-color"]')!.getAttribute('content'),'#101827');
+  assert.doesNotMatch(html,/gesturestart|gesturechange|touchstart|touchmove/);
+  assert.match(html,/button,a,summary,input,select,label\.check\{touch-action:manipulation\}/);
+  assert.doesNotMatch(html,/touch-action:none/);
+ }finally{a.close();}
+});

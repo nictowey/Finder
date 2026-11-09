@@ -20,7 +20,7 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
   const browser = await engine.launch({headless: true});
   try {
     for (const width of [390, 320, 960]) {
-      const page = await browser.newPage({viewport: {width, height: 844}, serviceWorkers: 'block'});
+      const page = await browser.newPage({viewport: {width, height: 844}, isMobile: width < 600, hasTouch: width < 600, serviceWorkers: 'block'});
       let saves = 0, reads = 0;
       let acceptDialogs = false, saveMode = 'ok', failRead = false, holdSave = false, releaseSave;
       const confirmations = [], saveBodies = [];
@@ -60,6 +60,23 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
       });
       await page.goto('https://sniper.example/watches');
       await page.getByText('Synthetic Artist · Favourite Record').waitFor();
+      // These are computed-style/layout checks, not proof of physical iPhone autozoom.
+      const viewport = await page.locator('meta[name="viewport"]').getAttribute('content');
+      assert.match(viewport, /viewport-fit=cover/);
+      assert.doesNotMatch(viewport, /user-scalable|maximum-scale|minimum-scale/);
+      const fields = await page.locator('input,select').evaluateAll(nodes => nodes.map(node => ({
+        id: node.id, font: parseFloat(getComputedStyle(node).fontSize), labeled: node.labels.length > 0,
+      })));
+      for (const field of fields) {
+        assert.ok(field.font >= 16, field.id + ' has a readable computed font');
+        assert.ok(field.labeled, field.id + ' has an accessible label');
+      }
+      assert.equal(await page.locator('body').evaluate(node => getComputedStyle(node).touchAction), 'auto');
+      assert.equal(await page.locator('#search').evaluate(node => getComputedStyle(node).touchAction), 'manipulation');
+      await page.locator('#search').focus();
+      assert.equal(await page.locator('#search').evaluate(node => node === document.activeElement), true);
+      assert.equal(await page.locator('#search').evaluate(node => getComputedStyle(node).outlineStyle), 'solid');
+
       assert.equal(await page.locator('#add-view').isVisible(), false);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       assert.equal(await page.locator('.check-summary').isVisible(), true);
@@ -106,6 +123,19 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
       await page.locator('#release').fill('99');
       await page.locator('#title').fill('My draft');
       await page.locator('#price').fill('12.00');
+      for (const id of ['release', 'title', 'price', 'currency']) {
+        await page.locator('#' + id).focus();
+        assert.equal(await page.locator('#' + id).evaluate(node => node === document.activeElement), true);
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      }
+      // Simulate enlarged form text without disabling browser zoom or mutating saved data.
+      const largeText = await page.addStyleTag({content: 'input,select{font-size:24px!important}'});
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      for (const selector of ['summary', 'label.check']) {
+        for (const box of await page.locator('#add-view ' + selector).evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height))) assert.ok(box >= 44);
+      }
+      await largeText.evaluate(node => node.remove());
+
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       await page.screenshot({path: `/artifacts/${engineName}-${width}-add.png`, fullPage: true});
       await page.locator('#nav-watches').click();
@@ -236,7 +266,7 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
       assert.equal(await page.locator('#title').inputValue(), 'Keep my unsaved removal draft');
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       await page.close();
-      console.log(`PASS ${engineName} width ${width}: check results, navigation and Back/Forward, draft guards, remove cancel and repeated click, removed recovery, paused restore, duplicate add, lost response, revision conflict and failed read without replay, overflow`);
+      console.log(`PASS ${engineName} width ${width}: check results, navigation and Back/Forward, readable input fonts and labels, focus, enlarged text, unrestricted zoom metadata, draft guards, remove cancel and repeated click, removed recovery, paused restore, duplicate add, lost response, revision conflict and failed read without replay, overflow`);
     }
   } finally {
     await browser.close();

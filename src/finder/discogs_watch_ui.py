@@ -23,7 +23,8 @@ def render_page(nonce, *, session_management=False):
 
 
 PAGE = r"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101827">
 <title>Sniper · Your watches</title>
 <style nonce="@@NONCE@@">
 :root{color-scheme:dark;--bg:#101827;--panel:#182337;--line:#364761;--muted:#b6c4d8;--accent:#b7f2cf;--ink:#eef3ff}
@@ -33,6 +34,15 @@ PAGE = r"""<!doctype html>
 main{max-width:960px}.layout{display:block;margin-top:20px}.panel{position:static;max-width:640px;margin:auto}header{margin-bottom:24px;flex-wrap:wrap;gap:12px}.intro h1{font-size:clamp(28px,5vw,42px);letter-spacing:-1.3px}.intro p{margin-bottom:0}.view-nav{display:flex;gap:6px;padding:6px;margin-top:24px;background:var(--panel);border:1px solid var(--line);border-radius:14px;position:sticky;top:8px;z-index:2}.view-nav a{flex:1;text-align:center;text-decoration:none;border-radius:9px;padding:12px 8px;color:var(--muted);font-weight:750;min-height:48px}.view-nav a[aria-current=page]{background:var(--accent);color:#15200b}.status{margin:14px 0 0;min-height:0}.status:empty{display:none}.toolbar{align-items:start}.toolbar h2{font-size:23px}.watch-count{font-size:13px;display:block;font-weight:400;margin-top:4px}.cards{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}.card{min-width:0}.card h3{overflow-wrap:anywhere}.card-actions button{flex:1}.card .price{font-size:22px}.check-summary{margin-top:14px;border-top:1px solid var(--line);padding-top:8px}.check-summary small{overflow-wrap:anywhere}.notice p+p{margin-top:6px}.details{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}summary{cursor:pointer;color:var(--muted);font-size:13px;padding:6px 0;min-height:36px}summary:focus-visible{outline:3px solid var(--accent);outline-offset:3px}.notice{margin-top:20px;font-size:12px;padding:12px 15px}.notice p{margin:0}.notice summary{font-weight:650}footer{margin-top:20px}footer p{margin-top:8px}.panel>p{font-size:14px}.empty{grid-column:1/-1;padding:28px 16px}.empty button{margin-top:12px}.form-help{margin:14px 0}.form-help small{line-height:1.6}@media(max-width:600px){main{padding:20px 16px 32px}.cards{grid-template-columns:1fr}.panel,.card{padding:18px}.intro h1{font-size:30px}.intro p{font-size:14px}.toolbar{gap:8px}.toolbar button{padding:8px 12px}.view-nav{margin-top:18px}.card-top{flex-wrap:nowrap}.pill{white-space:nowrap}.notice{margin-top:16px}header .pill{font-size:11px;padding:6px 9px}}
 /* Removed watches remain recoverable, separate from enabled and paused watches. */
 .card-actions{flex-wrap:wrap}.card-actions button{flex:1 1 72px}.card-actions .remove{color:#ffbcb3;border-color:#805d64}.recovery-note{font-size:14px;color:var(--muted)}.removed-hint{padding:12px;border:1px solid var(--line);border-radius:9px;margin-top:16px;font-size:14px}.removed-hint button{margin-top:8px}.view-nav a{overflow-wrap:anywhere}.removed-card .pill{border-color:#805d64;color:#ffcbc3}
+/* Keep form entry at a readable size to avoid iOS's small-input focus zoom.
+   Pinch zoom remains available; manipulation is limited to interactive targets. */
+input,select{font-size:16px}
+button,a,summary,input,select,label.check{touch-action:manipulation}
+summary,label.check{min-height:44px}
+main{padding-top:max(36px,env(safe-area-inset-top));padding-right:max(24px,env(safe-area-inset-right));padding-bottom:max(64px,env(safe-area-inset-bottom));padding-left:max(24px,env(safe-area-inset-left))}
+.view-nav{top:max(8px,env(safe-area-inset-top))}
+@media(max-width:800px){main{padding-top:max(24px,env(safe-area-inset-top));padding-right:max(16px,env(safe-area-inset-right));padding-bottom:max(40px,env(safe-area-inset-bottom));padding-left:max(16px,env(safe-area-inset-left))}}
+@media(max-width:600px){main{padding-top:max(20px,env(safe-area-inset-top));padding-bottom:max(32px,env(safe-area-inset-bottom))}}
 </style></head><body><main>
 <header><div class="brand">SNIPER<span class="accent">.</span></div><span class="pill">Private watchlist</span></header>
 <div class="intro"><h1>Your next record starts here.</h1><p class="muted">Your records. Your price. One place to keep watch.</p></div>
