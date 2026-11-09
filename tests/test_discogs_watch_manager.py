@@ -200,7 +200,9 @@ def test_any_price_and_get_no_mutations(setup):
 def test_ui_safety_copy_and_no_external_code():
     page = render_page('"evil')
     assert 'nonce="&quot;evil"' in page
-    assert "cannot filter media or sleeve grade, US sellers" in page
+    assert "No media/sleeve grade or US-seller filtering" in page
+    assert "Prices exclude shipping, tax and fees" in page
+    assert "Last observed aggregate prices and counts may have changed" in page
     assert "No automatic retry was made" in page
     assert "localStorage" not in page and "<script src" not in page
     assert "textContent" in page and "innerHTML" not in page

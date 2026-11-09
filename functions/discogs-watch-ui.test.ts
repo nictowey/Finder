@@ -91,7 +91,7 @@ test('Notification cards separate accepted history, current settings and unconfi
   const text=a.doc.getElementById('watches')!.textContent!;
   assert.match(text,/Recorded notifications5/);assert.match(text,/With current watch settings2/);
   assert.match(text,/not confirmed phone delivery/);assert.match(text,/1 queued · 0 in progress · 1 uncertain/);
-  assert.match(a.doc.getElementById('count')!.textContent!,/1 active · 0 paused/);
+  assert.match(a.doc.getElementById('count')!.textContent!,/1 enabled · 0 paused/);
  }finally{a.close();}
 });
 
@@ -156,4 +156,106 @@ test('Direct Add link opens its form and empty watchlist offers an Add action',a
   assert.equal(empty.w.location.hash,'#add');
   assert.equal((empty.doc.getElementById('add-view') as HTMLElement).hidden,false);
  }finally{empty.close();}
+});
+
+
+async function checkState(watch:Record<string,unknown>,monitor:unknown=true){
+ return app(async()=>({ok:true,json:async()=>{const s=fixture();return {...s,monitor_enabled:monitor,watches:[{...s.watches[0],...watch}]};}}));
+}
+
+test('Never-checked watches show visible missing evidence, not a running claim',async()=>{
+ const a=await checkState({});try{
+  const summary=a.doc.querySelector('.check-summary')!;
+  assert.equal(summary.closest('details'),null);
+  assert.match(summary.textContent!,/Last successful check: None recorded for current settings/);
+  assert.match(summary.textContent!,/Latest recorded check: No result recorded for current settings/);
+  assert.match(a.doc.getElementById('monitor-status')!.textContent!,/Monitor setting: enabled · running status not verified/);
+  assert.equal(a.doc.querySelector('.card .pill')!.textContent,'Enabled');
+  assert.equal(a.doc.querySelector('.check-summary time'),null);
+  assert.match(a.doc.querySelector('.card > .meta')!.textContent!,/Last observed item minimumUnknownLast observed copies for saleUnknown/);
+  assert.equal(a.requests.length,1);assert.equal(a.requests[0].path,'/watches/state');
+ }finally{a.close();}
+});
+
+test('Successful observations show a visible dated snapshot without inferred freshness',async()=>{
+ const a=await checkState({status:'ok',last_success:1000,lowest_item_price:'18.00',count:3});try{
+  const time=a.doc.querySelector('.check-summary time')!;
+  assert.equal(time.closest('details'),null);assert.equal(time.getAttribute('datetime'),'1970-01-01T00:16:40.000Z');
+  assert.match(a.doc.querySelector('.check-summary')!.textContent!,/Latest recorded check: Successful/);
+  assert.match(a.doc.querySelector('.card > .meta')!.textContent!,/Last observed item minimumUSD 18.00Last observed copies for sale3/);
+  assert.doesNotMatch(a.doc.querySelector('.check-summary')!.textContent!,/stale|overdue|healthy|next check/i);
+  assert.match(a.doc.querySelector('.notice')!.textContent!,/aggregate prices and counts may have changed/);
+  assert.match(a.doc.querySelector('.notice')!.textContent!,/No media\/sleeve grade or US-seller filtering/);
+  assert.match(a.doc.querySelector('.notice')!.textContent!,/shipping, tax and fees/);
+  assert.equal(a.doc.querySelector('.notice details'),null);
+ }finally{a.close();}
+});
+
+for(const [status,label] of [['error','Failed'],['unknown','Result could not be confirmed']]){
+ test(`${status} results retain the dated prior observation and show the failure outside details`,async()=>{
+  const a=await checkState({status,last_success:1000,lowest_item_price:'18.00',count:3});try{
+   const result=a.doc.querySelector('.check-summary .error')!;
+   assert.equal(result.textContent,'Latest recorded check: '+label);assert.equal(result.closest('details'),null);
+   assert.equal(a.doc.querySelector('.check-summary time')!.getAttribute('datetime'),'1970-01-01T00:16:40.000Z');
+   assert.match(a.doc.querySelector('.card > .meta')!.textContent!,/USD 18.00Last observed copies for sale3/);
+   assert.doesNotMatch(result.textContent!,/retry|scheduled|running|delivered/i);
+   assert.equal(a.requests.length,1);
+  }finally{a.close();}
+ });
+}
+
+test('A failed first check does not manufacture a successful sample or zero availability',async()=>{
+ const a=await checkState({status:'error'});try{
+  assert.match(a.doc.querySelector('.check-summary')!.textContent!,/None recorded for current settings.*Latest recorded check: Failed/);
+  assert.equal(a.doc.querySelector('.check-summary time'),null);
+  assert.match(a.doc.querySelector('.card > .meta')!.textContent!,/Last observed copies for saleUnknown/);
+ }finally{a.close();}
+});
+
+test('Paused watches and disabled monitor settings remain distinct from check history',async()=>{
+ const paused=await checkState({enabled:false,status:'ok',last_success:1000});try{
+  assert.equal(paused.doc.querySelector('.card .pill')!.textContent,'Paused');
+  assert.match(paused.doc.querySelector('.check-summary')!.textContent!,/Latest recorded check: Successful/);
+  assert.match(paused.doc.querySelector('.check-summary')!.textContent!,/Watch paused · new checks are disabled for this watch/);
+  assert.equal(paused.doc.querySelector('[data-action="toggle"]')!.textContent,'Resume');
+  assert.equal(paused.requests.length,1);
+ }finally{paused.close();}
+ const disabled=await checkState({status:'error',last_success:1000},false);try{
+  assert.match(disabled.doc.getElementById('monitor-status')!.textContent!,/Monitor setting: disabled · saving watches will not start it/);
+  assert.equal(disabled.doc.querySelector('.card .pill')!.textContent,'Enabled');
+  assert.match(disabled.doc.querySelector('.check-summary')!.textContent!,/Latest recorded check: Failed/);
+  assert.match(disabled.doc.querySelector('.check-summary')!.textContent!,/Monitor disabled · new checks are stopped/);
+  assert.equal(disabled.requests.length,1);
+ }finally{disabled.close();}
+});
+
+test('Missing or unfamiliar status and invalid success dates stay unknown',async()=>{
+ for(const status of [null,'unrecognized','__proto__']){
+  const a=await checkState({status,last_success:'not-a-date',count:0},null);try{
+   assert.match(a.doc.querySelector('.check-summary')!.textContent!,/Last successful check: Time unavailable/);
+   assert.match(a.doc.querySelector('.check-summary')!.textContent!,/Latest recorded check: Status unavailable/);
+   assert.equal(a.doc.querySelector('.check-summary time'),null);
+   assert.match(a.doc.getElementById('monitor-status')!.textContent!,/Monitor setting unavailable · running status not verified/);
+   assert.match(a.doc.querySelector('.card > .meta')!.textContent!,/Last observed copies for sale0/);
+   assert.doesNotMatch(a.doc.querySelector('.card')!.textContent!,/Invalid Date|NaN|undefined/);
+  }finally{a.close();}
+ }
+});
+
+test('Manual refresh updates recorded results without starting another check or losing a draft',async()=>{
+ let reads=0;const a=await app(async()=>({ok:true,json:async()=>{const s=fixture();return {...s,watches:[{...s.watches[0],status:++reads===1?'error':'ok',last_success:reads===1?1000:2000,lowest_item_price:'18.00',count:3}]};}}));try{
+  assert.match(a.doc.querySelector('.check-summary')!.textContent!,/Latest recorded check: Failed/);
+  a.input('title','Unsaved health check draft');a.click('#refresh');await tick();await tick();
+  assert.match(a.doc.querySelector('.check-summary')!.textContent!,/Latest recorded check: Successful/);
+  assert.equal(a.doc.querySelector('.check-summary time')!.getAttribute('datetime'),'1970-01-01T00:33:20.000Z');
+  assert.equal((a.doc.getElementById('title') as HTMLInputElement).value,'Unsaved health check draft');
+  assert.equal(a.requests.length,2);assert.ok(a.requests.every(r=>r.path==='/watches/state'&&r.body===null));
+ }finally{a.close();}
+});
+
+test('Price-capped watches retain their saved count-increase alert preference',async()=>{
+ const a=await checkState({alert_count_increases:true});try{
+  assert.match(a.doc.querySelector('.card details')!.textContent!,/Alert preferences: initial availability, price drops, count increases/);
+  assert.equal(a.requests.length,1);
+ }finally{a.close();}
 });

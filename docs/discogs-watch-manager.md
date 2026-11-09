@@ -144,3 +144,21 @@ watch increments its revision, so the current-settings count restarts while the
 retained accepted total stays. Earlier events cannot reliably be attributed to the
 current price merely by their observed minimum, since earlier saved caps are not
 stored on those records. No historical price-setting counts are invented.
+
+
+## Reading saved check results
+
+Each card exposes the last successful check time and latest recorded result without
+opening notification details. A failed or unknown check does not replace the prior
+successful price/count. Those values are labeled **last observed**, not current
+availability. Missing success history and an unavailable result are explicit; a
+saved settings change resets the sample, so missing history applies to the current
+settings. Dates use the browser's time zone.
+
+The global banner describes the saved monitor enable setting, not whether the
+worker is currently running or healthy. Watch enable/pause state is separate from
+check history, and disabled global monitoring is called out on enabled watches.
+No stale threshold, next-check countdown, polling interval or automatic page
+refresh is inferred. Refresh reads stored results only; it does not trigger a
+provider check. Aggregate-only, grade/US-seller and delivered-price limitations
+remain visible. Notification-service acceptance still is not phone delivery.
