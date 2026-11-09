@@ -452,3 +452,66 @@ test('Mobile controls use readable fonts and preserve browser zoom and labels',a
   assert.doesNotMatch(html,/touch-action:none/);
  }finally{a.close();}
 });
+
+const filterFixture=()=>({...fixture(),watches:[
+ {...fixture().watches[0],release_id:30,public_title:'Zulu',last_success:100},
+ {...fixture().watches[0],release_id:20,public_title:'alpha',enabled:false,last_success:200},
+ {...fixture().watches[0],release_id:10,public_title:'Alpha',last_success:200},
+ {...fixture().watches[0],release_id:40,public_title:'Unknown'},
+ {...fixture().watches[0],release_id:50,public_title:'Removed',removed:true,enabled:false,last_success:300},
+]});
+function select(a:Awaited<ReturnType<typeof app>>,id:string,value:string){const input=a.doc.getElementById(id) as HTMLSelectElement;input.value=value;input.dispatchEvent(new a.w.Event('change',{bubbles:true}));}
+function releases(a:Awaited<ReturnType<typeof app>>){return [...a.doc.querySelectorAll('#watches [data-release]')].map(n=>Number((n as HTMLElement).dataset.release));}
+
+test('Watch filters combine with search and stable sorting without writes',async()=>{
+ const snapshot=filterFixture();const a=await app(async()=>({ok:true,json:async()=>structuredClone(snapshot)}));try{
+  assert.deepEqual(releases(a),[10,20,30,40]);
+  select(a,'watch-sort','name');assert.deepEqual(releases(a),[10,20,40,30]);
+  select(a,'watch-sort','checked');assert.deepEqual(releases(a),[10,20,30,40]);
+  select(a,'watch-filter','paused');assert.deepEqual(releases(a),[20]);
+  assert.equal(a.doc.getElementById('shown-count')!.textContent,'Showing 1 of 4 watches');
+  select(a,'watch-filter','enabled');a.input('search','alpha');assert.deepEqual(releases(a),[10]);
+  a.input('search','missing');assert.deepEqual(releases(a),[]);a.click('#watches .empty button');
+  assert.deepEqual(releases(a),[10,20,30,40]);assert.equal(a.doc.activeElement!.id,'search');
+  assert.equal((a.doc.getElementById('watch-sort') as HTMLSelectElement).value,'checked');
+  assert.deepEqual(snapshot,filterFixture());assert.equal(a.requests.filter(r=>r.path.endsWith('/save')).length,0);
+  assert.equal(a.doc.querySelectorAll('#removed-watches [data-release]').length,1);
+ }finally{a.close();}
+});
+
+test('Refresh and navigation preserve filters, sorting and an unsaved draft',async()=>{
+ const snapshot=filterFixture();const a=await app(async()=>({ok:true,json:async()=>structuredClone(snapshot)}));try{
+  select(a,'watch-filter','enabled');select(a,'watch-sort','name');a.input('search','alpha');
+  a.input('title','Keep my draft');a.w.location.hash='#add';await tick();a.w.location.hash='#watches';await tick();
+  snapshot.watches[2].enabled=false;a.click('#refresh');await tick();await tick();
+  assert.deepEqual(releases(a),[]);assert.equal((a.doc.getElementById('title') as HTMLInputElement).value,'Keep my draft');
+  assert.equal((a.doc.getElementById('watch-filter') as HTMLSelectElement).value,'enabled');
+  assert.equal((a.doc.getElementById('watch-sort') as HTMLSelectElement).value,'name');
+  assert.equal((a.doc.getElementById('search') as HTMLInputElement).value,'alpha');
+  assert.equal(a.requests.filter(r=>r.path.endsWith('/save')).length,0);
+ }finally{a.close();}
+});
+
+test('Filters follow refreshed removals and paused restorations without changing preferences',async()=>{
+ const snapshot=filterFixture();const a=await app(async()=>({ok:true,json:async()=>structuredClone(snapshot)}));try{
+  select(a,'watch-filter','paused');assert.deepEqual(releases(a),[20]);
+  snapshot.watches[1].removed=true;snapshot.watches[4].removed=false;
+  a.click('#refresh');await tick();await tick();assert.deepEqual(releases(a),[50]);
+  assert.equal(a.doc.getElementById('shown-count')!.textContent,'Showing 1 of 4 watches');
+  assert.equal(a.requests.filter(r=>r.path.endsWith('/save')).length,0);
+ }finally{a.close();}
+});
+
+test('Last-success sorting keeps epoch timestamps ahead of unknown dates and failures honest',async()=>{
+ const snapshot=filterFixture();snapshot.watches[0].last_success=0;snapshot.watches[1].status='error';
+ const a=await app(async()=>({ok:true,json:async()=>structuredClone(snapshot)}));try{
+  select(a,'watch-sort','checked');assert.deepEqual(releases(a),[10,20,30,40]);
+  assert.match(a.doc.querySelector('#watches [data-release="20"]')!.textContent!,/Latest recorded check: Failed/);
+  assert.match(a.doc.querySelector('#watches [data-release="40"]')!.textContent!,/None recorded for current settings/);
+  for(const id of ['watch-filter','watch-sort']){
+   const select=a.doc.getElementById(id) as HTMLSelectElement;
+   assert.ok(select.closest('label'));assert.equal(a.w.getComputedStyle(select).fontSize,'16px');
+   assert.ok(Number.parseFloat(a.w.getComputedStyle(select).minHeight)>=44);
+  }
+ }finally{a.close();}
+});

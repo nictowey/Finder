@@ -88,6 +88,47 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
       assert.match(await page.locator('.notice').innerText(), /No media\/sleeve grade or US-seller filtering/);
       assert.equal(await page.locator('.notice').isVisible(), true);
       await page.screenshot({path: `/artifacts/${engineName}-${width}-watches.png`, fullPage: true});
+      // Presentation controls use only the current synthetic snapshot, never a save.
+      snapshot.watches.push({...structuredClone(fixture.watches[0]), release_id: 2, public_title: 'Alpha', enabled: false, last_success: 1794229300});
+      snapshot.watches.push({...structuredClone(fixture.watches[0]), release_id: 3, public_title: 'Unknown', last_success: null});
+      snapshot.watches.push({...structuredClone(fixture.watches[0]), release_id: 4, public_title: 'Removed', enabled: false, removed: true});
+      await page.locator('#refresh').click();
+      await page.locator('#refresh:not(:disabled)').waitFor();
+      const visibleReleases = () => page.locator('#watches [data-release]').evaluateAll(nodes => nodes.map(node => Number(node.dataset.release)));
+      await page.locator('#watch-sort').selectOption('name');
+      assert.deepEqual(await visibleReleases(), [2, 1, 3]);
+      await page.locator('#watch-sort').selectOption('checked');
+      assert.deepEqual(await visibleReleases(), [2, 1, 3]);
+      await page.locator('#watch-filter').selectOption('paused');
+      assert.deepEqual(await visibleReleases(), [2]);
+      assert.equal(await page.locator('#shown-count').innerText(), 'Showing 1 of 3 watches');
+      await page.locator('#search').fill('missing');
+      assert.deepEqual(await visibleReleases(), []);
+      await page.getByRole('button', {name: 'Clear search and filters'}).click();
+      assert.deepEqual(await visibleReleases(), [2, 1, 3]);
+      await page.locator('#watch-filter').selectOption('enabled');
+      await page.locator('#search').fill('Synthetic');
+      await page.locator('#nav-add').click();
+      await page.locator('#title').fill('Filter navigation draft');
+      await page.locator('#nav-watches').click();
+      await page.goBack();
+      await page.locator('#add-view').waitFor({state: 'visible'});
+      assert.equal(await page.locator('#title').inputValue(), 'Filter navigation draft');
+      await page.goForward();
+      await page.locator('#watches-view').waitFor({state: 'visible'});
+      await page.locator('#refresh').click();
+      await page.locator('#refresh:not(:disabled)').waitFor();
+      assert.equal(await page.locator('#watch-filter').inputValue(), 'enabled');
+      assert.equal(await page.locator('#watch-sort').inputValue(), 'checked');
+      assert.equal(await page.locator('#search').inputValue(), 'Synthetic');
+      assert.deepEqual(await visibleReleases(), [1]);
+      assert.equal(saves, 0);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      for (const id of ['watch-filter', 'watch-sort']) assert.ok((await page.locator('#' + id).boundingBox()).height >= 44);
+      await page.screenshot({path: `/artifacts/${engineName}-${width}-filters.png`, fullPage: true});
+      await page.locator('#watch-filter').selectOption('all');
+      await page.locator('#watch-sort').selectOption('release');
+      await page.locator('#search').fill('');
       const states = [
         {name: 'waiting', watch: {status: 'waiting', last_success: null, lowest_item_price: null, count: null}, result: 'No result recorded for current settings'},
         {name: 'error', watch: {status: 'error'}, result: 'Failed'},
@@ -266,7 +307,7 @@ for (const [engineName, engine] of Object.entries({chromium, webkit})) {
       assert.equal(await page.locator('#title').inputValue(), 'Keep my unsaved removal draft');
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       await page.close();
-      console.log(`PASS ${engineName} width ${width}: check results, navigation and Back/Forward, readable input fonts and labels, focus, enlarged text, unrestricted zoom metadata, draft guards, remove cancel and repeated click, removed recovery, paused restore, duplicate add, lost response, revision conflict and failed read without replay, overflow`);
+      console.log(`PASS ${engineName} width ${width}: search, status filters, stable sorting, check results, navigation and Back/Forward, readable input fonts and labels, focus, enlarged text, unrestricted zoom metadata, draft guards, remove cancel and repeated click, removed recovery, paused restore, duplicate add, lost response, revision conflict and failed read without replay, overflow`);
     }
   } finally {
     await browser.close();
