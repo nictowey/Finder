@@ -15,9 +15,16 @@ only the Origin actually emitted by the browser. Three flows run in both engines
    A real native POST emits `Origin: null` and is rejected with 403, reproducing the
    browser failure that manual requests with an injected Origin did not reveal.
 2. The current application policy is left untouched. A real native POST must emit
-   the exact `https://watch.example` origin, receive 303, and retain a Secure,
-   HttpOnly, SameSite=Strict, host-only session cookie. JavaScript cannot read it.
-   This check fails against the unfixed no-referrer application.
+   the exact `https://watch.example` origin and receive an actual application
+   decision of 303 with Location `/session`. Playwright interception only covers
+   the first URL in a redirect chain, so the network-disabled fixture delivers
+   that response to the browser as 200 with Location removed and Set-Cookie
+   unchanged. A separate explicit navigation to intercepted `/session` must
+   authenticate using the retained cookie. The cookie is Secure, HttpOnly,
+   SameSite=Strict and host-only; JavaScript cannot read it. This verifies only
+   synthetic-response cookie storage/use, not native 303 handling, real TLS or
+   persistence across browser restarts. The native request and Origin are never
+   changed. This check fails against the unfixed no-referrer application.
 3. An actual native form on `https://attacker.example` submits a valid synthetic
    challenge to the bootstrap route and must receive 403. Simulated cached Basic
    identity cannot bypass the strict foreign-Origin check. The legacy flow also
@@ -27,7 +34,10 @@ The workflow `Device session native browser forms` builds
 `deployment/DeviceSessionBrowser.Dockerfile` and runs this check. It reuses the
 repository's locked official Playwright dependency, without changing dependencies
 of the existing Firefox pipeline. Results print browser versions, observed origins,
-response statuses and security-property booleans, never cookie values or form tokens.
+application/fixture-delivery statuses and security-property booleans, never cookie
+values or form tokens. Each engine is attempted even when the other fails; the
+job fails if either fails or is unavailable. Logs explicitly mark synthetic
+redirect normalization and do not claim native redirect/restart verification.
 
 Local contract checks can run without launching a browser:
 

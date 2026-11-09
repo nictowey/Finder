@@ -124,3 +124,19 @@ def test_dockerfile_specific_context_allows_only_required_browser_inputs():
     assert "COPY tests/device_session_browser ./tests/device_session_browser/" in dockerfile
     workflow = (ROOT / ".github/workflows/device-session-native-browser.yml").read_text()
     assert workflow.count("'deployment/DeviceSessionBrowser.Dockerfile.dockerignore'") == 2
+
+
+def test_browser_fixture_preserves_decision_without_claiming_native_redirect():
+    script = (ROOT / "tests/device_session_browser/native_form.mjs").read_text()
+    assert "assert.equal(response.headers.location, '/session')" in script
+    assert "fixtureStatus = 200" in script
+    assert "delete fixtureHeaders.location" in script
+    assert "const fixtureHeaders = {...response.headers}" in script
+    assert "const account = await page.goto(origin + '/session')" in script
+    assert "assert.equal(account.status(), 200)" in script
+    assert "native_redirect_verified: false" in script
+    assert "restart_persistence_verified: false" in script
+    assert "application_status: response.status" in script
+    assert "fixture_delivery_status: fixtureStatus" in script
+    assert "if (failures.length) throw new AggregateError" in script
+    assert "if (browser) await browser.close()" in script

@@ -32,9 +32,11 @@ function dispatch(data) {
 }
 
 try {
+  const failures = [];
   for (const [name, engine] of Object.entries({chromium, webkit})) {
-    const browser = await engine.launch({headless: true});
+    let browser;
     try {
+      browser = await engine.launch({headless: true});
       const context = await browser.newContext({serviceWorkers: 'block', acceptDownloads: false});
       const attempts = [];
       const unexpected = [];
@@ -60,12 +62,25 @@ try {
         const response = await dispatch({path: url.pathname, method: request.method(),
           headers: await request.allHeaders(),
           body: (request.postDataBuffer() ?? Buffer.alloc(0)).toString('base64'), policy});
-        if (request.method() === 'POST') {
-          attempts.push({origin: response.origin, status: response.status});
-          console.log(JSON.stringify({phase: 'native-post', browser: name, policy,
-            origin: response.origin, status: response.status}));
+        let fixtureStatus = response.status;
+        const fixtureHeaders = {...response.headers};
+        if (request.method() === 'POST' && url.pathname === '/session/start' && response.status === 303) {
+          // Playwright routes only the first URL of a redirect chain. In this
+          // network-disabled fixture, preserve the REAL application's decision
+          // and Set-Cookie, but do not ask the browser to follow that redirect.
+          assert.equal(response.headers.location, '/session');
+          fixtureStatus = 200;
+          delete fixtureHeaders.location;
         }
-        await route.fulfill({status: response.status, headers: response.headers,
+        if (request.method() === 'POST') {
+          attempts.push({origin: response.origin, status: response.status,
+            fixtureStatus, location: response.headers.location ?? null});
+          console.log(JSON.stringify({phase: 'native-post', browser: name, policy,
+            origin: response.origin, application_status: response.status,
+            fixture_delivery_status: fixtureStatus,
+            expected_location: response.headers.location ?? null}));
+        }
+        await route.fulfill({status: fixtureStatus, headers: fixtureHeaders,
           body: Buffer.from(response.body, 'base64')});
       });
       const page = await context.newPage();
@@ -92,15 +107,19 @@ try {
       // override the policy here: this fails against the old application code.
       policy = 'current';
       const login = await page.goto(origin + '/session/login');
-      assert.equal(await submit('Remember this device for 30 days'), 303);
-      await page.waitForURL(origin + '/session');
+      assert.equal(await submit('Remember this device for 30 days'), 200);
+      assert.equal(attempts.at(-1).location, '/session');
+      assert.equal(attempts.at(-1).fixtureStatus, 200);
+      // Separate explicit navigation, not evidence of native 303 redirect handling.
+      const account = await page.goto(origin + '/session');
+      assert.equal(account.status(), 200);
       assert.equal(page.url(), origin + '/session');
       assert.equal(attempts.at(-1).origin, origin, `${name}: native form must emit canonical Origin`);
       assert.equal(attempts.at(-1).status, 303, `${name}: current native form must create session`);
       assert.equal(login.headers()['referrer-policy'], 'same-origin');
       const cookies = await context.cookies(origin);
       const cookie = cookies.find(item => item.name === '__Host-sniper_session');
-      assert.ok(cookie, `${name}: browser must retain the session cookie`);
+      assert.ok(cookie, `${name}: browser must retain the synthetic response session cookie`);
       assert.equal(cookie.httpOnly, true);
       assert.equal(cookie.secure, true);
       assert.equal(cookie.sameSite, 'Strict');
@@ -126,12 +145,18 @@ try {
         legacy_native_origin: attempts[0].origin, legacy_status: attempts[0].status,
         current_native_origin: attempts[1].origin, current_status: attempts[1].status,
         foreign_native_origin: attempts[2].origin, foreign_status: attempts[2].status,
+        fixture_redirect_normalized: true, native_redirect_verified: false,
+        explicit_cookie_navigation_status: 200, restart_persistence_verified: false,
         cookie_secure: true, cookie_http_only: true, cookie_same_site: 'Strict'}));
       await context.close();
+    } catch (error) {
+      failures.push(new Error(`${name}: ${error.message}`));
+      console.error(JSON.stringify({status: 'failed', browser: name, error: error.message}));
     } finally {
-      await browser.close();
+      if (browser) await browser.close();
     }
   }
+  if (failures.length) throw new AggregateError(failures, 'Native form browser checks failed');
 } finally {
   child.stdin.end();
   child.kill('SIGTERM');
