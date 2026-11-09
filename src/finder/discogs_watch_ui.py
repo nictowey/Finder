@@ -6,8 +6,20 @@ import html
 # ruff: noqa: E501
 
 
-def render_page(nonce):
-    return PAGE.replace("@@NONCE@@", html.escape(nonce, quote=True))
+def render_page(nonce, *, session_management=False):
+    page = PAGE.replace("@@NONCE@@", html.escape(nonce, quote=True))
+    if session_management:
+        page = page.replace(
+            "</header>",
+            '<a href="/session" class="pill">Device sign-in</a></header>',
+            1,
+        )
+        page = page.replace(
+            "</head>",
+            '<link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/session/icon.png"></head>',
+            1,
+        )
+    return page
 
 
 PAGE = r"""<!doctype html>

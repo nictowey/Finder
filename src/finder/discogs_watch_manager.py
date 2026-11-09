@@ -133,7 +133,7 @@ def _pairs(pairs):
 class WatchApp:
     """Authenticated, CSRF-protected WSGI UI; all writes are explicit POSTs."""
 
-    def __init__(self, *, backend, origin, authenticate, clock=time.time):
+    def __init__(self, *, backend, origin, authenticate, clock=time.time, session_management=False):
         parsed = urlsplit(origin)
         if (
             parsed.scheme != "https"
@@ -150,6 +150,7 @@ class WatchApp:
         self.backend, self.origin, self.host = backend, origin, parsed.netloc
         self.authenticate, self.clock = authenticate, clock
         self.tokens, self.lock = {}, threading.Lock()
+        self.session_management = session_management
 
     def _token(self, principal):
         with self.lock:
@@ -177,6 +178,8 @@ class WatchApp:
             policy = (
                 "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
             )
+            if self.session_management:
+                policy += "; manifest-src 'self'; img-src 'self'"
             if nonce:
                 policy += (
                     f"; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; connect-src 'self'"
@@ -209,7 +212,12 @@ class WatchApp:
             return reply(400, {"error": "Watch details belong in the private form, not the URL."})
         if method == "GET" and path == PATH:
             nonce = secrets.token_urlsafe(24)
-            return reply(200, render_page(nonce), page=True, nonce=nonce)
+            return reply(
+                200,
+                render_page(nonce, session_management=self.session_management),
+                page=True,
+                nonce=nonce,
+            )
         try:
             if method == "GET" and path == PATH + "/state":
                 return reply(200, {**self.backend.snapshot(), "csrf": self._token(principal)})

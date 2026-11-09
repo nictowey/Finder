@@ -1,0 +1,70 @@
+# DEFAULT-OFF ALTERNATIVE, not an overlay on the existing Basic-only site.
+# Requires a NEW dedicated DNS hostname with working HTTPS on 443. Never use
+# the ntfy/IVC hostname with a different port: cookies do not isolate by port.
+# REVIEW_ORIGIN must exactly equal https://<session-hostname> passed to the host.
+# Keep existing IVC/ntfy sites unchanged. Validate with the actual Caddy binary.
+(sniper_session_proxy_common) {
+    header_up -Authorization
+    header_up -Forwarded
+    header_up -X-Forwarded-For
+    header_up -X-Forwarded-Host
+    header_up -X-Forwarded-Proto
+    transport http {
+        dial_timeout 2s
+        response_header_timeout 30s
+        read_timeout 30s
+        write_timeout 10s
+    }
+}
+(sniper_session_gate) {
+    header Cache-Control "no-store"
+    request_body {
+        max_size 4096
+    }
+    forward_auth unix//run/sniper-review/review.sock {
+        uri /_proxy_gate
+        header_up -Authorization
+        header_up -Cookie
+        header_up -X-Review-Principal
+        transport http {
+            dial_timeout 2s
+            response_header_timeout 5s
+        }
+    }
+}
+{$REVIEW_ORIGIN} {
+    tls {
+        issuer acme https://acme-v02.api.letsencrypt.org/directory
+    }
+    # No access/debug logs. Retain global bounded header/body/write timeouts.
+    @bootstrap path /session/login /session/start
+    handle @bootstrap {
+        route {
+            import sniper_session_gate
+            basicauth {
+                {$REVIEW_PRINCIPAL} {$REVIEW_PASSWORD_HASH}
+            }
+            reverse_proxy unix//run/sniper-review/review.sock {
+                import sniper_session_proxy_common
+                # Replace, do not append. Only verified Basic can assert identity.
+                header_up X-Review-Principal {http.auth.user.id}
+                # Cookie is used only to rotate a prior session after a valid POST.
+            }
+        }
+    }
+    @session path /watches /watches/state /watches/save /listing-review /session /session/logout /session/revoke-all /manifest.webmanifest /session/icon.png
+    handle @session {
+        route {
+            import sniper_session_gate
+            reverse_proxy unix//run/sniper-review/review.sock {
+                import sniper_session_proxy_common
+                header_up -X-Review-Principal
+                # Preserve Cookie only for the session middleware. It validates and
+                # removes it before calling the old review/watch applications.
+            }
+        }
+    }
+    handle {
+        respond "Not found" 404
+    }
+}
