@@ -24,7 +24,7 @@ def save_fields(fields):
         type(fields["release"]) is not str
         or len(fields["release"]) > 500
         or type(fields["title"]) is not str
-        or not 1 <= len(fields["title"]) <= 120
+        or len(fields["title"]) > 120
         or type(fields["currency"]) is not str
         or type(fields["any_price"]) is not bool
         or type(fields["enabled"]) is not bool
@@ -41,7 +41,7 @@ def save_fields(fields):
         raise ProtocolError("invalid_watch_fields")
     PriceLeadRule(
         release_id=release_id(fields["release"]),
-        public_title=fields["title"],
+        public_title=fields["title"] or f"Discogs release {release_id(fields['release'])}",
         currency=fields["currency"],
         item_price_ceiling=fields["price"],
         any_price=fields["any_price"],

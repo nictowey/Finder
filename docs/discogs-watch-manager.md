@@ -15,7 +15,7 @@ price. Use a ceiling of 39.99 for a strict under-40 USD preference.
 
 These are aggregate leads only. No individual-listing discovery, condition check,
 US-seller filter, shipping quote, tax, payment or purchase is claimed. No catalog
-lookup is performed. The user supplies a display title. New enabled watches can
+lookup is performed. A display title is optional; a blank label uses “Discogs release [ID]”. New enabled watches can
 cause the existing notification worker to deliver through its existing private
 channel; the form says so. Saving does not send anything synchronously and cannot
 start a globally paused monitor.

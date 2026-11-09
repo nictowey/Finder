@@ -134,7 +134,6 @@ def test_conflict_and_duplicate_submission(setup):
         {"enabled": 1},
         {"any_price": "false"},
         {"revision": True},
-        {"title": ""},
         {"title": "a\nb"},
         {"currency": "ZZZ"},
         {"any_price": True},
@@ -361,3 +360,9 @@ def test_notification_counts_use_accepted_events_not_attempts_or_queue(setup):
         "uncertain": 2,
     }
     assert not paused["enabled"]
+
+
+def test_adding_watch_needs_only_release_and_price_not_a_label(setup):
+    _, _, backend, app = setup
+    assert call(app, "/watches/save", "POST", fields(app, title=""))["status"].startswith("200")
+    assert backend.snapshot()["watches"][-1]["public_title"] == "Discogs release 99"

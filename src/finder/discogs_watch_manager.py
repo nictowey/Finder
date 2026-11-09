@@ -90,6 +90,8 @@ class WatchBackend:
 
     def save(self, fields):
         ident = release_id(fields["release"])
+        if type(fields["title"]) is not str:
+            raise ValueError("Use a text label or leave it blank")
         if type(fields["revision"]) is not int or fields["revision"] < 0:
             raise ValueError("Use a current revision")
         if type(fields["any_price"]) is not bool or type(fields["enabled"]) is not bool:
@@ -104,7 +106,7 @@ class WatchBackend:
         # New watches have initial-under-limit and later under-limit price-drop leads.
         rule = PriceLeadRule(
             release_id=ident,
-            public_title=fields["title"],
+            public_title=fields["title"] or f"Discogs release {ident}",
             currency=fields["currency"],
             item_price_ceiling=fields["price"],
             any_price=fields["any_price"],

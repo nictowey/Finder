@@ -262,3 +262,11 @@ def test_invalid_notification_projection_fails_closed(integration, counts):
     state["watches"][0]["notifications"] = counts
     with pytest.raises(ProtocolError):
         project_snapshot(state)
+
+
+def test_optional_label_round_trips_through_broker(integration):
+    _, backend, _, client, _, _ = integration
+    payload = fields()
+    payload["title"] = ""
+    assert client.save(payload) == 2
+    assert backend.snapshot()["watches"][0]["public_title"] == "Discogs release 1"

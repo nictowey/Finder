@@ -23,7 +23,7 @@ PAGE = r"""<!doctype html>
 <p id="status" class="status" role="status" aria-live="polite">Loading your saved watches…</p>
 <div class="layout"><section class="panel"><h2 id="form-title">Add a watch</h2><p class="muted" id="form-note">Save it here. No message to your assistant needed.</p>
 <form id="watch-form"><label>Discogs release link or ID<input id="release" required maxlength="500" autocomplete="off" placeholder="https://www.discogs.com/release/…"><small>Use the exact release, not a master or sell/item link. No catalog request is made.</small></label>
-<label>Record name<input id="title" required maxlength="120" autocomplete="off" placeholder="Artist · album · edition"><small>This label can appear in your existing private alerts.</small></label>
+<label>Record name <span class="muted">(optional)</span><input id="title" maxlength="120" autocomplete="off" placeholder="Artist · album · edition"><small>Leave blank to use the release ID. This label can appear in your existing private alerts.</small></label>
 <div class="row"><label>Item-price limit<input id="price" required inputmode="decimal" pattern="[0-9]{1,7}([.][0-9]{1,2})?" maxlength="10" placeholder="40.00"><small>At or below this price, before shipping and fees.</small></label><label>Currency<select id="currency"><option>USD</option><option>GBP</option><option>EUR</option><option>CAD</option><option>AUD</option></select></label></div>
 <label class="check"><input id="any-price" type="checkbox">Watch availability at any price</label>
 <label class="check"><input id="enabled" type="checkbox" checked>Watch active</label>

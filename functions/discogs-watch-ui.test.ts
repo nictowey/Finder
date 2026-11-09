@@ -92,3 +92,11 @@ test('Notification cards separate accepted history, current settings and unconfi
   assert.match(a.doc.getElementById('count')!.textContent!,/1 active · 0 paused/);
  }finally{a.close();}
 });
+
+test('A release and price can be submitted without a separate record label',async()=>{
+ const a=await app(async(path)=>({ok:true,json:async()=>path.endsWith('/state')?fixture():{saved:true}}));try{
+  assert.equal((a.doc.getElementById('title') as HTMLInputElement).required,false);
+  a.input('release','99');a.input('price','12');a.submit();await tick();await tick();
+  const save=a.requests.find(r=>r.path.endsWith('/save'))!;assert.equal(save.body.title,'');assert.equal(save.body.release,'99');assert.equal(save.body.price,'12');
+ }finally{a.close();}
+});
