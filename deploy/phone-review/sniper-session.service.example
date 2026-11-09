@@ -7,6 +7,8 @@
 Description=Private remembered-device session app (separate instance)
 After=caddy.service sniper-review-broker.service
 Requires=caddy.service sniper-review-broker.service
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -16,11 +18,12 @@ SupplementaryGroups=sniper-review-broker
 RuntimeDirectory=sniper-session
 RuntimeDirectoryMode=0750
 UMask=0077
-WorkingDirectory=/opt/sniper-review
+WorkingDirectory=/opt/sniper-session/releases/REPLACE_WITH_REVIEWED_RELEASE
 # Reuse only the existing narrow broker client group; no shared DB access.
 Environment=SNIPER_SESSION_IP=REPLACE_WITH_APPROVED_PUBLIC_IPV4
-ExecStart=/opt/sniper-review/venv/bin/python -I -m finder.discogs_phone_review_server --broker-socket /run/sniper-review-broker/broker.sock --broker-user sniper --origin https://${SNIPER_SESSION_IP} --principal review-owner --socket-directory /run/sniper-session --enable-watch-management --enable-device-sessions --allow-ip-session-origin --session-ip-address ${SNIPER_SESSION_IP} --session-database /var/lib/sniper-review-auth/devices.db
-Restart=no
+ExecStart=/opt/sniper-session/releases/REPLACE_WITH_REVIEWED_RELEASE/venv/bin/python -I -m finder.discogs_phone_review_server --broker-socket /run/sniper-review-broker/broker.sock --broker-user sniper --origin https://${SNIPER_SESSION_IP} --principal review-owner --socket-directory /run/sniper-session --enable-watch-management --enable-device-sessions --allow-ip-session-origin --session-ip-address ${SNIPER_SESSION_IP} --session-database /var/lib/sniper-review-auth/devices.db
+Restart=on-failure
+RestartSec=5s
 TimeoutStopSec=35
 KillSignal=SIGTERM
 NoNewPrivileges=yes
@@ -44,7 +47,7 @@ RestrictAddressFamilies=AF_UNIX
 ReadWritePaths=/run/sniper-session /var/lib/sniper-review-auth
 # Confirm all secret paths on host; dedicated UID must have no secret-reading groups.
 # Include the actual chosen TLS key storage too; absent paths require operator review.
-InaccessiblePaths=/var/lib/sniper /etc/sniper /root /home /etc/caddy /run/caddy-admin /etc/letsencrypt
+InaccessiblePaths=/var/lib/sniper /etc/sniper /root /home /etc/caddy /run/caddy-admin -/etc/letsencrypt -/var/lib/sniper-acme -/var/lib/sniper-ip-tls
 MemoryMax=192M
 TasksMax=16
 LimitNOFILE=128

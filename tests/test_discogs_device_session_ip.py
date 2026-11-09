@@ -229,7 +229,7 @@ def test_ip_proxy_template_has_explicit_external_tls_and_scoped_challenge():
     assert "https://{$REVIEW_IP_ADDRESS}" in text
     assert "tls {$REVIEW_IP_CERT_FILE} {$REVIEW_IP_KEY_FILE}" in text
     assert "http://{$REVIEW_IP_ADDRESS}" in text
-    assert "path /.well-known/acme-challenge/*" in text
+    assert r"path_regexp acme ^/\.well-known/acme-challenge/[A-Za-z0-9_-]+$" in text
     assert "method GET HEAD" in text
     assert "root * {$REVIEW_IP_ACME_WEBROOT}" in text
     assert 'respond "Not found" 404' in text
@@ -248,6 +248,10 @@ def test_ip_instance_template_preserves_old_socket_and_db_isolation():
     old = (root / "sniper-review.service").read_text()
     assert "unix//run/sniper-session/review.sock" in proxy
     assert "unix//run/sniper-review/review.sock" not in proxy
+    assert "/opt/sniper-review/venv" not in unit
+    assert "/opt/sniper-session/releases/REPLACE_WITH_REVIEWED_RELEASE/venv/bin/python" in unit
+    assert "Restart=on-failure" in unit and "StartLimitBurst=3" in unit
+    assert "-/var/lib/sniper-acme -/var/lib/sniper-ip-tls" in unit
     assert "RuntimeDirectory=sniper-session\n" in unit
     assert "--socket-directory /run/sniper-session" in unit
     assert "--broker-socket /run/sniper-review-broker/broker.sock" in unit

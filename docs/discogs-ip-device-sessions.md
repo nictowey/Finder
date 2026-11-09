@@ -150,3 +150,5 @@ origin and Host, unchanged DNS behavior, Basic bootstrap, cookie attributes,
 watch CSRF, listing review, logout and static proxy-template contracts. They do
 not bind listeners, issue certificates, contact test addresses or verify a real
 proxy. Full repository CI remains required before publication.
+
+The session instance must use a distinct immutable runtime under its own release directory, not the old Basic service virtual environment. Preserve the original source and dependencies as well as its process/socket. Replace the example release placeholder only with the reviewed staged version. Optional inaccessible paths use the systemd `-` prefix to avoid failure when an otherwise denied path does not exist.
